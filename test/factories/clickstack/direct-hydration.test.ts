@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { clickstackBootstrap } from '../../../src/factories/clickstack/index.js';
+import { DEFAULT_CLICKSTACK_VERSION } from '../../../src/factories/clickstack/resources/helm.js';
 
 interface DirectReExec {
   reExecuteWithLiveStatus(
@@ -56,8 +57,27 @@ describe('clickstack direct-mode status hydration (hermetic, no cluster)', () =>
     expect(typeof status!.gateway.otlpHttpEndpoint).toBe('string');
     expect(typeof status!.app.host).toBe('string');
 
-    // Bare build-time constant ports hydrate directly too.
-    expect(status!.app.appPort).toBe(3000);
-    expect(status!.app.apiPort).toBe(8000);
+    // `version` is a reference into the OWNED HelmRelease's own chart pin, and
+    // that resource's spec is fully known to this seam — so it resolves here to
+    // the concrete pin, with no cluster and no ConfigMap round-trip.
+    expect(status!.version).toBe(DEFAULT_CLICKSTACK_VERSION);
+    expect(typeof status!.version).toBe('string');
+
+    // The remaining CONSTRUCTION-TIME fields (the ports and the storage block)
+    // are no longer bare constants either: they are projected from the contract
+    // ConfigMap this composition owns, which is what makes them visible on the
+    // live KRO CR. Like `ready`/`phase`, they are therefore `Cel.expr` objects
+    // that this JS-re-execution seam PRESERVES rather than resolves — the
+    // cel-js reference resolver settles them against the live ConfigMap in a
+    // real direct deploy (asserted in the cluster-gated integration suite).
+    const celExpression = (value: unknown): string =>
+      (value as { expression: string }).expression;
+
+    expect(celExpression(status!.app.appPort)).toBe('int(clickstackContract.data.appPort)');
+    expect(celExpression(status!.app.apiPort)).toBe('int(clickstackContract.data.apiPort)');
+    expect(celExpression(status!.storage.mode)).toBe('clickstackContract.data.storageMode');
+    expect(celExpression(status!.storage.persistentQueue)).toBe(
+      'clickstackContract.data.storagePersistentQueue == "true"'
+    );
   });
 });

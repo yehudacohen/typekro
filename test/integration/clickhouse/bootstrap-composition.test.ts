@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/index.js';
+import { waitUntilGone } from '../shared-absence.js';
 import {
   createTestNamespace,
   deleteTestFactoryInstanceAndRecoverNamespaces,
@@ -485,18 +486,10 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     // Each of these deletions is processed asynchronously by KRO/the operator
     // via finalizers and can lag a beat after `deleteInstance` returns — poll
     // each to a short deadline rather than asserting immediate absence.
-    const pollGone = async (read: () => Promise<unknown>): Promise<boolean> => {
-      const deadline = Date.now() + 120000;
-      while (Date.now() < deadline) {
-        try {
-          await read();
-          await new Promise((r) => setTimeout(r, 5000));
-        } catch {
-          return true;
-        }
-      }
-      return false;
-    };
+    // `waitUntilGone` counts ONLY a 404 as gone and re-throws everything else,
+    // so a 5xx or an auth failure cannot pass these assertions.
+    const pollGone = (read: () => Promise<unknown>): Promise<boolean> =>
+      waitUntilGone(read, 120_000);
 
     // Instance CR gone.
     expect(

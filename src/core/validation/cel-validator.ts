@@ -621,7 +621,15 @@ export function validateStatusCelExpressions(
     lambdaVars.add('each');
 
     const findings: Array<{ referencedId: string; matchedRef: string }> = [];
-    const directResourceRefPattern = /\b([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./g;
+    // ONLY THE FIRST SEGMENT OF A PATH IS A RESOURCE ID. `\b` also matches immediately after a
+    // `.`, so any path whose INTERIOR repeats a Kubernetes section name was scanned a second time
+    // from that interior segment: `helmRelease.spec.chart.spec.version` (a Flux chart pin) was
+    // reported as "Referenced resource 'chart' does not exist", and
+    // `chi.status.conditions.metadata.name` as 'conditions'. Interior segments are field names,
+    // which is all they ever were. The lookbehind pins each candidate to the root of its path —
+    // the same scanner shape `kro-instance-safety.ts` already uses.
+    const directResourceRefPattern =
+      /(?<![A-Za-z0-9_$.])([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./g;
     let directMatch: RegExpExecArray | null = directResourceRefPattern.exec(expression);
     while (directMatch !== null) {
       const referencedId = directMatch[1] ?? '';

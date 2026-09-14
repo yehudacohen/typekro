@@ -93,11 +93,31 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
 - `replicas`, `shards` — cluster layout
 - `keeper` — whether the cluster coordinates through Keeper (defaults to `true` when `replicas > 1`)
 - `users[].name` and `users[].networksIp` — user names become CHI configuration **path fragments**
+- `storage` — the storage *mode*. PVC (the default) or the full S3 disk configuration; see [Storage](#storage)
 
 **Runtime (spec fields — schema refs / proxies serialize to clean CEL):**
 
 - `name`, `namespace`, `version`, `clusterName`
-- `storage.size`, `storage.storageClassName`
+  ::: warning `clusterName` is constrained, and the constraint is enforced in three places
+  The value is the cluster identity the operator concatenates into every generated object name
+  **and** the `ON CLUSTER '<name>'` target of the [scheduled backup](#scheduled-backups-and-restore) — where a
+  quote or a semicolon would be extra SQL rather than a bad name. It must match
+  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`: a letter, then up to 14 more letters, digits or
+  dashes, not ending in a dash.
+
+  That is the *intersection* of two independent limits, not a house style. The Altinity CRD
+  constrains `spec.configuration.clusters[].name` to `^[a-zA-Z0-9-]{0,15}$` with `maxLength: 15`
+  (`namePartClusterMaxLen`), so an underscore or a 16th character is rejected by the API server
+  whatever TypeKro accepts; ClickHouse reads the same value as an identifier, so a leading digit or
+  dash is not one.
+
+  A **literal** is rejected at construction. A **schema reference** cannot be — so the pattern
+  travels into the generated RGD (`clusterName: string | maxLength=15 pattern="…"`) and KRO rejects
+  a bad instance. The backup script re-checks the name it receives in `$CLICKHOUSE_CLUSTER` and
+  escapes it before interpolation, and refuses to run rather than issue a statement built from a
+  name it does not recognise.
+  :::
+- `storage.size`, `storage.storageClassName` — the **local** volume (the data volume in PVC mode; the thin cache volume in S3 mode)
 - `keeper.host`, `keeper.port`
 - `users.<name>.passwordSha256Hex` or `users.<name>.passwordSecretRef` (one
   literal key per declared user, selected by the build-time credential source)
@@ -126,6 +146,240 @@ shards, users }) and pass only runtime fields through the spec.
 ### The low-level `clickHouseInstallation()`
 
 `clickHouseInstallation(config)` remains available as the concrete-topology escape hatch (direct mode, or compositions whose topology is a literal). It applies the same loud build-time guards. Prefer `makeClickHouseCluster()` in compositions.
+
+## Storage
+
+`storage` is a discriminated union on `mode`. `'pvc'` is the default and is unchanged from earlier releases.
+
+```typescript
+// PVC (default) — local MergeTree data volume
+const local = makeClickHouseCluster();
+
+// S3 — object storage is the durable record, with a bounded local cache
+const objectStore = makeClickHouseCluster({
+  storage: {
+    mode: 's3',
+    bucket: 'example-observability',
+    prefix: 'clickhouse',
+    region: 'us-east-2',
+    diskType: 's3_plain_rewritable',
+    cache: { size: '50Gi' },
+    auth: { irsa: { roleArn: 'arn:aws:iam::123456789012:role/clickhouse-s3' } },
+  },
+});
+
+await objectStore.factory('kro').deploy({
+  name: 'observability',
+  namespace: 'observability',
+  version: '25.12.5',
+  // In S3 mode this volume holds server metadata and the cache — size it for
+  // the cache, not for the dataset.
+  storage: { size: '100Gi', storageClassName: 'gp3-expandable' },
+});
+```
+
+### What the S3 coordinates must look like
+
+Every component of the object-storage location is validated at construction, and the *composed* URL is validated again as a whole. The reason is the destination's second life: the same string is the `<endpoint>` text of `config.d/storage.xml` **and** the `BACKUP … TO S3('<url>')` string literal the backup CronJob builds, where a `'` is not a bad URL but extra SQL. Validating components individually is a set of doors that has to stay complete, so the composed result is re-checked too.
+
+| Option | Rule |
+| --- | --- |
+| `bucket`, `backup.bucket` | AWS bucket naming: 3-63 characters of lowercase letters, digits, `.` and `-`, starting and ending alphanumeric, no `..`, not IP-address-shaped |
+| `region` | `^[a-z]{2}(-[a-z]+)+-\d$` — `us-east-2`, `eu-central-1`, `us-gov-west-1`. A shape, not an enumeration, so a new region needs no release; an availability *zone* (`us-east-1a`) is not a region and is rejected |
+| `prefix`, `backup.prefix` | `/`-separated segments of `[A-Za-z0-9._~!$()*+,;=:@-]` — no quotes, whitespace, control characters, `&`, `%` or `..` |
+| `endpoint` | An absolute `http(s)` URL made only of RFC 3986 URL characters (no whitespace, quotes, angle brackets, `&` or backslash). An internationalized host must be given in punycode |
+| `policyName` | A bare ClickHouse identifier — it is rendered as an XML *element name*, where escaping does not exist |
+| `backup.database` | A bare SQL identifier — it is interpolated into `BACKUP DATABASE <db>` |
+
+Errors name the option you set, including `storage.backup.bucket` / `storage.backup.prefix` rather than the disk's own.
+
+### Why S3 configuration is build-time
+
+`storage.mode` and everything under it compiles into a `storage_configuration` XML document embedded in the CHI's `configuration.files`, **and** decides which resources exist (the IRSA ServiceAccount, the backup CronJob). That is the same class of choice `zones` already occupies, so it lives in the constructor and a schema ref there throws loudly rather than serializing a `__KUBERNETES_REF__` marker into server configuration.
+
+Only `storage.size` and `storage.storageClassName` stay in the runtime spec.
+
+### Durability: `s3` vs `s3_plain_rewritable`
+
+This is the decision the discriminated `diskType` exists to force. A boolean `s3: true` would hide it.
+
+| | `diskType: 's3'` (default) | `diskType: 's3_plain_rewritable'` |
+| --- | --- | --- |
+| Part **data** | in the bucket | in the bucket |
+| Part **metadata** | on the local disk | **in the bucket** |
+| Bucket is self-describing | ❌ no — the local disk holds the map to the objects | ✅ yes |
+| Node loss | data loss unless a backup exists | restart + reattach, no restore step |
+| Durable without backups | ❌ | ✅ |
+| Replication (`replicas > 1`) | ✅ supported | ❌ **rejected by the factory** |
+| Mutations (`ALTER … UPDATE/DELETE`, lightweight deletes) | ✅ | ❌ not supported |
+| `ALTER … MODIFY TTL` | ✅ | ⚠️ only with `materialize_ttl_after_modify = 0` |
+| Minimum ClickHouse | any supported release | **24.5** |
+| Recommended pairing | `storage.backup` | single-replica, no backup required |
+
+`s3_plain_rewritable` arrived in ClickHouse 24.4, and 24.5 generalized it to the `metadata_type: plain_rewritable` form this factory emits (`type: object_storage` + `object_storage_type: s3` + `metadata_type: plain_rewritable`), so **24.5 is the pinned floor**. It is enforced in BOTH modes: a concrete `version` below the floor (or one the factory cannot read as `major.minor`, such as a moving tag or a digest pin) is rejected at construction, and because `version` is per-instance runtime spec the same floor travels into the generated KRO schema as a `pattern=` marker on `spec.version`, so the API server rejects an instance that selects an older server before the ClickHouseInstallation is ever created. ClickHouse's own documentation is explicit that mutations and table replication are **not** supported for this metadata type, which is why the factory refuses `replicas > 1` and why TTL DDL must skip materialization. TTL-driven expiry itself runs during merges, which this disk type does support. See [External disks for storing data](https://clickhouse.com/docs/operations/storing-data).
+
+`status.storage` puts the resulting guarantee on the cluster contract, so nobody has to read the XML to find out:
+
+```typescript
+status: {
+  storage: {
+    mode: 'pvc' | 's3';
+    diskType?: 's3' | 's3_plain_rewritable';
+    policyName?: string;              // 's3_main' by default
+    bucket?: string;
+    selfDescribingBucket?: boolean;   // true only for s3_plain_rewritable
+    backupSchedule?: string;          // present when a backup CronJob exists
+  };
+}
+```
+
+These are construction-time values, so — like `clickhouse.port`, `clickhouse.database` and `clickhouse.user` — they have no natural CHI field to read. Rather than emit them as literals (which KRO drops from the instance status, leaving the declared schema promising fields the live CR never carries), the composition writes them into a **ConfigMap it owns**, `<installation>-contract`, and projects them back from that resource. They therefore appear on the live KRO CR status in both factory modes, and the ConfigMap itself is a readable copy of the cluster's durability contract.
+
+### What gets rendered
+
+```xml
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <s3>
+                <type>s3</type>
+                <endpoint>https://example-observability.s3.us-east-2.amazonaws.com/clickhouse/</endpoint>
+                <use_environment_credentials>true</use_environment_credentials>
+            </s3>
+            <s3_cache>
+                <type>cache</type>
+                <disk>s3</disk>
+                <path>/var/lib/clickhouse/disks/s3_cache/</path>
+                <max_size>53687091200</max_size>
+                <cache_on_write_operations>true</cache_on_write_operations>
+            </s3_cache>
+        </disks>
+        <policies>
+            <s3_main>
+                <volumes><main><disk>s3_cache</disk></main></volumes>
+            </s3_main>
+        </policies>
+    </storage_configuration>
+</clickhouse>
+```
+
+Alongside it, `configuration.settings` carries `merge_tree/storage_policy: s3_main`. **That setting is the point**: it makes the S3 policy the MergeTree *default*, so tables created by tooling outside TypeKro — the ClickStack/HyperDX gateway collector's goose migrations, SigNoz's migrator — land on object storage with no `SETTINGS storage_policy` clause and no per-table DDL.
+
+The cache lives under `/var/lib/clickhouse/`, which is the operator's data-volume mount, so `cache.size` must fit inside `storage.size` (the factory rejects a cache larger than its volume). Override the location with `cache.path` if you mount something else.
+
+### Credentials
+
+Access keys are never accepted inline. There are exactly two transports.
+
+**IRSA (EKS).** The composition creates a ServiceAccount annotated with `eks.amazonaws.com/role-arn` and runs the CHI pod template as it; the disk configuration uses `<use_environment_credentials>true</use_environment_credentials>`, so the AWS SDK inside ClickHouse picks up the projected web-identity token. No key material appears in any manifest.
+
+```typescript
+auth: { irsa: { roleArn: 'arn:aws:iam::123456789012:role/clickhouse-s3' } }
+```
+
+The ServiceAccount defaults to `<instance-name>-s3`; set `auth.irsa.serviceAccountName` to choose the name.
+
+**Secret-backed keys (MinIO, non-EKS).** The keys become pod env vars via `secretKeyRef` (`optional: false`, so a missing Secret fails the pod loudly) and the disk configuration references them with ClickHouse's `from_env` attribute — the *values* never enter the CHI spec.
+
+```typescript
+auth: {
+  secretRef: {
+    name: 'minio-credentials',
+    accessKeyIdKey: 'AWS_ACCESS_KEY_ID',        // default
+    secretAccessKeyKey: 'AWS_SECRET_ACCESS_KEY', // default
+  },
+}
+```
+
+For a custom S3-compatible service, set `endpoint` to the service's base URL (`http://minio.minio.svc.cluster.local:9000`) and leave `region` unset — the factory appends the bucket and prefix path-style. With no `endpoint`, `region` is required and the endpoint is the AWS virtual-hosted form.
+
+### IAM policy for the IRSA role
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+      "Resource": "arn:aws:s3:::example-observability"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::example-observability/clickhouse/*"
+    }
+  ]
+}
+```
+
+`ListBucket` should be scoped with a `s3:prefix` condition where your policy language allows it. Add a second statement for the backup prefix (`.../backups/*`) when `storage.backup` is configured — the prune step needs `s3:DeleteObject` and `s3:ListBucket` there. The role's trust policy is the usual EKS OIDC web-identity trust for `system:serviceaccount:<namespace>:<serviceAccountName>`.
+
+### Scheduled backups and restore
+
+With `diskType: 's3'`, part metadata is local — so durability *is* the backup. Declare one:
+
+```typescript
+storage: {
+  mode: 's3',
+  bucket: 'example-observability',
+  region: 'us-east-2',
+  cache: { size: '50Gi' },
+  auth: { irsa: { roleArn: 'arn:aws:iam::123456789012:role/clickhouse-s3' } },
+  backup: {
+    schedule: '0 2 * * *',
+    prefix: 'backups',            // default; must not be the bucket root
+    database: 'default',          // must be a bare SQL identifier
+    retention: { days: 14 },      // renders a real prune step
+  },
+}
+```
+
+That renders a CronJob whose run:
+
+1. generates a timestamped name (`%Y%m%d%H%M%S`) and issues `BACKUP DATABASE <db> [ON CLUSTER '<clusterName>'] TO S3('<endpoint>/<timestamp>')`. The statement carries **no credentials** — `BACKUP` executes server-side, and the storage compiler renders an `<s3>` section for the backup endpoint into `config.d/storage.xml`, so nothing sensitive reaches `system.query_log`;
+2. with `retention.days`, follows up with an `amazon/aws-cli` prune container that deletes expired timestamped prefixes. The backup runs as an `initContainer` in that case, because Job containers otherwise run in parallel and the prune must see a finished backup.
+
+Set `backup.auth.secretRef` to connect as a specific ClickHouse user; without it the job connects as `default` with no password (the dev-first default).
+
+### Sharded clusters back up every shard
+
+A plain `BACKUP DATABASE db TO S3(...)` is executed by the ONE server the client connected to, and that server holds only its own shard's parts — on a multi-shard cluster it produces a backup that succeeds, restores cleanly, and is missing every other shard's data. So the rendered statement gains `ON CLUSTER '<clusterName>'` whenever the topology has more than one shard or replica, or a keeper is configured. ClickHouse then fans the statement out to every host of the cluster and coordinates them through [Zoo]Keeper into **one** backup at **one** destination path (the `backup_restore_keeper_*` settings in the [BACKUP/RESTORE reference](https://clickhouse.com/docs/operations/backup) exist for that coordination).
+
+There are deliberately no `{shard}` / `{replica}` macros in the destination: that convention produces N independent per-shard backups needing N restore statements, which is a different design.
+
+Because the fan-out needs Keeper, `makeClickHouseCluster` **rejects at construction** a topology with more than one shard or replica that declares `storage.backup` but no keeper:
+
+```typescript
+// throws: backing up every shard needs `BACKUP ... ON CLUSTER`, which needs a keeper
+makeClickHouseCluster({ shards: 2, storage: { /* … */ backup: { schedule: '0 2 * * *' } } });
+
+// correct: the coordinated statement has somewhere to coordinate
+makeClickHouseCluster({ shards: 2, keeper: true, storage: { /* … */ backup: { schedule: '0 2 * * *' } } });
+```
+
+(`keeper` already defaults to `true` for `replicas > 1`; multi-*shard* topologies must opt in.)
+
+### Restore
+
+**Restore is deliberately not automated** — restoring over a live database is a decision, not a schedule. List the available backups and restore one by name, **matching the backup's own shape**: a backup taken `ON CLUSTER` is restored `ON CLUSTER`.
+
+```sql
+-- from a clickhouse-client pod against the cluster
+SHOW DATABASES;
+
+-- single-node topology (1 shard, 1 replica, no keeper)
+RESTORE DATABASE default
+  FROM S3('https://<bucket>.s3.<region>.amazonaws.com/backups/20260101020000');
+
+-- sharded/replicated topology — the same cluster name the CronJob used
+RESTORE DATABASE default ON CLUSTER 'cluster'
+  FROM S3('https://<bucket>.s3.<region>.amazonaws.com/backups/20260101020000');
+```
+
+The cluster name is `spec.clusterName` (default `cluster`), and it is also published on the status contract as `status.clickhouse.clusterName`.
+
+Restore into a fresh database first (`RESTORE DATABASE default AS default_restored FROM …`) when the live one still exists, then swap with `EXCHANGE TABLES` or `RENAME DATABASE`. The restore reads its credentials from the same `<s3>` config section the backup wrote through, so it needs no keys in the statement either.
 
 ## Users Shape
 
@@ -191,6 +445,14 @@ status: {
     user?: string;                    // first declared user
   };
   keeper?: { host: string; port: number };
+  storage: {                          // see Storage above
+    mode: 'pvc' | 's3';
+    diskType?: 's3' | 's3_plain_rewritable';
+    policyName?: string;
+    bucket?: string;
+    selfDescribingBucket?: boolean;
+    backupSchedule?: string;
+  };
   installation: {
     name: string;
     namespace: string;
@@ -226,7 +488,14 @@ The connection details are derived from the operator's **verified naming convent
 - `keeper.host` / `keeper.port` — `clickhouse.spec.configuration.zookeeper.nodes[0].*`.
 - `installation.name` / `installation.namespace` — `clickhouse.metadata.*`.
 
-Only the **bare build-time constants** — `clickhouse.port` (9000), `clickhouse.database` (`'default'`), and `clickhouse.user` (first declared user) — are hydrated client-side and absent from the KRO CR status: KRO status CEL cannot express a literal-only field (nor reference `schema.spec.*`), and there is no honest resource field to anchor them on. The native port is still KRO-visible inside `nativeUrl`/`httpUrl`.
+The remaining fields — `clickhouse.port`, `clickhouse.database`, `clickhouse.user`, and the whole `storage` block — are **construction-time values with no natural CHI field to read**. KRO status CEL cannot express a literal-only leaf (nor reference `schema.spec.*`), so emitting them as literals meant the declared schema promised fields the live CR never carried. They are instead written into a ConfigMap the composition **owns** (`<installation>-contract`, resource id `clickhouseContract`) and projected back from it:
+
+- `clickhouse.database` / `clickhouse.user` — `clickhouseContract.data.database` / `.user`.
+- `clickhouse.port` — `int(clickhouseContract.data.nativePort)`; ConfigMap values are strings, so the CEL `int(...)` conversion restores the declared number.
+- `storage.mode` / `diskType` / `policyName` / `bucket` / `backupSchedule` — `clickhouseContract.data.storage*`.
+- `storage.selfDescribingBucket` — `clickhouseContract.data.storageSelfDescribingBucket == "true"`.
+
+Every declared status leaf is therefore a resource projection, and `kubectl get clickhouseclusters -o yaml` shows the whole contract — durability included — in both factory modes. See [typekro#188](https://github.com/yehudacohen/typekro/issues/188) for the underlying framework gap (a literal status leaf is accepted at build time and then silently dropped by KRO).
 
 Operator health is deliberately **not** part of this contract: the operator is separate
 one-per-cluster infrastructure whose own bootstrap status carries `ready`, `failed`, `phase`, and

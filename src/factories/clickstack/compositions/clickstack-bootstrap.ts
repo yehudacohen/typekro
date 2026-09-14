@@ -76,7 +76,7 @@
  * ```
  */
 
-import type { V1CronJob } from '@kubernetes/client-node';
+import type { V1CronJob, V1PersistentVolumeClaim } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/portable-strategies.js';
@@ -84,7 +84,9 @@ import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
+import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { persistentVolumeClaim } from '../../kubernetes/storage/persistent-volume-claim.js';
 import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import {
   CLICKSTACK_API_PORT,
@@ -122,17 +124,70 @@ import {
   DEFAULT_CLICKSTACK_NAMESPACE,
   mapClickStackConfigToHelmValues,
 } from '../utils/helm-values-mapper.js';
+import {
+  CLICKSTACK_CONFIG_MAP_NAME,
+  CLICKSTACK_SECRET_NAME,
+  type ResolvedClickStackStorage,
+  assertQueueReplicaCompatible,
+  clickStackQueueClaimName,
+  renderPersistentQueueClaimSpec,
+  renderRetentionScript,
+  resolveClickStackStorage,
+} from '../utils/storage.js';
 import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.js';
 
 /** Concrete, resolved build choices the composition body branches on. */
 interface ResolvedBuildConfig {
   mongoMode: 'internal' | 'external';
   credentialSource: 'inline' | 'secretValues';
+  /** Internal-Mongo PVC sizing (build-time; shapes the StatefulSet template). */
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
+  /**
+   * The EXTERNAL ClickHouse's storage story: retention DDL, the collector's
+   * persistent queue, and the status contract. Distinct from `storage` above,
+   * which is Mongo's PVC.
+   */
+  clickhouseStorage: ResolvedClickStackStorage;
 }
 
 const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+
+/**
+ * Readiness for the collector queue's PersistentVolumeClaim.
+ *
+ * `Pending` counts as ready ON PURPOSE. The default binding mode of most
+ * dynamic provisioners — and of kind's `local-path` StorageClass — is
+ * `WaitForFirstConsumer`, which does not bind a claim until a Pod that mounts
+ * it is scheduled. That Pod comes from the HelmRelease which DEPENDS on this
+ * claim, so requiring `Bound` here would deadlock every such cluster. What
+ * this evaluator does still catch is a claim the API server rejected the
+ * provisioning of (`Lost`), and a claim whose status has not appeared at all.
+ */
+const clickstackQueueClaimReadiness = registerPortableReadinessEvaluator<V1PersistentVolumeClaim>(
+  'typekro.readiness.clickstack.queue-claim',
+  '1',
+  (liveResource) => {
+    const phase = liveResource.status?.phase;
+    if (phase === 'Bound') {
+      return { ready: true, reason: 'Bound', message: 'The queue claim is bound to a volume' };
+    }
+    if (phase === 'Pending') {
+      return {
+        ready: true,
+        reason: 'WaitingForConsumer',
+        message:
+          'The queue claim is Pending — expected until the collector Pod is scheduled on a ' +
+          'WaitForFirstConsumer StorageClass',
+      };
+    }
+    return {
+      ready: false,
+      reason: phase === undefined ? 'NoStatus' : 'UnexpectedPhase',
+      message: `The queue claim is in phase ${phase ?? '<none>'}, expected Bound or Pending`,
+    };
+  }
+);
 const clickstackTeamBootstrapReadiness = registerPortableReadinessEvaluator<V1CronJob>(
   'typekro.readiness.clickstack.team-bootstrap',
   '1',
@@ -144,7 +199,11 @@ const clickstackTeamBootstrapReadiness = registerPortableReadinessEvaluator<V1Cr
     const succeededAt = status?.lastSuccessfulTime
       ? new Date(status.lastSuccessfulTime).getTime()
       : Number.NaN;
-    if (Number.isFinite(scheduledAt) && Number.isFinite(succeededAt) && succeededAt >= scheduledAt) {
+    if (
+      Number.isFinite(scheduledAt) &&
+      Number.isFinite(succeededAt) &&
+      succeededAt >= scheduledAt
+    ) {
       return {
         ready: true,
         reason: 'BootstrapCurrent',
@@ -160,6 +219,35 @@ const clickstackTeamBootstrapReadiness = registerPortableReadinessEvaluator<V1Cr
     };
   }
 );
+/**
+ * Resource id of the owned ClickStack HelmRelease inside the graph.
+ *
+ * Extracted as a constant because the status now READS BACK from it
+ * (`spec.chart.spec.version`), so the id appears in two places and must not
+ * drift.
+ */
+const CLICKSTACK_HELM_RELEASE_RESOURCE_ID = 'clickstackHelmRelease';
+
+/**
+ * Resource id of the CONTRACT ConfigMap inside the composition graph.
+ *
+ * WHY THIS RESOURCE EXISTS. The HyperDX app/API ports and the whole `storage`
+ * durability block come from the CONSTRUCTION-TIME build, not from the owned
+ * HelmRelease. As bare constants they were dropped by KRO (status CEL cannot
+ * express a literal-only leaf, nor reference `schema.spec.*`), so the declared
+ * schema promised fields the live CR never carried — a GitOps consumer reading
+ * `kubectl get clickstackbootstraps -o yaml` saw the ingest endpoints but not
+ * what happens to the telemetry after it arrives. Writing them into a
+ * ConfigMap this composition owns gives them a resource to be projected from,
+ * and the ConfigMap is a readable artifact in its own right.
+ *
+ * @see https://github.com/yehudacohen/typekro/issues/188
+ */
+const CLICKSTACK_CONTRACT_RESOURCE_ID = 'clickstackContract';
+
+/** Suffix of the contract ConfigMap's name (`<release>-contract`). */
+export const CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX = '-contract';
+
 const inlineSchemaFieldValidations = {
   apiKey: `self != "${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}"`,
 } as const;
@@ -235,6 +323,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       mongoMode: build.mongoMode,
       credentialSource: build.credentialSource,
       ...(build.values !== undefined && { values: build.values }),
+      storage: build.clickhouseStorage,
     });
 
     if (
@@ -303,6 +392,39 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       });
     }
 
+    // ── Collector persistent sending queue (PVC) ─────────────────────────
+    //
+    // A "persistent queue" has to outlive the collector Pod, and the two
+    // volume kinds a chart can template for you do NOT: an `emptyDir` dies
+    // with the Pod, and a *generic ephemeral volume*'s PVC is deleted along
+    // with the Pod that owns it
+    // (https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/). So the
+    // claim is a STANDALONE PersistentVolumeClaim owned by this composition,
+    // mounted by `claimName` through the chart's `extraVolumes` seam. It is
+    // created before the HelmRelease so the collector's first Pod can bind it.
+    //
+    // READINESS: the claim is treated as ready while `Pending`, because a
+    // `WaitForFirstConsumer` StorageClass (the common default, and kind's) does
+    // not bind a claim until a Pod mounts it — and that Pod is created by the
+    // HelmRelease that waits on this resource. Gating on `Bound` here would
+    // deadlock the deployment on every such cluster.
+    const queueClaim =
+      build.clickhouseStorage.persistentQueue === undefined
+        ? undefined
+        : persistentVolumeClaim({
+            id: 'clickstackQueueClaim',
+            metadata: {
+              name: clickStackQueueClaimName(spec.name),
+              namespace: resolvedNamespace as string,
+              labels: {
+                'app.kubernetes.io/name': 'clickstack-otel-queue',
+                'app.kubernetes.io/instance': spec.name,
+                'app.kubernetes.io/managed-by': 'typekro',
+              },
+            },
+            spec: renderPersistentQueueClaimSpec(build.clickhouseStorage.persistentQueue),
+          }).withReadinessEvaluator(clickstackQueueClaimReadiness);
+
     // ── ClickStack HelmRelease ───────────────────────────────────────────
     //
     // The HelmRelease does not set `disableWait`, so helm-controller waits
@@ -330,8 +452,13 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
             ],
           }
         : {}),
-      id: 'clickstackHelmRelease',
+      id: CLICKSTACK_HELM_RELEASE_RESOURCE_ID,
     });
+    // The collector Pod mounts the queue claim by name, so the claim has to
+    // exist before helm-controller creates the Deployment.
+    if (queueClaim !== undefined) {
+      _clickstackHelmRelease.dependsOn(queueClaim);
+    }
 
     // HyperDX's production OpAMP controller activates OTLP only after its
     // authoritative Team collection contains an ingestion key. The chart's
@@ -415,6 +542,114 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     }).withReadinessEvaluator(clickstackTeamBootstrapReadiness);
     _teamBootstrap.dependsOn(_clickstackHelmRelease);
 
+    // ── OTel table retention (TTL) ───────────────────────────────────────
+    //
+    // TypeKro does not own the OTel tables — the gateway collector's goose
+    // migrations create them on first start, and only then can a TTL be
+    // applied. So retention converges through an idempotent CronJob rather
+    // than a one-shot Job: it skips tables that have not appeared yet and
+    // re-checks later, and it only issues `MODIFY TTL` when the table's
+    // current definition does not already carry the target expression.
+    //
+    // Connection details come from the chart-owned `clickstack-config`
+    // ConfigMap and `clickstack-secret` Secret (the same envFrom pair the
+    // gateway collector uses), so this works identically in inline and
+    // Secret-backed credential modes and keeps no credential in the manifest.
+    if (build.clickhouseStorage.retentionEntries.length > 0) {
+      const _retention = cronJob({
+        id: 'clickstackRetention',
+        metadata: {
+          name: `${spec.name}-otel-retention`,
+          namespace: resolvedNamespace as string,
+          labels: {
+            'app.kubernetes.io/name': 'clickstack-otel-retention',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+        spec: {
+          schedule: build.clickhouseStorage.retentionSchedule,
+          concurrencyPolicy: 'Forbid',
+          successfulJobsHistoryLimit: 1,
+          failedJobsHistoryLimit: 3,
+          jobTemplate: {
+            spec: {
+              backoffLimit: 3,
+              template: {
+                metadata: {
+                  labels: {
+                    'app.kubernetes.io/name': 'clickstack-otel-retention',
+                    'app.kubernetes.io/instance': spec.name,
+                  },
+                },
+                spec: {
+                  restartPolicy: 'Never',
+                  containers: [
+                    {
+                      name: 'retention',
+                      image: build.clickhouseStorage.retentionImage,
+                      command: ['sh', '-c', renderRetentionScript(build.clickhouseStorage)],
+                      envFrom: [
+                        { configMapRef: { name: CLICKSTACK_CONFIG_MAP_NAME, optional: false } },
+                        { secretRef: { name: CLICKSTACK_SECRET_NAME, optional: false } },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      });
+      _retention.dependsOn(_clickstackHelmRelease);
+    }
+
+    // The build-time half of the status contract, written to a resource this
+    // composition OWNS so it can be projected into status rather than emitted
+    // as a literal KRO drops. See CLICKSTACK_CONTRACT_RESOURCE_ID.
+    const _clickstackContract = configMap({
+      id: CLICKSTACK_CONTRACT_RESOURCE_ID,
+      metadata: {
+        name: `${spec.name}${CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX}`,
+        namespace: resolvedNamespace,
+        labels: {
+          'app.kubernetes.io/name': 'clickstack',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/component': 'contract',
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      // ConfigMap values are strings by definition, so the numeric ports come
+      // back through `int(...)` and the boolean through an `== "true"`
+      // comparison — both live-verified to resolve in kro mode (KRO status
+      // CEL) and in direct mode (the cel-js reference resolver).
+      // `version` is deliberately NOT here: the chart pin the status reports
+      // is read straight off the owned HelmRelease
+      // (`spec.chart.spec.version`), so echoing it through this ConfigMap
+      // would be a second copy of the same fact.
+      data: {
+        appPort: String(CLICKSTACK_APP_PORT),
+        apiPort: String(CLICKSTACK_API_PORT),
+        storageMode: build.clickhouseStorage.mode,
+        ...(build.clickhouseStorage.diskType !== undefined
+          ? { storageDiskType: build.clickhouseStorage.diskType }
+          : {}),
+        ...(build.clickhouseStorage.policyName !== undefined
+          ? { storagePolicyName: build.clickhouseStorage.policyName }
+          : {}),
+        ...(build.clickhouseStorage.retention?.logs !== undefined
+          ? { storageRetentionLogs: build.clickhouseStorage.retention.logs }
+          : {}),
+        ...(build.clickhouseStorage.retention?.traces !== undefined
+          ? { storageRetentionTraces: build.clickhouseStorage.retention.traces }
+          : {}),
+        ...(build.clickhouseStorage.retention?.metrics !== undefined
+          ? { storageRetentionMetrics: build.clickhouseStorage.retention.metrics }
+          : {}),
+        storagePersistentQueue: String(build.clickhouseStorage.persistentQueue !== undefined),
+      },
+    });
+
     const helmReleaseStatus = helmReleaseConditionSummary(_clickstackHelmRelease);
     const teamBootstrapReady = Cel.expr<boolean>(
       'has(clickstackTeamBootstrap.status.lastScheduleTime) && ',
@@ -457,7 +692,12 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         teamBootstrapReady,
         ' ? "Ready" : "Installing")'
       ),
-      version: resolvedVersion,
+      // The HelmRelease's own chart pin — the version Flux is reconciling,
+      // read off the release rather than echoed from `resolvedVersion`. In kro
+      // mode `resolvedVersion` is `Cel.default(schema.spec.version, …)`, a
+      // schema-only expression KRO drops from the instance status, so the
+      // declared `version` field never appeared on the live CR at all.
+      version: _clickstackHelmRelease.spec.chart.spec.version,
       ui: {
         url: `http://${_clickstackHelmRelease.metadata.name}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local:${CLICKSTACK_APP_PORT}`,
       },
@@ -467,13 +707,79 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       },
       app: {
         host: `${_clickstackHelmRelease.metadata.name}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local`,
-        // Bare numeric constants — no resource anchor, so client-hydrated
-        // only; both ports are KRO-visible inside the URL fields above.
-        appPort: CLICKSTACK_APP_PORT,
-        apiPort: CLICKSTACK_API_PORT,
+        // Projected from the owned contract ConfigMap through `int(...)`.
+        // These were bare numeric constants, which KRO omits from the instance
+        // status — so the declared `app` object arrived with only `host`.
+        appPort: Cel.expr<number>(`int(${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.appPort)`),
+        apiPort: Cel.expr<number>(`int(${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.apiPort)`),
+      },
+      // Storage sits next to `gateway.otlpHttpEndpoint` so one read answers
+      // both "where do I send telemetry" and "what happens to it".
+      //
+      // PROJECTED FROM THE OWNED CONTRACT CONFIGMAP, not inlined: as bare
+      // build-time constants KRO dropped the whole block, so the declared
+      // schema promised a durability contract the live CR never carried.
+      storage: {
+        mode: Cel.expr<'pvc' | 's3'>(`${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageMode`),
+        ...(build.clickhouseStorage.diskType !== undefined && {
+          diskType: Cel.expr<'s3' | 's3_plain_rewritable'>(
+            `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageDiskType`
+          ),
+        }),
+        ...(build.clickhouseStorage.policyName !== undefined && {
+          policyName: Cel.expr<string>(
+            `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storagePolicyName`
+          ),
+        }),
+        ...(build.clickhouseStorage.retention !== undefined && {
+          retention: {
+            ...(build.clickhouseStorage.retention.logs !== undefined && {
+              logs: Cel.expr<string>(
+                `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageRetentionLogs`
+              ),
+            }),
+            ...(build.clickhouseStorage.retention.traces !== undefined && {
+              traces: Cel.expr<string>(
+                `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageRetentionTraces`
+              ),
+            }),
+            ...(build.clickhouseStorage.retention.metrics !== undefined && {
+              metrics: Cel.expr<string>(
+                `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageRetentionMetrics`
+              ),
+            }),
+          },
+        }),
+        persistentQueue: Cel.expr<boolean>(
+          `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storagePersistentQueue == "true"`
+        ),
       },
     };
   }
+}
+
+/**
+ * Resolve the ClickHouse-storage half of a build, with the queue's
+ * replica constraint checked against the build-time chart values.
+ *
+ * The persistent queue is ONE bbolt database under an exclusive file lock, so
+ * `persistentQueue` and `replicaCount > 1` cannot both be honoured — that
+ * combination is rejected at construction rather than deploying a second
+ * collector that blocks on the lock (or wedges on `Multi-Attach` first).
+ */
+function resolveClickHouseStorageForBuild(
+  options: Pick<ClickStackInternalMongoBuildOptions, 'storage' | 'values'>
+): ResolvedClickStackStorage {
+  const resolved = resolveClickStackStorage('makeClickstackBootstrap', options.storage);
+  const collectorValues = (options.values as Record<string, unknown> | undefined)?.[
+    'otel-collector'
+  ];
+  const replicaCount =
+    typeof collectorValues === 'object' && collectorValues !== null
+      ? (collectorValues as { replicaCount?: unknown }).replicaCount
+      : undefined;
+  assertQueueReplicaCompatible('makeClickstackBootstrap', resolved, replicaCount);
+  return resolved;
 }
 
 function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): ResolvedBuildConfig {
@@ -482,6 +788,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
+    clickhouseStorage: resolveClickHouseStorageForBuild(options),
   };
 }
 
@@ -490,6 +797,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
+    clickhouseStorage: resolveClickHouseStorageForBuild(options),
   };
 }
 

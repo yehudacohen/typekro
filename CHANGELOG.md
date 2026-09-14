@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- ClickHouse clusters may now keep their data in S3-compatible object storage
+  with only a bounded local read-through cache on the node. `makeClickHouseCluster`
+  takes a build-time `storage` topology whose `mode: 's3'` branch compiles a
+  `storage_configuration` document into the ClickHouseInstallation's
+  `configuration.files` and makes the generated policy the MergeTree default, so
+  tables created by tooling outside TypeKro land on object storage with no
+  per-table DDL. `mode: 'pvc'` remains the default and existing PVC consumers are
+  unchanged.
+
+  The durability trade-off is a discriminated `diskType`, not a boolean. The
+  classic `s3` disk keeps part metadata on the local disk, so the bucket alone
+  cannot be reattached and durability depends on the new optional
+  `storage.backup` — a CronJob issuing `BACKUP DATABASE … TO S3(…)` with an
+  age-based prune step and a documented restore procedure. On a sharded or
+  replicated topology that statement becomes
+  `BACKUP … ON CLUSTER '<clusterName>' TO S3(…)`, so every shard contributes to
+  one Keeper-coordinated backup rather than the connected host silently
+  capturing only its own shard; because that fan-out is coordinated through
+  [Zoo]Keeper, a topology with more than one shard or replica that declares
+  `storage.backup` without a keeper is rejected at construction. Because
+  `clusterName` is interpolated into that statement, it is constrained to
+  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$` — the intersection of the
+  Altinity CRD's own pattern and 15-character cap on `clusters[].name` with
+  ClickHouse's use of the value as an identifier. A literal is rejected at
+  construction, the pattern travels into the generated KRO schema so a bad
+  instance is rejected by the operator, and the backup script re-checks and
+  escapes the name it receives before building the statement.
+  `s3_plain_rewritable`
+  keeps metadata in the bucket, making node loss a restart and reattach; it
+  requires ClickHouse 24.5 or newer and a single replica, and both limits are
+  enforced at construction time. `status.storage` reports the resulting
+  guarantee.
+
+  S3 credentials are never accepted inline: `auth.irsa` creates a ServiceAccount
+  annotated with `eks.amazonaws.com/role-arn` and pairs it with
+  `use_environment_credentials`, while `auth.secretRef` wires the keys as pod
+  environment variables that the rendered configuration reads through `from_env`,
+  so no key material appears in the ClickHouseInstallation spec.
+
+  Every component of the object-storage location is validated at construction —
+  `bucket` and the `backup.bucket` override against AWS's bucket naming rules
+  through one shared validator, `region` against an AWS region shape, `prefix`
+  and `backup.prefix` against a safe path-segment allow-list — and the fully
+  COMPOSED endpoint URL is then validated again as a whole against the RFC 3986
+  character allow-list. The composed string is what the runtime sees, in the
+  `<endpoint>` element of `config.d/storage.xml` and in the
+  `BACKUP … TO S3('<url>')` literal the CronJob builds, so it is checked as a
+  unit rather than only component by component; the script's own quote-doubling
+  stays as defence in depth. Values that XML 1.0 cannot represent at all — NUL
+  and the other C0 controls, lone surrogates, the `#xFFFE`/`#xFFFF`
+  non-characters — are refused when the configuration is built, naming the
+  offending index and code point, because escaping cannot encode them and a
+  rendered document containing one is rejected by ClickHouse's own parser at
+  startup.
+
+- ClickStack bootstraps may now declare the external ClickHouse's storage story.
+  Per-signal `retention` renders an idempotent CronJob applying `TTL … DELETE` to
+  the OTel tables the gateway collector creates, skipping tables that have not
+  been migrated yet and leaving a converged cluster untouched. Convergence
+  compares the COMPLETE TTL clause read back from `system.tables.engine_full`
+  against the intended one, so neither a partial interval match nor extra
+  clauses can report a different retention policy as converged. Retention is
+  rejected at construction together with `diskType: 's3_plain_rewritable'`:
+  that metadata type is immutable and ClickHouse refuses every `ALTER TABLE` on
+  it except settings and comments, so the CronJob could never apply a TTL
+  there.
+
+  An opt-in persistent sending queue backs the gateway collector with file
+  storage so a ClickHouse restart during a node rebuild does not drop in-flight
+  telemetry. That queue is backed by a standalone PersistentVolumeClaim owned by
+  the composition and mounted by `claimName` — never an `emptyDir` or a generic
+  ephemeral volume, both of which Kubernetes deletes together with the collector
+  Pod. The queue means exactly ONE gateway collector replica and there is no
+  volume option that changes it: `file_storage` keeps the queue in a bbolt
+  database under an exclusive file lock, so a second collector opening the same
+  directory blocks on that lock rather than sharing the queue. A build-time
+  `values['otel-collector'].replicaCount` above 1 is rejected at construction,
+  the rendered values pin `replicaCount: 1`, and the claim is always
+  `ReadWriteOnce`. Per-replica queues would need the chart's `mode: statefulset`
+  with `volumeClaimTemplates`, which this composition does not model today — the
+  error names that path rather than offering a shared volume that cannot
+  deliver it.
+
+  Because one replica bounds only the STEADY state, the queue also forces
+  `rollout.strategy: 'Recreate'` on the gateway Deployment. The collector chart
+  leaves it on Kubernetes' default `RollingUpdate`, whose default `maxSurge`
+  rounds up to one extra Pod, so any pod-template change creates the
+  replacement collector while the old one still holds the `ReadWriteOnce` claim
+  and the bbolt lock. On another node that replacement never leaves
+  `ContainerCreating` (`Multi-Attach error for volume`), and `RollingUpdate`
+  will not terminate the old Pod until the new one is Ready, so the rollout
+  deadlocks until `progressDeadlineSeconds` expires; on the same node it starts
+  anyway and reports Ready off the OpAMP supervisor's `health_check` while its
+  `file_storage` extension cannot take the lock, so the rollout "succeeds" over
+  a queue the new collector never opened. `Recreate` removes the overlap
+  entirely by draining first. The cost is a
+  brief gateway outage on every rollout, and the persistent queue is exactly
+  what makes that cost acceptable: producers upstream retry, and telemetry the
+  gateway already accepted is on the claim rather than in the departing Pod's
+  memory, so the replacement resumes draining the same queue. The pin is scoped
+  to the queue — with no `persistentQueue` the gateway keeps the chart's
+  `RollingUpdate` default — and unlike `replicaCount` a build-time
+  `rollout.strategy` is overridden rather than rejected.
+
+  The queue's chart
+  values re-emit the gateway subchart's own `custom-config` volume alongside
+  the claim, because Helm replaces a list-valued override and that mount is how
+  the collector receives `global.otelCollector.customConfig` — without it the
+  OpAMP supervisor cannot read the overlay and the agent starts without the
+  ingest pipelines or the queue wiring, while the Pod still reports Ready. The
+  bootstrap status now carries `storage` next to the gateway endpoints.
+
 ### Changed
 
 - Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider
@@ -32,6 +146,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clickhouseOperatorBootstrap` now stops the Altinity operator from copying
+  another controller's ownership labels onto the objects it generates. The
+  operator propagates a ClickHouseInstallation's labels to every ConfigMap,
+  Service, StatefulSet and PVC it creates for it; in KRO mode the CHI is a
+  graph child carrying KRO's ApplySet membership labels, so those labels landed
+  on the operator's own children and KRO's pruning deleted them as members it
+  no longer declared. The Pod could then never mount `chi-<name>-common-configd`
+  and the CHI sat `InProgress` indefinitely with no error reported anywhere.
+  The bootstrap now defaults the operator's `label.exclude` to the ApplySet and
+  KRO ownership labels, which `customValues` can still override.
+- `makeClickHouseCluster` accepts `name`/`kind` overrides for the generated
+  ResourceGraphDefinition. The runtime spec schema is a product of the topology
+  — declared users, a required keeper, and the `s3_plain_rewritable` version
+  floor all appear only where they apply — and KRO refuses to update a
+  generated CRD with a breaking schema change, so two different topologies
+  deployed to one cluster previously made whichever was applied second fail
+  with "breaking changes detected".
+- The shared Flux HelmRelease readiness evaluator no longer reports ready while
+  Flux is still installing. It previously accepted readiness evidence that did
+  not describe the current release, so `waitForReady: true` on a Helm-backed
+  bootstrap could return before the chart's workloads — and, for an operator
+  chart, its CRDs — existed, and a consumer proceeding on `ready` failed. Ready
+  now additionally requires every generation-bearing observation Flux publishes
+  (the top-level `observedGeneration` and the `Ready`/`Released` conditions'
+  own) to be exactly `metadata.generation` rather than merely not behind,
+  `Reconciling` not to be `True` (Flux holds it for the whole install/upgrade,
+  so a `Ready=True` beside it belongs to the previous release), `Stalled` not to
+  be `True`, the revision Flux last attempted to be the revision actually
+  released (the failed-upgrade-then-rollback shape), and a present `Released`
+  condition to be `True`. The portable strategy revision is bumped so a graph
+  serialized by an older TypeKro cannot rehydrate the looser evaluator.
+- ClickHouse and ClickStack status contracts are now fully observable through
+  KRO. Fields that came from the construction-time topology — the ClickHouse
+  cluster's `clickhouse.port`/`database`/`user` and its whole `storage`
+  durability block, and ClickStack's `version`, `app.appPort`/`apiPort` and
+  `storage` block — were emitted as literals, which KRO drops from the instance
+  status, so the declared schema promised fields the live custom resource never
+  carried. Each composition now writes those values into a ConfigMap it owns
+  (`<name>-contract`) and projects the status back from that resource, so
+  `kubectl get clickhouseclusters -o yaml` shows the whole contract, durability
+  included, in both factory modes.
+- `makeClickHouseCluster` now carries the `s3_plain_rewritable` ClickHouse
+  version floor into the generated KRO schema as a `pattern=` marker on
+  `spec.version`, so an instance selecting a server that cannot run that
+  metadata type is rejected by the API server. The construction-time check
+  could not see a per-instance version in KRO mode and previously skipped
+  silently; a concrete version it cannot parse (a moving tag, a digest pin) is
+  now refused rather than assumed.
+- A custom ClickHouse `storage.endpoint` is now parsed and validated part by
+  part — scheme, userinfo, host shape, port range, query, fragment and path —
+  instead of only passing a character allow-list, which accepted
+  `http://key:secret@minio:9000` and wrote those credentials into the server's
+  `config.d/storage.xml`. S3 bucket names are checked against the complete
+  published general-purpose-bucket rule set, including the reserved `xn--`,
+  `sthree-` and `amzn-s3-demo-` prefixes and the `-s3alias`, `--ol-s3`,
+  `.mrap` and `--x-s3` suffixes; a dotted bucket name is refused on the AWS
+  virtual-hosted endpoint the factory composes, where the wildcard certificate
+  cannot cover the extra label.
+- `ClickHouseInstallationConfigSchema` now models the S3 storage branch field by
+  field, with the credential-transport and region-or-endpoint invariants encoded
+  in the schema, and `ClickHouseInstallationConfig` is inferred from it. The
+  schema previously described only the two fields common to both storage modes
+  while the exported type was widened with the whole S3 configuration, leaving
+  every S3 field unvalidated.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their
