@@ -30,10 +30,25 @@ import {
   separateStatusFields,
   validateStatusCelExpressions,
 } from '../validation/cel-validator.js';
+import {
+  findLiteralStatusLeaves,
+  formatLiteralStatusLeaves,
+} from '../validation/literal-status.js';
 import { arkConstraintRule } from './arktype-ast.js';
 import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
 
 const logger = getComponentLogger('schema-defaults');
+const statusEmissionLogger = getComponentLogger('kro-status-emission');
+
+/** Emission-time policy knobs for the KRO status schema. */
+export interface KroStatusEmissionOptions {
+  /**
+   * Downgrade the literal-status-leaf error (#188) to a warning that lists the
+   * offending paths. For consumers mid-migration; the fields are still dropped
+   * by KRO.
+   */
+  readonly allowLiteralStatus?: boolean;
+}
 const SCHEMA_MARKER_PATTERN_SOURCE = KUBERNETES_REF_SCHEMA_MARKER_SOURCE;
 
 // ---------------------------------------------------------------------------
@@ -1718,7 +1733,8 @@ export function arktypeToKroSchema(
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  schemaFieldValidations?: Readonly<Record<string, string>>
+  schemaFieldValidations?: Readonly<Record<string, string>>,
+  statusEmissionOptions?: KroStatusEmissionOptions
 ): KroSimpleSchemaWithMetadata {
   const nullableField = collectSchemaFieldPaths(schemaDefinition.spec.json)
     .nullable.values()
@@ -1924,6 +1940,27 @@ export function arktypeToKroSchema(
     }
   }
 
+  // Literal status leaves (#188). This has to run BEFORE the static/dynamic
+  // split: the split is what quietly drops them from the emitted status, so by
+  // the time we hold `dynamicFields` the evidence is gone. Direct mode never
+  // reaches this emitter, and literals are legitimate there.
+  const literalStatusLeaves = findLiteralStatusLeaves(userStatusMappings, nestedStatusCel);
+  if (literalStatusLeaves.length > 0) {
+    if (statusEmissionOptions?.allowLiteralStatus) {
+      statusEmissionLogger.warn('Status fields KRO will leave unset', {
+        graph: name,
+        kind: schemaDefinition.kind,
+        paths: literalStatusLeaves.map((leaf) => leaf.path),
+      });
+    } else {
+      throw new TypeKroError(
+        formatLiteralStatusLeaves(literalStatusLeaves),
+        'KRO_LITERAL_STATUS_LEAF',
+        { leaves: literalStatusLeaves.map((leaf) => ({ ...leaf })) }
+      );
+    }
+  }
+
   const { dynamicFields } = separateStatusFields(
     userStatusMappings,
     nestedStatusCel,
@@ -1983,6 +2020,14 @@ export function arktypeToKroSchema(
       enumerable: false,
     });
   }
+  // Only reachable with the escape hatch on — otherwise the throw above got
+  // here first. Non-enumerable so it never appears in the RGD YAML.
+  if (literalStatusLeaves.length > 0) {
+    Object.defineProperty(schema, '__literalStatusLeaves', {
+      value: literalStatusLeaves,
+      enumerable: false,
+    });
+  }
 
   return schema;
 }
@@ -2031,7 +2076,8 @@ export function generateKroSchemaFromArktype<
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  schemaFieldValidations?: Readonly<Record<string, string>>
+  schemaFieldValidations?: Readonly<Record<string, string>>,
+  statusEmissionOptions?: KroStatusEmissionOptions
 ): KroSimpleSchemaWithMetadata {
   return arktypeToKroSchema(
     name,
@@ -2039,7 +2085,8 @@ export function generateKroSchemaFromArktype<
     resources,
     statusMappings,
     nestedStatusCel,
-    schemaFieldValidations
+    schemaFieldValidations,
+    statusEmissionOptions
   );
 }
 
