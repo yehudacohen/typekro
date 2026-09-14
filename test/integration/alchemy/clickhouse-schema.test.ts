@@ -45,6 +45,13 @@ import {
 } from '../../../src/alchemy/index.js';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/index.js';
 import {
+  CLICKHOUSE_SCHEMA_E2E_DATABASE,
+  CLICKHOUSE_SCHEMA_E2E_PASSWORD,
+  CLICKHOUSE_SCHEMA_E2E_USER,
+  clickHouseSchemaE2EClusterSpec,
+  makeClickHouseSchemaE2ECluster,
+} from './clickhouse-schema-fixture.js';
+import {
   createTestNamespace,
   deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
@@ -65,8 +72,8 @@ describeOrSkip('ClickHouseSchema against a live ClickHouse (e2e)', () => {
   const operatorNs = `tk-chschema-op-${runId}`;
   const chiNs = `tk-chschema-chi-${runId}`;
   const chiName = 'ch-schema';
-  const chiUser = 'probe';
-  const database = 'orders';
+  const chiUser = CLICKHOUSE_SCHEMA_E2E_USER;
+  const database = CLICKHOUSE_SCHEMA_E2E_DATABASE;
 
   let kubeConfig: ReturnType<typeof getIntegrationTestKubeConfig>;
   let storageClass: string;
@@ -107,7 +114,14 @@ describeOrSkip('ClickHouseSchema against a live ClickHouse (e2e)', () => {
       Test.toEffect(Test.destroy(alchemyOptions, stack as never) as never, alchemyOptions as never)
     );
 
-  /** Query the live server from a throwaway `clickhouse-client` Pod (independent evidence). */
+  /**
+   * Query the live server from a throwaway `clickhouse-client` Pod (independent evidence).
+   *
+   * Authenticates as the SAME user, with the SAME password, as the schema resource — both
+   * come from the fixture, so the CHI's declared credential and the two clients that use
+   * it cannot drift apart. The password travels in the Pod's environment rather than in
+   * argv, so it never reaches a process listing even in a test.
+   */
   async function query(sql: string, name: string): Promise<string> {
     return (
       await runTestPodAndReadLogs(
@@ -115,16 +129,16 @@ describeOrSkip('ClickHouseSchema against a live ClickHouse (e2e)', () => {
           namespace: chiNs,
           name: `${chiName}-q-${name}-${crypto.randomUUID().slice(0, 6)}`,
           image: 'clickhouse/clickhouse-server:25.7',
-          command: [
-            'clickhouse-client',
-            '--host',
-            `clickhouse-${chiName}.${chiNs}.svc.cluster.local`,
-            '--port',
-            '9000',
-            '--user',
-            chiUser,
-            '--query',
-            sql,
+          command: ['sh', '-c'],
+          args: [
+            'exec clickhouse-client ' +
+              `--host clickhouse-${chiName}.${chiNs}.svc.cluster.local ` +
+              `--port 9000 --user ${chiUser} --password "\${CLICKHOUSE_PASSWORD:-}" ` +
+              '--query "$CLICKHOUSE_QUERY"',
+          ],
+          env: [
+            { name: 'CLICKHOUSE_PASSWORD', value: CLICKHOUSE_SCHEMA_E2E_PASSWORD },
+            { name: 'CLICKHOUSE_QUERY', value: sql },
           ],
           timeoutMs: 240_000,
         },
@@ -230,8 +244,7 @@ describeOrSkip('ClickHouseSchema against a live ClickHouse (e2e)', () => {
   }, 900_000);
 
   it('reconciles a ClickHouse cluster the schema resource can target', async () => {
-    const { makeClickHouseCluster } = await import('../../../src/factories/clickhouse/index.js');
-    const clickhouse = makeClickHouseCluster({ users: [{ name: chiUser }] });
+    const clickhouse = makeClickHouseSchemaE2ECluster();
     const factory = clickhouse.factory('direct', {
       namespace: chiNs,
       waitForReady: true,
@@ -240,12 +253,18 @@ describeOrSkip('ClickHouseSchema against a live ClickHouse (e2e)', () => {
     });
     clickhouseFactory = factory;
 
-    const instance = await factory.deploy({
-      name: chiName,
-      namespace: chiNs,
-      version: '25.7',
-      storage: { size: '2Gi', storageClassName: storageClass },
-    });
+    // The spec comes from the fixture so the declared user's credential is supplied.
+    // Omitting it is not a smaller test: the composition body dereferences
+    // `spec.users.<name>` and throws before anything reaches the cluster, which
+    // `test/unit/alchemy/clickhouse-schema-composition.test.ts` pins offline.
+    const instance = await factory.deploy(
+      clickHouseSchemaE2EClusterSpec({
+        name: chiName,
+        namespace: chiNs,
+        version: '25.7',
+        storage: { size: '2Gi', storageClassName: storageClass },
+      }) as never
+    );
     clickhouseDeployed = true;
     expect(instance.status.ready).toBe(true);
   }, 900_000);
@@ -265,8 +284,13 @@ describeOrSkip('ClickHouseSchema against a live ClickHouse (e2e)', () => {
         Effect.gen(function* () {
           return yield* clickHouseSchema('orders-schema', {
             target: target(),
+            // No `passwordEnv`: the default one is unset inside the CHI server container,
+            // so `--password "${CLICKHOUSE_PASSWORD:-}"` resolves to the empty password the
+            // fixture declared for this user. See `clickhouse-schema-fixture.ts`.
             client: { user: chiUser },
             statements,
+            // `execution` left at the `fanout` default: this CHI has one replica, so the
+            // fanout is one pod, and the state records that pod set.
             executor: countingExecutor(),
           });
         }) as never
@@ -277,6 +301,9 @@ describeOrSkip('ClickHouseSchema against a live ClickHouse (e2e)', () => {
     const stack = makeStack('tk-clickhouse-schema-e2e', baseStatements);
     const created = (await runDeploy(stack)) as unknown as ClickHouseSchemaState | undefined;
     expect(execCount).toBe(baseStatements.length);
+    // One Ready server pod, so the fanout is one pod — and it is recorded, which is what a
+    // later scale-out would be compared against.
+    expect(created?.podNames).toHaveLength(1);
 
     // Independent evidence from the server itself, not from the resource's own state.
     expect(await query(`EXISTS DATABASE ${database}`, 'db')).toBe('1');
