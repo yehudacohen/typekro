@@ -279,20 +279,39 @@ rules:
 
 A failure raises `ClickHouseSchemaError` carrying the **resource's own id** (`resourceId` — the
 name you gave *this* schema, so `orders-schema` and `billing-schema` are told apart), the
-`statementIndex`, the pod it failed on and, when the server produced one, ClickHouse's
-`clickHouseCode`:
+`statementIndex`, the pod it failed on and, when the server produced them, ClickHouse's
+`clickHouseCode` and `clickHouseException`:
 
 ```
 ClickHouseSchema 'orders-schema': statement 3 failed on pod chi-orders-0-1-0
-with ClickHouse code 62 (exit 62).
+with ClickHouse code 62 (DB::Exception) (exit 62).
 ```
+
+### The redaction contract
 
 **The failing statement's text is never on the error** — only its index. Statements should not
 contain credentials (bind them through the server's own configuration, the way the S3 storage
-compiler does), but a `CREATE TABLE … S3(…, aws_secret_access_key)` would, and ClickHouse echoes
-the offending fragment back in its message. Every line of server output that matches
-`password` / `secret` / `aws_secret` / `access_key` / `credential` is replaced with `[redacted]`
-before it reaches the error.
+compiler does), but a `CREATE TABLE … S3('https://…', 'AKIA…', 'wJalr…', 'CSV')` would, and
+ClickHouse echoes the offending fragment back in its message — with nothing in the text saying
+which positional argument is the secret.
+
+So the contract is not "server output with credentials filtered out". It is: **keep what
+identifies the failure, and treat every value the submitted statement contained as a secret.**
+
+1. ClickHouse's error **code** and **exception class** are parsed out of the raw output first and
+   carried separately. Neither can contain a credential, so redaction never costs you the part of
+   the message that says what went wrong.
+2. The **statement text** is replaced wherever the server echoed it back.
+3. **Every literal the statement contains** — every single-quoted value, plus whatever follows
+   `PASSWORD` / `IDENTIFIED BY` / `access_key_id` / `secret_access_key` / `aws_access_key_id` /
+   `aws_secret_access_key` / `token` — is replaced with `<redacted>` wherever it appears. This is
+   positional, so it catches the arguments keyword matching cannot name. Redacting a harmless
+   literal costs a word of an error message; leaking the other kind costs the key.
+4. The **keyword line filter** (`password` / `secret` / `aws_secret` / `access_key` /
+   `credential` / `token` → `[redacted]`) runs as a second layer, for text the statement did not
+   account for.
+5. The result is **capped at 2 KiB**, so a `DESCRIBE`-sized dump or a multi-megabyte parser trace
+   cannot be carried into Alchemy state and every log line.
 
 ### Retries
 

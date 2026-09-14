@@ -2,13 +2,20 @@
  * ClickHouse SQL text analysis: a small lexer plus the two things that read it.
  *
  * TypeKro never REWRITES a statement — an author's DDL reaches the server byte for byte.
- * It does have to READ them, and that needs a scan which knows where a string literal
- * starts and ends: {@link validateOnClusterStatement} decides whether a statement is
- * actually cluster-wide, so `execution.mode: 'onCluster'` can reject a statement that
- * would silently land on one replica instead of rewriting it into something it wasn't.
- * Deliberately not a SQL parser. It resolves quoting and comments and nothing else; the
- * question above is answered conservatively, so an unrecognised shape is rejected rather
- * than waved through.
+ * It does have to READ statements for two reasons, and both need the same thing: a scan
+ * that knows where a string literal starts and ends.
+ *
+ * 1. {@link validateOnClusterStatement} decides whether a statement is actually
+ *    cluster-wide, so `execution.mode: 'onCluster'` can reject a statement that would
+ *    silently land on one replica instead of rewriting it into something it wasn't.
+ * 2. {@link extractStatementSecrets} collects the literals a statement contains, so the
+ *    server's own error text — which quotes the offending fragment back — can be redacted
+ *    against what was actually submitted rather than against a keyword list that a
+ *    positional `S3('…','AKIA…','wJalr…','CSV')` walks straight past.
+ *
+ * Deliberately not a SQL parser. It resolves quoting and comments and nothing else; every
+ * question above is answered conservatively, so an unrecognised shape is rejected (1) or
+ * over-redacted (2) rather than waved through.
  */
 
 /** One lexical unit. Numbers and operators collapse into `punct` — nothing here reads them. */
@@ -243,4 +250,71 @@ export function validateOnClusterStatement(
     `carries no 'ON CLUSTER ${cluster}' clause, and no 'replicatedDatabases' allow-list ` +
     `was declared to prove it targets a Replicated database`
   );
+}
+
+/**
+ * Keywords whose following value is a credential.
+ *
+ * `IDENTIFIED BY` is handled separately: it is the two-word form of the same idea.
+ */
+const SECRET_KEYWORDS = new Set([
+  'password',
+  'token',
+  'access_key_id',
+  'secret_access_key',
+  'aws_access_key_id',
+  'aws_secret_access_key',
+]);
+
+/**
+ * Below this length a "secret" is not one, and blanking it out of the server's message
+ * would destroy the message without protecting anything.
+ */
+const MIN_SECRET_LENGTH = 3;
+
+/**
+ * Every value in the SUBMITTED statement that must not survive into a captured message.
+ *
+ * Deliberately over-broad: EVERY single-quoted literal counts, not only the ones a
+ * keyword introduces. That is the whole point — the case keyword matching misses is the
+ * positional one, `S3('https://…', '<key id>', '<secret>', 'CSV')`, where nothing in the
+ * text says which argument is the credential. Redacting a harmless literal costs a word
+ * of an error message; leaking the other kind costs the key.
+ */
+export function extractStatementSecrets(statement: string): readonly string[] {
+  const tokens = tokenizeClickHouseSql(statement);
+  const secrets = new Set<string>();
+
+  const add = (value: string | undefined) => {
+    if (value !== undefined && value.length >= MIN_SECRET_LENGTH) secrets.add(value);
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.kind === 'quoted' && token.quote === "'") {
+      add(token.value);
+      continue;
+    }
+    if (token?.kind !== 'word') continue;
+
+    const keyword = token.value.toLowerCase();
+    let cursor = index + 1;
+    if (keyword === 'identified') {
+      if (!isWord(tokens[cursor], 'by')) continue;
+      cursor += 1;
+      // `IDENTIFIED WITH sha256_password BY '…'` also lands here via the BY token.
+    } else if (!SECRET_KEYWORDS.has(keyword)) {
+      continue;
+    }
+    // Step over an assignment or separator between the keyword and its value.
+    while (
+      tokens[cursor]?.kind === 'punct' &&
+      ['=', ':', '(', ','].includes(tokens[cursor]?.value ?? '')
+    ) {
+      cursor += 1;
+    }
+    add(identifierValue(tokens[cursor]));
+  }
+
+  return [...secrets];
 }

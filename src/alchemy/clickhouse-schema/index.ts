@@ -33,6 +33,7 @@ export {
 export type { ClickHouseSchemaRunContext, ClickHouseSchemaRuntimeDeps } from './runner.js';
 export {
   type ClickHouseSqlToken,
+  extractStatementSecrets,
   leadingKeyword,
   referencedDatabases,
   statementTargetsCluster,
@@ -58,6 +59,9 @@ export {
   type ClickHouseSchemaTarget,
   ClickHouseSchemaTargetSchema,
   DEFAULT_EXECUTION,
+  MAX_RETAINED_DETAIL_CHARS,
   parseClickHouseErrorCode,
+  parseClickHouseExceptionName,
+  redactClickHouseOutput,
   redactClickHouseText,
 } from './types.js';

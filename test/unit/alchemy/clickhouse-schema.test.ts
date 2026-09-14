@@ -25,8 +25,12 @@ import {
   computeFingerprint,
   DEFAULT_CLICKHOUSE_PASSWORD_ENV,
   deleteClickHouseSchema,
+  extractStatementSecrets,
+  MAX_RETAINED_DETAIL_CHARS,
   needsApply,
   parseClickHouseErrorCode,
+  parseClickHouseExceptionName,
+  redactClickHouseOutput,
   redactClickHouseText,
   referencedDatabases,
   renderClickHouseCommand,
@@ -686,6 +690,7 @@ describe('ClickHouseSchema — error handling', () => {
     const schemaError = error as ClickHouseSchemaError;
     expect(schemaError.statementIndex).toBe(1);
     expect(schemaError.clickHouseCode).toBe(62);
+    expect(schemaError.clickHouseException).toBe('DB::Exception');
     // Two execs total: statement 0 succeeded, statement 1 failed and was NOT retried.
     expect(execCalls).toHaveLength(2);
   });
@@ -843,7 +848,73 @@ describe('ClickHouseSchema — pod selection', () => {
 });
 
 describe('ClickHouseSchema — redaction', () => {
-  it('replaces any line that could carry a credential', () => {
+  const s3Statement =
+    'CREATE TABLE IF NOT EXISTS orders.archive (id UUID) ENGINE = S3(' +
+    "'https://storage.example.invalid/archive', 'AKIAIOSFODNN7EXAMPLE', " +
+    "'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', 'CSV')";
+
+  // ClickHouse quotes the offending definition back verbatim and says nothing about
+  // "password" or "secret" — the exact case keyword matching walks straight past.
+  const s3Echo =
+    'Code: 36. DB::Exception: Bad arguments: ' +
+    "S3('https://storage.example.invalid/archive', 'AKIAIOSFODNN7EXAMPLE', " +
+    "'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', 'CSV')";
+
+  it('redacts positional credentials the server echoed back, which keywords never see', () => {
+    const redacted = redactClickHouseOutput(s3Echo, s3Statement);
+
+    expect(redacted).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(redacted).not.toContain('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
+    expect(redacted).toContain('<redacted>');
+  });
+
+  it('keeps the error code and exception class, which is what a reader needs', () => {
+    expect(parseClickHouseErrorCode(s3Echo)).toBe(36);
+    expect(parseClickHouseExceptionName(s3Echo)).toBe('DB::Exception');
+    expect(redactClickHouseOutput(s3Echo, s3Statement)).toContain('Code: 36');
+  });
+
+  it('strips the submitted statement itself when the server echoes it whole', () => {
+    const echo = `Code: 62. DB::Exception: Syntax error in: ${s3Statement}`;
+    const redacted = redactClickHouseOutput(echo, s3Statement);
+    expect(redacted).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(redacted).toContain('Code: 62');
+  });
+
+  it('redacts a keyword-introduced credential too', () => {
+    const statement = "CREATE USER reporting IDENTIFIED BY 'hunter2-not-a-real-password'";
+    expect(extractStatementSecrets(statement)).toContain('hunter2-not-a-real-password');
+    const redacted = redactClickHouseOutput(
+      'Code: 81. Exception: bad user hunter2-not-a-real-password',
+      statement
+    );
+    expect(redacted).not.toContain('hunter2-not-a-real-password');
+  });
+
+  it('caps what it retains, so a runaway echo cannot be carried into state', () => {
+    const echo = `Code: 47. DB::Exception: ${'x'.repeat(50_000)}`;
+    const redacted = redactClickHouseOutput(echo);
+    expect(redacted.length).toBeLessThan(MAX_RETAINED_DETAIL_CHARS + 32);
+    expect(redacted).toContain('Code: 47');
+    expect(redacted).toContain('[truncated]');
+  });
+
+  it('carries the redacted detail onto the error, not the raw output', async () => {
+    const config = validConfig({ statements: [s3Statement] });
+    const { executor } = fakeExecutor({
+      results: [{ stdout: '', stderr: s3Echo, exitCode: 36 }],
+    });
+    const error = (await applyClickHouseSchema(context(executor, config), undefined).catch(
+      (caught: unknown) => caught
+    )) as ClickHouseSchemaError;
+
+    expect(error.clickHouseCode).toBe(36);
+    expect(error.clickHouseException).toBe('DB::Exception');
+    expect(error.detail ?? '').not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(error.detail ?? '').not.toContain('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
+  });
+
+  it('keeps the keyword line filter as a second layer', () => {
     const text = [
       'Code: 36. DB::Exception: Bad arguments',
       "  S3('https://storage.example.invalid/x', 'AKIAEXAMPLE', aws_secret_access_key)",

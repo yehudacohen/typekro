@@ -26,9 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed fingerprint re-runs the WHOLE ordered list. The fingerprint — sha256 over the
   statements, the settings, the resolved client configuration and the execution model —
   is what makes an unchanged schema a true no-op. It is recorded only after the last
-  statement succeeds, so a converge that dies partway re-runs from the beginning. The
-  `target` and the live pod set are compared outside the fingerprint, because they
-  describe WHERE the DDL landed rather than what it was.
+  statement succeeds, so a converge that dies partway re-runs from the beginning. Three
+  things are compared outside the fingerprint, because they describe WHERE the DDL landed
+  rather than what it was: the `target`, the live pod set, and the cluster.
 
   DDL is made cluster-wide EXPLICITLY, through a validated `execution` model, because
   standard ClickHouse DDL is server-local: a converge that touched one pod of a
@@ -69,17 +69,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path from the runner to the pod — one statement per `clickhouse-client` invocation, fed
   on stdin so no SQL appears in the container's argv. One invocation per statement rather
   than a single `--multiquery` batch is what makes error attribution by statement INDEX
-  possible. `ClickHouseSchemaError` carries that index, the resource's own alchemy id and
-  the pod it failed on, plus ClickHouse's own error code —
-  and never the statement text: every line of server output matching
-  `password`/`secret`/`aws_secret`/`access_key`/`credential` is redacted first. Only
-  transport failures (websocket errors, resets, timeouts) are retried; a SQL error never
-  is. The chosen pod must be Ready before the first exec, with a bounded
-  `waitForPod.timeoutMs`; EVERY Ready pod is considered when choosing where to execute, so
-  a Ready pod from an older template without the requested container does not cause the
-  converge to reject the candidates behind it. The exec transport is an injectable `ClickHouseExecutor`
-  interface with a default `@kubernetes/client-node` implementation. The converging
-  identity needs `list` on `pods` and `create` on `pods/exec` in the target namespace.
+  possible. `ClickHouseSchemaError` carries that index, the resource's own alchemy id, the
+  pod it failed on and ClickHouse's error code and exception class — and never the
+  statement text.
+
+  Redaction does not try to filter credentials out of server output by keyword, because
+  the case that matters has no keyword to match: ClickHouse echoes a bad definition back
+  verbatim, and a positional `S3('https://…', '<key id>', '<secret>', 'CSV')` names none
+  of its arguments. Instead, the error code and exception class are parsed out of the raw
+  output first, and the retained message is redacted against the SUBMITTED statement —
+  the statement text itself, every single-quoted literal it contains, and every value
+  following `PASSWORD`/`IDENTIFIED BY`/`access_key_id`/`secret_access_key`/
+  `aws_access_key_id`/`aws_secret_access_key`/`token` are replaced with `<redacted>`
+  wherever they appear. The keyword line filter remains as a second layer, and what
+  survives is capped at 2 KiB so a runaway echo cannot be carried into Alchemy state.
+
+  Only transport failures (websocket errors, resets, timeouts) are retried; a SQL error
+  never is. Pods must be Ready before the first exec, with a bounded
+  `waitForPod.timeoutMs`; EVERY Ready pod is considered when choosing where to execute,
+  so a Ready pod from an older template without the requested container no longer causes
+  the converge to reject the candidates behind it. The exec transport is an injectable
+  `ClickHouseExecutor` interface with a default `@kubernetes/client-node` implementation.
+  The converging identity needs `list` on `pods` and `create` on `pods/exec` in the target
+  namespace.
 
 - ClickHouse clusters may now keep their data in S3-compatible object storage
   with only a bounded local read-through cache on the node. `makeClickHouseCluster`

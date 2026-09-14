@@ -14,7 +14,8 @@ import {
   ClickHouseSchemaError,
   type ClickHouseSchemaState,
   parseClickHouseErrorCode,
-  redactClickHouseText,
+  parseClickHouseExceptionName,
+  redactClickHouseOutput,
 } from './types.js';
 
 /** The Altinity CHI server container name (see `clickHouseInstallation`'s pod template). */
@@ -144,6 +145,7 @@ export function computeFingerprint(config: ClickHouseSchemaConfig): string {
 export interface ClickHouseSchemaRunContext {
   readonly executor: ClickHouseExecutor;
   readonly config: ClickHouseSchemaConfig;
+  /** The alchemy resource `id` — what every error and log line is attributed to. */
   readonly resourceId: string;
   /** Credential-free cluster identity; see {@link ClickHouseSchemaState.clusterId}. */
   readonly clusterId?: string | undefined;
@@ -308,26 +310,32 @@ async function runStatement(
 
     if (result.exitCode === 0) return;
 
-    // A server-side failure. Surface the INDEX and ClickHouse's code; never the SQL.
-    const output = redactClickHouseText(`${result.stderr}\n${result.stdout}`.trim());
-    const code = parseClickHouseErrorCode(output);
+    // A server-side failure. The code and exception class are parsed from the RAW output
+    // — before redaction, which may well blank the very line that carries them — and the
+    // message is then redacted against the statement that was submitted.
+    const raw = `${result.stderr}\n${result.stdout}`.trim();
+    const code = parseClickHouseErrorCode(raw);
+    const exception = parseClickHouseExceptionName(raw);
     throw new ClickHouseSchemaError(
       `ClickHouseSchema '${resourceId}': statement ${index} failed on pod ${podName}` +
-        `${code === undefined ? '' : ` with ClickHouse code ${code}`} ` +
+        `${code === undefined ? '' : ` with ClickHouse code ${code}`}` +
+        `${exception === undefined ? '' : ` (${exception})`} ` +
         `(exit ${result.exitCode}).`,
       resourceId,
       index,
       code,
-      output
+      redactClickHouseOutput(raw, statement),
+      exception
     );
   }
 
   throw new ClickHouseSchemaError(
     `ClickHouseSchema '${resourceId}': exec transport failed for statement ${index} on pod ` +
       `${podName} after ${maxAttempts} attempt(s): ` +
-      redactClickHouseText(lastTransport?.message ?? 'unknown error'),
+      redactClickHouseOutput(lastTransport?.message ?? 'unknown error', statement),
     resourceId,
     index,
+    undefined,
     undefined,
     undefined,
     lastTransport ? { cause: lastTransport } : undefined

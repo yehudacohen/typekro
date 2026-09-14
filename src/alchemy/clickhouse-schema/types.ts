@@ -13,7 +13,7 @@
 import { type } from 'arktype';
 import { TypeKroError } from '../../core/errors.js';
 import type { SerializableKubeConfigOptions } from '../types.js';
-import { validateOnClusterStatement } from './sql.js';
+import { extractStatementSecrets, validateOnClusterStatement } from './sql.js';
 
 /**
  * Accepted shape for a ClickHouse user or database name.
@@ -393,14 +393,16 @@ export class ClickHouseSchemaError extends TypeKroError {
     public readonly statementIndex?: number,
     /** ClickHouse's own error code, parsed from `Code: <n>.`, when the server produced one. */
     public readonly clickHouseCode?: number,
-    /** Redacted server output. */
+    /** Redacted, length-capped server output — see {@link redactClickHouseOutput}. */
     public readonly detail?: string,
+    /** ClickHouse's exception class (`DB::Exception`, `DB::NetException`, …). */
+    public readonly clickHouseException?: string,
     options?: ErrorOptions
   ) {
     super(
       message,
       'CLICKHOUSE_SCHEMA_ERROR',
-      { resourceId, statementIndex, clickHouseCode, detail },
+      { resourceId, statementIndex, clickHouseCode, clickHouseException, detail },
       options
     );
     this.name = 'ClickHouseSchemaError';
@@ -413,8 +415,14 @@ export class ClickHouseSchemaError extends TypeKroError {
  * Matched case-insensitively against a whole line, because ClickHouse reports a bad
  * table definition by quoting the definition — which is precisely where a secret would
  * be if one were ever written into a statement.
+ *
+ * This is the SECOND layer only. It cannot see a credential the server echoes without a
+ * nearby keyword, which is exactly what a positional table function produces:
+ * `S3('https://…', 'AKIA…', 'wJalr…', 'CSV')` has the secret in argument three and the
+ * word "secret" nowhere. {@link redactClickHouseOutput} is the first layer and does not
+ * rely on keywords at all.
  */
-const SECRET_LINE_PATTERN = /password|secret|aws_secret|access_key|credential/i;
+const SECRET_LINE_PATTERN = /password|secret|aws_secret|access_key|credential|token/i;
 
 /** Replace every line that could carry a credential with a marker. */
 export function redactClickHouseText(text: string): string {
@@ -424,10 +432,75 @@ export function redactClickHouseText(text: string): string {
     .join('\n');
 }
 
+/**
+ * Ceiling on the server text retained on an error (~2 KiB).
+ *
+ * An echo is a diagnostic aid, not a log sink: a `DESCRIBE`-sized dump or a multi-megabyte
+ * parser trace carried into alchemy state and every log line is a liability of its own,
+ * independent of whether it contains a secret.
+ */
+export const MAX_RETAINED_DETAIL_CHARS = 2048;
+
+const TRUNCATION_MARKER = '… [truncated]';
+
+/**
+ * What survives from a failed exec's captured output.
+ *
+ * The contract is NOT "server output with credentials filtered out" — that framing is how
+ * the keyword-matching version came to leak. It is: keep what identifies the failure, and
+ * treat every value the SUBMITTED statement contained as a secret.
+ *
+ * In order:
+ *
+ * 1. The statement text itself is replaced wherever the server echoed it back, so a
+ *    definition quoted in full cannot smuggle its own literals through.
+ * 2. Every literal the statement contains — every single-quoted value, plus whatever
+ *    follows `PASSWORD` / `IDENTIFIED BY` / `access_key_id` / `secret_access_key` /
+ *    `aws_access_key_id` / `aws_secret_access_key` / `token` — is replaced with
+ *    `<redacted>` wherever it appears. This is positional, so it catches the arguments
+ *    keyword matching cannot name.
+ * 3. The keyword line filter runs as a second layer, for text the statement did not
+ *    account for.
+ * 4. The result is capped at {@link MAX_RETAINED_DETAIL_CHARS}.
+ *
+ * ClickHouse's error CODE and exception class are parsed out BEFORE any of this and
+ * carried separately on the error, so redaction never costs the caller the one part of
+ * the message that says what went wrong.
+ */
+export function redactClickHouseOutput(output: string, statement?: string): string {
+  let text = output;
+
+  if (statement !== undefined) {
+    const trimmed = statement.trim();
+    if (trimmed.length >= 8) text = text.split(trimmed).join('<redacted>');
+    for (const secret of extractStatementSecrets(statement)) {
+      text = text.split(secret).join('<redacted>');
+    }
+  }
+
+  text = redactClickHouseText(text);
+
+  return text.length <= MAX_RETAINED_DETAIL_CHARS
+    ? text
+    : `${text.slice(0, MAX_RETAINED_DETAIL_CHARS)}${TRUNCATION_MARKER}`;
+}
+
 /** Parse ClickHouse's `Code: 62. DB::Exception: …` prefix out of server output. */
 export function parseClickHouseErrorCode(text: string): number | undefined {
   const match = /Code:\s*(\d+)/.exec(text);
   if (!match?.[1]) return undefined;
   const code = Number.parseInt(match[1], 10);
   return Number.isNaN(code) ? undefined : code;
+}
+
+/**
+ * Parse the exception CLASS (`DB::Exception`, `DB::NetException`, `Poco::Exception`) out
+ * of server output.
+ *
+ * Retained alongside the numeric code because the two say different things: the code
+ * names the condition, the class says which subsystem raised it — and neither can carry
+ * a credential, so both survive redaction intact.
+ */
+export function parseClickHouseExceptionName(text: string): string | undefined {
+  return /\b([A-Za-z][A-Za-z0-9_]*(?:::[A-Za-z][A-Za-z0-9_]*)+)/.exec(text)?.[1];
 }
