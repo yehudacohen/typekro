@@ -191,6 +191,15 @@ What strict mode escalates:
   intentionally use cross-composition references should not enable strict
   mode (or should pass `strictCelDiagnostics: false` to override the
   environment variable).
+- Nested-composition status inlining that runs deeper than 16 levels of
+  nesting. The inliner resolves each `<id>.status.<field>` mapping
+  recursively, treating a mapping already being expanded on the current path
+  as terminal (the concrete resource reference is the answer), so cycles do
+  not consume the budget. Exhausting it therefore means the resolution table
+  itself is wrong — most likely a faulty alias entry — and the emitted
+  expression would still carry unresolved virtual ids that KRO rejects.
+  Leniently it stays a warning and the partially-resolved expression is
+  emitted.
 
 What strict mode does NOT escalate (unprovable heuristics stay warnings):
 - `INVALID_FIELD_PATH` findings — field shapes are guessed against magic
