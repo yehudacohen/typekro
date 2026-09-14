@@ -60,7 +60,7 @@ the next converge.
 
 | Phase | Behaviour |
 | --- | --- |
-| **create** | Wait for the Ready server pods matching `target.podSelector`, then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `podNames`, `clusterId`. |
+| **create** | Wait for the server pods matching `target.podSelector` to be Ready — *all* of them under `fanout`, *one* under `onCluster` — then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `podNames`, `clusterId`. |
 | **update** | If the fingerprint, the target, the cluster identity *and* (under `fanout`) the live pod set are unchanged, do nothing. Otherwise re-run every statement and record the new state. |
 | **delete** | Per `onDelete` (see below). |
 
@@ -89,14 +89,46 @@ Two mechanisms make DDL cluster-wide, and `execution` requires you to pick one. 
 execution: { mode: 'fanout' }   // default; may be omitted
 ```
 
-TypeKro runs the ordered statement list against **every Ready server pod** matching the
-selector, one pod after another, each pod receiving the list in statement order. It needs
-nothing from the cluster — no Keeper, no `Replicated` database engine — and leans on exactly the
-idempotence the statements already promise.
+TypeKro runs the ordered statement list against **every server pod** matching the selector, one
+pod after another, each pod receiving the list in statement order. It needs nothing from the
+cluster — no Keeper, no `Replicated` database engine — and leans on exactly the idempotence the
+statements already promise.
+
+#### It is all or nothing
+
+`fanout` **never applies to a strict subset.** The whole matching set is enumerated first, and
+every pod in it must become Ready before a single statement is executed:
+
+- **matching** means the selector matched it and it is not on its way out: pods with a
+  `metadata.deletionTimestamp`, and pods in a terminal phase (`Succeeded`/`Failed`), are excluded
+  — they can never be Ready again, so waiting for them would only burn the budget;
+- every other matching pod — Ready, `Pending`, running-but-not-Ready — must reach Ready within
+  `waitForPod.timeoutMs`, or the converge **fails**, naming the pods and their phases;
+- a matching pod without `target.container` fails the converge **immediately**, naming it: no
+  amount of waiting adds a container to a running pod.
+
+This is what a **StatefulSet mid-rollout** hits: one Ready replica and two `Pending` ones make
+the resource *wait*, and then *fail* if the rollout does not finish in time — rather than record
+a fingerprinted, apparently cluster-wide apply that only ever reached one server and is never
+retried. Failing is the recoverable outcome: the fingerprint is written only on success, so the
+next converge applies the full list to the full set.
+
+On a large cluster where some replica is almost always rolling, **`onCluster` is the right
+mode** — it hands the DDL to Keeper and needs exactly one Ready server.
+
+A selector that also matches non-server pods therefore *fails* a `fanout` converge instead of
+quietly skipping them. Narrow the selector.
+
+#### The recorded pod set
 
 The pod set is recorded in `podNames`, and an otherwise-unchanged converge compares the live set
 against it. A **scale-out** gets the schema; so does a **replaced pod**. That check costs one
 `list pods` call and no exec, so an unchanged schema on an unchanged topology is still free.
+
+`podNames` is always the set the statements **actually reached**, never the set that happened to
+be live when the run finished. A replica that appears *while* the statements are running is not
+claimed as covered: the run re-lists afterwards, records what it applied to, and the next
+converge re-applies because the recorded set no longer matches the live one.
 
 **A single-replica installation is a one-pod fanout**, which is why the default is also the
 correct setting there — you do not need to configure anything for the common case.
@@ -205,7 +237,7 @@ never run are a silent footgun.
 | Prop | Type | Notes |
 | --- | --- | --- |
 | `target.namespace` | `string` | Namespace holding the server pods. |
-| `target.podSelector` | `Record<string, string>` | Label selector. Which matching pods are used is the [execution model](#execution-model)'s business. Validated as real label keys/values. |
+| `target.podSelector` | `Record<string, string>` | Label selector. Which matching pods are used is the [execution model](#execution-model)'s business — under `fanout`, *all* of them. Validated as real label keys/values. |
 | `target.container` | `string?` | Defaults to `clickhouse`, the Altinity CHI server container. |
 | `client.user` | `string?` | Defaults to `default`. |
 | `client.passwordEnv` | `string?` | Name of the env var **inside the container** holding the password. Defaults to `CLICKHOUSE_PASSWORD`. |
@@ -217,7 +249,7 @@ never run are a silent footgun.
 | `settings` | `Record<string, string \| number>?` | Rendered as `--<setting>=<value>`. Names and values are validated as identifiers/scalars. |
 | `onDelete` | `'retain' \| 'run'` | Defaults to `retain`. |
 | `deleteStatements` | `string[]?` | Required — and only allowed — when `onDelete` is `'run'`. |
-| `waitForPod.timeoutMs` | `number?` | Budget for a Ready pod to appear. Defaults to 120000. |
+| `waitForPod.timeoutMs` | `number?` | Budget for the pods the execution model needs to become Ready — every matching pod under `fanout`, one under `onCluster`. Defaults to 120000. |
 | `statementTimeoutMs` | `number?` | Per-statement exec timeout. Defaults to 300000. |
 | `retry.maxAttempts` / `retry.backoffMs` | `number?` | Transport retries only. Defaults 3 / 1000ms. |
 | `kubeConfig` | `SerializableKubeConfigOptions?` | Same shape `KroResource` accepts. Omit for the ambient kubeconfig. |
@@ -426,7 +458,7 @@ clause for you — and raise `settings.distributed_ddl_task_timeout` accordingly
   statementCount: number;
   database: string;
   target: { namespace: string; podSelector: Record<string, string>; container?: string };
-  podNames: string[];     // sorted; every pod the last apply executed against
+  podNames: string[];     // sorted; every pod the last apply actually executed against
   clusterId?: string;     // credential-free identity of the cluster it reached
 }
 ```

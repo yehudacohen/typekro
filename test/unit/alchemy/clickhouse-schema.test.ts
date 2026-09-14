@@ -46,11 +46,27 @@ const readyPod = (name: string): ClickHousePodSummary => ({
   name,
   ready: true,
   containers: ['clickhouse'],
+  phase: 'Running',
 });
 const pendingPod = (name: string): ClickHousePodSummary => ({
   name,
   ready: false,
   containers: ['clickhouse'],
+  phase: 'Pending',
+});
+/** Ready, but on its way out: matched by the selector, never part of the applied set. */
+const terminatingPod = (name: string): ClickHousePodSummary => ({
+  name,
+  ready: true,
+  containers: ['clickhouse'],
+  phase: 'Running',
+  terminating: true,
+});
+const finishedPod = (name: string): ClickHousePodSummary => ({
+  name,
+  ready: false,
+  containers: ['clickhouse'],
+  phase: 'Succeeded',
 });
 
 interface FakeExecutorOptions {
@@ -766,13 +782,62 @@ describe('ClickHouseSchema — error handling', () => {
   });
 });
 
-describe('ClickHouseSchema — pod selection', () => {
-  it('picks the Ready pods, skipping pods that are not Ready', async () => {
-    const { executor } = fakeExecutor({
-      podPages: [[pendingPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')]],
+describe("ClickHouseSchema — pod selection under 'fanout'", () => {
+  it('waits for a Ready+Pending mix, then applies to ALL of them', async () => {
+    // A StatefulSet mid-rollout. Taking the Ready pod alone would record a successful
+    // cluster-wide apply after touching one replica of three.
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [
+        [readyPod('chi-orders-0-0-0'), pendingPod('chi-orders-0-1-0')],
+        [readyPod('chi-orders-0-0-0'), pendingPod('chi-orders-0-1-0')],
+        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')],
+      ],
     });
-    const pods = await selectExecutionPods(context(executor, validConfig()));
-    expect(pods.map((pod) => pod.name)).toEqual(['chi-orders-0-1-0']);
+    const state = await applyClickHouseSchema(
+      context(executor, validConfig({ waitForPod: { timeoutMs: 30_000 } })),
+      undefined
+    );
+
+    expect(execCalls).toHaveLength(4);
+    expect(state.podNames).toEqual(['chi-orders-0-0-0', 'chi-orders-0-1-0']);
+  });
+
+  it('never applies to a strict subset: it execs nothing until every pod is Ready', async () => {
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0'), pendingPod('chi-orders-0-1-0')]],
+    });
+    const error = (await applyClickHouseSchema(
+      context(executor, validConfig({ waitForPod: { timeoutMs: 5_000 } })),
+      undefined
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it('times out naming the pod that never became Ready, and its phase', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0'), pendingPod('chi-orders-0-1-0')]],
+    });
+    const error = (await selectExecutionPods(
+      context(executor, validConfig({ waitForPod: { timeoutMs: 5_000 } }))
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('clickhouse.altinity.com/chi=orders');
+    expect(error.message).toContain('1 of 2 pod(s) were still not Ready');
+    expect(error.message).toContain('chi-orders-0-1-0: Pending, not Ready');
+    expect(error.message).toContain("execution.mode 'onCluster'");
+  });
+
+  it('times out with a diagnosable error when no pod matches at all', async () => {
+    const { executor } = fakeExecutor({ podPages: [[]] });
+    const error = (await selectExecutionPods(
+      context(executor, validConfig({ waitForPod: { timeoutMs: 5_000 } }))
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('no pod matched the selector');
   });
 
   it('waits for a pod to become Ready within the budget', async () => {
@@ -786,20 +851,99 @@ describe('ClickHouseSchema — pod selection', () => {
     expect(listCalls.length).toBe(3);
   });
 
-  it('times out with a diagnosable error when no pod becomes Ready', async () => {
-    const { executor } = fakeExecutor({ podPages: [[pendingPod('chi-orders-0-0-0')]] });
+  it('excludes a terminating pod — it is leaving, so nothing waits for it', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0'), terminatingPod('chi-orders-0-1-0')]],
+    });
+    const pods = await selectExecutionPods(context(executor, validConfig()));
+    expect(pods.map((pod) => pod.name)).toEqual(['chi-orders-0-0-0']);
+  });
+
+  it('excludes a pod in a terminal phase rather than waiting out the budget on it', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0'), finishedPod('chi-orders-0-1-0')]],
+    });
+    const pods = await selectExecutionPods(context(executor, validConfig()));
+    expect(pods.map((pod) => pod.name)).toEqual(['chi-orders-0-0-0']);
+  });
+
+  it('fails immediately when ONE matching pod lacks the container, naming it', async () => {
+    // Waiting cannot add a container to a running pod, and applying to the other two would
+    // be the partial fanout this mode exists to rule out.
+    const { executor, listCalls } = fakeExecutor({
+      podPages: [
+        [
+          readyPod('chi-orders-0-0-0'),
+          { name: 'chi-orders-0-1-0', ready: true, containers: ['server', 'sidecar'] },
+          readyPod('chi-orders-0-2-0'),
+        ],
+      ],
+    });
     const error = (await selectExecutionPods(
-      context(executor, validConfig({ waitForPod: { timeoutMs: 5_000 } }))
+      context(executor, validConfig({ waitForPod: { timeoutMs: 30_000 } }))
     ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
 
     expect(error).toBeInstanceOf(ClickHouseSchemaError);
-    expect(error.message).toContain('clickhouse.altinity.com/chi=orders');
-    expect(error.message).toContain('none were Ready');
+    expect(error.message).toContain('1 of 3');
+    expect(error.message).toContain('chi-orders-0-1-0: server, sidecar');
+    expect(error.message).toContain('target.container');
+    expect(listCalls).toHaveLength(1);
+  });
+
+  it('records the set the statements REACHED when the topology moves mid-run', async () => {
+    // Selection saw two pods; a third appeared while the statements were running. State
+    // records the two that were actually applied to, never the live three — and the next
+    // converge re-applies precisely because the two sets now differ.
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [
+        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')],
+        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0'), readyPod('chi-orders-0-2-0')],
+      ],
+    });
+    const config = validConfig();
+    const state = await applyClickHouseSchema(context(executor, config), undefined);
+
+    expect(execCalls).toHaveLength(4);
+    expect(state.podNames).toEqual(['chi-orders-0-0-0', 'chi-orders-0-1-0']);
+
+    // Nothing the fingerprint can see changed …
+    expect(needsApply(config, state)).toBe(false);
+    // … and yet the next converge re-applies, precisely because the recorded set is what
+    // was reached rather than what was live, so it no longer matches the live set.
+    const next = fakeExecutor({
+      podPages: [
+        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0'), readyPod('chi-orders-0-2-0')],
+      ],
+    });
+    const reapplied = await applyClickHouseSchema(context(next.executor, config), state);
+    expect(next.execCalls).toHaveLength(6);
+    expect(reapplied.podNames).toEqual([
+      'chi-orders-0-0-0',
+      'chi-orders-0-1-0',
+      'chi-orders-0-2-0',
+    ]);
+  });
+});
+
+describe("ClickHouseSchema — pod selection under 'onCluster'", () => {
+  const onClusterConfig = (overrides: Record<string, unknown> = {}) =>
+    validConfig({
+      execution: { mode: 'onCluster', cluster: 'cluster' },
+      statements: ['CREATE DATABASE IF NOT EXISTS orders ON CLUSTER cluster'],
+      ...overrides,
+    });
+
+  it('does NOT wait for the pods that are still rolling — Keeper distributes the DDL', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [[pendingPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')]],
+    });
+    const pods = await selectExecutionPods(context(executor, onClusterConfig()));
+    expect(pods.map((pod) => pod.name)).toEqual(['chi-orders-0-1-0']);
   });
 
   it('considers LATER Ready pods rather than judging by the first one', async () => {
     // The first Ready pod is from a template without the server container; the second is
-    // a perfectly good candidate, and rejecting the converge because of the first one
+    // a perfectly good initiator, and rejecting the converge because of the first one
     // would throw it away.
     const { executor } = fakeExecutor({
       podPages: [
@@ -809,22 +953,8 @@ describe('ClickHouseSchema — pod selection', () => {
         ],
       ],
     });
-    const pods = await selectExecutionPods(context(executor, validConfig()));
+    const pods = await selectExecutionPods(context(executor, onClusterConfig()));
     expect(pods.map((pod) => pod.name)).toEqual(['chi-orders-0-1-0']);
-  });
-
-  it('fans out only to the Ready pods that HAVE the container', async () => {
-    const { executor } = fakeExecutor({
-      podPages: [
-        [
-          { name: 'chi-orders-0-0-0', ready: true, containers: ['clickhouse'] },
-          { name: 'chi-orders-0-1-0', ready: true, containers: ['server'] },
-          { name: 'chi-orders-0-2-0', ready: true, containers: ['clickhouse'] },
-        ],
-      ],
-    });
-    const pods = await selectExecutionPods(context(executor, validConfig()));
-    expect(pods.map((pod) => pod.name)).toEqual(['chi-orders-0-0-0', 'chi-orders-0-2-0']);
   });
 
   it('fails only when NO Ready pod qualifies, listing every candidate and its containers', async () => {
@@ -836,7 +966,7 @@ describe('ClickHouseSchema — pod selection', () => {
         ],
       ],
     });
-    const error = (await selectExecutionPods(context(executor, validConfig())).catch(
+    const error = (await selectExecutionPods(context(executor, onClusterConfig())).catch(
       (caught: unknown) => caught
     )) as ClickHouseSchemaError;
 
@@ -844,6 +974,17 @@ describe('ClickHouseSchema — pod selection', () => {
     expect(error.message).toContain('chi-orders-0-0-0: server');
     expect(error.message).toContain('chi-orders-0-1-0: server, sidecar');
     expect(error.message).toContain('target.container');
+  });
+
+  it('times out with a diagnosable error when no pod becomes Ready', async () => {
+    const { executor } = fakeExecutor({ podPages: [[pendingPod('chi-orders-0-0-0')]] });
+    const error = (await selectExecutionPods(
+      context(executor, onClusterConfig({ waitForPod: { timeoutMs: 5_000 } }))
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('clickhouse.altinity.com/chi=orders');
+    expect(error.message).toContain('none were Ready');
   });
 });
 

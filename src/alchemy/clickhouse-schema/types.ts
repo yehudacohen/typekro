@@ -83,8 +83,10 @@ export const ClickHouseSchemaTargetSchema = type({
    * `{ 'clickhouse.altinity.com/chi': 'orders' }`.
    *
    * Which of the matching pods are used is the execution model's business, not the
-   * selector's: `fanout` executes against every Ready pod that has the container,
-   * `onCluster` against the first. See {@link ClickHouseSchemaExecutionSchema}.
+   * selector's: `fanout` executes against every matching pod and requires all of them to
+   * be Ready, `onCluster` against the first Ready one. A selector that also matches
+   * non-server pods therefore fails a `fanout` converge rather than quietly skipping them
+   * — narrow it. See {@link ClickHouseSchemaExecutionSchema}.
    */
   podSelector: 'Record<string, string>',
   /** Container to exec into. Defaults to the CHI server container, `clickhouse`. */
@@ -126,16 +128,21 @@ export const ClickHouseSchemaRetrySchema = type({
  * work is done. Two mechanisms make DDL cluster-wide, and this resource requires one of
  * them to be chosen explicitly:
  *
- * - `fanout` (the default) — TypeKro runs the ordered statement list against EVERY Ready
- *   server pod matching the selector, in turn. It needs nothing from the cluster (no
- *   Keeper, no `Replicated` database engine) and leans on exactly the idempotence the
- *   statements already promise. The pod set is recorded in state, so a scale-out or a
- *   replaced pod re-applies even though the statements did not change. A single-replica
- *   installation is a one-pod fanout — which is why the default is also the correct
- *   setting there.
+ * - `fanout` (the default) — TypeKro runs the ordered statement list against EVERY pod
+ *   matching the selector, in turn. It needs nothing from the cluster (no Keeper, no
+ *   `Replicated` database engine) and leans on exactly the idempotence the statements
+ *   already promise. It is ALL OR NOTHING: every matching pod that is not terminating or
+ *   finished must become Ready within `waitForPod.timeoutMs` and must carry the requested
+ *   container, or the converge fails — so a StatefulSet mid-rollout makes the resource
+ *   wait, and then fail, rather than fingerprint a half-applied schema. The pod set is
+ *   recorded in state, so a scale-out or a replaced pod re-applies even though the
+ *   statements did not change. A single-replica installation is a one-pod fanout — which
+ *   is why the default is also the correct setting there.
  * - `onCluster` — the statements distribute themselves and TypeKro runs them ONCE, on the
- *   first Ready pod. That is only true if each statement actually says so, so every
- *   statement is validated at construction; see {@link ClickHouseSchemaConfigSchema}.
+ *   first Ready pod; pods that are still rolling are Keeper's problem, not this converge's,
+ *   which is what makes this the right mode on a large cluster. That is only true if each
+ *   statement actually says so, so every statement is validated at construction; see
+ *   {@link ClickHouseSchemaConfigSchema}.
  *
  * @see https://clickhouse.com/docs/sql-reference/distributed-ddl
  */
@@ -308,9 +315,13 @@ export interface ClickHouseSchemaState {
    * Sorted names of EVERY pod the last apply executed against.
    *
    * Load-bearing under `execution.mode: 'fanout'`, not informational: a converge compares
-   * the live Ready pod set against this one, so a scale-out or a replaced pod re-applies
+   * the live matching pod set against this one, so a scale-out or a replaced pod re-applies
    * the statements even though the fingerprint is unchanged. Under `onCluster` it records
    * the single initiating pod.
+   *
+   * It is always the set the statements ACTUALLY reached, never the set that was live when
+   * the run finished — a topology that moved mid-apply therefore leaves the two differing,
+   * which is exactly what makes the next converge re-apply.
    */
   readonly podNames: readonly string[];
   /**
@@ -350,6 +361,23 @@ export interface ClickHousePodSummary {
   readonly name: string;
   readonly ready: boolean;
   readonly containers: readonly string[];
+  /**
+   * `status.phase` — `Pending`, `Running`, `Succeeded`, `Failed` or `Unknown`.
+   *
+   * Load-bearing under `fanout`, which waits for every matching pod rather than taking
+   * whichever ones are Ready: a pod in a terminal phase can never become Ready, so waiting
+   * for it would only burn the whole budget before failing. `undefined` when the transport
+   * did not report one, which is treated as "still on its way".
+   */
+  readonly phase?: string;
+  /**
+   * `metadata.deletionTimestamp` is set.
+   *
+   * A terminating pod still reports Ready for a while; exec'ing into one races the
+   * kubelet's SIGTERM, and WAITING for one is worse still — it is leaving, so it will
+   * never be Ready again. Either way it is not part of the matching set.
+   */
+  readonly terminating?: boolean;
 }
 
 /**

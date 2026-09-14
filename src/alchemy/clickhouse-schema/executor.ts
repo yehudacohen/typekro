@@ -74,19 +74,21 @@ export class KubeExecClickHouseExecutor implements ClickHouseExecutor {
     return pods.items.flatMap((pod): ClickHousePodSummary[] => {
       const name = pod.metadata?.name;
       if (!name) return [];
-      // A terminating pod still reports Ready for a while; exec'ing into one races the
-      // kubelet's SIGTERM, so it is not a candidate.
-      const terminating = pod.metadata?.deletionTimestamp !== undefined;
-      const ready =
-        !terminating &&
-        (pod.status?.conditions ?? []).some(
-          (condition) => condition.type === 'Ready' && condition.status === 'True'
-        );
+      // `ready`, `phase` and `terminating` are reported SEPARATELY rather than folded into
+      // one boolean: selection has to tell "not Ready yet, keep waiting" apart from "leaving
+      // or finished, stop waiting", and a pod that is Ready while terminating is the case
+      // where those two answers differ. Which of them disqualifies a pod is the runner's
+      // decision, and it differs by execution model.
+      const ready = (pod.status?.conditions ?? []).some(
+        (condition) => condition.type === 'Ready' && condition.status === 'True'
+      );
       return [
         {
           name,
           ready,
           containers: (pod.spec?.containers ?? []).flatMap((c) => (c.name ? [c.name] : [])),
+          ...(pod.status?.phase !== undefined ? { phase: pod.status.phase } : {}),
+          ...(pod.metadata?.deletionTimestamp !== undefined ? { terminating: true } : {}),
         },
       ];
     });

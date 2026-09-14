@@ -7,6 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { getComponentLogger } from '../../core/logging/index.js';
 import {
   type ClickHouseExecutor,
   type ClickHousePodSummary,
@@ -207,22 +208,128 @@ function hasContainer(pod: ClickHousePodSummary, container: string): boolean {
   return pod.containers.length === 0 || pod.containers.includes(container);
 }
 
+/** Phases a pod never leaves. It cannot become Ready, so waiting for one is waiting forever. */
+const TERMINAL_PHASES = new Set(['Succeeded', 'Failed']);
+
 /**
- * Poll until the server pods the execution model needs are Ready, or the budget runs out.
+ * Whether a matching pod belongs to the set this converge is responsible for.
  *
- * A ClickHouse server accepts connections only once it is Ready, and a CHI rollout has a
- * window where pods exist but are still replaying logs — exec'ing then produces a
- * connection-refused that looks like a SQL failure. Waiting for readiness first is what
- * makes "ordered after the instance is ready" true in practice as well as in the
- * dependency graph.
- *
- * EVERY Ready pod is considered, not just the first. A CHI rollout can leave a Ready pod
- * whose container set does not match — a sidecar-injected replica, a pod from an older
- * template — and rejecting the whole converge because the FIRST Ready pod happened to be
- * that one throws away perfectly good candidates. Pods are returned sorted by name, so
- * the recorded pod set and the execution order are both stable.
+ * Excluded are pods on their way out (`metadata.deletionTimestamp` set) and pods that have
+ * already finished (`Succeeded`/`Failed`). Both are matched by the selector and neither
+ * will ever serve a statement, so counting them would make `fanout` hang until its budget
+ * expired and then fail on a pod nobody was waiting for. Everything else — Ready, Pending,
+ * Running-but-not-Ready, phase unknown — is in the set and must become Ready.
  */
-export async function selectExecutionPods(
+function isMatchingPod(pod: ClickHousePodSummary): boolean {
+  return pod.terminating !== true && !TERMINAL_PHASES.has(pod.phase ?? '');
+}
+
+/** `name: Ready` / `name: Pending, not Ready` — what a failure has to name to be actionable. */
+function describePod(pod: ClickHousePodSummary): string {
+  if (pod.ready) return `${pod.name}: Ready`;
+  return `${pod.name}: ${pod.phase ?? 'phase unknown'}, not Ready`;
+}
+
+function byName(left: ClickHousePodSummary, right: ClickHousePodSummary): number {
+  return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+}
+
+/**
+ * One `list pods` call, reduced to the matching set and sorted by name.
+ *
+ * Sorted so the recorded pod set, the execution order and every error message are stable
+ * across converges.
+ */
+async function listMatchingPods(
+  context: ClickHouseSchemaRunContext
+): Promise<readonly ClickHousePodSummary[]> {
+  const pods = await context.executor.listPods(
+    context.config.target.namespace,
+    context.config.target.podSelector,
+    context.abortSignal
+  );
+  return [...pods].filter(isMatchingPod).sort(byName);
+}
+
+/**
+ * `fanout`: EVERY matching pod, or none at all.
+ *
+ * The rule this enforces is that a `fanout` converge is never partial. Taking whichever
+ * pods happen to be Ready is what makes a StatefulSet mid-rollout — one Ready replica and
+ * two Pending ones — record a successful, fingerprinted, cluster-wide apply after updating
+ * a single server; the remaining replicas then come up with no schema and the fingerprint
+ * says the work is done. So the whole matching set is enumerated first and each pod must
+ * become Ready within `waitForPod.timeoutMs`:
+ *
+ * - a pod that never becomes Ready fails the converge, naming the pods and their phases;
+ * - a pod without the requested container fails IMMEDIATELY rather than after the budget,
+ *   because no amount of waiting adds a container to a running pod.
+ *
+ * Failing is the conservative outcome: alchemy retries a failed converge, and the
+ * fingerprint is recorded only on success, so the next converge applies the full set. A
+ * recorded partial apply would never be retried at all.
+ */
+async function selectFanoutPods(
+  context: ClickHouseSchemaRunContext
+): Promise<readonly ClickHousePodSummary[]> {
+  const { config, resourceId } = context;
+  const deps = runtimeDeps(context);
+  const timeoutMs = config.waitForPod?.timeoutMs ?? DEFAULT_WAIT_FOR_POD_TIMEOUT_MS;
+  const container = resolveContainer(config);
+  const deadline = deps.now() + timeoutMs;
+
+  for (;;) {
+    const matching = await listMatchingPods(context);
+
+    const withoutContainer = matching.filter((pod) => !hasContainer(pod, container));
+    if (withoutContainer.length > 0) {
+      throw new ClickHouseSchemaError(
+        `ClickHouseSchema '${resourceId}': execution.mode 'fanout' applies the statements to ` +
+          `EVERY pod matching ${selectorText(config)} in namespace ` +
+          `'${config.target.namespace}', and ${withoutContainer.length} of ${matching.length} ` +
+          `has no container '${container}' (` +
+          `${withoutContainer.map((pod) => `${pod.name}: ${pod.containers.join(', ')}`).join('; ')}` +
+          `). Set target.container, or narrow target.podSelector to the server pods.`,
+        resourceId
+      );
+    }
+
+    const notReady = matching.filter((pod) => !pod.ready);
+    if (matching.length > 0 && notReady.length === 0) return matching;
+
+    if (deps.now() >= deadline) {
+      const state =
+        matching.length === 0
+          ? 'no pod matched the selector'
+          : `${notReady.length} of ${matching.length} pod(s) were still not Ready ` +
+            `(${notReady.map(describePod).join('; ')})`;
+      throw new ClickHouseSchemaError(
+        `ClickHouseSchema '${resourceId}': execution.mode 'fanout' applies the statements to ` +
+          `EVERY pod matching ${selectorText(config)} in namespace ` +
+          `'${config.target.namespace}' and never to a subset, but after ${timeoutMs}ms ` +
+          `${state}. Let the rollout finish, raise waitForPod.timeoutMs, or switch to ` +
+          `execution.mode 'onCluster'.`,
+        resourceId
+      );
+    }
+    await deps.sleep(Math.min(POD_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+  }
+}
+
+/**
+ * `onCluster`: the ONE pod that initiates the distributed DDL.
+ *
+ * The opposite trade-off to {@link selectFanoutPods}, and deliberately so: the statements
+ * distribute themselves through Keeper's DDL queue, so a pod that is still starting is not
+ * a pod this converge has to wait for — the server it eventually becomes picks the DDL up
+ * from the queue. Only one usable Ready pod is needed, which is what makes `onCluster` the
+ * right mode on a large cluster where some replica is almost always rolling.
+ *
+ * EVERY Ready pod is considered, not just the first: a rollout can leave a Ready pod whose
+ * container set does not match — a sidecar-injected replica, a pod from an older template —
+ * and judging by the first one throws away perfectly good initiators behind it.
+ */
+async function selectInitiatorPod(
   context: ClickHouseSchemaRunContext
 ): Promise<readonly ClickHousePodSummary[]> {
   const { config, resourceId } = context;
@@ -233,21 +340,12 @@ export async function selectExecutionPods(
   let lastSeen = 0;
 
   for (;;) {
-    const pods = await context.executor.listPods(
-      config.target.namespace,
-      config.target.podSelector,
-      context.abortSignal
-    );
-    lastSeen = pods.length;
-    const ready = [...pods]
-      .filter((pod) => pod.ready)
-      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-    const usable = ready.filter((pod) => hasContainer(pod, container));
+    const matching = await listMatchingPods(context);
+    lastSeen = matching.length;
+    const ready = matching.filter((pod) => pod.ready);
+    const initiator = ready.find((pod) => hasContainer(pod, container));
 
-    if (usable.length > 0) {
-      // `fanout` needs all of them; `onCluster` distributes from whichever one it starts on.
-      return config.execution.mode === 'fanout' ? usable : [usable[0] as ClickHousePodSummary];
-    }
+    if (initiator) return [initiator];
     if (ready.length > 0) {
       throw new ClickHouseSchemaError(
         `ClickHouseSchema '${resourceId}': no Ready pod in namespace ` +
@@ -267,6 +365,27 @@ export async function selectExecutionPods(
     }
     await deps.sleep(Math.min(POD_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
   }
+}
+
+/**
+ * Poll until the server pods the execution model needs are Ready, or the budget runs out.
+ *
+ * A ClickHouse server accepts connections only once it is Ready, and a CHI rollout has a
+ * window where pods exist but are still replaying logs — exec'ing then produces a
+ * connection-refused that looks like a SQL failure. Waiting for readiness first is what
+ * makes "ordered after the instance is ready" true in practice as well as in the
+ * dependency graph.
+ *
+ * WHICH pods have to be Ready is the execution model's whole difference: `fanout` reaches
+ * every server itself and so needs all of them ({@link selectFanoutPods}); `onCluster`
+ * hands the statements to Keeper and so needs exactly one ({@link selectInitiatorPod}).
+ */
+export async function selectExecutionPods(
+  context: ClickHouseSchemaRunContext
+): Promise<readonly ClickHousePodSummary[]> {
+  return context.config.execution.mode === 'fanout'
+    ? await selectFanoutPods(context)
+    : await selectInitiatorPod(context);
 }
 
 /**
@@ -396,6 +515,25 @@ export async function applyClickHouseSchema(
   }
 
   const { podNames } = await runStatements(context, config.statements);
+
+  if (config.execution.mode === 'fanout') {
+    // THE SCALE RACE. Selection saw one matching set; a replica can be added, replaced or
+    // removed while the statements are still running, so the set that is live now is not
+    // necessarily the set that was applied to. What goes into state is always the set the
+    // statements ACTUALLY reached — recording the live one instead would claim coverage of
+    // a pod nothing ran on, and that claim is never revisited because it makes the two sets
+    // agree. Re-listing here makes the divergence explicit and observable; `needsApply`
+    // does the rest, because the recorded set no longer matches the live one and the next
+    // converge re-applies the whole list.
+    const live = (await listMatchingPods(context)).map((pod) => pod.name);
+    if (!samePodSet(live, podNames)) {
+      getComponentLogger('alchemy-clickhouse-schema').warn(
+        'ClickHouse server pod set changed while the schema was being applied; recording the ' +
+          'pods the statements actually reached, so the next converge re-applies',
+        { resourceId: context.resourceId, appliedTo: podNames, live }
+      );
+    }
+  }
 
   return {
     fingerprint: computeFingerprint(config),

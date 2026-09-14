@@ -34,10 +34,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   standard ClickHouse DDL is server-local: a converge that touched one pod of a
   multi-replica deployment would report success while the other servers had no schema,
   and then no-op forever on the fingerprint. `{ mode: 'fanout' }` (the default) runs the
-  ordered list against every Ready server pod matching the selector and records the pod
-  set in state, so a scale-out or a replaced pod re-applies even though the statements
-  did not change; a single-replica installation is a one-pod fanout, so the default is
-  also correct there. `{ mode: 'onCluster', cluster }` runs the statements once and
+  ordered list against every server pod matching the selector and records the pod set in
+  state, so a scale-out or a replaced pod re-applies even though the statements did not
+  change; a single-replica installation is a one-pod fanout, so the default is also
+  correct there. `fanout` is ALL OR NOTHING: the whole matching set is enumerated first
+  (pods carrying a `deletionTimestamp`, and pods in a terminal phase, are excluded — they
+  can never become Ready again), every pod in it must become Ready within
+  `waitForPod.timeoutMs` before a single statement is executed, and a matching pod without
+  the requested container fails the converge immediately, naming it. A StatefulSet
+  mid-rollout therefore makes the resource wait — and then fail — rather than fingerprint
+  an apply that only reached one replica; on a large cluster where some replica is almost
+  always rolling, `onCluster` is the mode to use. `podNames` always records the set the
+  statements ACTUALLY reached rather than the set that was live when the run finished, so
+  a replica that appears mid-apply is never claimed as covered and the next converge
+  re-applies. `{ mode: 'onCluster', cluster }` runs the statements once and
   requires every statement to prove it distributes itself — either by carrying
   `ON CLUSTER <cluster>` (matched with a ClickHouse-aware lexer, so quoting, case and
   string literals are handled) or by naming only databases on an optional
@@ -86,9 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Only transport failures (websocket errors, resets, timeouts) are retried; a SQL error
   never is. Pods must be Ready before the first exec, with a bounded
-  `waitForPod.timeoutMs`; EVERY Ready pod is considered when choosing where to execute,
-  so a Ready pod from an older template without the requested container no longer causes
-  the converge to reject the candidates behind it. The exec transport is an injectable
+  `waitForPod.timeoutMs`; under `onCluster`, EVERY Ready pod is considered when choosing
+  the initiator, so a Ready pod from an older template without the requested container no
+  longer causes the converge to reject the candidates behind it. The exec transport is an injectable
   `ClickHouseExecutor` interface with a default `@kubernetes/client-node` implementation.
   The converging identity needs `list` on `pods` and `create` on `pods/exec` in the target
   namespace.
