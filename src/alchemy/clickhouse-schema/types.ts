@@ -313,6 +313,18 @@ export interface ClickHouseSchemaState {
    * the single initiating pod.
    */
   readonly podNames: readonly string[];
+  /**
+   * Credential-free identity of the cluster the statements were applied to — sha256 over
+   * the current context's cluster name, server URL and CA material, the same shape the
+   * per-cluster capability cache keys on.
+   *
+   * Without it, `namespace`/`podSelector`/`container` describe a target that two different
+   * kubeconfigs answer to identically: re-pointing the resource at a second cluster would
+   * match the recorded target, match the fingerprint, and skip the DDL entirely.
+   * `undefined` when the kubeconfig names no current cluster, or when a caller injected an
+   * executor and supplied no kubeconfig to identify.
+   */
+  readonly clusterId?: string;
 }
 
 /** One `clickhouse-client` invocation inside a server container. */

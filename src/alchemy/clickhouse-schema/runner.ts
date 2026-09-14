@@ -137,13 +137,16 @@ export function computeFingerprint(config: ClickHouseSchemaConfig): string {
  * Everything one converge needs, in one place.
  *
  * An options object rather than a parameter list: the execution model gives the runner
- * several independent knobs, and threading them positionally through four exported
- * entry points makes every call site unreadable at exactly the place correctness matters.
+ * several independent knobs, and `clusterId` is not derivable here at all — the runner is
+ * deliberately free of `@kubernetes/client-node`, so the identity of the cluster it is
+ * talking to has to arrive from the provider that built the transport.
  */
 export interface ClickHouseSchemaRunContext {
   readonly executor: ClickHouseExecutor;
   readonly config: ClickHouseSchemaConfig;
   readonly resourceId: string;
+  /** Credential-free cluster identity; see {@link ClickHouseSchemaState.clusterId}. */
+  readonly clusterId?: string | undefined;
   readonly deps?: ClickHouseSchemaRuntimeDeps | undefined;
   readonly abortSignal?: AbortSignal | undefined;
 }
@@ -155,15 +158,24 @@ function runtimeDeps(context: ClickHouseSchemaRunContext): ClickHouseSchemaRunti
 /**
  * Whether a converge must (re-)run the statements against this target.
  *
+ * Three things are compared, and the third is the one that is easy to forget: the
+ * fingerprint (what is applied), the target strings (where, within a cluster), and the
+ * CLUSTER ITSELF. Namespace, selector and container are just strings — `telemetry` +
+ * `chi=orders` names a pod in staging exactly as well as it names one in production — so
+ * without the cluster identity, re-pointing a resource at a second cluster matches the
+ * recorded target, matches the fingerprint, and silently applies nothing there.
+ *
  * The live pod SET is deliberately not compared here: it needs an API call, so
  * {@link applyClickHouseSchema} checks it separately and only under `fanout`.
  */
 export function needsApply(
   config: ClickHouseSchemaConfig,
-  previous: ClickHouseSchemaState | undefined
+  previous: ClickHouseSchemaState | undefined,
+  clusterId?: string
 ): boolean {
   if (!previous) return true;
   if (previous.fingerprint !== computeFingerprint(config)) return true;
+  if (previous.clusterId !== clusterId) return true;
   return (
     JSON.stringify({
       namespace: previous.target.namespace,
@@ -369,7 +381,7 @@ export async function applyClickHouseSchema(
   const { config } = context;
   const deps = runtimeDeps(context);
 
-  if (previous && !needsApply(config, previous)) {
+  if (previous && !needsApply(config, previous, context.clusterId)) {
     if (config.execution.mode !== 'fanout') return previous;
     const liveNames = (await selectExecutionPods(context)).map((pod) => pod.name);
     if (samePodSet(liveNames, previous.podNames)) return previous;
@@ -384,6 +396,7 @@ export async function applyClickHouseSchema(
     database: resolveDatabase(config),
     target: config.target,
     podNames,
+    ...(context.clusterId !== undefined ? { clusterId: context.clusterId } : {}),
   };
 }
 

@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declaration time, naming its index; TypeKro never rewrites the author's SQL to make the
   promise true. See https://clickhouse.com/docs/sql-reference/distributed-ddl.
 
+  State also records a credential-free identity of the CLUSTER the statements reached —
+  sha256 over the current context's cluster name, server URL and CA material, reusing the
+  same `clusterIdentity` derivation the per-cluster API-capability cache keys on — and
+  surfaces it as the `clusterId` output. Namespace, selector and container are just
+  strings that a second cluster answers to identically, so without it, re-pointing a
+  resource at another cluster matched the recorded target, matched the fingerprint, and
+  applied nothing there.
+
   `onDelete` defaults to `retain` and does not reach the cluster at all on delete — a
   schema resource must never drop data because a stack was torn down. `run` executes an
   explicit `deleteStatements` list and nothing else; `run` without it, and

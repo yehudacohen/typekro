@@ -60,8 +60,8 @@ the next converge.
 
 | Phase | Behaviour |
 | --- | --- |
-| **create** | Wait for the Ready server pods matching `target.podSelector`, then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `podNames`. |
-| **update** | If the fingerprint, the target *and* (under `fanout`) the live pod set are unchanged, do nothing. Otherwise re-run every statement and record the new state. |
+| **create** | Wait for the Ready server pods matching `target.podSelector`, then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `podNames`, `clusterId`. |
+| **update** | If the fingerprint, the target, the cluster identity *and* (under `fanout`) the live pod set are unchanged, do nothing. Otherwise re-run every statement and record the new state. |
 | **delete** | Per `onDelete` (see below). |
 
 The fingerprint is a sha256 over the ordered `statements`, the `settings`, the resolved `client`
@@ -70,6 +70,7 @@ because they describe *where* the DDL landed rather than *what* it was:
 
 - **the target** — re-pointing the resource at another namespace, selector or container
   re-applies the DDL there even though the statements are byte-identical;
+- **the cluster identity** — see [Cluster identity](#cluster-identity);
 - **the pod set**, under `fanout` — see [Execution model](#execution-model).
 
 ## Execution model
@@ -150,6 +151,27 @@ that would otherwise be rejected. It has no effect under `fanout`.
 **TypeKro never rewrites your SQL.** Adding `ON CLUSTER` on your behalf would change the
 semantics of DDL TypeKro did not write, and getting that wrong on a production cluster is not
 recoverable. Validation refuses; it does not repair.
+
+## Cluster identity
+
+`namespace`, `podSelector` and `container` are just strings — `telemetry` + `chi=orders` names a
+pod in staging exactly as well as it names one in production. Without more, pointing the same
+resource at a second cluster would match the recorded target, match the fingerprint, and silently
+apply nothing there.
+
+So the state also records a **credential-free identity of the cluster the statements reached**:
+
+```
+sha256(current-context cluster name | server URL | caData | caFile | skipTLSVerify)
+```
+
+— the same derivation the per-cluster API-capability probe cache keys on (`clusterIdentity`,
+reused rather than re-derived, so the two cannot disagree about what "the same cluster" means).
+No token, certificate or key material contributes to it. It is surfaced as the `clusterId`
+output, and a change to it re-applies the DDL on the new cluster.
+
+`clusterId` is `undefined` when the kubeconfig names no current cluster, or when you injected an
+`executor` and supplied no `kubeConfig` to identify.
 
 ### `onDelete`
 
@@ -383,6 +405,7 @@ clause for you — and raise `settings.distributed_ddl_task_timeout` accordingly
   database: string;
   target: { namespace: string; podSelector: Record<string, string>; container?: string };
   podNames: string[];     // sorted; every pod the last apply executed against
+  clusterId?: string;     // credential-free identity of the cluster it reached
 }
 ```
 

@@ -24,6 +24,7 @@ import { type } from 'arktype';
 import { Effect } from 'effect';
 import { materializeSerializableKubeConfigOptions } from '../../core/deployment/shared-utilities.js';
 import { ValidationError } from '../../core/errors.js';
+import { clusterIdentity } from '../../core/kubernetes/api-capability.js';
 import { createKubernetesClientProvider } from '../../core/kubernetes/client-provider.js';
 import { getComponentLogger } from '../../core/logging/index.js';
 import { ensureError } from '../../core/errors.js';
@@ -59,13 +60,37 @@ export const ClickHouseSchema = ResourceMod.Resource<ClickHouseSchemaR>(
   CLICKHOUSE_SCHEMA_RESOURCE_TYPE
 );
 
-/** Build the transport: the injected executor if present, else exec over the kube API. */
-function resolveExecutor(props: ClickHouseSchemaResourceProps): ClickHouseExecutor {
-  if (props.executor) return props.executor;
-  const kubeConfig: KubeConfig = createKubernetesClientProvider(
-    props.kubeConfig ? materializeSerializableKubeConfigOptions(props.kubeConfig) : undefined
-  ).getKubeConfig();
-  return new KubeExecClickHouseExecutor(kubeConfig);
+/** The transport plus the identity of the cluster it reaches. */
+interface ClickHouseSchemaTransport {
+  readonly executor: ClickHouseExecutor;
+  readonly clusterId: string | undefined;
+}
+
+/**
+ * Build the transport: the injected executor if present, else exec over the kube API.
+ *
+ * The cluster identity travels WITH the transport rather than being derived later,
+ * because they answer the same question — which API server this converge is talking to —
+ * and deriving it twice is how the two drift apart. `clusterIdentity` is the helper the
+ * per-cluster capability cache already keys on, reused rather than re-derived, so the two
+ * caches cannot disagree about what "the same cluster" means.
+ *
+ * An injected executor is still identified when a kubeConfig accompanies it: the caller
+ * supplying its own transport does not make the target cluster unknowable. Only an
+ * injected executor with no kubeConfig at all has no identity to record.
+ */
+function resolveTransport(props: ClickHouseSchemaResourceProps): ClickHouseSchemaTransport {
+  const kubeConfig: KubeConfig | undefined =
+    props.executor && !props.kubeConfig
+      ? undefined
+      : createKubernetesClientProvider(
+          props.kubeConfig ? materializeSerializableKubeConfigOptions(props.kubeConfig) : undefined
+        ).getKubeConfig();
+
+  return {
+    executor: props.executor ?? new KubeExecClickHouseExecutor(kubeConfig as KubeConfig),
+    clusterId: kubeConfig ? clusterIdentity(kubeConfig) : undefined,
+  };
 }
 
 /**
@@ -86,10 +111,12 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
       return yield* Effect.tryPromise({
         try: async (abortSignal) => {
           const logger = getComponentLogger('alchemy-clickhouse-schema');
-          if (!needsApply(news, output)) {
+          const { executor, clusterId } = resolveTransport(news);
+          if (!needsApply(news, output, clusterId)) {
             logger.debug('ClickHouse schema unchanged; verifying the server set', {
               fingerprint: output?.fingerprint,
               statementCount: news.statements.length,
+              clusterId,
             });
           } else {
             logger.info('Applying ClickHouse schema', {
@@ -97,13 +124,15 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
               statementCount: news.statements.length,
               fingerprint: computeFingerprint(news),
               executionMode: news.execution.mode,
+              clusterId,
             });
           }
           return await applyClickHouseSchema(
             {
-              executor: resolveExecutor(news),
+              executor,
               config: news,
               resourceId: CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
+              clusterId,
               abortSignal,
             },
             output
@@ -118,13 +147,16 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
       // persisted output could only ever guess `retain`, which is what happens anyway.
       if (!olds || olds.onDelete !== 'run') return;
       yield* Effect.tryPromise({
-        try: (abortSignal) =>
-          deleteClickHouseSchema({
-            executor: resolveExecutor(olds),
+        try: (abortSignal) => {
+          const { executor, clusterId } = resolveTransport(olds);
+          return deleteClickHouseSchema({
+            executor,
             config: olds,
             resourceId: CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
+            clusterId,
             abortSignal,
-          }),
+          });
+        },
         catch: ensureError,
       });
     }),

@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import { KubeConfig } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import {
   applyClickHouseSchema,
@@ -33,6 +34,7 @@ import {
   statementTargetsCluster,
 } from '../../../src/alchemy/index.js';
 import type { ClickHouseSchemaRuntimeDeps } from '../../../src/alchemy/index.js';
+import { clusterIdentity } from '../../../src/core/kubernetes/api-capability.js';
 
 const RESOURCE_ID = 'orders-schema';
 
@@ -112,13 +114,14 @@ function validConfig(overrides: Record<string, unknown> = {}): ClickHouseSchemaC
 function context(
   executor: ClickHouseExecutor,
   config: ClickHouseSchemaConfig,
-  extra: { deps?: ClickHouseSchemaRuntimeDeps } = {}
+  extra: { deps?: ClickHouseSchemaRuntimeDeps; clusterId?: string } = {}
 ) {
   return {
     executor,
     config,
     resourceId: RESOURCE_ID,
     deps: extra.deps ?? fakeDeps().deps,
+    clusterId: extra.clusterId,
   };
 }
 
@@ -570,6 +573,61 @@ describe('ClickHouseSchema — update', () => {
     const { executor, execCalls } = fakeExecutor();
     await applyClickHouseSchema(context(executor, config), previous);
     expect(execCalls).toHaveLength(2);
+  });
+});
+
+describe('ClickHouseSchema — cluster identity', () => {
+  const kubeConfigFor = (server: string): KubeConfig => {
+    const kubeConfig = new KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: 'target', server, skipTLSVerify: true }],
+      users: [{ name: 'runner' }],
+      contexts: [{ name: 'target', cluster: 'target', user: 'runner' }],
+      currentContext: 'target',
+    });
+    return kubeConfig;
+  };
+
+  const staging = clusterIdentity(kubeConfigFor('https://staging.example.invalid:6443')) as string;
+  const production = clusterIdentity(
+    kubeConfigFor('https://production.example.invalid:6443')
+  ) as string;
+
+  it('derives a different identity for a different API server', () => {
+    expect(staging).toBeDefined();
+    expect(staging).not.toBe(production);
+  });
+
+  it('re-applies when the same target strings point at another cluster', async () => {
+    const config = validConfig();
+    const previous = stateFor(config, { clusterId: staging });
+
+    // Identical namespace, selector, container and statements — only the cluster moved.
+    expect(needsApply(config, previous, staging)).toBe(false);
+    expect(needsApply(config, previous, production)).toBe(true);
+
+    const { executor, execCalls } = fakeExecutor();
+    const state = await applyClickHouseSchema(
+      context(executor, config, { clusterId: production }),
+      previous
+    );
+    expect(execCalls).toHaveLength(2);
+    expect(state.clusterId).toBe(production);
+  });
+
+  it('surfaces the identity on the output so state says which cluster was touched', async () => {
+    const { executor } = fakeExecutor();
+    const state = await applyClickHouseSchema(
+      context(executor, validConfig(), { clusterId: 'abc123' }),
+      undefined
+    );
+    expect(state.clusterId).toBe('abc123');
+  });
+
+  it('carries no identity when there is none to carry', async () => {
+    const { executor } = fakeExecutor();
+    const state = await applyClickHouseSchema(context(executor, validConfig()), undefined);
+    expect(state.clusterId).toBeUndefined();
   });
 });
 
