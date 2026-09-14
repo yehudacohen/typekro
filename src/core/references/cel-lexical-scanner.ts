@@ -127,8 +127,16 @@ interface CelLiteralRegion extends CelStringLiteralSpan {
  *
  * The comment stops BEFORE its newline, so masking one never disturbs the line
  * structure of a multi-line expression.
+ *
+ * Exported as the comment half of this lexis, the sibling of
+ * {@link celStringLiteralEnd}, for callers that walk a REGION of CEL rather
+ * than a whole expression and so cannot use the whole-text masks below. Such a
+ * caller owes itself the ordering rule {@link celLiteralRegions} encodes: ask
+ * this question and the string question at the same index, in one source-ordered
+ * walk, so that a `//` inside a literal opens no comment and a quote inside a
+ * comment opens no literal.
  */
-function celLineCommentEnd(text: string, at: number): number {
+export function celLineCommentEnd(text: string, at: number): number {
   if (text[at] !== '/' || text[at + 1] !== '/') return at;
   const newline = text.slice(at).search(/[\r\n]/);
   return newline < 0 ? text.length : at + newline;

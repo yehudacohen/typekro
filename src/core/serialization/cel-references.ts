@@ -17,6 +17,7 @@ import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import {
   type CelLambdaScope,
+  celLineCommentEnd,
   celStringLiteralEnd,
   collectCelLambdaScopes,
   maskClosedCelLiteralsAndComments,
@@ -94,12 +95,15 @@ const CEL_STRING_PREFIX_LETTER = /[rRbB]/;
  * every one of those: `r"a\"` is a COMPLETE raw literal (raw forms have no
  * escape alternative), and `"""…"""` closes only at its matching triple.
  *
- * The STRING-ONLY entry point is deliberate. Its sibling
- * {@link maskClosedCelLiteralsAndComments} is comment-aware, and these two
- * scans run over KRO MIXED-TEMPLATE text whose literal part routinely contains
- * `http://…`; a comment-aware walk would read that `//` as a `COMMENT` and stop
- * reporting literals for the rest of the line. Only the string half of the
- * lexis is wanted here.
+ * The STRING-ONLY entry point is deliberate. Its whole-text sibling
+ * {@link maskClosedCelLiteralsAndComments} masks comments too, and running THAT
+ * over a KRO MIXED TEMPLATE is wrong, because a template's literal part
+ * routinely contains `http://…` and a whole-text comment walk would read that
+ * `//` as a `COMMENT` and blank the rest of the line — the region markers
+ * included. Comment awareness is still owed to the parts of the text that
+ * really are CEL; it is supplied there, region-locally, by
+ * {@link celRegionCommentEnd}, which the two scans below ask ALONGSIDE this one
+ * at each index. Only the string half of the lexis is wanted from this helper.
  *
  * `previous` is the input character before `index`. A prefix letter opens a
  * literal only when it does not merely CONTINUE an identifier, so that `myr"x"`
@@ -123,14 +127,53 @@ function celStringLiteralEndAt(expr: string, index: number, previous?: string): 
 }
 
 /**
+ * End of the CEL `COMMENT ::= '//' ~NEWLINE*` that starts at `index`, or
+ * `index` for none — asked ONLY of text that is itself CEL.
+ *
+ * **Why a comment is a token here.** Inside a `${ … }` region — and in a
+ * genuinely bare CEL expression — the text IS CEL, and CEL's lexis has line
+ * comments. A `//` there that is not inside a STRING_LIT begins one, and
+ * everything up to the newline is commentary: it holds no braces that can close
+ * the region and no paths that can be rewritten. Without this, the `{` of
+ * `${a.0 // {` + newline + ` + b.1}` was counted as a nested brace, so
+ * {@link celTemplateRegionEnd} never found the region's close, returned `-1`,
+ * and the caller copied the whole remainder through — leaving the invalid `.0`
+ * and `.1` accesses the sweep exists to remove. The rewrite walk had the
+ * mirror-image fault, respelling a `.<digits>` that was only ever commentary.
+ *
+ * **Where this does NOT apply, and why that is not the round-3 `http://`
+ * problem.** That evidence was about LITERAL TEMPLATE TEXT — the part of a KRO
+ * mixed template outside every `${ … }`, which KRO emits verbatim and which is
+ * not CEL at all. In `` `http://${string(a.spec.ports.0.port)}` `` the `//`
+ * belongs to a URL scheme, and reading it as a comment would blank the region
+ * that follows it. Literal text is still never comment-scanned: this helper is
+ * asked only between a region's braces, and in the whole-string branch that is
+ * reached only when the text is bare CEL. A URL that appears INSIDE a region
+ * lives in a string literal (`${"http://x" + a.0}`), and
+ * {@link celStringLiteralEndAt} skips that literal WHOLE before this question is
+ * ever reached at the `//`.
+ *
+ * **Ordering.** Both callers ask this question and the string question at the
+ * same index in one source-ordered walk — the rule the scanner's own
+ * `celLiteralRegions` encodes: a `//` inside a literal opens no comment, and a
+ * quote inside a comment opens no literal, so `${a.0 // "` + newline +
+ * ` + b.1}` still rewrites both runs instead of letting the commented-out quote
+ * swallow the rest of the region.
+ */
+function celRegionCommentEnd(expr: string, index: number): number {
+  return celLineCommentEnd(expr, index);
+}
+
+/**
  * Find the `}` that closes the KRO `${ … }` region whose body starts at
  * `start`.
  *
- * Brace-balanced and string-literal aware. A CEL region may contain a `{` of
- * its own (a map literal), and may contain a `}` that does not end anything —
- * inside a STRING_LIT, as in `${"}" + a.0}`. Scanning for the first `}` would
- * cut the region short there and hand the rest of the expression to the
- * literal-text path. Returns the index of the closing brace, or `-1` when the
+ * Brace-balanced, string-literal aware and COMMENT aware. A CEL region may
+ * contain a `{` of its own (a map literal), and may contain a `{` or `}` that
+ * does not open or end anything — inside a STRING_LIT, as in `${"}" + a.0}`, or
+ * inside a `//` comment ({@link celRegionCommentEnd}). Scanning for the first
+ * `}` would cut the region short there and hand the rest of the expression to
+ * the literal-text path. Returns the index of the closing brace, or `-1` when the
  * region is never closed (in which case the caller copies the remainder
  * through unchanged rather than guessing where it ended).
  *
@@ -141,6 +184,10 @@ function celStringLiteralEndAt(expr: string, index: number, previous?: string): 
  * `}` and the remainder — `a.0` included — was copied through unnormalised,
  * while in `${"""a"}b""" + c.0}` the quotes paired off two at a time and the
  * region ended at a `}` that is inside the triple-quoted literal.
+ *
+ * A comment is skipped WHOLE the same way, up to but not including its newline,
+ * so neither the `{` of `${a.0 // {` nor the `}` of `${a.0 // }` reaches the
+ * depth counter.
  */
 function celTemplateRegionEnd(expr: string, start: number): number {
   let depth = 1;
@@ -148,6 +195,12 @@ function celTemplateRegionEnd(expr: string, start: number): number {
   for (let i = start; i < expr.length; i++) {
     const char = expr[i];
     if (!char) continue;
+
+    const commentEnd = celRegionCommentEnd(expr, i);
+    if (commentEnd > i) {
+      i = commentEnd - 1;
+      continue;
+    }
 
     const literalEnd = celStringLiteralEndAt(expr, i, expr[i - 1]);
     if (literalEnd > i) {
@@ -189,6 +242,13 @@ const CARRIES_KUBERNETES_REF_MARKER = new RegExp(KUBERNETES_REF_MARKER_SOURCE);
  * prefixed forms: `r"a\".b.0"` is the complete raw literal `r"a\"` followed by
  * `.b.0"`, whose `.0` is an ordinary index, yet the `\"` read as an escape and
  * protected it; `rb'x\' + c.0` lost its `c.0` the same way.
+ *
+ * A `//` COMMENT is copied through whole for the same reason
+ * ({@link celRegionCommentEnd}): its text is commentary, not a path, so the
+ * `c.1` of `a.0 // c.1` + newline + `+ b.1` stays as written while the two real
+ * accesses either side of it become `a[0]` and `b[1]`. The newline is left to
+ * the ordinary walk, which also means a comment can never lend its last
+ * identifier as the left context of the next line's run.
  */
 function rewriteCelIndexPathsInRegion(expr: string): string {
   let result = '';
@@ -196,6 +256,13 @@ function rewriteCelIndexPathsInRegion(expr: string): string {
   for (let i = 0; i < expr.length; i++) {
     const char = expr[i];
     if (!char) continue;
+
+    const commentEnd = celRegionCommentEnd(expr, i);
+    if (commentEnd > i) {
+      result += expr.slice(i, commentEnd);
+      i = commentEnd - 1;
+      continue;
+    }
 
     const literalEnd = celStringLiteralEndAt(expr, i, expr[i - 1]);
     if (literalEnd > i) {
@@ -272,15 +339,16 @@ function rewriteCelIndexPathsInRegion(expr: string): string {
  *
  * Quoted data is skipped, and skipped with the WHOLE `STRING_LIT`/`BYTES_LIT`
  * lexis: `r`/`R`/`b`/`B` prefixes in either order, the two triple-quoted forms,
- * and escapes in the non-raw forms only ({@link celStringLiteralEndAt}). The
- * scan is nevertheless STRING-ONLY, deliberately not the shared
- * {@link maskClosedCelLiteralsAndComments}, because this function runs over KRO
- * MIXED-TEMPLATE text rather than over CEL alone: its inputs include values like
- * `` `http://${string(service.spec.ports.0.port)}` ``, and the `//` of a URL
- * scheme is a `COMMENT` to a CEL lexer — masking it would blank the template
- * that follows and silently drop this rewrite. The same reason rules out
- * `celStringLiteralSpans`, whose walk is comment-aware too and so stops
- * reporting literals at the first `//`.
+ * and escapes in the non-raw forms only ({@link celStringLiteralEndAt}).
+ * `//` COMMENTS are skipped whole too, but only where the text is CEL — see
+ * {@link celRegionCommentEnd}, and the boundary in the next paragraph. What is
+ * deliberately NOT used is a WHOLE-TEXT mask,
+ * {@link maskClosedCelLiteralsAndComments} or `celStringLiteralSpans`: this
+ * function runs over KRO MIXED-TEMPLATE text rather than over CEL alone, its
+ * inputs include values like `` `http://${string(service.spec.ports.0.port)}` ``,
+ * and a whole-text walk would read that URL scheme's `//` — which sits in
+ * LITERAL text, where CEL's lexis does not reach — as a `COMMENT` and blank the
+ * template that follows, silently dropping this rewrite.
  *
  * **Where the rewrite applies.** The inputs above are KRO MIXED TEMPLATES: a
  * `${ … }` CEL region embedded in LITERAL text that KRO emits verbatim. Only
@@ -291,16 +359,25 @@ function rewriteCelIndexPathsInRegion(expr: string): string {
  * the rule to the whole string corrupted them into `v1[2]` and the like,
  * changing text KRO would have emitted as written.
  *
- * A region's end is found by brace balancing that is STRING-LITERAL AWARE
- * ({@link celTemplateRegionEnd}), because a CEL region may legitimately contain
- * a `}` — inside a map literal, or inside a STRING_LIT as in `${"}" + a.0}`.
+ * That split is also the boundary of CEL's COMMENT rule. A region's body and a
+ * bare CEL expression are CEL, so a `//` outside a string literal there begins a
+ * comment and is copied through whole; literal template text is not CEL, is
+ * never comment-scanned, and keeps its `http://`. The two never collide: a URL
+ * that appears inside a region is inside a STRING_LIT, which is skipped whole
+ * before the `//` is ever reached.
+ *
+ * A region's end is found by brace balancing that is STRING-LITERAL AND COMMENT
+ * AWARE ({@link celTemplateRegionEnd}), because a CEL region may legitimately
+ * contain a `{` or `}` that closes nothing — inside a map literal, inside a
+ * STRING_LIT as in `${"}" + a.0}`, or inside a comment as in `${a.0 // {`.
  * Each region is rewritten independently, from an empty left context, so a run
  * never chains across the literal text between two regions.
  *
  * Text with no `${` is rewritten whole only when it is GENUINELY BARE CEL, and
  * that takes a second condition: no `__KUBERNETES_REF_…__` marker either. Bare
  * CEL is the form `getInnerCelPath` and `markerToCelPath` build, and the form
- * the marker and nested-status resolvers hand over.
+ * the marker and nested-status resolvers hand over. Being CEL, it is read with
+ * the comment rule too.
  *
  * MARKER-LADEN TEXT is the other thing that arrives without a `${`: a string
  * derived from a template literal whose interpolations coerced to markers, as

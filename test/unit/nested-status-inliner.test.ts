@@ -1503,13 +1503,65 @@ describe('normalizeCelArrayIndexPaths — the whole CEL string-literal lexis', (
     expect(normalizeCelArrayIndexPaths('${"abc + a.0')).toBe('${"abc + a.0');
   });
 
-  it('still reads `//` as literal template text, never as a CEL comment', () => {
-    // The scan is the STRING-ONLY entry point on purpose: this function sees
-    // mixed-template text where a URL scheme must not mask the rest of the line.
+  it('reads a `//` in literal text or in a string literal as data, not as a comment', () => {
+    // The string scan is the STRING-ONLY entry point on purpose: a whole-text
+    // comment mask would blank the region markers after a URL scheme. Comment
+    // awareness is region-local instead — see the comment-boundary suite below.
     expect(normalizeCelArrayIndexPaths('http://${string(service.spec.ports.0.port)}')).toBe(
       'http://${string(service.spec.ports[0].port)}'
     );
     expect(normalizeCelArrayIndexPaths('${"http://x" + a.0}')).toBe('${"http://x" + a[0]}');
+  });
+});
+
+describe('normalizeCelArrayIndexPaths — the CEL comment boundary', () => {
+  it("does not count a comment's brace when closing a region", () => {
+    // The reviewer's input. The `{` is commentary, so the region still closes at
+    // the final `}` — rather than never closing, which left BOTH accesses
+    // invalid because the whole remainder was copied through unchanged.
+    expect(normalizeCelArrayIndexPaths('${a.0 // {\n + b.1}')).toBe('${a[0] // {\n + b[1]}');
+    // The mirror case: a `}` in a comment must not close the region early.
+    expect(normalizeCelArrayIndexPaths('${a.0 // }\n + b.1}')).toBe('${a[0] // }\n + b[1]}');
+  });
+
+  it('leaves a dotted numeric run inside a comment as written', () => {
+    expect(normalizeCelArrayIndexPaths('${a.0 // c.1\n + b.1}')).toBe('${a[0] // c.1\n + b[1]}');
+    // Bare CEL is CEL too, so the same rule applies to the whole-string branch.
+    expect(normalizeCelArrayIndexPaths('a.0 // c.1\n+ b.1')).toBe('a[0] // c.1\n+ b[1]');
+  });
+
+  it('does not let a quote inside a comment open a string literal', () => {
+    // Source-ordered: the comment is recognised first, so the `"` is commentary
+    // and cannot swallow the rest of the region.
+    expect(normalizeCelArrayIndexPaths('${a.0 // "\n + b.1}')).toBe('${a[0] // "\n + b[1]}');
+  });
+
+  it('does not let a `//` inside a string literal open a comment', () => {
+    // The literal is skipped whole before the `//` is ever reached, which is why
+    // a URL inside a region is still safe.
+    expect(normalizeCelArrayIndexPaths('${"// }" + a.0}')).toBe('${"// }" + a[0]}');
+    expect(normalizeCelArrayIndexPaths('${"http://x" + a.0}')).toBe('${"http://x" + a[0]}');
+  });
+
+  it('never comment-scans literal template text', () => {
+    // A URL scheme outside every region is not CEL: the region after it is still
+    // found and rewritten.
+    expect(normalizeCelArrayIndexPaths('http://host/${a.0}')).toBe('http://host/${a[0]}');
+    // And marker-laden text stays literal text, `//` and all.
+    expect(
+      normalizeCelArrayIndexPaths('http://__KUBERNETES_REF_svc_status.host__:8080/api/v1.2')
+    ).toBe('http://__KUBERNETES_REF_svc_status.host__:8080/api/v1.2');
+  });
+
+  it('runs an unterminated comment to the end of the region text', () => {
+    expect(normalizeCelArrayIndexPaths('${a.0 // b.1')).toBe('${a.0 // b.1');
+    expect(normalizeCelArrayIndexPaths('a.0 // b.1')).toBe('a[0] // b.1');
+  });
+
+  it('still counts a real map-literal brace after a comment', () => {
+    expect(normalizeCelArrayIndexPaths('${a.0 // x\n + {"k": b.1}.k}')).toBe(
+      '${a[0] // x\n + {"k": b[1]}.k}'
+    );
   });
 });
 
