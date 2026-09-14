@@ -53,7 +53,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an apply that only reached one replica; on a large cluster where some replica is almost
   always rolling, `onCluster` is the mode to use. The recorded set is always the one the
   statements ACTUALLY reached rather than the set that was live when the run finished, so
-  a replica that appears mid-apply is never claimed as covered. `{ mode: 'onCluster', cluster }` runs the statements once and requires EVERY
+  a replica that appears mid-apply is never claimed as covered — and never left behind
+  either: a `fanout` apply RECONCILES UNTIL THE LIVE SET IS COVERED. It selects the
+  complete Ready set, applies the ordered list to every pod not yet applied to in this run,
+  re-lists, applies to whatever appeared (by name and UID), and repeats until a re-list
+  shows no uncovered pod; pods that disappeared between passes are dropped from the
+  recorded set. A settled cluster costs exactly one pass. Two bounds stop a churning
+  cluster looping forever — `maxReconcilePasses` (default 3) and the overall
+  `waitForPod.timeoutMs`, spent ACROSS the passes rather than renewed by each one — and
+  hitting either with pods still uncovered FAILS the converge naming them, so alchemy
+  commits nothing and the next converge starts over. It never returns success with an
+  uncovered pod; recording one and merely warning left that pod unapplied until some
+  future deployment happened to change the fingerprint. `maxReconcilePasses` is not part of
+  the fingerprint — it says how the apply is driven, not what is applied — and is ignored
+  under `onCluster`, which has no coverage to reconcile. `{ mode: 'onCluster', cluster }` runs the statements once and requires EVERY
   statement to carry an explicit `ON CLUSTER <cluster>` clause naming that cluster —
   matched with a ClickHouse-aware lexer, so quoting, case and string literals are handled.
   Nothing is inferred from a statement's shape: cluster-wideness is a property of the DDL

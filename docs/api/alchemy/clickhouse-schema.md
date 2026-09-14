@@ -60,7 +60,7 @@ the next converge.
 
 | Phase | Behaviour |
 | --- | --- |
-| **create** | Wait for the server pods matching `target.podSelector` to be Ready — *all* of them under `fanout`, *one* under `onCluster` — then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `pods`, `podNames`, `clusterId`. |
+| **create** | Wait for the server pods matching `target.podSelector` to be Ready — *all* of them under `fanout`, *one* under `onCluster` — then run every statement in array order against each pod the execution model selects, re-listing and reconciling under `fanout` until the live set is covered. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `pods`, `podNames`, `clusterId`. |
 | **update** | If the fingerprint, the target, the cluster identity *and* (under `fanout`) the live pod set are unchanged, do nothing. Otherwise re-run every statement and record the new state. |
 | **delete** | Per `onDelete` (see below). |
 
@@ -143,10 +143,48 @@ reading state at a glance. State written before UIDs were recorded has no `pods`
 the comparison falls back to names for it, and the first converge that applies rewrites state in
 the new shape.
 
-`pods` is always the set the statements **actually reached**, never the set that happened to be
-live when the run finished. A replica that appears *while* the statements are running is not
-claimed as covered: the run re-lists afterwards, records what it applied to, and the next
-converge re-applies because the recorded set no longer matches the live one.
+#### Reconciling until the set is covered
+
+A replica can be added, replaced or removed **while the statements are running**, so the set that
+is live when the run finishes is not necessarily the set that was applied to.
+
+Recording the live set would be wrong — it claims coverage of a pod nothing ran on, and the claim
+is never revisited because it makes the two sets agree. Recording only what was reached and
+*warning* about the difference is not enough either: Alchemy commits that state without another
+reconcile, so the newly observed pod stays unapplied until some future deployment happens to
+change the fingerprint. So the apply **keeps reconciling**:
+
+1. select the complete Ready set (the all-or-nothing rules above);
+2. apply the whole ordered list to every pod not yet applied to **in this run** — a pod an
+   earlier pass already covered is not re-run;
+3. re-list. Pods that appeared are uncovered and get another pass; pods that **disappeared** are
+   dropped from the recorded set, since state describes coverage of pods that exist;
+4. repeat until a re-list shows no uncovered pod.
+
+A settled cluster costs exactly **one pass**: one `list pods`, the statements, one re-list.
+
+Two bounds stop a genuinely churning cluster from looping forever — `maxReconcilePasses`
+(default **3**) and the overall `waitForPod.timeoutMs`, which is spent **across** the passes
+rather than renewed by each one. Hitting either with pods still uncovered **fails** the converge,
+naming them:
+
+```
+ClickHouseSchema 'orders-schema': execution.mode 'fanout' applies the statements to EVERY pod
+matching clickhouse.altinity.com/chi=orders in namespace 'example-observability', but the pod
+set kept changing: after 3 reconcile pass(es), 1 pod(s) had still not been applied to
+(chi-orders-0-3-0). Nothing is recorded, so the next converge re-applies the whole list. Let
+the rollout settle, raise maxReconcilePasses, or switch to execution.mode 'onCluster'.
+```
+
+**It never returns success with an uncovered pod.** Failing is the recoverable outcome: no state
+is committed, so the next converge starts over and applies the whole list to the whole set. A
+recorded partial apply would never be retried at all.
+
+`maxReconcilePasses` is deliberately **not** part of the fingerprint — like `waitForPod`, `retry`
+and `statementTimeoutMs`, it says how the apply is driven, not what is applied, so changing it
+does not re-run DDL. It is ignored under `onCluster`, which has no coverage to reconcile: one
+execution hands the DDL to Keeper's queue, which reaches pods this converge never looked at,
+including ones that appear later.
 
 **A single-replica installation is a one-pod fanout**, which is why the default is also the
 correct setting there — you do not need to configure anything for the common case.
@@ -268,7 +306,8 @@ never run are a silent footgun.
 | `settings` | `Record<string, string \| number>?` | Rendered as `--<setting>=<value>`. Names and values are validated as identifiers/scalars. |
 | `onDelete` | `'retain' \| 'run'` | Defaults to `retain`. |
 | `deleteStatements` | `string[]?` | Required — and only allowed — when `onDelete` is `'run'`. |
-| `waitForPod.timeoutMs` | `number?` | Budget for the pods the execution model needs to become Ready — every matching pod under `fanout`, one under `onCluster`. Defaults to 120000. |
+| `waitForPod.timeoutMs` | `number?` | Budget for the pods the execution model needs to become Ready — every matching pod under `fanout`, one under `onCluster`. Under `fanout` it also bounds the whole reconcile loop, spent across its passes. Defaults to 120000. |
+| `maxReconcilePasses` | `number?` | `fanout` only: how many times an apply re-lists and applies to pods that appeared while it ran, before failing rather than recording a partial apply. Defaults to 3. See [Reconciling until the set is covered](#reconciling-until-the-set-is-covered). |
 | `statementTimeoutMs` | `number?` | Per-statement exec timeout. Defaults to 300000. |
 | `retry.maxAttempts` / `retry.backoffMs` | `number?` | Transport retries only. Defaults 3 / 1000ms. |
 | `kubeConfig` | `SerializableKubeConfigOptions?` | Same shape `KroResource` accepts. Omit for the ambient kubeconfig. |

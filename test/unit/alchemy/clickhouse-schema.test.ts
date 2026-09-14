@@ -954,38 +954,138 @@ describe("ClickHouseSchema — pod selection under 'fanout'", () => {
     expect(listCalls).toHaveLength(1);
   });
 
-  it('records the set the statements REACHED when the topology moves mid-run', async () => {
-    // Selection saw two pods; a third appeared while the statements were running. State
-    // records the two that were actually applied to, never the live three — and the next
-    // converge re-applies precisely because the two sets now differ.
+  it('applies to a pod that appeared MID-RUN, in a second reconcile pass', async () => {
+    // Selection saw two pods; a third appeared while the statements were running. Warning
+    // and returning success here is what left that replica unapplied: alchemy commits the
+    // state without another reconcile, so the new pod has no schema until some future
+    // deployment happens to change the fingerprint. The run keeps reconciling instead.
     const { executor, execCalls } = fakeExecutor({
       podPages: [
+        [readyPod('chi-orders-0-0-0', 'uid-0'), readyPod('chi-orders-0-1-0', 'uid-1')],
+        [
+          readyPod('chi-orders-0-0-0', 'uid-0'),
+          readyPod('chi-orders-0-1-0', 'uid-1'),
+          readyPod('chi-orders-0-2-0', 'uid-2'),
+        ],
+      ],
+    });
+    const config = validConfig();
+    const state = await applyClickHouseSchema(context(executor, config), undefined);
+
+    // Two pods in pass one, the newcomer in pass two — and the first two are NOT re-run.
+    expect(execCalls).toHaveLength(6);
+    expect(execCalls.filter((call) => call.podName === 'chi-orders-0-2-0')).toHaveLength(2);
+    expect(state.podNames).toEqual(['chi-orders-0-0-0', 'chi-orders-0-1-0', 'chi-orders-0-2-0']);
+    expect(state.pods).toEqual([
+      { name: 'chi-orders-0-0-0', uid: 'uid-0' },
+      { name: 'chi-orders-0-1-0', uid: 'uid-1' },
+      { name: 'chi-orders-0-2-0', uid: 'uid-2' },
+    ]);
+    // The live set is now covered, so the next converge is a genuine no-op.
+    expect(needsApply(config, state)).toBe(false);
+  });
+
+  it('costs exactly one pass when the set does not move', async () => {
+    const { executor, listCalls } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')]],
+    });
+    await applyClickHouseSchema(context(executor, validConfig()), undefined);
+    // One select, one re-list. No second pass.
+    expect(listCalls).toHaveLength(2);
+  });
+
+  it('FAILS, naming the uncovered pod, when churn outlasts the pass bound', async () => {
+    // A new replica on every re-list. Returning a successful state here would commit a
+    // schema that does not cover what is live, and alchemy would never revisit it.
+    const { executor } = fakeExecutor({
+      podPages: [
+        [readyPod('chi-orders-0-0-0')],
+        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')],
         [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')],
         [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0'), readyPod('chi-orders-0-2-0')],
+        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0'), readyPod('chi-orders-0-2-0')],
+        [
+          readyPod('chi-orders-0-0-0'),
+          readyPod('chi-orders-0-1-0'),
+          readyPod('chi-orders-0-2-0'),
+          readyPod('chi-orders-0-3-0'),
+        ],
+      ],
+    });
+    const error = (await applyClickHouseSchema(context(executor, validConfig()), undefined).catch(
+      (caught: unknown) => caught
+    )) as ClickHouseSchemaError;
+
+    // No state is returned at all, so alchemy commits nothing.
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('after 3 reconcile pass(es)');
+    expect(error.message).toContain('chi-orders-0-3-0');
+    expect(error.message).toContain('maxReconcilePasses');
+  });
+
+  it('honours a configured maxReconcilePasses', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [
+        [readyPod('chi-orders-0-0-0')],
+        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0')],
+      ],
+    });
+    const error = (await applyClickHouseSchema(
+      context(executor, validConfig({ maxReconcilePasses: 1 })),
+      undefined
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('after 1 reconcile pass(es)');
+    expect(error.message).toContain('chi-orders-0-1-0');
+  });
+
+  it('keeps maxReconcilePasses out of the fingerprint — it is not what is applied', () => {
+    expect(computeFingerprint(validConfig({ maxReconcilePasses: 7 }))).toBe(
+      computeFingerprint(validConfig())
+    );
+  });
+
+  it('spends ONE waitForPod budget across the passes, not a fresh one per pass', async () => {
+    // Pass one waits out the whole budget for a rolling replica. Pass two must not be
+    // handed another, or a set that keeps churning stretches the converge without limit.
+    const { deps, slept } = fakeDeps();
+    const { executor } = fakeExecutor({
+      podPages: [
+        [pendingPod('chi-orders-0-0-0')],
+        [readyPod('chi-orders-0-0-0')],
+        [readyPod('chi-orders-0-0-0'), pendingPod('chi-orders-0-1-0')],
+        [readyPod('chi-orders-0-0-0'), pendingPod('chi-orders-0-1-0')],
+      ],
+    });
+    const error = (await applyClickHouseSchema(
+      context(executor, validConfig({ waitForPod: { timeoutMs: 2_000 } }), { deps }),
+      undefined
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('after 2000ms');
+    expect(error.message).toContain('still not Ready');
+    // Only pass one ever slept; pass two found the budget already spent.
+    expect(slept).toEqual([2_000]);
+  });
+
+  it('drops a pod that DISAPPEARED between passes from the recorded set', async () => {
+    // It was applied to, and then it was gone. State describes coverage of pods that
+    // exist; recording a departed pod would only make the next converge re-apply.
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [
+        [readyPod('chi-orders-0-0-0', 'uid-0'), readyPod('chi-orders-0-1-0', 'uid-1')],
+        [readyPod('chi-orders-0-0-0', 'uid-0')],
       ],
     });
     const config = validConfig();
     const state = await applyClickHouseSchema(context(executor, config), undefined);
 
     expect(execCalls).toHaveLength(4);
-    expect(state.podNames).toEqual(['chi-orders-0-0-0', 'chi-orders-0-1-0']);
-
-    // Nothing the fingerprint can see changed …
+    expect(state.podNames).toEqual(['chi-orders-0-0-0']);
+    expect(state.pods).toEqual([{ name: 'chi-orders-0-0-0', uid: 'uid-0' }]);
     expect(needsApply(config, state)).toBe(false);
-    // … and yet the next converge re-applies, precisely because the recorded set is what
-    // was reached rather than what was live, so it no longer matches the live set.
-    const next = fakeExecutor({
-      podPages: [
-        [readyPod('chi-orders-0-0-0'), readyPod('chi-orders-0-1-0'), readyPod('chi-orders-0-2-0')],
-      ],
-    });
-    const reapplied = await applyClickHouseSchema(context(next.executor, config), state);
-    expect(next.execCalls).toHaveLength(6);
-    expect(reapplied.podNames).toEqual([
-      'chi-orders-0-0-0',
-      'chi-orders-0-1-0',
-      'chi-orders-0-2-0',
-    ]);
   });
 });
 

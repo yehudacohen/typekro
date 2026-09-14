@@ -45,6 +45,14 @@ export const DEFAULT_WAIT_FOR_POD_TIMEOUT_MS = 120_000;
 export const DEFAULT_STATEMENT_TIMEOUT_MS = 300_000;
 export const DEFAULT_MAX_ATTEMPTS = 3;
 export const DEFAULT_BACKOFF_MS = 1_000;
+
+/**
+ * How many times a `fanout` apply re-lists and applies to newly appeared pods before it
+ * gives up and fails. Three covers the ordinary races — a scale-out or a replacement
+ * landing mid-apply — without letting a cluster that is genuinely churning stretch one
+ * converge indefinitely.
+ */
+export const DEFAULT_MAX_RECONCILE_PASSES = 3;
 const POD_POLL_INTERVAL_MS = 2_000;
 
 /** Injected clock and sleep, so the wait/timeout and backoff paths are testable. */
@@ -269,15 +277,20 @@ async function listMatchingPods(
  * Failing is the conservative outcome: alchemy retries a failed converge, and the
  * fingerprint is recorded only on success, so the next converge applies the full set. A
  * recorded partial apply would never be retried at all.
+ *
+ * `deadline` lets {@link applyFanoutUntilCovered} spend ONE `waitForPod` budget across all
+ * of its reconcile passes rather than handing each pass a fresh one, so a set that keeps
+ * churning cannot stretch the converge without limit.
  */
 async function selectFanoutPods(
-  context: ClickHouseSchemaRunContext
+  context: ClickHouseSchemaRunContext,
+  budgetDeadline?: number
 ): Promise<readonly ClickHousePodSummary[]> {
   const { config, resourceId } = context;
   const deps = runtimeDeps(context);
   const timeoutMs = config.waitForPod?.timeoutMs ?? DEFAULT_WAIT_FOR_POD_TIMEOUT_MS;
   const container = resolveContainer(config);
-  const deadline = deps.now() + timeoutMs;
+  const deadline = budgetDeadline ?? deps.now() + timeoutMs;
 
   for (;;) {
     const matching = await listMatchingPods(context);
@@ -542,6 +555,90 @@ function samePodIdentitySet(
 }
 
 /**
+ * `fanout`: apply, re-list, apply again — until the LIVE pod set is covered, or fail.
+ *
+ * THE SCALE RACE. Selection sees one matching set; a replica can be added, replaced or
+ * removed while the statements are still running, so the set that is live when the run
+ * finishes is not necessarily the set that was applied to. Recording the live set instead
+ * would claim coverage of a pod nothing ran on — and that claim is never revisited,
+ * because it makes the two sets agree. Recording only what was reached and WARNING about
+ * the difference does not fix it either: alchemy commits that state without another
+ * reconcile, so the newly observed pod stays unapplied until some future deployment
+ * happens to change the fingerprint or the set. A converge that observed an uncovered pod
+ * and returned success is exactly the half-applied schema `fanout` exists to rule out.
+ *
+ * So the loop keeps going instead:
+ *
+ * 1. select the complete Ready set (the all-or-nothing rules of {@link selectFanoutPods});
+ * 2. apply the whole ordered list to every pod not yet applied to IN THIS RUN — a pod
+ *    already covered by an earlier pass is not re-run, so a settled set costs one pass;
+ * 3. re-list. Pods that appeared are uncovered and get another pass; pods that DISAPPEARED
+ *    are dropped from the recorded set, because state must describe coverage of pods that
+ *    exist rather than of ones that are gone;
+ * 4. repeat until a re-list shows no uncovered pod.
+ *
+ * Two bounds keep a genuinely churning cluster from looping forever: `maxReconcilePasses`
+ * and the overall `waitForPod` budget, which is spent ACROSS the passes rather than renewed
+ * by each one. Hitting either with pods still uncovered FAILS the converge, naming them —
+ * never returns a successful state — so alchemy does not commit a partial apply and the
+ * next converge starts over. Failing is the recoverable outcome; a recorded partial apply
+ * would never be retried at all.
+ */
+async function applyFanoutUntilCovered(
+  context: ClickHouseSchemaRunContext,
+  statements: readonly string[]
+): Promise<readonly ClickHousePodSummary[]> {
+  const { config, resourceId } = context;
+  const deps = runtimeDeps(context);
+  const maxPasses = config.maxReconcilePasses ?? DEFAULT_MAX_RECONCILE_PASSES;
+  const timeoutMs = config.waitForPod?.timeoutMs ?? DEFAULT_WAIT_FOR_POD_TIMEOUT_MS;
+  const budgetDeadline = deps.now() + timeoutMs;
+  const logger = getComponentLogger('alchemy-clickhouse-schema');
+  /** Pods this run has applied to, by {@link podKey}. */
+  const applied = new Map<string, ClickHousePodSummary>();
+
+  for (let pass = 1; ; pass += 1) {
+    for (const pod of await selectFanoutPods(context, budgetDeadline)) {
+      if (applied.has(podKey(pod))) continue;
+      await runStatementsOnPod(context, pod, statements);
+      applied.set(podKey(pod), pod);
+    }
+
+    const live = await listMatchingPods(context);
+    const liveKeys = new Set(live.map(podKey));
+    for (const key of [...applied.keys()]) {
+      if (!liveKeys.has(key)) applied.delete(key);
+    }
+    const uncovered = live.filter((pod) => !applied.has(podKey(pod)));
+    if (uncovered.length === 0) return [...applied.values()].sort(byName);
+
+    if (pass >= maxPasses) {
+      throw new ClickHouseSchemaError(
+        `ClickHouseSchema '${resourceId}': execution.mode 'fanout' applies the statements to ` +
+          `EVERY pod matching ${selectorText(config)} in namespace ` +
+          `'${config.target.namespace}', but the pod set kept changing: after ${maxPasses} ` +
+          `reconcile pass(es), ${uncovered.length} pod(s) had still not been applied to ` +
+          `(${uncovered.map((pod) => pod.name).join(', ')}). Nothing is recorded, so the next ` +
+          `converge re-applies the whole list. Let the rollout settle, raise ` +
+          `maxReconcilePasses, or switch to execution.mode 'onCluster'.`,
+        resourceId
+      );
+    }
+
+    logger.info(
+      'ClickHouse server pod set changed while the schema was being applied; reconciling again',
+      {
+        resourceId,
+        pass,
+        maxPasses,
+        appliedTo: [...applied.values()].map((pod) => pod.name),
+        uncovered: uncovered.map((pod) => pod.name),
+      }
+    );
+  }
+}
+
+/**
  * Converge the schema: no-op when nothing changed, otherwise re-run EVERY statement.
  *
  * There is no partial application. A fingerprint change re-runs the whole ordered list,
@@ -554,7 +651,11 @@ function samePodIdentitySet(
  * third one that a scale-out added, nor to the replacement a drain put back under the same
  * name with an empty disk, and the fingerprint cannot see either — so an otherwise-unchanged
  * converge still lists pods and re-applies when the set moved. That listing is one API call
- * and no exec, so an unchanged, unchanged-topology converge stays free.
+ * and no exec, so an unchanged, unchanged-topology converge stays free. When it does apply,
+ * it applies until the live set is COVERED; see {@link applyFanoutUntilCovered}.
+ *
+ * `onCluster` has no coverage to reconcile: one execution hands the DDL to Keeper's queue,
+ * which reaches the pods this converge never looked at, including ones that appear later.
  */
 export async function applyClickHouseSchema(
   context: ClickHouseSchemaRunContext,
@@ -569,29 +670,10 @@ export async function applyClickHouseSchema(
     if (samePodIdentitySet(live, previous)) return previous;
   }
 
-  const { pods } = await runStatements(context, config.statements);
-
-  if (config.execution.mode === 'fanout') {
-    // THE SCALE RACE. Selection saw one matching set; a replica can be added, replaced or
-    // removed while the statements are still running, so the set that is live now is not
-    // necessarily the set that was applied to. What goes into state is always the set the
-    // statements ACTUALLY reached — recording the live one instead would claim coverage of
-    // a pod nothing ran on, and that claim is never revisited because it makes the two sets
-    // agree. Re-listing here makes the divergence explicit and observable; the recorded set
-    // no longer matches the live one, so the next converge re-applies the whole list.
-    const live = await listMatchingPods(context);
-    if (!sameKeySet(live.map(podKey), pods.map(podKey))) {
-      getComponentLogger('alchemy-clickhouse-schema').warn(
-        'ClickHouse server pod set changed while the schema was being applied; recording the ' +
-          'pods the statements actually reached, so the next converge re-applies',
-        {
-          resourceId: context.resourceId,
-          appliedTo: pods.map((pod) => pod.name),
-          live: live.map((pod) => pod.name),
-        }
-      );
-    }
-  }
+  const pods =
+    config.execution.mode === 'fanout'
+      ? await applyFanoutUntilCovered(context, config.statements)
+      : (await runStatements(context, config.statements)).pods;
 
   return {
     fingerprint: computeFingerprint(config),

@@ -183,6 +183,18 @@ export const ClickHouseSchemaConfigSchema = type({
   onDelete: "'retain' | 'run' = 'retain'",
   'deleteStatements?': 'string[]',
   'waitForPod?': ClickHouseSchemaWaitForPodSchema,
+  /**
+   * `fanout` only: how many times an apply re-lists and applies to pods that appeared
+   * while it was running, before failing rather than recording a partial apply.
+   *
+   * Defaults to 3. A settled cluster costs exactly one pass, so raising this only matters
+   * on a cluster whose topology is moving throughout the converge; the whole loop is also
+   * bounded by `waitForPod.timeoutMs`, spent across the passes rather than renewed by each
+   * one. Deliberately NOT part of the fingerprint: like `waitForPod`, `retry` and
+   * `statementTimeoutMs`, it says how the apply is driven, not what is applied, so changing
+   * it must not re-run DDL. Ignored under `onCluster`, which has no coverage to reconcile.
+   */
+  'maxReconcilePasses?': 'number.integer > 0',
   /** Per-statement exec timeout. A long `CREATE MATERIALIZED VIEW ... POPULATE` may need more. */
   'statementTimeoutMs?': 'number.integer > 0',
   'retry?': ClickHouseSchemaRetrySchema,
