@@ -27,7 +27,12 @@ import type {
   KubernetesResource,
   WithKroStatusFields,
 } from '../../types/kubernetes.js';
-import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
+import type {
+  KroCompatibleType,
+  SchemaDefinition,
+  SerializationOptions,
+} from '../../types/serialization.js';
+import { resolveAllowLiteralStatus } from '../../validation/literal-status.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { waitForKroInstanceReady } from '../kro-readiness.js';
 import { convertToKubernetesName, handleDeploymentError } from '../shared-utilities.js';
@@ -129,7 +134,19 @@ export class KroDeploymentStrategy<
       this.factoryName,
       this.schemaDefinition,
       this.resources || {},
-      this.statusMappings || {}
+      this.statusMappings || {},
+      undefined,
+      undefined,
+      {
+        allowLiteralStatus: resolveAllowLiteralStatus(
+          this.factoryOptions.allowLiteralStatus,
+          (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
+            ?.allowLiteralStatus
+        ),
+        ...(this.factoryOptions.strictCelDiagnostics === undefined
+          ? {}
+          : { strictCelDiagnostics: this.factoryOptions.strictCelDiagnostics }),
+      }
     );
 
     // Create RGD manifest

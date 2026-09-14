@@ -495,11 +495,7 @@ export function makeEnvoyAIGateway(
         phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
           `${failed.expression} ? "Failed" : (${ready.expression} ? "Ready" : "Installing")`
         ),
-        endpoint: Cel.expr<string>(
-          'has(gateway.status.addresses) && size(gateway.status.addresses) > 0 ? "http://" + ' +
-            'string(gateway.status.addresses[0].value) + ":" + ' +
-            'string(gateway.spec.listeners[0].port) + "/v1" : ""'
-        ),
+        endpoint: gatewayEndpointExpression('gateway'),
         gatewayClassName: Cel.expr<string>('gatewayContract.data.gatewayClassName'),
         providerCount: Cel.expr<number>('int(gatewayContract.data.providerCount)'),
         acceptedProviderCount,
@@ -509,6 +505,27 @@ export function makeEnvoyAIGateway(
       };
     }
   ) as CallableComposition<EnvoyAIGatewaySpec, EnvoyAIGatewayStatus>;
+}
+
+/**
+ * The Gateway's public endpoint, or `''` until the controller assigns an
+ * address. `status.addresses` is an optional nested list, so the address is
+ * read through `Cel.firstWhereHas` — the one guard form cel-js and cel-go both
+ * accept — and the port is only indexed inside the lazy ternary branch that
+ * runs when an address exists.
+ */
+function gatewayEndpointExpression(resourceId: string): ReturnType<typeof Cel.expr<string>> {
+  // The Gateway is reconciled by its controller rather than declared here, so
+  // only its graph resource id is in scope and the address list has to be named
+  // by path. The entry type is still declared, so 'value' is still checked.
+  const address = Cel.firstWhereHas(
+    Cel.unsafeListPath<{ value: string }>(`${resourceId}.status.addresses`),
+    'value'
+  ).expression;
+  return Cel.expr<string>(
+    `(${address}) != "" ? "http://" + string(${address}) + ":" + ` +
+      `string(${resourceId}.spec.listeners[0].port) + "/v1" : ""`
+  );
 }
 
 function acceptedExpression(resourceId: string): ReturnType<typeof Cel.expr<boolean>> {

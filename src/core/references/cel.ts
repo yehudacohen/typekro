@@ -4,7 +4,7 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../constants
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { celLiteralForValueTree, getInnerCelPath } from '../serialization/cel-references.js';
-import type { CelExpression, RefOrValue } from '../types.js';
+import type { CelExpression, KubernetesRef, RefOrValue } from '../types.js';
 
 const logger = getComponentLogger('cel');
 
@@ -343,6 +343,32 @@ function celValueForTernary(value: RefOrValue<unknown>): string {
 }
 
 /**
+ * True when a value is a structured *literal* — a plain object or array written
+ * out at the call site — rather than a ref or a CEL expression.
+ *
+ * The distinction decides whether the two branches of an emitted ternary need
+ * widening. KRO gives a schema or resource reference a **nominal** object type
+ * taken from the resource's schema, while a CEL object literal is inferred as a
+ * `map` and a list literal as a `list`. Both materialize to the same Kubernetes
+ * JSON, but cel-go's checker rejects a ternary whose branches carry static types
+ * that do not unify, so a nominal branch next to a literal branch fails at RGD
+ * admission while cel-js evaluates it happily. A ref or CEL-expression fallback
+ * carries the same nominal type as the other branch and needs nothing.
+ *
+ * `dyn()` is the fix: it unifies with everything in the checker, is identity at
+ * runtime, and is implemented by both direct-mode evaluators — so wrapping is
+ * free where it is unnecessary and load-bearing where it is not.
+ */
+function isStructuredLiteral(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !isKubernetesRef(value) &&
+    !isCelExpression(value)
+  );
+}
+
+/**
  * Creates a conditional CEL expression with smart value conversion.
  *
  * Unlike `Cel.conditional` (which concatenates raw strings), `Cel.cond`
@@ -435,16 +461,10 @@ function defaultValue(
     : has(value).expression;
   const celValue = celValueForTernary(value);
   const fallbackCel = celValueForTernary(fallback);
-  // KRO gives schema object references a nominal object type while CEL object
-  // literals are inferred as maps. Although both values materialize to the same
-  // Kubernetes JSON object, CEL rejects a ternary that mixes those static types.
   // Widen both structured branches to dyn so KRO can validate the expression
-  // without changing the runtime value or direct-mode `??` behavior.
-  const hasStructuredLiteralFallback =
-    fallback !== null &&
-    typeof fallback === 'object' &&
-    !isKubernetesRef(fallback) &&
-    !isCelExpression(fallback);
+  // without changing the runtime value or direct-mode `??` behavior. See
+  // {@link isStructuredLiteral} for why the mixed static types are a problem.
+  const hasStructuredLiteralFallback = isStructuredLiteral(fallback);
   const selectedValue = hasStructuredLiteralFallback ? `dyn(${celValue})` : celValue;
   const selectedFallback = hasStructuredLiteralFallback ? `dyn(${fallbackCel})` : fallbackCel;
   // KRO's CEL checker rejects `typedScalar != null` even though the runtime
@@ -462,6 +482,417 @@ function defaultValue(
 
 /** Alias for {@link defaultValue}. */
 const coalesce: typeof defaultValue = defaultValue;
+
+const UNSAFE_CEL_LIST_PATH: unique symbol = Symbol.for('typekro.unsafeCelListPath');
+
+/**
+ * A CEL path to a list, written out by hand instead of selected.
+ *
+ * Produced only by {@link unsafeListPath}. It is a distinct type rather than a
+ * bare `string` so that the guarded-list helpers can accept a hand-written path
+ * where one is genuinely needed, while still rejecting an arbitrary string that
+ * was passed by mistake.
+ */
+export interface UnsafeCelListPath<TElement = unknown> {
+  readonly [UNSAFE_CEL_LIST_PATH]: string;
+  /** Phantom: carries the declared element type, never present at runtime. */
+  readonly __element?: TElement;
+}
+
+/**
+ * A selectable reference to a list-typed field.
+ *
+ * The ordinary way to produce one is to read the field off a resource or schema
+ * proxy — `service.status.loadBalancer.ingress` — which gives the helpers both
+ * the CEL path and the element type. `TElement` is inferred from it, so the
+ * `field` argument can be checked against the element's own keys.
+ *
+ * A hand-written path is accepted only in the {@link UnsafeCelListPath} form, so
+ * it has to be asked for by name.
+ */
+export type CelListSelector<TElement> =
+  | readonly TElement[]
+  | undefined
+  | KubernetesRef<readonly TElement[]>
+  | KubernetesRef<readonly TElement[] | undefined>
+  | UnsafeCelListPath<TElement>;
+
+/**
+ * What projecting `TField` off an entry of a `TElement` list yields.
+ *
+ * Written out rather than left as an inferrable type parameter on purpose: a
+ * free `TResult` would be inferred from the *contextual* type at the call site —
+ * the status field's own declared type — so a loosely typed status field would
+ * silently widen the projection back to whatever it declares, which is exactly
+ * the type safety this signature exists to provide.
+ */
+export type CelFieldProjection<
+  TElement,
+  TField extends keyof TElement,
+> = CelExpression<NonNullable<TElement[TField]>> & NonNullable<TElement[TField]>;
+
+/** What projecting the first entry of a `TElement` list yields. */
+export type CelEntryProjection<TElement> = CelExpression<NonNullable<TElement>> &
+  NonNullable<TElement>;
+
+/**
+ * The trailing `fallback` parameter of a projection helper, constrained to the
+ * type being projected.
+ *
+ * Two things are being said at once, which is why this is a parameter *list*
+ * rather than a parameter type:
+ *
+ * - **The fallback has the projected type.** A projection is typed as the field
+ *   it projects, so a fallback of any other type makes that type a lie. Worse,
+ *   the helpers emit the fallback as the `else` branch of a CEL ternary, and a
+ *   ternary whose branches have different types is rejected outright by cel-go
+ *   when KRO admits the ResourceGraphDefinition — while cel-js evaluates it
+ *   happily, so the mismatch survives every direct-mode test and surfaces only
+ *   on a cluster.
+ * - **The default is available exactly where the projected type admits it.**
+ *   The default is not "some string", it is the empty string, so the question
+ *   is `'' extends T` — whether `''` itself is assignable to `T`. The narrower
+ *   `string extends T` asks whether `T` admits *any* string, which is a
+ *   different question and the wrong one: a literal union like
+ *   `'' | 'Ready' | 'Failed'` admits the default perfectly well, yet fails
+ *   `string extends T` and so used to force the author to restate `''` by hand.
+ *   The two tests agree everywhere else that matters — both true for `string`
+ *   and for a union containing it, both false for `number`, for `boolean`, for
+ *   a string-literal union `''` is not a member of, and for a template-literal
+ *   type such as `` `${number}px` `` that no empty string inhabits. Where the
+ *   test is false the argument is required, so a numeric field with no fallback
+ *   is a compile error rather than a silent `''` that KRO will reject.
+ *
+ * `RefOrValue` is kept, so a `KubernetesRef` or a CEL expression of the right
+ * type is still accepted in place of a literal.
+ *
+ * **Structured projections are included in all of this.** A projection of an
+ * object- or list-typed field takes an object or array fallback, `{}` and `[]`
+ * included, and it is rendered as the CEL map or list literal of that shape —
+ * see {@link projectionFallback}. Nothing special is needed at the type level to
+ * say so, and that is the point: `''` is not assignable to an object type, so
+ * such a projection requires its fallback, and neither `null` nor `undefined` is
+ * assignable to `RefOrValue<T>` for a `NonNullable` `T`, so neither can be
+ * passed. The runtime rejects `null` as well, for callers with no types.
+ */
+export type CelFallbackArgs<T> = '' extends T
+  ? [fallback?: RefOrValue<T>]
+  : [fallback: RefOrValue<T>];
+
+/**
+ * Name a list by its CEL path, when there is no proxy to select it from.
+ *
+ * **Unsafe** in one specific sense: nothing checks the path. Not that the named
+ * resource is in the graph, not that the path reaches a list, and not that the
+ * elements are what `TElement` says they are. Get any of that wrong and the
+ * mistake surfaces on a cluster rather than at compile time, which is exactly
+ * what selecting the field off a proxy avoids.
+ *
+ * Reach for it only where the proxy genuinely is not in scope — a bootstrap
+ * composition that names a graph resource by id because the resource is created
+ * by a Helm chart rather than declared in the composition, for instance. The
+ * element type is still declared and still checked, so `field` keeps its
+ * `keyof` check even here.
+ *
+ * @example
+ * ```typescript
+ * // The Gateway is created by its controller; only its resource id is in scope.
+ * Cel.firstWhereHas(
+ *   Cel.unsafeListPath<{ value: string }>(`${resourceId}.status.addresses`),
+ *   'value'
+ * )
+ * ```
+ */
+function unsafeListPath<TElement = unknown>(path: string): UnsafeCelListPath<TElement> {
+  const trimmed = path.trim();
+  if (trimmed.length === 0) {
+    throw new TypeKroError(
+      'Cel.unsafeListPath() requires a non-empty CEL path string.',
+      'CEL_INVALID_INPUT'
+    );
+  }
+  return { [UNSAFE_CEL_LIST_PATH]: trimmed };
+}
+
+function isUnsafeCelListPath(value: unknown): value is UnsafeCelListPath {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as UnsafeCelListPath)[UNSAFE_CEL_LIST_PATH] === 'string'
+  );
+}
+
+/** Resolve a list argument to the CEL path text that names it. */
+function celListPath(list: unknown, helperName: string): string {
+  if (isUnsafeCelListPath(list)) return list[UNSAFE_CEL_LIST_PATH];
+  if (isKubernetesRef(list)) return getInnerCelPath(list);
+  throw new TypeKroError(
+    `${helperName}() requires a list field selected from a resource or schema proxy ` +
+      '(for example `service.status.loadBalancer.ingress`). To name a list by its CEL path ' +
+      'instead, wrap it in Cel.unsafeListPath().',
+    'CEL_INVALID_INPUT'
+  );
+}
+
+/**
+ * Chain a `has()` guard for every hop of a CEL path below its root identifier.
+ *
+ * `a.status.loadBalancer.ingress` becomes
+ * `has(a.status) && has(a.status.loadBalancer) && has(a.status.loadBalancer.ingress)`.
+ * Returns `undefined` when the path has no hop to guard (a bare identifier) or
+ * is not a plain dotted path, in which case the caller guards the whole thing.
+ */
+function chainedHasGuard(path: string): string | undefined {
+  if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(path)) return undefined;
+  const segments = path.split('.');
+  return segments
+    .slice(1)
+    .map((_, index) => `has(${segments.slice(0, index + 2).join('.')})`)
+    .join(' && ');
+}
+
+/**
+ * The fallback a projection helper was given, or the `''` default.
+ *
+ * The parameter is a rest tuple because {@link CelFallbackArgs} decides at the
+ * type level whether the argument may be omitted; at runtime that reduces to
+ * "the argument if one was passed". An explicitly passed `undefined` is treated
+ * as omitted, so it cannot reach `celValueForTernary` and be rendered as `""`
+ * on a field whose type is not a string.
+ */
+function defaultedFallback(fallback: readonly unknown[]): RefOrValue<unknown> {
+  const [given] = fallback;
+  return given === undefined ? '' : (given as RefOrValue<unknown>);
+}
+
+/** A projection's fallback, rendered, plus how to render the branches around it. */
+interface ProjectionFallback {
+  /** The fallback as CEL, for the `else` branch of both ternaries. */
+  readonly cel: string;
+  /** Wrap one ternary branch so cel-go's checker can unify the two. */
+  readonly branch: (expression: string) => string;
+}
+
+/**
+ * Render a projection helper's fallback and decide how to write the branches.
+ *
+ * **Structured fallbacks are supported.** A projection of an object- or
+ * list-typed field takes an object or array literal, which
+ * {@link celValueForTernary} renders as a CEL map or list literal with nested
+ * refs and CEL expressions rendered by the same `RefOrValue` rules as a scalar
+ * fallback; `{}` and `[]` render as the empty literals. Because the other branch
+ * of the ternary reads a field whose CEL type comes from the referenced
+ * resource's schema, a structured literal fallback makes both branches `dyn` —
+ * see {@link isStructuredLiteral} for why, and why `dyn()` costs nothing when
+ * the field happens to be `dyn` already.
+ *
+ * **`null` is not a fallback.** A projection is typed `NonNullable`, so the type
+ * level rejects `null` and an explicit `undefined` for every projected type that
+ * does not admit them — which is every structured one. This guards the same
+ * thing for callers with no types: without it a `null` fallback on an
+ * object-typed field rendered as `""`, a branch cel-go rejects outright and
+ * cel-js quietly returns, which is exactly the class of bug the fallback typing
+ * exists to prevent. `null` is not usable even where cel-go admits it against a
+ * message type, because the engines disagree on it.
+ */
+function projectionFallback(helperName: string, fallback: readonly unknown[]): ProjectionFallback {
+  const [given] = fallback;
+  if (given === null) {
+    throw new TypeKroError(
+      `${helperName}() fallback cannot be null. The projection is typed as the field it ` +
+        'projects and cel-go rejects a ternary whose branches disagree, so pass a value of ' +
+        'that type instead: an object or array literal for a structured field, or a ' +
+        'KubernetesRef or CEL expression of the projected type.',
+      'CEL_INVALID_INPUT'
+    );
+  }
+
+  const value = defaultedFallback(fallback);
+  const cel = celValueForTernary(value);
+  const widen = isStructuredLiteral(value);
+  return { cel, branch: widen ? (expression) => `dyn(${expression})` : (expression) => expression };
+}
+
+/**
+ * Project the first entry of an optional nested list that actually carries a
+ * field, in the one CEL form both engines accept.
+ *
+ * ## Why this helper exists
+ *
+ * An optional nested list — `service.status.loadBalancer.ingress`,
+ * `helmRelease.status.history` — is absent until a controller fills it in, and
+ * the two CEL engines TypeKro emits for disagree about how to guard it:
+ *
+ * - **`has()` on an index expression** (`has(list[0].field)`) is rejected by
+ *   cel-js: "has() does not support atomic expressions".
+ * - **`"field" in list[0]`** is rejected by cel-go under KRO's type env, which
+ *   types a list entry as a message rather than a map.
+ * - **A `has()` guard on the *right* of `&&`** (`size(list) > 0 && has(list)`)
+ *   is absorbed by cel-go but propagates in cel-js, which evaluates operands
+ *   left to right.
+ *
+ * The form both engines accept is `list.filter(entry, has(entry.field))` inside
+ * a **lazy ternary**, which is exactly what this helper emits:
+ *
+ * ```
+ * has(a.status) && has(a.status.list)
+ *   ? (size(<matching>) > 0 ? <matching>[0].<field> : <fallback>)
+ *   : <fallback>
+ * ```
+ *
+ * ## Selecting the list
+ *
+ * `list` is a list-typed field read off a resource or schema proxy, which gives
+ * this helper the element type and lets `field` be checked against the element's
+ * own keys — `Cel.firstWhereHas(service.status.loadBalancer.ingress, 'hostnmae')`
+ * is a compile error rather than a status field that is permanently `''`. Where
+ * no proxy is in scope, name the path with {@link unsafeListPath}.
+ *
+ * @param list The list to read, selected from a resource or schema proxy.
+ * @param field The field an entry must carry to be selected. Must be a key of
+ *   the list's element type.
+ * @param fallback Value used when the list is absent, empty, or has no entry
+ *   carrying `field`. Has the type of the projected field — both because the
+ *   projection is typed as that field, and because cel-go rejects a ternary
+ *   whose branches disagree. Defaults to the empty string only where that field
+ *   type admits `''`; elsewhere it is required, structured fields included — an
+ *   object- or list-typed field takes an object or array literal, a
+ *   `KubernetesRef`, or a CEL expression of that type. See
+ *   {@link CelFallbackArgs} and {@link projectionFallback}.
+ *
+ * @example
+ * ```typescript
+ * // First ingress entry that reports a hostname, or '' while none does.
+ * hostname: Cel.firstWhereHas(service.status.loadBalancer.ingress, 'hostname')
+ *
+ * // Naming a graph resource by id, as bootstrap compositions do.
+ * version: Cel.firstWhereHas(
+ *   Cel.unsafeListPath<{ chartVersion: string }>('release.status.history'),
+ *   'chartVersion'
+ * )
+ * ```
+ */
+function firstWhereHas<TElement extends object, TField extends Extract<keyof TElement, string>>(
+  list: CelListSelector<TElement>,
+  field: TField,
+  ...fallback: CelFallbackArgs<NonNullable<TElement[TField]>>
+): CelFieldProjection<TElement, TField> {
+  if (!/^[A-Za-z_$][\w$]*$/.test(field)) {
+    throw new TypeKroError(
+      `Cel.firstWhereHas() field must be a simple CEL identifier, received '${field}'.`,
+      'CEL_INVALID_INPUT'
+    );
+  }
+  const path = celListPath(list, 'Cel.firstWhereHas');
+  const matching = `${path}.filter(entry, has(entry.${field}))`;
+  const guard = chainedHasGuard(path) ?? `has(${path})`;
+  const { cel, branch } = projectionFallback('Cel.firstWhereHas', fallback);
+  const projected = branch(`${matching}[0].${field}`);
+  const otherwise = branch(cel);
+
+  return {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression: `${guard} ? (size(${matching}) > 0 ? ${projected} : ${otherwise}) : ${otherwise}`,
+  } as CelFieldProjection<TElement, TField>;
+}
+
+/**
+ * First entry of an optional nested list of scalars, with the same
+ * dual-dialect-safe guard as {@link firstWhereHas}.
+ *
+ * Use this when list entries are plain values (`status.endpoints.secure` is a
+ * list of URLs) and there is therefore no field to filter on. Every hop of the
+ * path is guarded, so an absent intermediate object yields the fallback instead
+ * of the cel-js "Identifier not found" error that a single `has()` on the full
+ * path produces.
+ *
+ * As with {@link firstWhereHas}, the list is selected from a resource or schema
+ * proxy; a hand-written path has to go through {@link unsafeListPath}.
+ *
+ * @param list The list to read, selected from a resource or schema proxy.
+ * @param fallback Value used when the list is absent or empty. Has the element
+ *   type, and is optional only where that type admits `''` — so a list of
+ *   objects requires an object fallback. See {@link CelFallbackArgs} and
+ *   {@link projectionFallback}.
+ *
+ * @example
+ * ```typescript
+ * endpoint: Cel.firstOf(Cel.unsafeListPath<string>('objectStore.status.endpoints.secure'))
+ * ```
+ */
+function firstOf<TElement>(
+  list: CelListSelector<TElement>,
+  ...fallback: CelFallbackArgs<NonNullable<TElement>>
+): CelEntryProjection<TElement> {
+  const path = celListPath(list, 'Cel.firstOf');
+  const guard = chainedHasGuard(path) ?? `has(${path})`;
+  const { cel, branch } = projectionFallback('Cel.firstOf', fallback);
+  const projected = branch(`${path}[0]`);
+  const otherwise = branch(cel);
+
+  return {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression: `${guard} ? (size(${path}) > 0 ? ${projected} : ${otherwise}) : ${otherwise}`,
+  } as CelEntryProjection<TElement>;
+}
+
+/** One entry of a Service's `status.loadBalancer.ingress`. */
+export interface LoadBalancerIngressEntry {
+  readonly ip?: string | undefined;
+  readonly hostname?: string | undefined;
+}
+
+/**
+ * A Service whose `status.loadBalancer.ingress` can be projected.
+ *
+ * The Service itself, selected from the graph — not its resource id. Where only
+ * the id is in scope, project the ingress list directly with
+ * {@link firstWhereHas} over a {@link unsafeListPath}.
+ */
+export interface LoadBalancerServiceRef {
+  readonly status: {
+    readonly loadBalancer: {
+      readonly ingress?: readonly LoadBalancerIngressEntry[] | undefined;
+    };
+  };
+}
+
+/**
+ * Project a Service's load balancer address in the one CEL form both engines
+ * accept.
+ *
+ * A `LoadBalancer` Service reports its address as `status.loadBalancer.ingress`,
+ * a list that does not exist until the cloud provider assigns one, and whose
+ * entries carry `ip` **or** `hostname` depending on the provider. This is
+ * {@link firstWhereHas} bound to that shape, so factories stop hand-rolling the
+ * guard.
+ *
+ * Yields the fallback (default `''`) while the Service has no address, and for
+ * the field the provider does not report.
+ *
+ * @param service The Service resource, selected from the graph.
+ * @param field `'ip'` for L4 load balancers, `'hostname'` for name-based ones.
+ * @param fallback Value while no matching entry exists. Defaults to `''`.
+ *
+ * @example
+ * ```typescript
+ * loadBalancer: {
+ *   ip: Cel.loadBalancerAddress(gatewayService, 'ip'),
+ *   hostname: Cel.loadBalancerAddress(gatewayService, 'hostname'),
+ * }
+ * ```
+ */
+function loadBalancerAddress(
+  service: LoadBalancerServiceRef,
+  field: 'ip' | 'hostname' = 'ip',
+  fallback: RefOrValue<string> = ''
+): CelExpression<string> & string {
+  return firstWhereHas<LoadBalancerIngressEntry, 'ip' | 'hostname'>(
+    service.status.loadBalancer.ingress as CelListSelector<LoadBalancerIngressEntry>,
+    field,
+    fallback
+  ) as CelExpression<string> & string;
+}
 
 /**
  * Creates a mixed string template that combines literal strings with CEL expressions
@@ -647,6 +1078,20 @@ export const Cel = {
   concat,
   has,
   not,
+  /**
+   * First entry of an optional nested list that carries `field`, in the one
+   * guard form cel-js and cel-go both accept.
+   */
+  firstWhereHas,
+  /** First entry of an optional nested list of scalars, dual-dialect safe. */
+  firstOf,
+  /**
+   * Name a list by its CEL path where no proxy is in scope. Nothing about the
+   * path is checked — prefer selecting the field off a resource or schema proxy.
+   */
+  unsafeListPath,
+  /** A Service's load balancer `ip`/`hostname`, dual-dialect safe. */
+  loadBalancerAddress,
   /** Tagged template literal for CEL expressions. Alias: standalone `cel` export. */
   tag: cel,
 
