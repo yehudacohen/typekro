@@ -9,6 +9,152 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ClickHouseSchema`, an Alchemy v2 resource (`TypeKro.ClickHouseSchema`) that applies
+  ClickHouse DDL to a cluster the `clickhouse`/`clickstack` factories deployed, at
+  converge time, with state. Nothing in TypeKro previously ran a deployment's own
+  schema: the factories create a server, and `clickStackStorage`'s retention CronJob
+  runs DDL from inside the cluster on a timer over tables TypeKro does not own.
+  `clickHouseSchema(id, props)` covers the other case — databases, `S3Queue` tables,
+  materialized views and application tables that belong to the deployment — as a
+  first-class Alchemy resource, so it is diffable, it fails the deploy rather than a
+  Job log, and it can be ordered after the instance's readiness like any other
+  dependency. Merge `clickHouseSchemaProvider` into the runtime's providers alongside
+  `kroProvider`.
+
+  Statements are the author's contract: each must be individually idempotent
+  (`CREATE ... IF NOT EXISTS`, `CREATE OR REPLACE`, `ALTER ... IF EXISTS`), because a
+  changed fingerprint re-runs the WHOLE ordered list. The fingerprint — sha256 over the
+  statements, the settings, the resolved client configuration and the execution model —
+  is what makes an unchanged schema a true no-op. It is recorded only after the last
+  statement succeeds, so a converge that dies partway re-runs from the beginning. Three
+  things are compared outside the fingerprint, because they describe WHERE the DDL landed
+  rather than what it was: the `target`, the live pod set, and the cluster.
+
+  DDL is made cluster-wide EXPLICITLY, through a validated `execution` model, because
+  standard ClickHouse DDL is server-local: a converge that touched one pod of a
+  multi-replica deployment would report success while the other servers had no schema,
+  and then no-op forever on the fingerprint. `{ mode: 'fanout' }` (the default) runs the
+  ordered list against every server pod matching the selector and records the pod set in
+  state as `{ name, uid }` pairs, so a scale-out, a removed replica, or a pod REPLACED
+  under the same name re-applies even though the statements did not change; a
+  single-replica installation is a one-pod fanout, so the default is also correct there.
+  The UID is the identity, not the name: a StatefulSet replica that is deleted and
+  recreated (a drain, a template change) comes back under the same name with an empty
+  disk, which a recorded set of names cannot tell apart from the pod that was there
+  before. `metadata.uid` identifies the pod OBJECT and is never reused, so a new UID
+  re-applies and an unchanged one does not — correctly, because a pod object that survived
+  kept its PersistentVolume (and the schema with it) or its replicated metadata in Keeper.
+  `podNames` is kept alongside `pods` for compatibility. `fanout` is ALL OR NOTHING: the whole matching set is enumerated first
+  (pods carrying a `deletionTimestamp`, and pods in a terminal phase, are excluded — they
+  can never become Ready again), every pod in it must become Ready within
+  `waitForPod.timeoutMs` before a single statement is executed, and a matching pod without
+  the requested container fails the converge immediately, naming it. A StatefulSet
+  mid-rollout therefore makes the resource wait — and then fail — rather than fingerprint
+  an apply that only reached one replica; on a large cluster where some replica is almost
+  always rolling, `onCluster` is the mode to use. The recorded set is always the one the
+  statements ACTUALLY reached rather than the set that was live when the run finished, so
+  a replica that appears mid-apply is never claimed as covered — and never left behind
+  either: a `fanout` apply RECONCILES UNTIL THE LIVE SET IS COVERED. It selects the
+  complete Ready set, applies the ordered list to every pod not yet applied to in this run,
+  re-lists, applies to whatever appeared (by name and UID), and repeats until ONE EXIT
+  PREDICATE holds — the last re-list observed a NON-EMPTY set, every pod of it was applied
+  to by this run (by name and UID), and it matched the observation before it. All three
+  parts are load-bearing. Without the first, "no pod is uncovered" is vacuously true of the
+  empty set, so a run whose only pod disappeared between the exec and the re-list recorded
+  `pods: []` as a success — and during a single-replica StatefulSet replacement that empty
+  window sits exactly between the old pod going away and its SAME-NAMED successor arriving,
+  leaving the successor (a new pod object, with an empty disk) unapplied behind a
+  fingerprint that said the work was done. Without the third, a single snapshot cannot tell
+  a settled set from one still moving: a pod that vanished mid-pass leaves every remaining
+  pod covered while the set itself is mid-change. An empty set is therefore never
+  convergence; it is waited out on the SAME `waitForPod` budget as the readiness wait, and
+  a failure names the race ("the matching set became empty after N pod(s) were applied; a
+  same-named successor would be unapplied") rather than the "no pod matched the selector"
+  of a selector that never matched anything. Pods that disappeared between passes are
+  dropped from the recorded set. A settled cluster still costs exactly one pass — the
+  selection's own list and the re-list are the two consecutive observations. Two bounds stop
+  a churning cluster looping forever — `maxReconcilePasses` (default 3) and the overall
+  `waitForPod.timeoutMs`, spent ACROSS the passes rather than renewed by each one — and
+  hitting either before the predicate holds FAILS the converge, naming which part of it the
+  observation failed, so alchemy commits nothing and the next converge starts over. It never
+  returns success with an uncovered pod and never records an empty set; recording an
+  uncovered pod and merely warning left it unapplied until some future deployment happened
+  to change the fingerprint. `maxReconcilePasses` is not part of
+  the fingerprint — it says how the apply is driven, not what is applied — and is ignored
+  under `onCluster`, which has no coverage to reconcile. `{ mode: 'onCluster', cluster }` runs the statements once and requires EVERY
+  statement to carry an explicit `ON CLUSTER <cluster>` clause naming that cluster —
+  matched with a ClickHouse-aware lexer, so quoting, case and string literals are handled.
+  Nothing is inferred from a statement's shape: cluster-wideness is a property of the DDL
+  TARGET, and a check keyed on a statement's references instead would wave through
+  `CREATE TABLE events AS analytics.source`, which creates `events` locally. A statement
+  that carries no clause is rejected at declaration time, naming its index, and TypeKro
+  never rewrites the author's SQL to make the promise true. Statements with no
+  cluster-wide form (`SET`, `USE`, a single-node `SYSTEM …`, `INSERT`) belong under
+  `fanout`, which reaches every server itself. See
+  https://clickhouse.com/docs/sql-reference/distributed-ddl.
+
+  State also records a credential-free identity of the CLUSTER the statements reached —
+  sha256 over the current context's cluster name, server URL and CA material, reusing the
+  same `clusterIdentity` derivation the per-cluster API-capability cache keys on — and
+  surfaces it as the `clusterId` output. Namespace, selector and container are just
+  strings that a second cluster answers to identically, so without it, re-pointing a
+  resource at another cluster matched the recorded target, matched the fingerprint, and
+  applied nothing there.
+
+  `onDelete` defaults to `retain` and does not reach the cluster at all on delete — a
+  schema resource must never drop data because a stack was torn down. `run` executes an
+  explicit `deleteStatements` list and nothing else; `run` without it, and
+  `deleteStatements` under `retain`, are both rejected at declaration time rather than
+  silently doing nothing.
+
+  A plaintext password is not representable: both the config object and its `client`
+  object reject undeclared keys, so `password` fails validation instead of being
+  persisted to Alchemy state, and a misunderstood option fails loudly instead of being
+  silently dropped while the author believes they configured something. The
+  password is read inside the pod from the container's own environment
+  (`--password "${CLICKHOUSE_PASSWORD:-}"` under `sh -c`, the variable name
+  configurable via `client.passwordEnv`), matching what the retention CronJob and
+  `clickHouseS3BackupCronJob` already set. Statements travel over the Kubernetes API
+  server's `pods/exec` subresource — no port-forward, no exposed native port, no network
+  path from the runner to the pod — one statement per `clickhouse-client` invocation, fed
+  on stdin so no SQL appears in the container's argv. One invocation per statement rather
+  than a single `--multiquery` batch is what makes error attribution by statement INDEX
+  possible. `ClickHouseSchemaError` carries that index, the resource's own alchemy id, the
+  pod it failed on and ClickHouse's error code and exception class — and never the
+  statement text.
+
+  Redaction does not try to filter credentials out of server output by keyword, because
+  the case that matters has no keyword to match: ClickHouse echoes a bad definition back
+  verbatim, and a positional `S3('https://…', '<key id>', '<secret>', 'CSV')` names none
+  of its arguments. Instead, the error code and exception class are parsed out of the raw
+  output first, and the retained message is redacted against the SUBMITTED statement —
+  the statement text itself, every single-quoted literal it contains, and every value
+  following `PASSWORD`/`IDENTIFIED BY`/`access_key_id`/`secret_access_key`/
+  `aws_access_key_id`/`aws_secret_access_key`/`token` are replaced with `<redacted>`
+  wherever they appear. Each literal is redacted in EVERY spelling it could be echoed
+  in, longest first — the decoded value, the raw source slice between the quotes, and the
+  value re-escaped both ways ClickHouse accepts (`\'` and `''`) — because a credential
+  containing a quote is one secret with several spellings and the server frequently quotes
+  back the text it was given rather than the value it decoded. Decoding and re-escaping both
+  run off ONE table, ClickHouse's own
+  (https://clickhouse.com/docs/sql-reference/syntax#string): `\xHH`, `\N`, `\a`, `\b`, `\e`,
+  `\f`, `\n`, `\r`, `\t`, `\v`, `\0`, `\\`, `\'`, `\"`, `` \` ``, `\/`, `\=`, and for
+  anything else "the backslash loses its special meaning i.e. it is interpreted literally",
+  so `\z` stays two characters. A decoder that dropped every backslash instead would decode
+  `\n` to the letter `n`, extracting a credential containing a newline in a spelling the
+  server never emits and leaving the real one in the message. The keyword line filter
+  remains as a second layer, and what survives is capped at 2 KiB so a runaway echo cannot
+  be carried into Alchemy state.
+
+  Only transport failures (websocket errors, resets, timeouts) are retried; a SQL error
+  never is. Pods must be Ready before the first exec, with a bounded
+  `waitForPod.timeoutMs`; under `onCluster`, EVERY Ready pod is considered when choosing
+  the initiator, so a Ready pod from an older template without the requested container no
+  longer causes the converge to reject the candidates behind it. The exec transport is an injectable
+  `ClickHouseExecutor` interface with a default `@kubernetes/client-node` implementation.
+  The converging identity needs `list` on `pods` and `create` on `pods/exec` in the target
+  namespace.
+
 - ClickHouse clusters may now keep their data in S3-compatible object storage
   with only a bounded local read-through cache on the node. `makeClickHouseCluster`
   takes a build-time `storage` topology whose `mode: 's3'` branch compiles a

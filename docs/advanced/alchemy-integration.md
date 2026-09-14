@@ -203,6 +203,24 @@ Use a secured Alchemy state backend regardless: state still contains non-secret 
 
 > **Upgrade note:** Alchemy state written by older TypeKro releases may already contain inline static kubeconfig credentials. The current provider rejects that legacy state rather than silently continuing to persist or consume it. Before upgrading, reconcile affected declarations with a default/file source or named bindings while the previous release is still available, or destroy them with the previous release. A state-driven delete that has only rejected legacy credentials fails closed; TypeKro will not guess a cluster or copy those bytes into the new contract.
 
+## Beyond Kubernetes objects: ClickHouseSchema
+
+Not everything a converge has to do is an `apply`. Creating a database, an `S3Queue` table or a
+materialized view on a ClickHouse cluster the `clickhouse`/`clickstack` factories deployed is a
+statement run against a live server — a converge-time, stateful, ordered operation that belongs in
+the same dependency graph as the instance it runs against, ordered after it.
+
+`ClickHouseSchema` is that resource: its own Alchemy v2 resource type
+(`TypeKro.ClickHouseSchema`), with its own provider `Layer` to merge alongside `kroProvider`.
+
+```typescript
+import { clickHouseSchema, clickHouseSchemaProvider } from 'typekro/alchemy';
+```
+
+See [ClickHouse Schema](/api/alchemy/clickhouse-schema) for the props, the idempotence contract,
+`onDelete` semantics, the `pods/exec` RBAC requirement, and a full
+`makeClickHouseCluster` → `KroResource` → `clickHouseSchema` example.
+
 ## Without Alchemy
 
 If you don't need Alchemy's state and lifecycle management, TypeKro deploys standalone — just call the factory directly:
