@@ -69,7 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path from the runner to the pod — one statement per `clickhouse-client` invocation, fed
   on stdin so no SQL appears in the container's argv. One invocation per statement rather
   than a single `--multiquery` batch is what makes error attribution by statement INDEX
-  possible. `ClickHouseSchemaError` carries that index plus ClickHouse's own error code,
+  possible. `ClickHouseSchemaError` carries that index, the resource's own alchemy id and
+  the pod it failed on, plus ClickHouse's own error code —
   and never the statement text: every line of server output matching
   `password`/`secret`/`aws_secret`/`access_key`/`credential` is redacted first. Only
   transport failures (websocket errors, resets, timeouts) are retried; a SQL error never

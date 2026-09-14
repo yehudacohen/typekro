@@ -107,19 +107,24 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
     // identity, so there is nothing for `alchemy nuke` to enumerate. Same stance as
     // `kroProvider`.
     list: () => Effect.succeed([]),
-    reconcile: Effect.fn(function* ({ news, output }) {
+    // `id` is the author's own name for THIS schema — the thing that distinguishes
+    // `orders-schema` from `billing-schema` in an error. The provider TYPE is the same
+    // constant for every instance and says nothing, which is why it is not used here.
+    reconcile: Effect.fn(function* ({ id, news, output }) {
       return yield* Effect.tryPromise({
         try: async (abortSignal) => {
           const logger = getComponentLogger('alchemy-clickhouse-schema');
           const { executor, clusterId } = resolveTransport(news);
           if (!needsApply(news, output, clusterId)) {
             logger.debug('ClickHouse schema unchanged; verifying the server set', {
+              resourceId: id,
               fingerprint: output?.fingerprint,
               statementCount: news.statements.length,
               clusterId,
             });
           } else {
             logger.info('Applying ClickHouse schema', {
+              resourceId: id,
               namespace: news.target.namespace,
               statementCount: news.statements.length,
               fingerprint: computeFingerprint(news),
@@ -128,20 +133,14 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
             });
           }
           return await applyClickHouseSchema(
-            {
-              executor,
-              config: news,
-              resourceId: CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
-              clusterId,
-              abortSignal,
-            },
+            { executor, config: news, resourceId: id, clusterId, abortSignal },
             output
           );
         },
         catch: ensureError,
       });
     }),
-    delete: Effect.fn(function* ({ olds }) {
+    delete: Effect.fn(function* ({ id, olds }) {
       // `retain` (the default) must not even reach the cluster, so the missing-spec case
       // below is a no-op rather than a guess: reconstructing an unknown `onDelete` from
       // persisted output could only ever guess `retain`, which is what happens anyway.
@@ -152,7 +151,7 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
           return deleteClickHouseSchema({
             executor,
             config: olds,
-            resourceId: CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
+            resourceId: id,
             clusterId,
             abortSignal,
           });

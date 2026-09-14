@@ -690,6 +690,20 @@ describe('ClickHouseSchema — error handling', () => {
     expect(execCalls).toHaveLength(2);
   });
 
+  it('attributes the failure to the LOGICAL resource id, not the provider type', async () => {
+    const { executor } = fakeExecutor({
+      results: [{ stdout: '', stderr: 'Code: 60. DB::Exception: Unknown table', exitCode: 60 }],
+    });
+    const error = (await applyClickHouseSchema(
+      { executor, config: validConfig(), resourceId: 'billing-schema', deps: fakeDeps().deps },
+      undefined
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error.resourceId).toBe('billing-schema');
+    expect(error.message).toContain("'billing-schema'");
+    expect(error.message).not.toContain('TypeKro.ClickHouseSchema');
+  });
+
   it('names the pod a statement failed on', async () => {
     const { executor } = fakeExecutor({
       podPages: [[readyPod('chi-orders-0-1-0')]],

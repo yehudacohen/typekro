@@ -277,11 +277,14 @@ rules:
 
 ## Errors
 
-A failure raises `ClickHouseSchemaError` carrying `statementIndex`, the pod it failed on and,
-when the server produced one, ClickHouse's own `clickHouseCode`:
+A failure raises `ClickHouseSchemaError` carrying the **resource's own id** (`resourceId` — the
+name you gave *this* schema, so `orders-schema` and `billing-schema` are told apart), the
+`statementIndex`, the pod it failed on and, when the server produced one, ClickHouse's
+`clickHouseCode`:
 
 ```
-ClickHouseSchema: statement 3 failed on pod chi-orders-0-1-0 with ClickHouse code 62 (exit 62).
+ClickHouseSchema 'orders-schema': statement 3 failed on pod chi-orders-0-1-0
+with ClickHouse code 62 (exit 62).
 ```
 
 **The failing statement's text is never on the error** — only its index. Statements should not

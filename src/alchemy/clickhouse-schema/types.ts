@@ -387,6 +387,7 @@ export interface ClickHouseExecutor {
 export class ClickHouseSchemaError extends TypeKroError {
   constructor(
     message: string,
+    /** The alchemy resource `id` — the logical name the author gave THIS schema. */
     public readonly resourceId: string,
     /** Index into `statements` (or `deleteStatements`), or `undefined` outside statement execution. */
     public readonly statementIndex?: number,
