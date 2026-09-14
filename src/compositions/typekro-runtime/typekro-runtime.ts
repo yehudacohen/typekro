@@ -1,9 +1,18 @@
 import { kubernetesComposition } from '../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
+import {
+  DISABLE_LABEL_GUARD_ENV,
+  LABEL_GUARD_ALTERNATIVES,
+  LABEL_GUARD_API_VERSION_ENV,
+  type LabelPropagationGuardStatus,
+  resolveLabelPropagationGuardCapability,
+} from '../../core/kro/label-guard-capability.js';
+import { getComponentLogger } from '../../core/logging/index.js';
 import { Cel } from '../../core/references/cel.js';
 import { fixCRDSchemaForK8s133 } from '../../core/runtime-patches/crd-schema-fix.js';
 import { helmRelease } from '../../factories/helm/helm-release.js';
 import { helmRepository } from '../../factories/helm/helm-repository.js';
+import { labelPropagationGuard } from '../../factories/kubernetes/admission/label-propagation-guard.js';
 import { namespace } from '../../factories/kubernetes/core/namespace.js';
 import { clusterRole, clusterRoleBinding } from '../../factories/kubernetes/rbac/index.js';
 import { yamlFile } from '../../factories/kubernetes/yaml/yaml-file.js';
@@ -47,6 +56,14 @@ import {
  * });
  * ```
  */
+const logger = getComponentLogger('typekro-runtime-bootstrap');
+
+/**
+ * Namespace the KRO controller runs in. Fixed by the KRO Helm chart, which
+ * creates a ClusterRoleBinding that names `kro-system` explicitly.
+ */
+const KRO_NAMESPACE = 'kro-system';
+
 export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   // Use a specific stable Flux version by default to avoid schema validation issues
   // that can occur with 'latest' (e.g., 422 errors on CRD validation)
@@ -174,6 +191,69 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
         id: 'kroHelmRelease',
       });
 
+      // Always-on KRO label-propagation guard (#193).
+      //
+      // Installed here, not from each operator bootstrap, for three reasons:
+      // this composition installs KRO so it knows the controller's namespace
+      // and ServiceAccount exactly (the exemption is computed, not guessed);
+      // it is applied in direct mode outside any ApplySet, so a cluster-scoped
+      // policy needs no singleton() ownership handling; and coverage becomes
+      // the default for every operator installed afterwards instead of
+      // depending on each factory author remembering.
+      //
+      // There is no config option. The only escape hatch is the break-glass
+      // env var, read by resolveLabelPropagationGuardCapability.
+      //
+      // The group version is never assumed. This body runs twice: once when
+      // the composition is built (no cluster, so the guard is emitted only if
+      // TYPEKRO_LABEL_GUARD_API_VERSION pins it) and again when the direct
+      // deployment path re-executes it, by which time that path has resolved
+      // MutatingAdmissionPolicy against the target cluster. The graph that is
+      // actually applied therefore carries the served group version — or no
+      // guard at all on a cluster that does not serve the kind.
+      //
+      // Ordering against the KRO HelmRelease is not load-bearing: the
+      // exemption is a username string comparison, so a policy that exists
+      // before KRO's ServiceAccount does behaves identically.
+      const guardCapability = resolveLabelPropagationGuardCapability();
+      const guard =
+        guardCapability.status === 'active'
+          ? labelPropagationGuard({
+              kroNamespace: KRO_NAMESPACE,
+              apiVersion: guardCapability.apiVersion,
+            })
+          : undefined;
+
+      if (guardCapability.status === 'unavailable') {
+        logger.warn(
+          `Skipping the KRO label-propagation guard: ${guardCapability.reason}. ` +
+            `Operators that copy the parent CR's labels onto their children will ` +
+            `have those children pruned by KRO's ApplySet. ${LABEL_GUARD_ALTERNATIVES}`,
+          {
+            disableEnvVar: DISABLE_LABEL_GUARD_ENV,
+            apiVersionEnvVar: LABEL_GUARD_API_VERSION_ENV,
+          }
+        );
+      }
+
+      // #188: a literal status leaf is accepted at serialization and then
+      // silently dropped by KRO, so both branches project from a live field of
+      // a resource that is guaranteed to be in the graph. `metadata.uid` is
+      // the field to use: it only exists once the API server has created the
+      // object, so `uid != ""` genuinely means "the policy is on the cluster",
+      // and unlike `metadata.name` it is not already concrete at build time.
+      // When the guard is skipped there is no policy to read, so the constant
+      // `unavailable` is projected from the KRO HelmRelease's uid instead.
+      const labelPropagationGuardStatus = guard
+        ? Cel.expr<LabelPropagationGuardStatus>(
+            guard.policy.metadata.uid,
+            ' != "" ? "active" : "unavailable"'
+          )
+        : Cel.expr<LabelPropagationGuardStatus>(
+            kroHelmRelease.metadata.uid,
+            ' == "" ? "active" : "unavailable"'
+          );
+
       // Use CEL expressions with actual HelmRelease conditions (Flux v2 pattern).
       // HelmReleaseStatus has a conditions array, not a phase field.
       // We use CEL .exists() to check for the Ready condition, matching the
@@ -191,6 +271,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
             '.exists(c, c.type == "Ready" && c.status == "True")'
           ),
         },
+        labelPropagationGuard: labelPropagationGuardStatus,
       };
     }
   );
@@ -210,7 +291,9 @@ function rewriteFluxNamespace<
   }
   if (Array.isArray(manifest.subjects)) {
     manifest.subjects = manifest.subjects.map((subject) =>
-      subject.namespace === DEFAULT_FLUX_NAMESPACE ? { ...subject, namespace: namespaceName } : subject
+      subject.namespace === DEFAULT_FLUX_NAMESPACE
+        ? { ...subject, namespace: namespaceName }
+        : subject
     );
   }
   return manifest;

@@ -26,6 +26,7 @@ import type {
   WebAppWithProcessingConfig,
   WebAppWithProcessingStatus,
 } from '../../../src/factories/webapp/types.js';
+import { assertNoForeignApplySetLabels } from '../../utils/kro-ownership-labels.js';
 import {
   createCoreV1ApiClient,
   createTestNamespace,
@@ -334,5 +335,21 @@ describe('WebAppWithProcessing KRO Mode', () => {
 
     // Ground-truth verification: all pods are actually Running and Ready
     await assertAllPodsHealthy(appNamespace, kubeConfig);
+
+    // #193: nothing the Valkey or CNPG operator created may carry KRO's
+    // ownership labels, or KRO's ApplySet pruner deletes it on every requeue.
+    //
+    // The Valkey workaround above (`cacheService` / `cacheConfigMap`
+    // pre-declared as graph nodes) hides two of those children from this
+    // sweep because KRO claims them itself — everything else the operator
+    // creates (the headless Service, the StatefulSet, its PVCs) is still
+    // covered here, and the guard is what makes them clean.
+    //
+    // TODO(#193): once the label-propagation guard is the floor on every
+    // supported cluster, drop the pre-declared cacheService/cacheConfigMap
+    // nodes from web-app-with-processing.ts and let this assertion cover
+    // them too. They still matter for clusters below Kubernetes 1.34.
+    const sweep = await assertNoForeignApplySetLabels(kubeConfig, appNamespace);
+    expect(sweep.kroApplied.length).toBeGreaterThan(0);
   }, 1500000);
 });

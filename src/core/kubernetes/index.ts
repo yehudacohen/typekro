@@ -10,6 +10,30 @@
 
 // API utilities
 export { KubernetesApi } from './api.js';
+export type {
+  ApiGroupDiscovery,
+  ApiGroupProbe,
+  ClusterCapabilityRequirement,
+  ClusterCapabilityResolution,
+  DiscoveryFailure,
+} from './api-capability.js';
+// Cluster API capability resolution — group versions are discovered, never assumed
+export {
+  CLUSTER_CAPABILITY_CACHE_MAX_ENTRIES,
+  CLUSTER_CAPABILITY_CACHE_TTL_MS,
+  CLUSTER_CAPABILITY_UNKNOWN_CACHE_TTL_MS,
+  clusterCapabilityCacheSize,
+  clusterIdentity,
+  getCachedClusterCapability,
+  getCurrentDeployTarget,
+  kubeConfigApiGroupDiscovery,
+  listDeployTimeCapabilities,
+  registerDeployTimeCapability,
+  resetClusterCapabilityCache,
+  resolveClusterCapability,
+  resolveDeployTimeCapabilities,
+  runWithDeployTarget,
+} from './api-capability.js';
 export {
   createBunCompatibleApiClient,
   createBunCompatibleApiextensionsV1Api,

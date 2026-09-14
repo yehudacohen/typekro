@@ -220,6 +220,32 @@ const stack = kubernetesComposition(definition, (spec) => {
 });
 ```
 
+### Label-Propagation Guard
+
+The runtime bootstrap also installs a cluster-scoped `MutatingAdmissionPolicy`
+that stops anything other than the Kro controller from introducing Kro's
+ownership labels on an object. Without it, an operator that copies the parent
+CR's label map onto its children feeds those children to Kro's ApplySet pruner,
+which deletes them on every requeue.
+
+There is no configuration option — the bootstrap reports
+`status.labelPropagationGuard: 'active' | 'unavailable'`, and
+`TYPEKRO_DISABLE_LABEL_GUARD=1` is the break-glass for a cluster where the
+policy misbehaves. The policy's group version is discovered from the target
+cluster at deploy time, never assumed: `v1beta1` on Kubernetes 1.34/1.35, `v1`
+from 1.36, and below 1.34 the API is not served, so the guard is skipped and
+reports `unavailable`. If discovery cannot reach the cluster at all — an
+unreachable API server, RBAC, a timeout — the guard is skipped too, but the
+warning says *discovery failed* rather than claiming the cluster is too old, and
+the failure is not cached as an answer. An offline `toYaml()` render has no
+cluster to ask and so leaves the guard out unless
+`TYPEKRO_LABEL_GUARD_API_VERSION` pins it. To build a graph for a known cluster
+outside a deployment, probe it and wrap the build:
+`withLabelPropagationGuardCapability(await probeLabelPropagationGuardSupport(kubeConfig), () => …)`
+— the cluster is always carried explicitly, never inherited from an earlier
+probe. See
+[Runtime Bootstrap](/api/kro/compositions/runtime#label-propagation-guard).
+
 ## YAML Generation
 
 Generate deterministic YAML for GitOps workflows. Works with ArgoCD, Flux, or any GitOps tool.

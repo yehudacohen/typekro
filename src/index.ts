@@ -179,6 +179,26 @@ export type {
 } from './core/aspects/types.js';
 // Imperative composition (define compositions with native TypeScript)
 export { kubernetesComposition } from './core/composition/imperative.js';
+// KRO ownership labels and the always-on label-propagation guard
+export {
+  DISABLE_LABEL_GUARD_ENV,
+  isKroOwnershipLabel,
+  KRO_OWNERSHIP_LABELS,
+  type KroOwnershipLabel,
+  LABEL_GUARD_ALTERNATIVES,
+  LABEL_GUARD_API_VERSION_ENV,
+  type LabelPropagationGuardCapability,
+  type LabelPropagationGuardStatus,
+  probeLabelPropagationGuardSupport,
+  resetLabelGuardCapabilityCache,
+  resolveLabelPropagationGuardCapability,
+  withLabelPropagationGuardCapability,
+} from './core/kro/index.js';
+export type {
+  DurableKubeConfigOptions,
+  KubeConfigCredentialBinding,
+  KubeConfigCredentialBindings,
+} from './core/kubernetes/client-provider.js';
 // Resource factory (used inside resource builders)
 export { createResource } from './core/proxy/create-resource.js';
 // CEL expression helpers (used in status builders)
@@ -220,11 +240,6 @@ export type {
 export type * from './core/types/index.js';
 export type { CelEvaluationContext } from './core/types/references.js';
 export { CelEvaluationError } from './core/types/references.js';
-export type {
-  DurableKubeConfigOptions,
-  KubeConfigCredentialBinding,
-  KubeConfigCredentialBindings,
-} from './core/kubernetes/client-provider.js';
 // Factory functions (all ecosystems)
 export * from './factories/index.js';
 // Factory-specific types
