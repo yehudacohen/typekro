@@ -21,7 +21,20 @@
 /** One lexical unit. Numbers and operators collapse into `punct` — nothing here reads them. */
 export type ClickHouseSqlToken =
   | { readonly kind: 'word'; readonly value: string }
-  | { readonly kind: 'quoted'; readonly value: string; readonly quote: "'" | '"' | '`' }
+  | {
+      readonly kind: 'quoted';
+      /** The DECODED value — what the server actually receives. */
+      readonly value: string;
+      /**
+       * The SOURCE slice between the quotes, escapes intact.
+       *
+       * Kept alongside the decoded value because ClickHouse echoes a bad fragment back in
+       * whichever spelling it feels like, and `pa\'ss` and `pa''ss` are the same secret as
+       * `pa'ss`. Redaction has to blank all of them; see {@link extractStatementSecrets}.
+       */
+      readonly raw: string;
+      readonly quote: "'" | '"' | '`';
+    }
   | { readonly kind: 'punct'; readonly value: string };
 
 const WORD_START = /[A-Za-z_]/;
@@ -32,7 +45,8 @@ const WORD_BODY = /[A-Za-z0-9_$]/;
  *
  * Comments (`--`, `#`, `/* … *\/`) are dropped. Quoted values are returned DECODED — the
  * doubling and backslash escapes ClickHouse accepts are resolved — because both callers
- * compare against the value the server sees, not the source spelling.
+ * compare against the value the server sees. The SOURCE slice is returned as well, because
+ * the server may echo back either spelling.
  */
 export function tokenizeClickHouseSql(statement: string): readonly ClickHouseSqlToken[] {
   const tokens: ClickHouseSqlToken[] = [];
@@ -61,6 +75,9 @@ export function tokenizeClickHouseSql(statement: string): readonly ClickHouseSql
       const quote = char as "'" | '"' | '`';
       let value = '';
       index += 1;
+      const start = index;
+      // An unterminated literal ends at the end of the statement, and its source slice with it.
+      let end = statement.length;
       while (index < statement.length) {
         const current = statement[index] as string;
         if (current === '\\' && index + 1 < statement.length) {
@@ -76,13 +93,14 @@ export function tokenizeClickHouseSql(statement: string): readonly ClickHouseSql
             index += 2;
             continue;
           }
+          end = index;
           index += 1;
           break;
         }
         value += current;
         index += 1;
       }
-      tokens.push({ kind: 'quoted', value, quote });
+      tokens.push({ kind: 'quoted', value, raw: statement.slice(start, end), quote });
       continue;
     }
     if (WORD_START.test(char)) {
@@ -202,27 +220,59 @@ const SECRET_KEYWORDS = new Set([
  */
 const MIN_SECRET_LENGTH = 3;
 
+/** `'` and `\` escaped C-style, the spelling `\'` comes from. */
+function backslashEscaped(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+}
+
+/** `'` doubled, the spelling `''` comes from. */
+function doubleQuoteEscaped(value: string): string {
+  return value.replaceAll("'", "''");
+}
+
 /**
- * Every value in the SUBMITTED statement that must not survive into a captured message.
+ * Every spelling of one literal that could appear in the server's output.
+ *
+ * A credential containing a quote or a backslash has TWO source spellings (`pa\'ss` and
+ * `pa''ss`) plus the decoded value (`pa'ss`), and ClickHouse echoes back whichever one it
+ * feels like — frequently the source form, since what it is complaining about is the text
+ * it was given. Redacting only the decoded value therefore leaves the escaped form of the
+ * secret sitting in the error. All of them are returned; for the overwhelmingly common
+ * literal that contains neither character they collapse to a single string.
+ */
+function secretForms(token: ClickHouseSqlToken | undefined): readonly string[] {
+  if (token === undefined || token.kind === 'punct') return [];
+  if (token.kind === 'word') return [token.value];
+  return [token.value, token.raw, backslashEscaped(token.value), doubleQuoteEscaped(token.value)];
+}
+
+/**
+ * Every value in the SUBMITTED statement that must not survive into a captured message,
+ * in every spelling it could be echoed in, LONGEST FIRST.
  *
  * Deliberately over-broad: EVERY single-quoted literal counts, not only the ones a
  * keyword introduces. That is the whole point — the case keyword matching misses is the
  * positional one, `S3('https://…', '<key id>', '<secret>', 'CSV')`, where nothing in the
  * text says which argument is the credential. Redacting a harmless literal costs a word
  * of an error message; leaking the other kind costs the key.
+ *
+ * Longest first so that replacing one form cannot leave a shorter form of the same secret
+ * stranded inside what is left of a longer one.
  */
 export function extractStatementSecrets(statement: string): readonly string[] {
   const tokens = tokenizeClickHouseSql(statement);
   const secrets = new Set<string>();
 
-  const add = (value: string | undefined) => {
-    if (value !== undefined && value.length >= MIN_SECRET_LENGTH) secrets.add(value);
+  const add = (values: readonly string[]) => {
+    for (const value of values) {
+      if (value.length >= MIN_SECRET_LENGTH) secrets.add(value);
+    }
   };
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token?.kind === 'quoted' && token.quote === "'") {
-      add(token.value);
+      add(secretForms(token));
       continue;
     }
     if (token?.kind !== 'word') continue;
@@ -243,8 +293,10 @@ export function extractStatementSecrets(statement: string): readonly string[] {
     ) {
       cursor += 1;
     }
-    add(identifierValue(tokens[cursor]));
+    add(secretForms(tokens[cursor]));
   }
 
-  return [...secrets];
+  return [...secrets].sort(
+    (left, right) => right.length - left.length || (left < right ? -1 : left > right ? 1 : 0)
+  );
 }

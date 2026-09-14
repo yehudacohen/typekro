@@ -1027,6 +1027,61 @@ describe('ClickHouseSchema — redaction', () => {
     expect(redacted).not.toContain('hunter2-not-a-real-password');
   });
 
+  describe('a credential whose value contains a quote', () => {
+    // One secret, three spellings. ClickHouse quotes back whichever it feels like — often
+    // the source text, since that is what it is complaining about. The value deliberately
+    // contains none of the words the line filter matches, so these tests exercise the
+    // literal replacement rather than the keyword layer behind it.
+    const DECODED = "hunter2'x-zx9qv-fake";
+    const BACKSLASH_SOURCE = "hunter2\\'x-zx9qv-fake";
+    const DOUBLED_SOURCE = "hunter2''x-zx9qv-fake";
+    const echoOf = (value: string) =>
+      `Code: 516. DB::Exception: Authentication failed for user reporting: ${value}`;
+
+    const backslashStatement = `CREATE USER reporting IDENTIFIED BY '${BACKSLASH_SOURCE}'`;
+    const doubledStatement = `CREATE USER reporting IDENTIFIED BY '${DOUBLED_SOURCE}'`;
+
+    it('collects the decoded value AND both escaped source spellings', () => {
+      const secrets = extractStatementSecrets(backslashStatement);
+      expect(secrets).toContain(DECODED);
+      expect(secrets).toContain(BACKSLASH_SOURCE);
+      expect(secrets).toContain(DOUBLED_SOURCE);
+    });
+
+    it("redacts a \\' secret echoed back in its RAW source form", () => {
+      const redacted = redactClickHouseOutput(echoOf(BACKSLASH_SOURCE), backslashStatement);
+      expect(redacted).not.toContain(BACKSLASH_SOURCE);
+      expect(redacted).not.toContain(DECODED);
+      expect(redacted).toContain('Code: 516');
+    });
+
+    it("redacts a \\' secret echoed back DECODED", () => {
+      const redacted = redactClickHouseOutput(echoOf(DECODED), backslashStatement);
+      expect(redacted).not.toContain(DECODED);
+    });
+
+    it("redacts a '' secret in both forms as well", () => {
+      for (const echo of [DOUBLED_SOURCE, DECODED, BACKSLASH_SOURCE]) {
+        const redacted = redactClickHouseOutput(echoOf(echo), doubledStatement);
+        expect(redacted).not.toContain(echo);
+        expect(redacted).not.toContain(DECODED);
+      }
+    });
+
+    it('matches the credential keyword case-insensitively', () => {
+      const statement = `CREATE USER reporting Identified By '${BACKSLASH_SOURCE}'`;
+      const secrets = extractStatementSecrets(statement);
+      expect(secrets).toContain(DECODED);
+      expect(secrets).toContain(BACKSLASH_SOURCE);
+    });
+
+    it('returns the forms longest first, so no form is stranded inside another', () => {
+      const secrets = extractStatementSecrets(backslashStatement);
+      const lengths = secrets.map((secret) => secret.length);
+      expect([...lengths].sort((left, right) => right - left)).toEqual(lengths);
+    });
+  });
+
   it('caps what it retains, so a runaway echo cannot be carried into state', () => {
     const echo = `Code: 47. DB::Exception: ${'x'.repeat(50_000)}`;
     const redacted = redactClickHouseOutput(echo);

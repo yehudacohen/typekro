@@ -97,8 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the statement text itself, every single-quoted literal it contains, and every value
   following `PASSWORD`/`IDENTIFIED BY`/`access_key_id`/`secret_access_key`/
   `aws_access_key_id`/`aws_secret_access_key`/`token` are replaced with `<redacted>`
-  wherever they appear. The keyword line filter remains as a second layer, and what
-  survives is capped at 2 KiB so a runaway echo cannot be carried into Alchemy state.
+  wherever they appear. Each literal is redacted in EVERY spelling it could be echoed
+  in, longest first — the decoded value, the raw source slice between the quotes, and the
+  value re-escaped both ways ClickHouse accepts (`\'` and `''`) — because a credential
+  containing a quote is one secret with several spellings and the server frequently quotes
+  back the text it was given rather than the value it decoded. The keyword line filter
+  remains as a second layer, and what survives is capped at 2 KiB so a runaway echo cannot
+  be carried into Alchemy state.
 
   Only transport failures (websocket errors, resets, timeouts) are retried; a SQL error
   never is. Pods must be Ready before the first exec, with a bounded

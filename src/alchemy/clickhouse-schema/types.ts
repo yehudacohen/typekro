@@ -483,7 +483,11 @@ const TRUNCATION_MARKER = '… [truncated]';
  *    follows `PASSWORD` / `IDENTIFIED BY` / `access_key_id` / `secret_access_key` /
  *    `aws_access_key_id` / `aws_secret_access_key` / `token` — is replaced with
  *    `<redacted>` wherever it appears. This is positional, so it catches the arguments
- *    keyword matching cannot name.
+ *    keyword matching cannot name. Each literal is redacted in EVERY spelling it could be
+ *    echoed in, longest first: the decoded value, the raw source slice between the quotes,
+ *    and the value re-escaped both ways ClickHouse accepts (`\'` and `''`). A credential
+ *    containing a quote is one secret with several spellings, and the server frequently
+ *    quotes back the one it was given rather than the one it decoded.
  * 3. The keyword line filter runs as a second layer, for text the statement did not
  *    account for.
  * 4. The result is capped at {@link MAX_RETAINED_DETAIL_CHARS}.

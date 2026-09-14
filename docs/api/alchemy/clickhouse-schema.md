@@ -340,6 +340,21 @@ identifies the failure, and treat every value the submitted statement contained 
    `aws_secret_access_key` / `token` — is replaced with `<redacted>` wherever it appears. This is
    positional, so it catches the arguments keyword matching cannot name. Redacting a harmless
    literal costs a word of an error message; leaking the other kind costs the key.
+
+   Each literal is redacted in **every spelling it could be echoed in**, longest first: the
+   decoded value, the raw source slice between the quotes, and the value re-escaped both ways
+   ClickHouse accepts. A credential containing a quote is one secret with three spellings —
+
+   | | |
+   | --- | --- |
+   | decoded | `pa'ss` |
+   | source, C-style | `pa\'ss` |
+   | source, doubled | `pa''ss` |
+
+   — and the server frequently quotes back the text it was *given* rather than the value it
+   decoded, so redacting only the decoded form leaves the credential in the message. For a
+   literal containing neither a quote nor a backslash, which is nearly all of them, the three
+   spellings are the same string and nothing changes.
 4. The **keyword line filter** (`password` / `secret` / `aws_secret` / `access_key` /
    `credential` / `token` → `[redacted]`) runs as a second layer, for text the statement did not
    account for.
