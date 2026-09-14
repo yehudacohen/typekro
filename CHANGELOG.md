@@ -51,7 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `password`/`secret`/`aws_secret`/`access_key`/`credential` is redacted first. Only
   transport failures (websocket errors, resets, timeouts) are retried; a SQL error never
   is. The chosen pod must be Ready before the first exec, with a bounded
-  `waitForPod.timeoutMs`. The exec transport is an injectable `ClickHouseExecutor`
+  `waitForPod.timeoutMs`; EVERY Ready pod is considered when choosing where to execute, so
+  a Ready pod from an older template without the requested container does not cause the
+  converge to reject the candidates behind it. The exec transport is an injectable `ClickHouseExecutor`
   interface with a default `@kubernetes/client-node` implementation. The converging
   identity needs `list` on `pods` and `create` on `pods/exec` in the target namespace.
 

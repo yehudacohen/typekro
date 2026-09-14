@@ -148,13 +148,28 @@ export function needsApply(
 }
 
 /**
- * Poll until a Ready pod matching the selector exists, or the budget runs out.
+ * A pod whose container list is empty is a pod the transport could not describe, not a
+ * pod without containers; exec'ing into it and letting the API server object is a better
+ * failure than refusing it here on missing information.
+ */
+function hasContainer(pod: ClickHousePodSummary, container: string): boolean {
+  return pod.containers.length === 0 || pod.containers.includes(container);
+}
+
+/**
+ * Poll until a usable Ready pod matching the selector exists, or the budget runs out.
  *
  * A ClickHouse server accepts connections only once it is Ready, and a CHI rollout has
  * a window where pods exist but are still replaying logs — exec'ing then produces a
  * connection-refused that looks like a SQL failure. Waiting for readiness first is what
  * makes "ordered after the instance is ready" true in practice as well as in the
  * dependency graph.
+ *
+ * EVERY Ready pod is considered, not just the first. A CHI rollout can leave a Ready pod
+ * whose container set does not match — a sidecar-injected replica, a pod from an older
+ * template — and rejecting the whole converge because the FIRST Ready pod happened to be
+ * that one throws away perfectly good candidates standing right behind it. Candidates are
+ * ordered by name so the choice is stable across converges.
  */
 export async function selectReadyPod(
   executor: ClickHouseExecutor,
@@ -175,16 +190,19 @@ export async function selectReadyPod(
       abortSignal
     );
     lastSeen = pods.length;
-    const ready = pods.find((pod) => pod.ready);
-    if (ready) {
-      if (ready.containers.length > 0 && !ready.containers.includes(container)) {
-        throw new ClickHouseSchemaError(
-          `ClickHouseSchema '${resourceId}': pod ${config.target.namespace}/${ready.name} has no ` +
-            `container '${container}' (has: ${ready.containers.join(', ')}). Set target.container.`,
-          resourceId
-        );
-      }
-      return ready;
+    const ready = [...pods]
+      .filter((pod) => pod.ready)
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    const usable = ready.find((pod) => hasContainer(pod, container));
+    if (usable) return usable;
+    if (ready.length > 0) {
+      throw new ClickHouseSchemaError(
+        `ClickHouseSchema '${resourceId}': no Ready pod in namespace ` +
+          `'${config.target.namespace}' has a container '${container}' (` +
+          `${ready.map((pod) => `${pod.name}: ${pod.containers.join(', ')}`).join('; ')}). ` +
+          `Set target.container.`,
+        resourceId
+      );
     }
     if (deps.now() >= deadline) {
       throw new ClickHouseSchemaError(

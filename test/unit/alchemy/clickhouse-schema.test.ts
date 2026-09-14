@@ -497,9 +497,30 @@ describe('ClickHouseSchema — pod selection', () => {
     expect(error.message).toContain('none were Ready');
   });
 
-  it('fails fast when the Ready pod has no container by the configured name', async () => {
+  it('considers LATER Ready pods rather than judging by the first one', async () => {
+    // The first Ready pod is from a template without the server container; the second is
+    // a perfectly good candidate, and rejecting the converge because of the first one
+    // would throw it away.
     const { executor } = fakeExecutor({
-      podPages: [[{ name: 'chi-orders-0-0-0', ready: true, containers: ['server'] }]],
+      podPages: [
+        [
+          { name: 'chi-orders-0-0-0', ready: true, containers: ['server'] },
+          { name: 'chi-orders-0-1-0', ready: true, containers: ['clickhouse'] },
+        ],
+      ],
+    });
+    const pod = await selectReadyPod(executor, validConfig(), RESOURCE_ID, fakeDeps().deps);
+    expect(pod.name).toBe('chi-orders-0-1-0');
+  });
+
+  it('fails only when NO Ready pod qualifies, listing every candidate and its containers', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [
+        [
+          { name: 'chi-orders-0-0-0', ready: true, containers: ['server'] },
+          { name: 'chi-orders-0-1-0', ready: true, containers: ['server', 'sidecar'] },
+        ],
+      ],
     });
     const error = (await selectReadyPod(
       executor,
@@ -509,6 +530,8 @@ describe('ClickHouseSchema — pod selection', () => {
     ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
 
     expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('chi-orders-0-0-0: server');
+    expect(error.message).toContain('chi-orders-0-1-0: server, sidecar');
     expect(error.message).toContain('target.container');
   });
 });
