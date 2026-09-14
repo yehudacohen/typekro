@@ -368,9 +368,10 @@ export interface ClickHouseSchemaState {
    * the fingerprint is unchanged. See {@link ClickHouseSchemaAppliedPod} for exactly what
    * that guarantees. Under `onCluster` it records the single initiating pod.
    *
-   * It is always the set the statements ACTUALLY reached — the reconcile loop keeps going
-   * until a re-list shows no uncovered pod, and fails rather than record a set that does
-   * not cover what is live.
+   * It is always the set the statements ACTUALLY reached, and under `fanout` it is never
+   * empty: the reconcile loop keeps going until a re-list observes a NON-EMPTY set in which
+   * every pod has been applied to and which matches the observation before it, and fails
+   * rather than record a set that does not cover what is live.
    *
    * `undefined` in state written before UIDs were recorded; the comparison then falls back
    * to {@link podNames}, and the first converge to run re-writes state in the new shape.

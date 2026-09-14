@@ -1087,6 +1087,171 @@ describe("ClickHouseSchema — pod selection under 'fanout'", () => {
     expect(state.pods).toEqual([{ name: 'chi-orders-0-0-0', uid: 'uid-0' }]);
     expect(needsApply(config, state)).toBe(false);
   });
+
+  it('waits out an EMPTY re-list and applies to the same-named successor', async () => {
+    // The single-replica replacement window: the only pod was applied to and then deleted,
+    // and its successor — same name, new UID, empty disk — has not appeared yet. An empty
+    // set has no uncovered pod in it, so treating "nothing uncovered" as convergence
+    // recorded pods: [] as a success and left the successor with no schema behind a
+    // fingerprint that said the work was done.
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [
+        [readyPod('chi-orders-0-0-0', 'uid-old')],
+        [],
+        [],
+        [readyPod('chi-orders-0-0-0', 'uid-new')],
+      ],
+    });
+    const config = validConfig({ waitForPod: { timeoutMs: 30_000 } });
+    const state = await applyClickHouseSchema(context(executor, config), undefined);
+
+    // Both pods were applied to — the departed one and its successor — and only the
+    // successor, which is what is live, is recorded.
+    expect(execCalls).toHaveLength(4);
+    expect(state.podNames).toEqual(['chi-orders-0-0-0']);
+    expect(state.pods).toEqual([{ name: 'chi-orders-0-0-0', uid: 'uid-new' }]);
+    expect(needsApply(config, state)).toBe(false);
+  });
+
+  it('FAILS, naming the race, when the set goes empty and nothing comes back', async () => {
+    const { deps } = fakeDeps();
+    const { executor } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0', 'uid-old')], []],
+    });
+    const error = (await applyClickHouseSchema(
+      context(executor, validConfig({ waitForPod: { timeoutMs: 1_000 } }), { deps }),
+      undefined
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    // The same budget the readiness wait spends, and a message that names the race rather
+    // than the "no pod matched the selector" of a selector that never matched anything.
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('after 1000ms');
+    expect(error.message).toContain('the matching set became empty after 1 pod(s) were applied');
+    expect(error.message).toContain('a same-named successor would be unapplied');
+    expect(error.message).not.toContain('no pod matched the selector');
+  });
+
+  it('names the race at the pass bound too, rather than reporting 0 uncovered pods', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0', 'uid-old')], []],
+    });
+    const error = (await applyClickHouseSchema(
+      context(executor, validConfig({ maxReconcilePasses: 1 })),
+      undefined
+    ).catch((caught: unknown) => caught)) as ClickHouseSchemaError;
+
+    expect(error).toBeInstanceOf(ClickHouseSchemaError);
+    expect(error.message).toContain('after 1 reconcile pass(es)');
+    expect(error.message).toContain('the matching set became empty after 1 pod(s) were applied');
+  });
+});
+
+/**
+ * The exit predicate, asserted over randomized pod-set churn rather than over hand-picked
+ * sequences: whenever a `fanout` apply RETURNS, the last re-list must have observed a
+ * non-empty set, every pod of it must have been applied to (by name and UID), and it must
+ * have matched the observation before it. Anything else has to fail instead.
+ */
+describe("ClickHouseSchema — 'fanout' exit predicate over randomized churn", () => {
+  /** A small deterministic PRNG, so a failing scenario is reproducible from its seed. */
+  function mulberry32(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let value = state;
+      value = Math.imul(value ^ (value >>> 15), 1 | value);
+      value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+      return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
+    };
+  }
+
+  const POOL = ['chi-orders-0-0-0', 'chi-orders-0-1-0', 'chi-orders-0-2-0'] as const;
+
+  /** The runner's own matching rule, restated so the assertions filter what it filters. */
+  const matching = (pods: readonly ClickHousePodSummary[]): readonly ClickHousePodSummary[] =>
+    pods.filter((pod) => pod.terminating !== true && pod.phase !== 'Succeeded');
+
+  const keys = (pods: readonly { name: string; uid?: string }[]): readonly string[] =>
+    pods.map((pod) => `${pod.name}/${pod.uid ?? ''}`).sort();
+
+  /** A sequence of pod-set snapshots, with pods appearing, disappearing and being REPLACED. */
+  function snapshots(random: () => number): readonly (readonly ClickHousePodSummary[])[] {
+    const generation = new Map<string, number>();
+    const count = 1 + Math.floor(random() * 5);
+    return Array.from({ length: count }, () =>
+      POOL.flatMap((name): ClickHousePodSummary[] => {
+        if (random() < 0.35) return [];
+        // A replacement keeps the name and takes a new UID.
+        if (random() < 0.3) generation.set(name, (generation.get(name) ?? 0) + 1);
+        const uid = `uid-${name}-${generation.get(name) ?? 0}`;
+        const pod = random() < 0.8 ? readyPod(name, uid) : { ...pendingPod(name), uid };
+        return [random() < 0.1 ? { ...pod, terminating: true } : pod];
+      })
+    );
+  }
+
+  it('never returns a set that is empty, partly unapplied, or still moving', async () => {
+    let converged = 0;
+    for (let seed = 1; seed <= 100; seed += 1) {
+      const random = mulberry32(seed);
+      const pages = snapshots(random);
+      const observed: (readonly ClickHousePodSummary[])[] = [];
+      const execCalls: string[] = [];
+      let listIndex = 0;
+
+      const executor: ClickHouseExecutor = {
+        listPods: async () => {
+          // The last snapshot repeats, so a settling cluster can actually settle.
+          const page = pages[Math.min(listIndex, pages.length - 1)] ?? [];
+          listIndex += 1;
+          observed.push(page);
+          return page;
+        },
+        exec: async (command) => {
+          execCalls.push(command.podName);
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+
+      const config = validConfig({ waitForPod: { timeoutMs: 8_000 } });
+      const outcome = await applyClickHouseSchema(
+        context(executor, config, { deps: fakeDeps().deps }),
+        undefined
+      ).catch((caught: unknown) => caught);
+
+      if (outcome instanceof Error) {
+        // The only permitted alternative to convergence: a diagnosable failure, and no
+        // state at all for alchemy to commit.
+        expect(outcome).toBeInstanceOf(ClickHouseSchemaError);
+        continue;
+      }
+
+      const state = outcome as ClickHouseSchemaState;
+      const final = matching(observed[observed.length - 1] ?? []);
+      const previous = matching(observed[observed.length - 2] ?? []);
+
+      // 1. the final observation is NON-EMPTY, and so is what was recorded;
+      expect(final.length).toBeGreaterThan(0);
+      expect(state.pods?.length ?? 0).toBeGreaterThan(0);
+      // 2. it is exactly what was recorded, by name AND UID;
+      expect(keys(state.pods ?? [])).toEqual(keys(final));
+      // 3. and the set was stable across the last two observations.
+      expect(keys(final)).toEqual(keys(previous));
+      // Recorded means applied: every recorded pod received the whole ordered list.
+      for (const pod of state.pods ?? []) {
+        expect(execCalls.filter((name) => name === pod.name).length).toBeGreaterThanOrEqual(
+          config.statements.length
+        );
+      }
+      // podNames stays in step with pods.
+      expect(state.podNames).toEqual((state.pods ?? []).map((pod) => pod.name));
+      converged += 1;
+    }
+    // The predicate would hold vacuously if every scenario failed, so the run has to prove
+    // that churn which settles is still converged on rather than refused.
+    expect(converged).toBeGreaterThan(20);
+  });
 });
 
 describe("ClickHouseSchema — pod selection under 'onCluster'", () => {

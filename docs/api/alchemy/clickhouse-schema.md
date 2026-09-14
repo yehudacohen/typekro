@@ -60,7 +60,7 @@ the next converge.
 
 | Phase | Behaviour |
 | --- | --- |
-| **create** | Wait for the server pods matching `target.podSelector` to be Ready — *all* of them under `fanout`, *one* under `onCluster` — then run every statement in array order against each pod the execution model selects, re-listing and reconciling under `fanout` until the live set is covered. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `pods`, `podNames`, `clusterId`. |
+| **create** | Wait for the server pods matching `target.podSelector` to be Ready — *all* of them under `fanout`, *one* under `onCluster` — then run every statement in array order against each pod the execution model selects, re-listing and reconciling under `fanout` until the [exit predicate](#the-exit-predicate) holds — a non-empty, fully applied, stable set. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `pods`, `podNames`, `clusterId`. |
 | **update** | If the fingerprint, the target, the cluster identity *and* (under `fanout`) the live pod set are unchanged, do nothing. Otherwise re-run every statement and record the new state. |
 | **delete** | Per `onDelete` (see below). |
 
@@ -159,14 +159,37 @@ change the fingerprint. So the apply **keeps reconciling**:
    earlier pass already covered is not re-run;
 3. re-list. Pods that appeared are uncovered and get another pass; pods that **disappeared** are
    dropped from the recorded set, since state describes coverage of pods that exist;
-4. repeat until a re-list shows no uncovered pod.
+4. repeat until the exit predicate below holds.
 
-A settled cluster costs exactly **one pass**: one `list pods`, the statements, one re-list.
+##### The exit predicate
+
+A `fanout` apply may record a pod set **only** when the last re-list observed all three of:
+
+1. a **non-empty** set;
+2. every pod in it **applied to by this run**, compared by name **and** UID;
+3. the **same set as the observation before it** — the selection's own list and the re-list are
+   those two observations.
+
+Each part rules out a specific way of committing a lie. Without (1), "no pod is uncovered" is
+vacuously true of the empty set, so a run whose only pod disappeared between the exec and the
+re-list would record `pods: []` as a success — and during a **single-replica StatefulSet
+replacement** that empty window sits exactly between the old pod going away and its *same-named*
+successor arriving, leaving the successor (a new pod object, with an empty disk) unapplied behind
+a fingerprint that says the work is done. Without (2), coverage would be claimed for a pod nothing
+ran on. Without (3), a single snapshot cannot tell a settled set from one still moving: a pod that
+vanished mid-pass leaves every *remaining* pod covered while the set itself is mid-change.
+
+An empty set is therefore never convergence. It is waited out on the **same** `waitForPod` budget
+as the readiness wait — re-listing until a non-terminating matching pod is present and Ready, then
+applying to it and re-verifying.
+
+A settled cluster still costs exactly **one pass**: one `list pods`, the statements, one re-list —
+those two lists are the two consecutive observations part (3) asks for.
 
 Two bounds stop a genuinely churning cluster from looping forever — `maxReconcilePasses`
 (default **3**) and the overall `waitForPod.timeoutMs`, which is spent **across** the passes
-rather than renewed by each one. Hitting either with pods still uncovered **fails** the converge,
-naming them:
+rather than renewed by each one. Hitting either before the predicate holds **fails** the converge,
+naming which part of it the observation failed:
 
 ```
 ClickHouseSchema 'orders-schema': execution.mode 'fanout' applies the statements to EVERY pod
@@ -176,9 +199,18 @@ set kept changing: after 3 reconcile pass(es), 1 pod(s) had still not been appli
 the rollout settle, raise maxReconcilePasses, or switch to execution.mode 'onCluster'.
 ```
 
-**It never returns success with an uncovered pod.** Failing is the recoverable outcome: no state
-is committed, so the next converge starts over and applies the whole list to the whole set. A
-recorded partial apply would never be retried at all.
+The empty case names the race it is, rather than the "no pod matched the selector" of a selector
+that never matched anything:
+
+```
+... but after 120000ms the matching set became empty after 1 pod(s) were applied; a same-named
+successor would be unapplied. Let the rollout finish, raise waitForPod.timeoutMs, or switch to
+execution.mode 'onCluster'.
+```
+
+**It never returns success with an uncovered pod, and never records an empty set.** Failing is the
+recoverable outcome: no state is committed, so the next converge starts over and applies the whole
+list to the whole set. A recorded partial apply would never be retried at all.
 
 `maxReconcilePasses` is deliberately **not** part of the fingerprint — like `waitForPod`, `retry`
 and `statementTimeoutMs`, it says how the apply is driven, not what is applied, so changing it

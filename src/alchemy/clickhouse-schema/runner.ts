@@ -261,6 +261,22 @@ async function listMatchingPods(
 }
 
 /**
+ * The mid-run empty set, in the words a reader needs to recognise the race.
+ *
+ * A set that goes empty after this run has already applied to pods is not convergence and
+ * is not "nothing matched": it is the window in which a pod has been deleted and its
+ * replacement has not yet appeared. Naming the count that WAS applied to, and the
+ * successor that would otherwise be missed, is what tells the reader which of the two
+ * empty-set situations they are looking at.
+ */
+function fanoutSetBecameEmptyClause(appliedSoFar: number): string {
+  return (
+    `the matching set became empty after ${appliedSoFar} pod(s) were applied; a same-named ` +
+    `successor would be unapplied`
+  );
+}
+
+/**
  * `fanout`: EVERY matching pod, or none at all.
  *
  * The rule this enforces is that a `fanout` converge is never partial. Taking whichever
@@ -281,10 +297,18 @@ async function listMatchingPods(
  * `deadline` lets {@link applyFanoutUntilCovered} spend ONE `waitForPod` budget across all
  * of its reconcile passes rather than handing each pass a fresh one, so a set that keeps
  * churning cannot stretch the converge without limit.
+ *
+ * `appliedSoFar` distinguishes the two ways the matching set can be empty. Empty from the
+ * start is "no pod matched the selector" — a selector or a namespace to fix. Empty AFTER
+ * this run applied to some pods is the replacement race {@link fanoutSetBecameEmptyClause}
+ * names, and it gets the same budget: a single-replica StatefulSet being replaced shows an
+ * empty set between the old pod disappearing and its same-named successor appearing, and
+ * the successor must be waited for and applied to rather than declared covered.
  */
 async function selectFanoutPods(
   context: ClickHouseSchemaRunContext,
-  budgetDeadline?: number
+  budgetDeadline?: number,
+  appliedSoFar = 0
 ): Promise<readonly ClickHousePodSummary[]> {
   const { config, resourceId } = context;
   const deps = runtimeDeps(context);
@@ -314,7 +338,9 @@ async function selectFanoutPods(
     if (deps.now() >= deadline) {
       const state =
         matching.length === 0
-          ? 'no pod matched the selector'
+          ? appliedSoFar > 0
+            ? fanoutSetBecameEmptyClause(appliedSoFar)
+            : 'no pod matched the selector'
           : `${notReady.length} of ${matching.length} pod(s) were still not Ready ` +
             `(${notReady.map(describePod).join('; ')})`;
       throw new ClickHouseSchemaError(
@@ -555,6 +581,59 @@ function samePodIdentitySet(
 }
 
 /**
+ * THE EXIT PREDICATE of a `fanout` apply — the single condition under which a pod set may
+ * be recorded as successfully applied. All three parts are load-bearing:
+ *
+ * 1. `observed` is NON-EMPTY. An empty observation is never convergence: "no pod is
+ *    uncovered" is vacuously true of the empty set, so a run that applied to a pod which
+ *    then disappeared would otherwise commit `pods: []` as success. During a single-replica
+ *    StatefulSet replacement that empty window sits exactly between the old pod going away
+ *    and its SAME-NAMED successor arriving, and the successor — a new pod object with an
+ *    empty disk — would be left unapplied behind a fingerprint that says the work is done.
+ * 2. every pod in `observed` is in `applied`, by NAME AND UID ({@link podKey}). Coverage is
+ *    of pod OBJECTS; a replacement wearing the applied pod's name is not covered by it.
+ * 3. `observed` equals the observation BEFORE it. The two preceding parts describe a single
+ *    snapshot, and a snapshot cannot distinguish a settled set from one that is still
+ *    moving: a pod that vanished between the selection and the re-list leaves every
+ *    remaining pod covered while the set itself is mid-change. Requiring two consecutive
+ *    identical observations is what makes the set, and not merely the last glimpse of it,
+ *    the thing that is recorded.
+ *
+ * The cost of part 3 on a settled cluster is nothing: the selection's list and the re-list
+ * are the two observations, so one pass still converges.
+ */
+function fanoutCovered(
+  observed: readonly ClickHousePodSummary[],
+  previous: readonly ClickHousePodSummary[],
+  applied: ReadonlyMap<string, ClickHousePodSummary>
+): boolean {
+  if (observed.length === 0) return false;
+  if (!observed.every((pod) => applied.has(podKey(pod)))) return false;
+  return sameKeySet(observed.map(podKey), previous.map(podKey));
+}
+
+/** Which part of {@link fanoutCovered} an observation failed, in one readable clause. */
+function unconvergedReason(
+  observed: readonly ClickHousePodSummary[],
+  previous: readonly ClickHousePodSummary[],
+  uncovered: readonly ClickHousePodSummary[],
+  appliedTotal: number
+): string {
+  if (observed.length === 0) return fanoutSetBecameEmptyClause(appliedTotal);
+  if (uncovered.length > 0) {
+    return (
+      `${uncovered.length} pod(s) had still not been applied to ` +
+      `(${uncovered.map((pod) => pod.name).join(', ')})`
+    );
+  }
+  return (
+    `the matching set was still moving between two consecutive observations ` +
+    `(${previous.map((pod) => pod.name).join(', ')} then ` +
+    `${observed.map((pod) => pod.name).join(', ')})`
+  );
+}
+
+/**
  * `fanout`: apply, re-list, apply again — until the LIVE pod set is covered, or fail.
  *
  * THE SCALE RACE. Selection sees one matching set; a replica can be added, replaced or
@@ -575,14 +654,14 @@ function samePodIdentitySet(
  * 3. re-list. Pods that appeared are uncovered and get another pass; pods that DISAPPEARED
  *    are dropped from the recorded set, because state must describe coverage of pods that
  *    exist rather than of ones that are gone;
- * 4. repeat until a re-list shows no uncovered pod.
+ * 4. repeat until {@link fanoutCovered} — the ONE exit predicate — holds.
  *
  * Two bounds keep a genuinely churning cluster from looping forever: `maxReconcilePasses`
  * and the overall `waitForPod` budget, which is spent ACROSS the passes rather than renewed
- * by each one. Hitting either with pods still uncovered FAILS the converge, naming them —
- * never returns a successful state — so alchemy does not commit a partial apply and the
- * next converge starts over. Failing is the recoverable outcome; a recorded partial apply
- * would never be retried at all.
+ * by each one. Hitting either before the predicate holds FAILS the converge, naming what is
+ * wrong with the observation ({@link unconvergedReason}) — never returns a successful state
+ * — so alchemy does not commit a partial apply and the next converge starts over. Failing is
+ * the recoverable outcome; a recorded partial apply would never be retried at all.
  */
 async function applyFanoutUntilCovered(
   context: ClickHouseSchemaRunContext,
@@ -594,14 +673,20 @@ async function applyFanoutUntilCovered(
   const timeoutMs = config.waitForPod?.timeoutMs ?? DEFAULT_WAIT_FOR_POD_TIMEOUT_MS;
   const budgetDeadline = deps.now() + timeoutMs;
   const logger = getComponentLogger('alchemy-clickhouse-schema');
-  /** Pods this run has applied to, by {@link podKey}. */
+  /** Pods this run has applied to, by {@link podKey}; pruned to what is still live. */
   const applied = new Map<string, ClickHousePodSummary>();
+  /** How many pods this run has applied to IN TOTAL, including ones since departed. */
+  let appliedTotal = 0;
 
   for (let pass = 1; ; pass += 1) {
-    for (const pod of await selectFanoutPods(context, budgetDeadline)) {
+    // The selection's own final list is the FIRST of the two observations the exit
+    // predicate compares; the re-list below is the second.
+    const selected = await selectFanoutPods(context, budgetDeadline, appliedTotal);
+    for (const pod of selected) {
       if (applied.has(podKey(pod))) continue;
       await runStatementsOnPod(context, pod, statements);
       applied.set(podKey(pod), pod);
+      appliedTotal += 1;
     }
 
     const live = await listMatchingPods(context);
@@ -609,18 +694,18 @@ async function applyFanoutUntilCovered(
     for (const key of [...applied.keys()]) {
       if (!liveKeys.has(key)) applied.delete(key);
     }
-    const uncovered = live.filter((pod) => !applied.has(podKey(pod)));
-    if (uncovered.length === 0) return [...applied.values()].sort(byName);
 
+    if (fanoutCovered(live, selected, applied)) return [...applied.values()].sort(byName);
+
+    const uncovered = live.filter((pod) => !applied.has(podKey(pod)));
     if (pass >= maxPasses) {
       throw new ClickHouseSchemaError(
         `ClickHouseSchema '${resourceId}': execution.mode 'fanout' applies the statements to ` +
           `EVERY pod matching ${selectorText(config)} in namespace ` +
           `'${config.target.namespace}', but the pod set kept changing: after ${maxPasses} ` +
-          `reconcile pass(es), ${uncovered.length} pod(s) had still not been applied to ` +
-          `(${uncovered.map((pod) => pod.name).join(', ')}). Nothing is recorded, so the next ` +
-          `converge re-applies the whole list. Let the rollout settle, raise ` +
-          `maxReconcilePasses, or switch to execution.mode 'onCluster'.`,
+          `reconcile pass(es), ${unconvergedReason(live, selected, uncovered, appliedTotal)}. ` +
+          `Nothing is recorded, so the next converge re-applies the whole list. Let the ` +
+          `rollout settle, raise maxReconcilePasses, or switch to execution.mode 'onCluster'.`,
         resourceId
       );
     }
@@ -633,6 +718,7 @@ async function applyFanoutUntilCovered(
         maxPasses,
         appliedTo: [...applied.values()].map((pod) => pod.name),
         uncovered: uncovered.map((pod) => pod.name),
+        reason: unconvergedReason(live, selected, uncovered, appliedTotal),
       }
     );
   }

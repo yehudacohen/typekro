@@ -56,15 +56,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a replica that appears mid-apply is never claimed as covered — and never left behind
   either: a `fanout` apply RECONCILES UNTIL THE LIVE SET IS COVERED. It selects the
   complete Ready set, applies the ordered list to every pod not yet applied to in this run,
-  re-lists, applies to whatever appeared (by name and UID), and repeats until a re-list
-  shows no uncovered pod; pods that disappeared between passes are dropped from the
-  recorded set. A settled cluster costs exactly one pass. Two bounds stop a churning
-  cluster looping forever — `maxReconcilePasses` (default 3) and the overall
+  re-lists, applies to whatever appeared (by name and UID), and repeats until ONE EXIT
+  PREDICATE holds — the last re-list observed a NON-EMPTY set, every pod of it was applied
+  to by this run (by name and UID), and it matched the observation before it. All three
+  parts are load-bearing. Without the first, "no pod is uncovered" is vacuously true of the
+  empty set, so a run whose only pod disappeared between the exec and the re-list recorded
+  `pods: []` as a success — and during a single-replica StatefulSet replacement that empty
+  window sits exactly between the old pod going away and its SAME-NAMED successor arriving,
+  leaving the successor (a new pod object, with an empty disk) unapplied behind a
+  fingerprint that said the work was done. Without the third, a single snapshot cannot tell
+  a settled set from one still moving: a pod that vanished mid-pass leaves every remaining
+  pod covered while the set itself is mid-change. An empty set is therefore never
+  convergence; it is waited out on the SAME `waitForPod` budget as the readiness wait, and
+  a failure names the race ("the matching set became empty after N pod(s) were applied; a
+  same-named successor would be unapplied") rather than the "no pod matched the selector"
+  of a selector that never matched anything. Pods that disappeared between passes are
+  dropped from the recorded set. A settled cluster still costs exactly one pass — the
+  selection's own list and the re-list are the two consecutive observations. Two bounds stop
+  a churning cluster looping forever — `maxReconcilePasses` (default 3) and the overall
   `waitForPod.timeoutMs`, spent ACROSS the passes rather than renewed by each one — and
-  hitting either with pods still uncovered FAILS the converge naming them, so alchemy
-  commits nothing and the next converge starts over. It never returns success with an
-  uncovered pod; recording one and merely warning left that pod unapplied until some
-  future deployment happened to change the fingerprint. `maxReconcilePasses` is not part of
+  hitting either before the predicate holds FAILS the converge, naming which part of it the
+  observation failed, so alchemy commits nothing and the next converge starts over. It never
+  returns success with an uncovered pod and never records an empty set; recording an
+  uncovered pod and merely warning left it unapplied until some future deployment happened
+  to change the fingerprint. `maxReconcilePasses` is not part of
   the fingerprint — it says how the apply is driven, not what is applied — and is ignored
   under `onCluster`, which has no coverage to reconcile. `{ mode: 'onCluster', cluster }` runs the statements once and requires EVERY
   statement to carry an explicit `ON CLUSTER <cluster>` clause naming that cluster —
