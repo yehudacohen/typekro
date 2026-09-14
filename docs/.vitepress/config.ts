@@ -88,6 +88,7 @@ export default withMermaid(
               { text: 'Cilium', link: '/api/cilium/' },
               { text: 'Cert-Manager', link: '/api/cert-manager/' },
               { text: 'ClickHouse', link: '/api/clickhouse/' },
+              { text: 'ClickHouse Schema (Alchemy)', link: '/api/alchemy/clickhouse-schema' },
               { text: 'OpenSearch', link: '/api/opensearch/' },
               { text: 'Envoy AI Gateway', link: '/api/envoy-ai-gateway/' },
               { text: 'CloudNativePG', link: '/api/cnpg/' },

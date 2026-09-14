@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ClickHouseSchema`, an Alchemy v2 resource (`TypeKro.ClickHouseSchema`) that applies
+  ClickHouse DDL to a cluster the `clickhouse`/`clickstack` factories deployed, at
+  converge time, with state. Nothing in TypeKro previously ran a deployment's own
+  schema: the factories create a server, and `clickStackStorage`'s retention CronJob
+  runs DDL from inside the cluster on a timer over tables TypeKro does not own.
+  `clickHouseSchema(id, props)` covers the other case — databases, `S3Queue` tables,
+  materialized views and application tables that belong to the deployment — as a
+  first-class Alchemy resource, so it is diffable, it fails the deploy rather than a
+  Job log, and it can be ordered after the instance's readiness like any other
+  dependency. Merge `clickHouseSchemaProvider` into the runtime's providers alongside
+  `kroProvider`.
+
+  Statements are the author's contract: each must be individually idempotent
+  (`CREATE ... IF NOT EXISTS`, `CREATE OR REPLACE`, `ALTER ... IF EXISTS`), because a
+  changed fingerprint re-runs the WHOLE ordered list. The fingerprint — sha256 over the
+  statements, the settings and the resolved client configuration — is what makes an
+  unchanged schema a true no-op: no pod lookup, no exec. It is recorded only after the
+  last statement succeeds, so a converge that dies partway re-runs from the beginning.
+  The `target` is compared separately, so re-pointing the resource at another server
+  re-applies there even though the SQL is byte-identical.
+
+  `onDelete` defaults to `retain` and does not reach the cluster at all on delete — a
+  schema resource must never drop data because a stack was torn down. `run` executes an
+  explicit `deleteStatements` list and nothing else; `run` without it, and
+  `deleteStatements` under `retain`, are both rejected at declaration time rather than
+  silently doing nothing.
+
+  A plaintext password is not representable: the `client` object rejects undeclared
+  keys, so `password` fails validation instead of being persisted to Alchemy state. The
+  password is read inside the pod from the container's own environment
+  (`--password "${CLICKHOUSE_PASSWORD:-}"` under `sh -c`, the variable name
+  configurable via `client.passwordEnv`), matching what the retention CronJob and
+  `clickHouseS3BackupCronJob` already set. Statements travel over the Kubernetes API
+  server's `pods/exec` subresource — no port-forward, no exposed native port, no network
+  path from the runner to the pod — one statement per `clickhouse-client` invocation, fed
+  on stdin so no SQL appears in the container's argv. One invocation per statement rather
+  than a single `--multiquery` batch is what makes error attribution by statement INDEX
+  possible. `ClickHouseSchemaError` carries that index plus ClickHouse's own error code,
+  and never the statement text: every line of server output matching
+  `password`/`secret`/`aws_secret`/`access_key`/`credential` is redacted first. Only
+  transport failures (websocket errors, resets, timeouts) are retried; a SQL error never
+  is. The chosen pod must be Ready before the first exec, with a bounded
+  `waitForPod.timeoutMs`. The exec transport is an injectable `ClickHouseExecutor`
+  interface with a default `@kubernetes/client-node` implementation. The converging
+  identity needs `list` on `pods` and `create` on `pods/exec` in the target namespace.
+
 - ClickHouse clusters may now keep their data in S3-compatible object storage
   with only a bounded local read-through cache on the node. `makeClickHouseCluster`
   takes a build-time `storage` topology whose `mode: 's3'` branch compiles a
