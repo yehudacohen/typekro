@@ -17,6 +17,7 @@ import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import {
   type CelLambdaScope,
+  celStringLiteralEnd,
   collectCelLambdaScopes,
   maskClosedCelLiteralsAndComments,
 } from '../references/cel-lexical-scanner.js';
@@ -78,6 +79,49 @@ function endsWithIndexableTarget(emitted: string): boolean {
   return start !== undefined && CEL_INDEX_TARGET_START.test(start);
 }
 
+/** The `STRING_LIT`/`BYTES_LIT` prefix letters, in either case and either order. */
+const CEL_STRING_PREFIX_LETTER = /[rRbB]/;
+
+/**
+ * End of the CEL string literal that starts at `index`, or `index` for none.
+ *
+ * Both scans below walk this module's text one character at a time, so each
+ * needs the same question answered at each step: *does a `STRING_LIT` or
+ * `BYTES_LIT` token begin here, and where does it end?* The answer comes from
+ * {@link celStringLiteralEnd}, the branch's spec-complete lexer — `r`/`R`/`b`/`B`
+ * prefixes in either order, the two triple-quoted forms, escapes in the non-raw
+ * forms only — rather than from a hand-rolled `"…"`/`'…'` loop, which mis-lexed
+ * every one of those: `r"a\"` is a COMPLETE raw literal (raw forms have no
+ * escape alternative), and `"""…"""` closes only at its matching triple.
+ *
+ * The STRING-ONLY entry point is deliberate. Its sibling
+ * {@link maskClosedCelLiteralsAndComments} is comment-aware, and these two
+ * scans run over KRO MIXED-TEMPLATE text whose literal part routinely contains
+ * `http://…`; a comment-aware walk would read that `//` as a `COMMENT` and stop
+ * reporting literals for the rest of the line. Only the string half of the
+ * lexis is wanted here.
+ *
+ * `previous` is the input character before `index`. A prefix letter opens a
+ * literal only when it does not merely CONTINUE an identifier, so that `myr"x"`
+ * lexes as the identifier `myr` followed by a plain string rather than as a raw
+ * one — the same boundary rule the scanner's own source-ordered walk gets from
+ * consuming an `IDENT` whole. A quote needs no such guard: `a"x"` opens a
+ * literal whatever precedes it.
+ *
+ * An UNTERMINATED literal is not a token: `index` comes back, and the caller
+ * steps over the opening quote as ordinary text. That is what keeps a bare
+ * apostrophe in marker-laden template text from swallowing everything after it.
+ */
+function celStringLiteralEndAt(expr: string, index: number, previous?: string): number {
+  const character = expr[index];
+  if (character === undefined) return index;
+  if (character !== '"' && character !== "'") {
+    if (!CEL_STRING_PREFIX_LETTER.test(character)) return index;
+    if (previous !== undefined && CEL_INDEX_TARGET_CHARACTER.test(previous)) return index;
+  }
+  return celStringLiteralEnd(expr, index);
+}
+
 /**
  * Find the `}` that closes the KRO `${ … }` region whose body starts at
  * `start`.
@@ -89,29 +133,25 @@ function endsWithIndexableTarget(emitted: string): boolean {
  * literal-text path. Returns the index of the closing brace, or `-1` when the
  * region is never closed (in which case the caller copies the remainder
  * through unchanged rather than guessing where it ended).
+ *
+ * Every literal is skipped WHOLE, via {@link celStringLiteralEndAt}, and brace
+ * counting resumes after it. Deciding string-ness delimiter by delimiter got
+ * the whole prefixed and triple-quoted family wrong in both directions: in
+ * `${r"\" + a.0}` the `\"` read as an escape, so the region ran past its real
+ * `}` and the remainder — `a.0` included — was copied through unnormalised,
+ * while in `${"""a"}b""" + c.0}` the quotes paired off two at a time and the
+ * region ended at a `}` that is inside the triple-quoted literal.
  */
 function celTemplateRegionEnd(expr: string, start: number): number {
   let depth = 1;
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
 
   for (let i = start; i < expr.length; i++) {
     const char = expr[i];
     if (!char) continue;
 
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'") {
-      quote = char;
+    const literalEnd = celStringLiteralEndAt(expr, i, expr[i - 1]);
+    if (literalEnd > i) {
+      i = literalEnd - 1;
       continue;
     }
 
@@ -140,33 +180,27 @@ const CARRIES_KUBERNETES_REF_MARKER = new RegExp(KUBERNETES_REF_MARKER_SOURCE);
 /**
  * Apply the dotted-numeric-run rule to ONE CEL region — a `${ … }` body, or a
  * whole bare CEL expression. See {@link normalizeCelArrayIndexPaths} for the
- * rule itself and for why the quote loop below is deliberately not the shared
- * comment-aware scanner.
+ * rule itself, and {@link celStringLiteralEndAt} for why the string scan is the
+ * STRING-ONLY lexer rather than the shared comment-aware mask.
+ *
+ * A literal is copied through WHOLE and the walk resumes after it, so quoted
+ * data is never rewritten and text outside a literal is never protected by one.
+ * The delimiter-by-delimiter scan this replaced got both halves wrong on the
+ * prefixed forms: `r"a\".b.0"` is the complete raw literal `r"a\"` followed by
+ * `.b.0"`, whose `.0` is an ordinary index, yet the `\"` read as an escape and
+ * protected it; `rb'x\' + c.0` lost its `c.0` the same way.
  */
 function rewriteCelIndexPathsInRegion(expr: string): string {
   let result = '';
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
 
   for (let i = 0; i < expr.length; i++) {
     const char = expr[i];
     if (!char) continue;
 
-    if (quote) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'") {
-      quote = char;
-      result += char;
+    const literalEnd = celStringLiteralEndAt(expr, i, expr[i - 1]);
+    if (literalEnd > i) {
+      result += expr.slice(i, literalEnd);
+      i = literalEnd - 1;
       continue;
     }
 
@@ -236,17 +270,17 @@ function rewriteCelIndexPathsInRegion(expr: string): string {
  *    ({@link CEL_INDEX_RUN_TERMINATOR}). This is what keeps the `5` of `2.5e3`
  *    out independently of the left-context test.
  *
- * Quoted data is skipped by the local quote loop below, which is deliberately
- * NOT the shared {@link maskClosedCelLiteralsAndComments} scanner even though
- * that one lexes the `STRING_LIT`/`BYTES_LIT` family far more completely. This
- * function runs over KRO MIXED-TEMPLATE text, not over CEL alone: its inputs
- * include values like `` `http://${string(service.spec.ports.0.port)}` ``, and
- * the `//` of a URL scheme is a `COMMENT` to a CEL lexer — masking it would
- * blank the template that follows and silently drop this rewrite. The same
- * reason rules out `celStringLiteralSpans`, whose walk is comment-aware too and
- * so stops reporting literals at the first `//`. Recognising only the two
- * single-delimiter quote forms is what keeps the scan safe on text that is not
- * wholly CEL.
+ * Quoted data is skipped, and skipped with the WHOLE `STRING_LIT`/`BYTES_LIT`
+ * lexis: `r`/`R`/`b`/`B` prefixes in either order, the two triple-quoted forms,
+ * and escapes in the non-raw forms only ({@link celStringLiteralEndAt}). The
+ * scan is nevertheless STRING-ONLY, deliberately not the shared
+ * {@link maskClosedCelLiteralsAndComments}, because this function runs over KRO
+ * MIXED-TEMPLATE text rather than over CEL alone: its inputs include values like
+ * `` `http://${string(service.spec.ports.0.port)}` ``, and the `//` of a URL
+ * scheme is a `COMMENT` to a CEL lexer — masking it would blank the template
+ * that follows and silently drop this rewrite. The same reason rules out
+ * `celStringLiteralSpans`, whose walk is comment-aware too and so stops
+ * reporting literals at the first `//`.
  *
  * **Where the rewrite applies.** The inputs above are KRO MIXED TEMPLATES: a
  * `${ … }` CEL region embedded in LITERAL text that KRO emits verbatim. Only

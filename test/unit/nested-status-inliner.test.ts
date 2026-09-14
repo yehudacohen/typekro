@@ -1435,6 +1435,84 @@ describe('normalizeCelArrayIndexPaths — marker-laden text is literal text', ()
 });
 
 
+describe('normalizeCelArrayIndexPaths — the whole CEL string-literal lexis', () => {
+  // Both scans in this module — the `${ … }` brace walk and the rewrite itself —
+  // now delegate to the branch's `celStringLiteralEnd`, so they agree with CEL
+  // on where a literal starts and ends. Recognising only `"…"`/`'…'` with `\`
+  // escapes got the raw, bytes and triple-quoted forms wrong in both
+  // directions: a literal ran on past its real end, or ended inside itself.
+
+  it('closes a region after a RAW string whose last character is a backslash', () => {
+    // `r"…"` has no escape alternative in the lexis, so the `"` after the `\`
+    // CLOSES the literal. Reading `\"` as an escape ran the region past its
+    // real `}`, and the whole remainder — `a.0` included — was copied through.
+    expect(normalizeCelArrayIndexPaths('${r"\\" + a.0}')).toBe('${r"\\" + a[0]}');
+    expect(normalizeCelArrayIndexPaths('${R"\\" + a.0}')).toBe('${R"\\" + a[0]}');
+  });
+
+  it('handles the combined bytes/raw prefixes in either order and case', () => {
+    expect(normalizeCelArrayIndexPaths("${rb'\\' + a.0}")).toBe("${rb'\\' + a[0]}");
+    expect(normalizeCelArrayIndexPaths("${br'\\' + a.0}")).toBe("${br'\\' + a[0]}");
+    expect(normalizeCelArrayIndexPaths("${BR'\\' + a.0}")).toBe("${BR'\\' + a[0]}");
+  });
+
+  it('lexes a BYTES literal, escapes and all', () => {
+    expect(normalizeCelArrayIndexPaths('${b"x" + a.0}')).toBe('${b"x" + a[0]}');
+    // The `}` is inside the literal: a bytes literal is escape-bearing.
+    expect(normalizeCelArrayIndexPaths('${b"x\\"} y" + a.0}')).toBe('${b"x\\"} y" + a[0]}');
+  });
+
+  it('ends a TRIPLE-quoted literal only at its matching triple', () => {
+    expect(normalizeCelArrayIndexPaths('${"""}""" + a.0}')).toBe('${"""}""" + a[0]}');
+    // A single inner quote used to pair off with an opening one, ending the
+    // region at the `}` that is inside the literal.
+    expect(normalizeCelArrayIndexPaths('${"""a"}b""" + c.0}')).toBe('${"""a"}b""" + c[0]}');
+    expect(normalizeCelArrayIndexPaths("${'''a'}b''' + c.0}")).toBe("${'''a'}b''' + c[0]}");
+  });
+
+  it('lets a triple-quoted literal span a newline', () => {
+    expect(normalizeCelArrayIndexPaths("'''multi\nline''' + a.0")).toBe("'''multi\nline''' + a[0]");
+    expect(normalizeCelArrayIndexPaths("${'''a\nb'}c''' + d.0}")).toBe("${'''a\nb'}c''' + d[0]}");
+  });
+
+  it('leaves a dotted digit run INSIDE a raw literal alone', () => {
+    // `v.0` is quoted data, not an index, even though `v` reads as an identifier.
+    expect(normalizeCelArrayIndexPaths('${r"v.0" + a.0}')).toBe('${r"v.0" + a[0]}');
+    expect(normalizeCelArrayIndexPaths('"""a.0""" + b.0')).toBe('"""a.0""" + b[0]');
+  });
+
+  it('rewrites the text that FOLLOWS a complete raw literal', () => {
+    // `r"a\"` is complete, so `.b.0` after it is ordinary CEL — the old scan
+    // thought the literal was still open and protected it.
+    expect(normalizeCelArrayIndexPaths('r"a\\".b.0 + c')).toBe('r"a\\".b[0] + c');
+    expect(normalizeCelArrayIndexPaths("rb'x\\' + c.0")).toBe("rb'x\\' + c[0]");
+  });
+
+  it('takes a prefix letter as a literal only at an identifier boundary', () => {
+    // `myr"…"` is the identifier `myr` then a PLAIN string — `"\"` in a plain
+    // string is an escaped quote, so that literal is unterminated and the brace
+    // walk steps over it as ordinary text, closing the region at the real `}`.
+    expect(normalizeCelArrayIndexPaths('${myr"\\" + a.0}')).toBe('${myr"\\" + a[0]}');
+    expect(normalizeCelArrayIndexPaths('${ab"\\" + a.0}')).toBe('${ab"\\" + a[0]}');
+    // A prefix letter with no quote behind it is just an identifier.
+    expect(normalizeCelArrayIndexPaths('${b + "x" + a.0}')).toBe('${b + "x" + a[0]}');
+    expect(normalizeCelArrayIndexPaths('${r + a.0}')).toBe('${r + a[0]}');
+  });
+
+  it('copies an unterminated literal through as ordinary text', () => {
+    expect(normalizeCelArrayIndexPaths('${"abc + a.0')).toBe('${"abc + a.0');
+  });
+
+  it('still reads `//` as literal template text, never as a CEL comment', () => {
+    // The scan is the STRING-ONLY entry point on purpose: this function sees
+    // mixed-template text where a URL scheme must not mask the rest of the line.
+    expect(normalizeCelArrayIndexPaths('http://${string(service.spec.ports.0.port)}')).toBe(
+      'http://${string(service.spec.ports[0].port)}'
+    );
+    expect(normalizeCelArrayIndexPaths('${"http://x" + a.0}')).toBe('${"http://x" + a[0]}');
+  });
+});
+
 describe('nested-composition status inlining — canonical mapping identity', () => {
   it('detects a cycle that turns a corner through an alias spelling', () => {
     // `webAppStack2` is not a key; it reaches `__nestedStatus:webAppStack1:ready`

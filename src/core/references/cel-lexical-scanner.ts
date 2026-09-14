@@ -76,8 +76,14 @@ const CEL_STRING_DELIMITERS = ['"""', "'''", '"', "'"] as const;
  * unterminated literal is not a token — the caller then steps over the opening
  * quote as ordinary text, which is the behaviour marker-laden template text
  * depends on.
+ *
+ * This is the STRING-ONLY entry point: it knows nothing about `//` comments, so
+ * a caller that runs over text which is not wholly CEL — KRO mixed templates,
+ * where `http://` must not read as a comment — can lex the literal family
+ * completely without inheriting comment masking. Callers that ARE looking at
+ * whole CEL expressions want {@link maskClosedCelLiteralsAndComments} instead.
  */
-function celStringLiteralEnd(text: string, at: number): number {
+export function celStringLiteralEnd(text: string, at: number): number {
   let index = at;
   let raw = false;
   let bytes = false;
