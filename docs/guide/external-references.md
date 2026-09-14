@@ -133,6 +133,66 @@ await databaseFactory.deploy({ name: 'main-database', storage: '50Gi' });
 await appFactory.deploy({ name: 'my-app', image: 'nginx' });
 ```
 
+## Observing a Resource Your Own Composition Creates
+
+A composition often needs to read a resource it does not author: the Service a Helm
+chart creates, or a CRD instance an operator produces. `observedResource()` reads that
+resource live rather than applying it, so on a fresh deployment it does not exist yet.
+
+Declare `dependsOn()` on the observed resource, naming the resource in the same graph
+whose deployment produces it:
+
+```typescript
+import { kubernetesComposition, observedResource } from 'typekro';
+
+const platform = kubernetesComposition(definition, (spec) => {
+  const release = helmRelease({
+    id: 'gatewayRelease',
+    name: spec.name,
+    chart: { name: 'gateway', version: '1.4.0' },
+    // ...
+  });
+
+  // The chart creates this Service. Without dependsOn, the read happens before the
+  // release is applied and fails with a 404.
+  const gatewayService = observedResource<ServiceSpec, ServiceStatus>({
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: { name: `${spec.name}-gateway`, namespace: spec.namespace },
+    id: 'gatewayService',
+  }).dependsOn(release);
+
+  return {
+    ready: release.status.conditions.some((c) => c.type === 'Ready' && c.status === 'True'),
+    address: gatewayService.status.loadBalancer.ingress[0].ip,
+  };
+});
+```
+
+With `dependsOn`, the deployment applies the release, waits for it to become ready, then
+reads the Service — retrying until it appears or the read budget runs out. Anything that
+consumes the observed resource is scheduled behind that read.
+
+If the resource never appears, the deployment fails with an error naming the reference,
+its `dependsOn` targets, and how long it waited. It is never silently skipped.
+
+Only a failure that waiting could fix is retried: a 404 for the object itself, a 429, a
+5xx, or a transport failure. A read that is rejected — RBAC (401/403), a malformed
+reference (400/405/422), or an `apiVersion`/`kind` the cluster does not serve — fails the
+deployment on the first attempt, with the classification and the API server's own message,
+rather than polling to the end of the budget and reporting a timeout:
+
+```
+Required external resource Service/my-app-gateway (reference 'gatewayService') could not
+be read: permission denied (HTTP 403). Waiting cannot fix this, so the deployment failed
+immediately instead of polling its dependsOn targets [gatewayRelease]: services
+"my-app-gateway" is forbidden: User "deployer" cannot get resource "services"
+```
+
+An observed resource with no `dependsOn` on an in-graph resource is still read before
+anything is applied, which is the right behaviour for a resource another composition or
+another team already owns.
+
 ## Cross-Namespace References
 
 Reference resources in different namespaces:

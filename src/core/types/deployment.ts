@@ -448,6 +448,21 @@ export interface ResourceGraphResource {
 }
 
 /**
+ * A live resource the graph observes but never applies.
+ *
+ * When the reference declares `dependsOn` on resources this graph creates
+ * (`observedResource(...).dependsOn(release)`), `dependsOn` carries their
+ * dependency-graph ids. The deployment engine defers the live read until those
+ * resources have been applied and are ready, so a composition can observe a
+ * resource its own release creates. A reference with no in-graph dependencies
+ * keeps the up-front read that happens before anything is applied.
+ */
+export interface ExternalResourceReference extends ResourceGraphResource {
+  /** Dependency-graph ids of in-graph resources that must be ready before the read. */
+  dependsOn?: string[];
+}
+
+/**
  * Internal deployment-specific resource graph used by the deployment engine.
  *
  * Not to be confused with `ResourceGraph<TSpec, TStatus>` in `resource-graph.ts`,
@@ -456,8 +471,8 @@ export interface ResourceGraphResource {
 export interface DeploymentResourceGraph {
   name: string;
   resources: ResourceGraphResource[];
-  /** Required live resources read before deployment but never applied or rolled back. */
-  externalReferences?: ResourceGraphResource[];
+  /** Required live resources read during deployment but never applied or rolled back. */
+  externalReferences?: ExternalResourceReference[];
   dependencyGraph: DependencyGraph;
 }
 

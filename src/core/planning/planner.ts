@@ -1949,6 +1949,21 @@ function buildResourceNodes(
       if (prerequisite) edges.push({ kind: 'ready', prerequisite, dependent });
     }
   }
+  // Direct materialization omits require-existing resources from `graph.resources`, so the loop
+  // above never sees a `dependsOn` declared *on* an external reference. Emit those edges from
+  // capture instead: direct mode uses them to schedule the observing read after the resources
+  // that create the observed object. Duplicates with the loop above are collapsed below.
+  for (const [captureId, resource] of Object.entries(capturedResources)) {
+    if (Reflect.get(resource, '__externalRef') !== true) continue;
+    const dependent = getResourceId(resource) ?? captureId;
+    if (!referenceIdToLogical.has(dependent)) continue;
+    for (const dependency of getMetadataField(resource, 'dependsOn') ?? []) {
+      const prerequisite = referenceIdToLogical.get(dependency.resourceId);
+      if (prerequisite && prerequisite !== dependent) {
+        edges.push({ kind: 'ready', prerequisite, dependent });
+      }
+    }
+  }
   for (const node of nodes) {
     if (!node.desired) continue;
     for (const reference of planValueReferences(node.desired)) {

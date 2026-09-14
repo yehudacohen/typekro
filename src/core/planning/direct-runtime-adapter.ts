@@ -309,6 +309,11 @@ export function directArtifactPlanToResourceGraph(
   const dependencyGraph = new DependencyGraph();
   const resources: DeploymentResourceGraph['resources'] = [];
   const externalReferences: NonNullable<DeploymentResourceGraph['externalReferences']> = [];
+  // External references are never applied, so they get no dependency-graph node. Their ordering
+  // requirement is recorded alongside them instead: the engine reads them after these graph ids
+  // have been applied and are ready.
+  const externalReferenceDependencies = new Map<string, Set<string>>();
+  const externalReferenceIdsByArtifactId = new Map<string, string[]>();
   const instancesByArtifactId = new Map<string, ExpandedArtifactInstance[]>();
   const includedArtifacts = plan.resources.filter(
     (artifact) =>
@@ -397,6 +402,11 @@ export function directArtifactPlanToResourceGraph(
       id: logicalId,
       manifest: manifest as DeployableK8sResource<Enhanced<unknown, unknown>>,
     });
+    externalReferenceDependencies.set(logicalId, new Set());
+    externalReferenceIdsByArtifactId.set(artifact.id, [
+      ...(externalReferenceIdsByArtifactId.get(artifact.id) ?? []),
+      logicalId,
+    ]);
   }
 
   const pairedInstances = (
@@ -425,31 +435,63 @@ export function directArtifactPlanToResourceGraph(
     return pairs;
   };
 
-  for (const edge of plan.edges) {
-    let prerequisiteArtifactId: string | undefined;
-    let dependentArtifactId: string | undefined;
-    if (edge.kind === 'output') {
-      prerequisiteArtifactId = edge.producer;
-      dependentArtifactId = edge.consumer;
-    } else if (edge.kind === 'existence' || edge.kind === 'ready') {
-      prerequisiteArtifactId = edge.prerequisite;
-      dependentArtifactId = edge.dependent;
-    } else if (edge.kind === 'ownership') {
-      prerequisiteArtifactId = edge.owner;
-      dependentArtifactId = edge.child;
-    }
-    if (!prerequisiteArtifactId || !dependentArtifactId) continue;
-    const prerequisites = (instancesByArtifactId.get(prerequisiteArtifactId) ?? []).filter(
-      (instance) => isAppliedArtifact(instance.artifact)
-    );
-    const dependents = (instancesByArtifactId.get(dependentArtifactId) ?? []).filter((instance) =>
+  const normalizedEdges = plan.edges.flatMap((edge) => {
+    const [prerequisiteArtifactId, dependentArtifactId] =
+      edge.kind === 'output'
+        ? [edge.producer, edge.consumer]
+        : edge.kind === 'existence' || edge.kind === 'ready'
+          ? [edge.prerequisite, edge.dependent]
+          : edge.kind === 'ownership'
+            ? [edge.owner, edge.child]
+            : [undefined, undefined];
+    return prerequisiteArtifactId && dependentArtifactId
+      ? [{ prerequisiteArtifactId, dependentArtifactId } as const]
+      : [];
+  });
+
+  const appliedInstances = (artifactId: string): readonly ExpandedArtifactInstance[] =>
+    (instancesByArtifactId.get(artifactId) ?? []).filter((instance) =>
       isAppliedArtifact(instance.artifact)
     );
+
+  // An edge that points at an external reference cannot become a graph edge — the reference has no
+  // node to attach to, since it is read rather than applied. Record it as a read-ordering
+  // requirement on the reference instead, so the engine can defer the live read until those
+  // resources are applied and ready.
+  for (const { prerequisiteArtifactId, dependentArtifactId } of normalizedEdges) {
+    for (const referenceId of externalReferenceIdsByArtifactId.get(dependentArtifactId) ?? []) {
+      const recorded = externalReferenceDependencies.get(referenceId);
+      if (!recorded) continue;
+      for (const prerequisite of appliedInstances(prerequisiteArtifactId)) {
+        recorded.add(prerequisite.graphId);
+      }
+    }
+  }
+
+  for (const { prerequisiteArtifactId, dependentArtifactId } of normalizedEdges) {
+    const prerequisites = appliedInstances(prerequisiteArtifactId);
+    const dependents = appliedInstances(dependentArtifactId);
+    // Consuming a deferred external reference means consuming whatever produces it, so the
+    // consumer inherits the reference's own prerequisites. Without this it could be scheduled at a
+    // level that runs before the reference has been read, and would resolve against nothing.
+    for (const referenceId of externalReferenceIdsByArtifactId.get(prerequisiteArtifactId) ?? []) {
+      for (const inherited of externalReferenceDependencies.get(referenceId) ?? []) {
+        for (const dependent of dependents) {
+          if (inherited !== dependent.graphId)
+            dependencyGraph.addEdge(dependent.graphId, inherited);
+        }
+      }
+    }
     for (const [prerequisite, dependent] of pairedInstances(prerequisites, dependents)) {
       if (prerequisite.graphId !== dependent.graphId) {
         dependencyGraph.addEdge(dependent.graphId, prerequisite.graphId);
       }
     }
+  }
+
+  for (const reference of externalReferences) {
+    const dependencies = [...(externalReferenceDependencies.get(reference.id) ?? [])].sort();
+    if (dependencies.length > 0) reference.dependsOn = dependencies;
   }
 
   return {

@@ -10,6 +10,7 @@ import { isKubernetesRef } from '../../utils/type-guards.js';
 import {
   DEFAULT_CRD_READY_TIMEOUT,
   DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
   DEFAULT_READINESS_TIMEOUT,
 } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
@@ -41,6 +42,7 @@ import type {
   DeploymentResult,
   DeploymentStateRecord,
   EnhancedDeploymentPlan,
+  ExternalResourceReference,
   ResolutionContext,
   RollbackResult,
 } from '../types/deployment.js';
@@ -57,6 +59,7 @@ import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debu
 import { discoverDeployedResourcesByInstance } from './deployment-state-discovery.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
 import { logHandleSnapshot } from './handle-tracing.js';
+import { classifyReadError } from './k8s-helpers.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { ReadinessWaiter } from './readiness-waiter.js';
 import { ResourceApplier } from './resource-applier.js';
@@ -83,6 +86,21 @@ interface LevelDeploymentResult {
         timestamp: Date;
       }
     | undefined;
+}
+
+/** Logger scoped to a single deployment, as produced by `this.logger.child(...)`. */
+type DeploymentLogger = ReturnType<ReturnType<typeof getComponentLogger>['child']>;
+
+/** External reference reads that must wait for resources this deployment creates. */
+interface ScheduledExternalReferences {
+  /** Level index -> references to read once that level has been applied and is ready. */
+  byLevel: Map<number, ExternalResourceReference[]>;
+  /**
+   * References still awaiting their scheduled read. Every reference in `byLevel` starts here; the
+   * up-front pass removes the ones it can satisfy without a live read (a seeded reference, or a
+   * dry run) so the scheduled pass skips them.
+   */
+  pending: Set<ExternalResourceReference>;
 }
 
 export class DirectDeploymentEngine {
@@ -368,18 +386,19 @@ export class DirectDeploymentEngine {
       });
 
       // Validate, plan, initialize monitoring, and build resolution context
-      const { enhancedPlan, context, resourceKeyMapping } = await this.validateAndPlanDeployment(
-        graph,
-        closures,
-        spec,
-        options,
-        startTime,
-        deployedResources,
-        deploymentLogger,
-        deploymentId,
-        abortSignal,
-        seedResources
-      );
+      const { enhancedPlan, context, resourceKeyMapping, scheduledExternalReferences } =
+        await this.validateAndPlanDeployment(
+          graph,
+          closures,
+          spec,
+          options,
+          startTime,
+          deployedResources,
+          deploymentLogger,
+          deploymentId,
+          abortSignal,
+          seedResources
+        );
 
       // Deploy resources and closures level by level with proper dependency handling
       for (let levelIndex = 0; levelIndex < enhancedPlan.levels.length; levelIndex++) {
@@ -414,6 +433,20 @@ export class DirectDeploymentEngine {
           );
           return earlyReturn;
         }
+
+        // Everything at this level is applied and ready, so any external reference that was
+        // waiting on it can now be read. A reference that still does not exist after its budget
+        // fails the deployment here rather than surfacing later as an unresolved status field.
+        await this.resolveScheduledExternalReferences(
+          levelIndex,
+          scheduledExternalReferences,
+          graph,
+          resourceKeyMapping,
+          options,
+          startTime,
+          abortSignal,
+          deploymentLogger
+        );
       }
 
       const result = this.buildDeploymentResult(
@@ -618,6 +651,7 @@ export class DirectDeploymentEngine {
     enhancedPlan: EnhancedDeploymentPlan;
     context: ResolutionContext;
     resourceKeyMapping: Map<string, unknown>;
+    scheduledExternalReferences: ScheduledExternalReferences;
   }> {
     // 1. Validate no cycles in dependency graph
     deploymentLogger.debug('Validating dependency graph', {
@@ -698,11 +732,26 @@ export class DirectDeploymentEngine {
       }
     }
 
+    // External references are read live rather than applied. A reference with no in-graph
+    // dependencies is read here, before anything is applied — a missing one is fatal, as it always
+    // has been. A reference that declares `dependsOn` on resources this graph creates is scheduled
+    // as graph work instead: `deployWithClosures` reads it once the level containing its last
+    // dependency has been applied and is ready. Without that, a composition could never observe a
+    // resource its own release creates.
+    const scheduledExternalReferences = this.scheduleExternalReferences(
+      graph,
+      enhancedPlan,
+      deploymentLogger
+    );
+
     for (const reference of graph.externalReferences ?? []) {
       abortSignal.throwIfAborted();
       const manifest = reference.manifest as KubernetesResource;
       const referenceId = getResourceMetadataId(manifest) ?? reference.id;
       if (resourceKeyMapping.has(referenceId)) {
+        // Already supplied by a seed or by a managed resource sharing the id. There is nothing to
+        // read now and nothing to wait for later.
+        scheduledExternalReferences.pending.delete(reference);
         deploymentLogger.debug('Resolved required external resource from deployment seed', {
           referenceId,
         });
@@ -710,42 +759,15 @@ export class DirectDeploymentEngine {
       }
       if (options.dryRun) {
         resourceKeyMapping.set(referenceId, manifest);
+        scheduledExternalReferences.pending.delete(reference);
         continue;
       }
-
-      const name = manifest.metadata?.name;
-      if (!manifest.apiVersion || !manifest.kind || !name) {
-        throw new ResourceGraphFactoryError(
-          `External reference ${referenceId} is missing apiVersion, kind, or metadata.name.`,
-          graph.name,
-          'deployment'
-        );
-      }
-      try {
-        const live = await this.k8sApi.read({
-          apiVersion: manifest.apiVersion,
-          kind: manifest.kind,
-          metadata: {
-            name,
-            ...(getResourceScope(manifest) !== 'cluster'
-              ? { namespace: manifest.metadata?.namespace ?? options.namespace ?? 'default' }
-              : {}),
-          },
-        });
-        resourceKeyMapping.set(referenceId, live);
-        deploymentLogger.debug('Resolved required external resource', {
-          referenceId,
-          apiVersion: manifest.apiVersion,
-          kind: manifest.kind,
-          name,
-        });
-      } catch (error: unknown) {
-        throw new ResourceGraphFactoryError(
-          `Required external resource ${manifest.kind}/${name} could not be read: ${ensureError(error).message}`,
-          graph.name,
-          'deployment'
-        );
-      }
+      // A deferred reference cannot exist yet on a fresh deployment, so reading it here would fail
+      // for exactly the reason this scheduling exists. Leave it to its scheduled read.
+      if (scheduledExternalReferences.pending.has(reference)) continue;
+      await this.resolveExternalReference(reference, graph, resourceKeyMapping, options, {
+        logger: deploymentLogger,
+      });
     }
 
     const context: ResolutionContext = {
@@ -767,7 +789,202 @@ export class DirectDeploymentEngine {
       },
     };
 
-    return { enhancedPlan, context, resourceKeyMapping };
+    return { enhancedPlan, context, resourceKeyMapping, scheduledExternalReferences };
+  }
+
+  /**
+   * Split external references into the ones that can be read before anything is applied and the
+   * ones that must wait for resources this graph creates.
+   *
+   * A reference carries the dependency-graph ids of its `dependsOn` targets. Its read is scheduled
+   * for the level that contains the last of those targets: once that level has been applied and is
+   * ready, the observed resource should exist. A reference whose targets are not part of this
+   * deployment plan is not deferred at all, keeping the up-front behaviour.
+   */
+  private scheduleExternalReferences(
+    graph: DeploymentResourceGraph,
+    enhancedPlan: EnhancedDeploymentPlan,
+    deploymentLogger: DeploymentLogger
+  ): ScheduledExternalReferences {
+    const scheduled: ScheduledExternalReferences = { byLevel: new Map(), pending: new Set() };
+    const references = graph.externalReferences ?? [];
+    if (references.length === 0) return scheduled;
+
+    const levelByGraphId = new Map<string, number>();
+    enhancedPlan.levels.forEach((level, levelIndex) => {
+      for (const resourceId of level.resources) levelByGraphId.set(resourceId, levelIndex);
+    });
+
+    for (const reference of references) {
+      const levels = (reference.dependsOn ?? [])
+        .map((graphId) => levelByGraphId.get(graphId))
+        .filter((levelIndex): levelIndex is number => levelIndex !== undefined);
+      if (levels.length === 0) continue;
+
+      const levelIndex = Math.max(...levels);
+      const atLevel = scheduled.byLevel.get(levelIndex);
+      if (atLevel) atLevel.push(reference);
+      else scheduled.byLevel.set(levelIndex, [reference]);
+      scheduled.pending.add(reference);
+      deploymentLogger.debug('Scheduled external reference read after its dependencies', {
+        referenceId: reference.id,
+        dependsOn: reference.dependsOn,
+        level: levelIndex + 1,
+      });
+    }
+
+    return scheduled;
+  }
+
+  /**
+   * Read the external references scheduled for a level that has just finished deploying.
+   *
+   * The read is retried until the observed resource appears or the deployment's remaining budget
+   * runs out. Exhausting the budget fails the deployment with an error naming the reference, the
+   * `dependsOn` targets it waited on, and how long it waited — never a silent skip.
+   */
+  private async resolveScheduledExternalReferences(
+    levelIndex: number,
+    scheduled: ScheduledExternalReferences,
+    graph: DeploymentResourceGraph,
+    resourceKeyMapping: Map<string, unknown>,
+    options: DeploymentOptions,
+    startTime: number,
+    abortSignal: AbortSignal,
+    deploymentLogger: DeploymentLogger
+  ): Promise<void> {
+    for (const reference of scheduled.byLevel.get(levelIndex) ?? []) {
+      if (!scheduled.pending.has(reference)) continue;
+      abortSignal.throwIfAborted();
+      await this.resolveExternalReference(reference, graph, resourceKeyMapping, options, {
+        logger: deploymentLogger,
+        retry: {
+          budgetMs: this.externalReferenceBudget(options, startTime),
+          abortSignal,
+        },
+      });
+      scheduled.pending.delete(reference);
+    }
+  }
+
+  /**
+   * Remaining time this deployment may spend waiting for a single observed resource to appear.
+   *
+   * Bounded by the same per-call read budget the rest of the engine polls against, and kept one
+   * poll interval short of the deployment's own timeout so a reference that never appears fails
+   * with the error naming it rather than racing the generic deployment timeout.
+   */
+  private externalReferenceBudget(options: DeploymentOptions, startTime: number): number {
+    const remaining = (options.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT) - (Date.now() - startTime);
+    return Math.max(0, Math.min(remaining - DEFAULT_POLL_INTERVAL, DEFAULT_READINESS_TIMEOUT));
+  }
+
+  /**
+   * Read one external reference into the resolution context, or fail the deployment.
+   *
+   * Without `retry` this is the historical single read that happens before anything is applied.
+   * With `retry` it polls until the observed resource appears or the budget runs out, which is how
+   * a reference that waits on resources this graph creates is resolved.
+   */
+  private async resolveExternalReference(
+    reference: ExternalResourceReference,
+    graph: DeploymentResourceGraph,
+    resourceKeyMapping: Map<string, unknown>,
+    options: DeploymentOptions,
+    settings: {
+      logger: DeploymentLogger;
+      retry?: { budgetMs: number; abortSignal: AbortSignal };
+    }
+  ): Promise<void> {
+    const manifest = reference.manifest as KubernetesResource;
+    const referenceId = getResourceMetadataId(manifest) ?? reference.id;
+    const name = manifest.metadata?.name;
+    if (!manifest.apiVersion || !manifest.kind || !name) {
+      throw new ResourceGraphFactoryError(
+        `External reference ${referenceId} is missing apiVersion, kind, or metadata.name.`,
+        graph.name,
+        'deployment'
+      );
+    }
+
+    const resourceRef = {
+      apiVersion: manifest.apiVersion,
+      kind: manifest.kind,
+      metadata: {
+        name,
+        ...(getResourceScope(manifest) !== 'cluster'
+          ? { namespace: manifest.metadata?.namespace ?? options.namespace ?? 'default' }
+          : {}),
+      },
+    };
+
+    const readStartedAt = Date.now();
+    const deadline = readStartedAt + (settings.retry?.budgetMs ?? 0);
+    const dependsOnTargets = (reference.dependsOn ?? []).join(', ') || 'none';
+    let lastDetail: string | undefined;
+
+    for (;;) {
+      settings.retry?.abortSignal.throwIfAborted();
+      try {
+        const live = await this.k8sApi.read(resourceRef);
+        resourceKeyMapping.set(referenceId, live);
+        settings.logger.debug('Resolved required external resource', {
+          referenceId,
+          apiVersion: manifest.apiVersion,
+          kind: manifest.kind,
+          name,
+          ...(settings.retry ? { waitedMs: Date.now() - readStartedAt } : {}),
+        });
+        return;
+      } catch (error: unknown) {
+        const assessment = classifyReadError(error);
+        lastDetail = assessment.detail;
+
+        // A permanent failure — bad credentials, a rejected request, a kind the cluster does not
+        // serve — reads the same on every attempt. Polling it to the deadline only delays the
+        // deployment by minutes and then reports a timeout that hides the actual cause.
+        if (!assessment.retryable) {
+          settings.logger.debug('External reference read failed permanently', {
+            referenceId,
+            apiVersion: manifest.apiVersion,
+            kind: manifest.kind,
+            name,
+            classification: assessment.classification,
+            statusCode: assessment.statusCode,
+          });
+          throw new ResourceGraphFactoryError(
+            `Required external resource ${manifest.kind}/${name} (reference '${referenceId}') could not be read: ` +
+              `${assessment.summary}. Waiting cannot fix this, so the deployment failed immediately ` +
+              `instead of polling its dependsOn targets [${dependsOnTargets}]: ${assessment.detail}`,
+            graph.name,
+            'deployment'
+          );
+        }
+      }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await this.abortableDelay(
+        Math.min(DEFAULT_POLL_INTERVAL, remaining),
+        settings.retry?.abortSignal
+      );
+    }
+
+    if (settings.retry) {
+      throw new ResourceGraphFactoryError(
+        `Required external resource ${manifest.kind}/${name} (reference '${referenceId}') could not be read ` +
+          `after waiting ${Date.now() - readStartedAt}ms for its dependsOn targets [${dependsOnTargets}] ` +
+          `to produce it: ${lastDetail ?? 'unknown error'}`,
+        graph.name,
+        'deployment'
+      );
+    }
+
+    throw new ResourceGraphFactoryError(
+      `Required external resource ${manifest.kind}/${name} could not be read: ${lastDetail ?? 'unknown error'}`,
+      graph.name,
+      'deployment'
+    );
   }
 
   /**
