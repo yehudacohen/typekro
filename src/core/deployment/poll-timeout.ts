@@ -83,3 +83,63 @@ export async function callWithTimeout<T>(
 export function perCallTimeout(remainingMs: number, capMs: number): number {
   return Math.min(capMs, remainingMs);
 }
+
+/**
+ * Kubernetes client methods {@link withCallDeadline} bounds. Every one returns a Promise, so
+ * wrapping it in {@link callWithTimeout} preserves its contract. Anything else (property access,
+ * synchronous helpers) is passed straight through.
+ */
+const DEADLINE_BOUND_METHODS: ReadonlySet<string> = new Set([
+  'read',
+  'list',
+  'create',
+  'replace',
+  'patch',
+  'delete',
+  'listClusterCustomObject',
+  'listNamespacedCustomObject',
+]);
+
+/**
+ * Wrap a Kubernetes API client so every request it issues is bounded by `timeoutMs`.
+ *
+ * Readiness polls already bound their own calls (see {@link callWithTimeout}); everything a handler
+ * does AROUND a deploy — drift checks, safety gates, CRD migrations — historically did not, so a
+ * single wedged request (a hung exec credential, a half-open socket, an API server that accepts the
+ * connection and never answers) hangs the whole reconcile with no log line and no error. Bounding at
+ * the client makes each of those calls reject with a {@link PollTimeoutError} naming the operation.
+ *
+ * Same SCOPE / LIMITATION as {@link callWithTimeout}: this bounds the caller's `await`, it does not
+ * cancel the in-flight request.
+ */
+export function withCallDeadline<T extends object>(
+  api: T,
+  options: {
+    readonly timeoutMs: number;
+    readonly label: string;
+    readonly abortSignal?: AbortSignal;
+  }
+): T {
+  const { timeoutMs, label, abortSignal } = options;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return api;
+  return new Proxy(api, {
+    get(target, property) {
+      const value = Reflect.get(target, property);
+      if (
+        typeof value !== 'function' ||
+        typeof property !== 'string' ||
+        !DEADLINE_BOUND_METHODS.has(property)
+      ) {
+        return value;
+      }
+      const method = value as (...args: unknown[]) => Promise<unknown>;
+      return (...args: unknown[]) =>
+        callWithTimeout(
+          () => method.apply(target, args),
+          timeoutMs,
+          `${label} ${property}`,
+          abortSignal
+        );
+    },
+  });
+}

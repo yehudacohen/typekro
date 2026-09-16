@@ -304,6 +304,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every Kubernetes call the Alchemy KRO provider makes AROUND a deploy is now
+  bounded by a per-request deadline. The drift and terminating-identity reads,
+  the singleton and pre-hoist safety gates, the hoisted-namespace ownership
+  probe and the two generated-CRD migrations all issued unbounded requests: a
+  wedged call (a hung exec credential, a half-open socket, an API server that
+  accepts the connection and never answers) left `reconcile` hanging with no log
+  line and no error, and the converge only died on the caller's outer timeout —
+  with no indication of which resource was stuck. Observed on an update of a
+  `ResourceGraphDefinition` whose live object had been deleted out-of-band while
+  its generated CRD was retained: the handler never reached the deployment
+  engine, so not even `Starting deployment` was logged. Each call now rejects
+  with a `PollTimeoutError` naming the resource and the operation. The budget is
+  `options.httpTimeouts.default` (default 30s), capped by the deployment
+  timeout; `options.httpTimeouts` is also forwarded to the deployment engine the
+  Alchemy path constructs, which previously ignored it.
 - `Composable<T>` mangled `readonly` array fields. Its passthrough list tested
   the mutable `unknown[]`, which a `readonly T[]` does not satisfy, so those
   fields fell into the object branch and were rebuilt element-wise as

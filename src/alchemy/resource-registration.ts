@@ -24,10 +24,14 @@ import type { Resource as ResourceT } from 'alchemy/Resource';
 import * as ResourceMod from 'alchemy/Resource';
 import { Effect } from 'effect';
 import * as Redacted from 'effect/Redacted';
-import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
+import {
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_HTTP_READ_TIMEOUT,
+} from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { ResourceReplacementTimeoutError } from '../core/deployment/errors.js';
 import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
+import { withCallDeadline } from '../core/deployment/poll-timeout.js';
 import {
   migrateLegacyKroArtifactBindingCrd,
   repairRetainedKroGeneratedCrdOwnership,
@@ -572,7 +576,11 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       await (dependencies.migrateLegacyArtifactBindings ?? migrateLegacyKroArtifactBindingCrd)(
         dependencies.kubeConfigForMigration?.() ??
           _createClientProvider(effectiveProps, 'artifact-binding-migration'),
-        resourceForDeploy as unknown as KubernetesResource
+        resourceForDeploy as unknown as KubernetesResource,
+        {
+          requestTimeoutMs: _clusterCallBudgetMs(effectiveProps),
+          ...(abortSignal ? { abortSignal } : {}),
+        }
       );
     }
     const deployProps =
@@ -592,7 +600,11 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       await (dependencies.repairRetainedCrdOwnership ?? repairRetainedKroGeneratedCrdOwnership)(
         dependencies.kubeConfigForMigration?.() ??
           _createClientProvider(effectiveProps, 'retained-crd-adoption'),
-        resourceForDeploy as unknown as KubernetesResource
+        resourceForDeploy as unknown as KubernetesResource,
+        {
+          requestTimeoutMs: _clusterCallBudgetMs(effectiveProps),
+          ...(abortSignal ? { abortSignal } : {}),
+        }
       );
     }
     _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, effectiveProps, resourceProperties);
@@ -633,14 +645,54 @@ function persistedKroResourceIdentity(
   };
 }
 
+/**
+ * The per-request budget for every cluster call this handler makes AROUND `engine.deploy` — the
+ * drift/terminating-identity reads, the singleton and pre-hoist safety gates, the hoisted-namespace
+ * ownership probe and the generated-CRD migrations. The engine bounds its own requests; these had
+ * no bound at all, so one wedged request (a hung exec credential, a half-open socket, an API server
+ * that accepts the connection and never answers) left the reconcile hanging with no log line and no
+ * error until the caller's outer timeout killed the whole converge.
+ *
+ * Capped by the deployment timeout so a single call can never outlive the deploy it precedes.
+ */
+function _clusterCallBudgetMs<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): number {
+  const cap = props.options?.httpTimeouts?.default ?? DEFAULT_HTTP_READ_TIMEOUT;
+  const deploymentTimeout = props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT;
+  return Math.max(1, Math.min(cap, deploymentTimeout));
+}
+
+/** A Kubernetes client for the handler's own calls, bounded by {@link _clusterCallBudgetMs}. */
+function _boundClusterCalls<T extends Enhanced<unknown, unknown>, Api extends object>(
+  api: Api,
+  props: TypeKroResourceProps<T>,
+  phase: string,
+  abortSignal?: AbortSignal
+): Api {
+  const name = props.resource.metadata?.name;
+  const kind = props.resource.kind ?? 'resource';
+  return withCallDeadline(api, {
+    timeoutMs: _clusterCallBudgetMs(props),
+    label: `${kind} ${name ?? '<unnamed>'} (${phase})`,
+    ...(abortSignal ? { abortSignal } : {}),
+  });
+}
+
 function identityReader(
   props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
   reader: KroResourceIdentityReader | undefined,
-  phase: string
+  phase: string,
+  abortSignal?: AbortSignal
 ): KroResourceIdentityReader {
   if (reader) return reader;
   const provider = _createClientProvider(props, phase);
-  const api = createBunCompatibleKubernetesObjectApi(provider);
+  const api = _boundClusterCalls(
+    createBunCompatibleKubernetesObjectApi(provider, props.options?.httpTimeouts),
+    props,
+    phase,
+    abortSignal
+  );
   return {
     read: async (resource: KubernetesResource) =>
       (await api.read(resource as Parameters<typeof api.read>[0])) as KubernetesResource,
@@ -699,7 +751,12 @@ async function waitForPersistedIdentityDeletion(
 ): Promise<void> {
   const identity = persistedKroResourceIdentity(output);
   if (!identity) return;
-  const reader = identityReader(props, dependencies.reader, 'alchemy-terminating-identity');
+  const reader = identityReader(
+    props,
+    dependencies.reader,
+    'alchemy-terminating-identity',
+    abortSignal
+  );
   const sleep =
     dependencies.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -805,7 +862,11 @@ async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unkn
   if (typeof incoming !== 'string' || incoming.length === 0) return;
 
   const kc = _createClientProvider(props, 'pre-hoist-check');
-  const api = createBunCompatibleKubernetesObjectApi(kc);
+  const api = _boundClusterCalls(
+    createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
+    props,
+    'pre-hoist-check'
+  );
 
   // The set of namespaces to check: the incoming one PLUS every EXISTING instance's
   // namespace (finding #7). An upgrade prunes the ApplySet for ALL instances of the
@@ -910,7 +971,11 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
   if (!query) return result;
 
   // STRICT CRD discovery — a list failure FAILS CLOSED (throws).
-  const objectApi = deps.objectApi ?? createBunCompatibleKubernetesObjectApi(kc);
+  const objectApi = _boundClusterCalls(
+    deps.objectApi ?? createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
+    props,
+    'pre-hoist-instance-scan'
+  );
   const crds = (await objectApi.list(
     'apiextensions.k8s.io/v1',
     'CustomResourceDefinition'
@@ -928,20 +993,23 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
     spec?: unknown;
   }>;
   try {
-    const customApi =
+    const customApi = _boundClusterCalls(
       deps.customApi ??
-      (createBunCompatibleCustomObjectsApi(kc) as unknown as {
-        listClusterCustomObject(request: {
-          group: string;
-          version: string;
-          plural: string;
-        }): Promise<{
-          items?: Array<{
-            metadata?: { namespace?: unknown; annotations?: Record<string, string> };
-            spec?: unknown;
+        (createBunCompatibleCustomObjectsApi(kc) as unknown as {
+          listClusterCustomObject(request: {
+            group: string;
+            version: string;
+            plural: string;
+          }): Promise<{
+            items?: Array<{
+              metadata?: { namespace?: unknown; annotations?: Record<string, string> };
+              spec?: unknown;
+            }>;
           }>;
-        }>;
-      });
+        }),
+      props,
+      'pre-hoist-instance-scan'
+    );
     const listResponse = await customApi.listClusterCustomObject({
       group: query.group,
       version: query.version,
@@ -1051,7 +1119,11 @@ async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unk
   if (typeof name !== 'string' || name.length === 0) return props;
 
   const kc = _createClientProvider(props, 'ownership-check');
-  const api = createBunCompatibleKubernetesObjectApi(kc);
+  const api = _boundClusterCalls(
+    createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
+    props,
+    'ownership-check'
+  );
 
   // CREATE-FIRST ownership (finding #3), matching the imperative path: attempt to CREATE
   // the namespace WITH the build-time stamp. A 201 is atomic proof typekro created it
@@ -1120,7 +1192,11 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   let live: LiveSingletonOwner | undefined;
   try {
     const kc = _createClientProvider(props, 'singleton-drift-check');
-    const api = createBunCompatibleKubernetesObjectApi(kc);
+    const api = _boundClusterCalls(
+      createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
+      props,
+      'singleton-drift-check'
+    );
     live = (await api.read(props.resource as Parameters<typeof api.read>[0])) as LiveSingletonOwner;
   } catch {
     return; // not found / CRD not yet created / cluster unreachable → no existing spec to clash with
@@ -1563,7 +1639,17 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
 ): Promise<TypeKroDeployer> {
   // Use dynamic import to avoid circular dependencies
   const { DirectDeploymentEngine } = await import('../core/deployment/engine.js');
-  const engine = new DirectDeploymentEngine(kc);
+  const { DeploymentMode } = await import('../core/references/index.js');
+  // Forward the caller's HTTP timeout configuration. Without it the engine's own client is built
+  // with no per-request budget on the Node runtime, so a wedged request inside a deploy hangs the
+  // reconcile the same way the handler's own calls used to.
+  const engine = new DirectDeploymentEngine(
+    kc,
+    undefined,
+    undefined,
+    DeploymentMode.DIRECT,
+    props.options?.httpTimeouts
+  );
 
   if (props.deploymentStrategy === 'direct') {
     return new DirectTypeKroDeployer(engine);
