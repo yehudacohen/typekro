@@ -1,12 +1,11 @@
 import type { KubeConfig, KubernetesObject } from '@kubernetes/client-node';
-import { DEFAULT_HTTP_READ_TIMEOUT } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
 import {
   createBunCompatibleKubernetesObjectApi,
   getErrorStatusCode,
 } from '../kubernetes/index.js';
 import { KRO_ARTIFACT_BINDINGS_SPEC_FIELD } from '../planning/values.js';
-import { withCallDeadline } from './poll-timeout.js';
+import { type CallDeadlineBudget, callDeadlineBudget, withCallDeadline } from './poll-timeout.js';
 
 const STABLE_BINDING_SCHEMA = 'map[string]map[string]string';
 const MAX_CRD_PATCH_ATTEMPTS = 5;
@@ -21,21 +20,22 @@ type MigrationApi = Pick<
 /**
  * Injectable seams shared by both cluster operations in this module.
  *
- * `requestTimeoutMs` / `abortSignal` bound every request the operation issues. Without a bound, a
+ * `requestBudget` / `abortSignal` bound every request the operation issues. Without a bound, a
  * wedged Kubernetes call here never settles: the caller (the Alchemy reconcile handler) then never
  * returns and never throws, emits no further log line, and the converge only dies on its outer
  * timeout. See {@link withCallDeadline}.
  */
 interface MigrationDependencies {
   readonly api?: MigrationApi;
-  /** Per-request budget. Defaults to {@link DEFAULT_HTTP_READ_TIMEOUT}. */
-  readonly requestTimeoutMs?: number;
+  /** Per-verb request budget. Defaults to the repo's HTTP read/write/delete timeouts. */
+  readonly requestBudget?: CallDeadlineBudget;
   readonly abortSignal?: AbortSignal;
 }
 
 /**
  * The bounded client for one RGD operation: the caller's injected API or a fresh one, wrapped so
- * every request rejects — naming the ResourceGraphDefinition — instead of hanging forever.
+ * every request rejects — naming the ResourceGraphDefinition — instead of hanging forever. The
+ * injected API is wrapped too: a test that supplies a wedged client must see the bound, not a hang.
  */
 function migrationApi(
   kubeConfig: KubeConfig,
@@ -45,7 +45,7 @@ function migrationApi(
 ): MigrationApi {
   const api = dependencies.api ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
   return withCallDeadline(api, {
-    timeoutMs: dependencies.requestTimeoutMs ?? DEFAULT_HTTP_READ_TIMEOUT,
+    budget: dependencies.requestBudget ?? callDeadlineBudget(undefined),
     label: `ResourceGraphDefinition ${rgdName} (${reason})`,
     ...(dependencies.abortSignal ? { abortSignal: dependencies.abortSignal } : {}),
   });

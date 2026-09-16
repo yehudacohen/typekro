@@ -8,6 +8,7 @@ import {
   finishDeletionResult,
   readDeletionResourceIdentity,
 } from '../core/deployment/deletion-result.js';
+import { callDeadlineBudget, withCallDeadline } from '../core/deployment/poll-timeout.js';
 import { createRollbackManager } from '../core/deployment/rollback-manager.js';
 import {
   createBunCompatibleCustomObjectsApi,
@@ -45,6 +46,29 @@ function getSchemaGroup(options: KroDeletionOptions): string {
 
 function getInstanceApiVersion(options: KroDeletionOptions): string {
   return `${getSchemaGroup(options)}/${getSchemaVersion(options.apiVersion)}`;
+}
+
+/**
+ * Bound every request a teardown client issues.
+ *
+ * Teardown polls (`delete` then read to a real 404) re-check their deadline only BETWEEN
+ * iterations, so they rely on each request settling. A wedged call — a hung exec credential, an API
+ * server that accepts the connection and never answers — otherwise hangs the destroy the same way
+ * it hung reconcile, with no error and no log line. Capped by the deletion timeout so no single
+ * request outlives the teardown it belongs to. The INJECTED client is wrapped too, so the test
+ * seams exercise the bound rather than escaping it.
+ */
+function boundDeletionCalls<T extends object>(
+  api: T,
+  options: KroDeletionOptions,
+  phase: string,
+  abortSignal?: AbortSignal
+): T {
+  return withCallDeadline(api, {
+    budget: callDeadlineBudget(undefined, options.timeout),
+    label: `KRO ${options.kind} ${options.rgdName} (${phase})`,
+    ...(abortSignal ? { abortSignal } : {}),
+  });
 }
 
 function getKubernetesErrorCode(error: unknown): number | undefined {
@@ -149,8 +173,9 @@ async function lookupCRDPlural(
   ) as KubernetesObjectCleanupApi
 ): Promise<string | undefined> {
   const logger = getComponentLogger('alchemy-kro-delete');
+  const boundedApi = boundDeletionCalls(k8sApi, options, 'crd-plural-lookup');
   try {
-    const crds = (await k8sApi.list(
+    const crds = (await boundedApi.list(
       'apiextensions.k8s.io/v1',
       'CustomResourceDefinition'
     )) as unknown as {
@@ -192,7 +217,8 @@ async function listKroInstances(
     return [];
   }
 
-  const response = await customApi.listClusterCustomObject({
+  const boundedCustomApi = boundDeletionCalls(customApi, options, 'instance-list', abortSignal);
+  const response = await boundedCustomApi.listClusterCustomObject({
     group: getSchemaGroup(options),
     version: getSchemaVersion(options.apiVersion),
     plural,
@@ -266,7 +292,14 @@ export async function deleteKroDefinition(
   // ONE gating mechanism: the engine's rollback manager deletes then polls to a REAL 404
   // and THROWS on timeout — the SAME primitive the imperative KRO teardown uses. A
   // pre-existing 404 is treated as already-gone.
-  const rollback = createRollbackManager(k8sApi as unknown as KubernetesObjectApi);
+  const rollback = createRollbackManager(
+    boundDeletionCalls(
+      k8sApi,
+      options,
+      'definition-delete',
+      abortSignal
+    ) as unknown as KubernetesObjectApi
+  );
   const timeout = options.timeout ?? 300000;
 
   // The RGD delete is a HARD gate (throws on timeout).
@@ -335,10 +368,14 @@ async function deleteKroInstanceFinalizerSafeWithApis(
   throwIfAborted(abortSignal);
   const logger = getComponentLogger('alchemy-kro-delete');
   const {
-    customApi,
-    k8sApi,
+    customApi: rawCustomApi,
+    k8sApi: rawK8sApi,
     sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   } = apis;
+  const k8sApi = boundDeletionCalls(rawK8sApi, options, 'instance-delete', abortSignal);
+  const customApi = rawCustomApi
+    ? boundDeletionCalls(rawCustomApi, options, 'instance-delete', abortSignal)
+    : rawCustomApi;
   const apiVersion = getInstanceApiVersion(options);
   const timeout = options.timeout ?? 300000;
   const deletion = createDeletionResultState('kro', options.rgdName, name);

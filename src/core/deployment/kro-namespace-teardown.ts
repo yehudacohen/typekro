@@ -9,6 +9,7 @@ import {
 import { getComponentLogger } from '../logging/index.js';
 import type { TypeKroLogger } from '../logging/types.js';
 import { isConflictError, isNotFoundError } from './k8s-helpers.js';
+import { type CallDeadlineBudget, callDeadlineBudget, withCallDeadline } from './poll-timeout.js';
 import { createRollbackManager } from './rollback-manager.js';
 
 /**
@@ -139,9 +140,23 @@ export async function listNamespacesOwnedByRgd(
     k8sApi?: NamespaceListApi;
     logger?: TypeKroLogger;
     abortSignal?: AbortSignal;
+    /**
+     * Per-verb request budget. Defaults to the repo's HTTP timeouts. The pagination loop below
+     * only re-checks its abort signal BETWEEN pages, so it relies on each page fetch settling —
+     * an unbounded fetch wedges the caller (the fail-closed pre-hoist gate, or teardown) with no
+     * error and no log line. See {@link withCallDeadline}.
+     */
+    requestBudget?: CallDeadlineBudget;
   } = {}
 ): Promise<string[]> {
-  const k8sApi = options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  const k8sApi = withCallDeadline(
+    options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig),
+    {
+      budget: options.requestBudget ?? callDeadlineBudget(undefined),
+      label: `Namespaces owned by ResourceGraphDefinition ${rgdName}`,
+      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+    }
+  );
   const owned: string[] = [];
   let continueToken: string | undefined;
   do {
@@ -424,7 +439,19 @@ export async function deleteNamespaceIfEmpty(
 ): Promise<NamespaceDeletionOutcome> {
   const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
   const context = options.context ?? {};
-  const k8sApi = options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  // Bound every request this teardown issues: its reads gate a DELETE, and a wedged call would
+  // hang the destroy with no error rather than failing safe to RETAIN. See {@link withCallDeadline}.
+  const requestBudget = callDeadlineBudget(undefined, options.timeoutMs);
+  const boundDeletionCalls = <T extends object>(api: T, phase: string): T =>
+    withCallDeadline(api, {
+      budget: requestBudget,
+      label: `Namespace ${namespace} (${phase})`,
+      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+    });
+  const k8sApi = boundDeletionCalls(
+    options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig),
+    'namespace-teardown'
+  );
   options.abortSignal?.throwIfAborted();
 
   // Early existence + OWNERSHIP check FIRST — one read serves both. A 404 means the
@@ -470,7 +497,12 @@ export async function deleteNamespaceIfEmpty(
     }
   }
 
-  const inventory = options.inventory ?? createClusterNamespaceInventory(kubeConfig);
+  const inventory =
+    options.inventory ??
+    createClusterNamespaceInventory(kubeConfig, {
+      requestBudget,
+      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+    });
   let verdict = await classifyNamespaceEmptiness(inventory, namespace, logger);
   options.abortSignal?.throwIfAborted();
   const pvcIsOnlyKnownOccupant =
@@ -505,7 +537,10 @@ export async function deleteNamespaceIfEmpty(
         reason: `namespace "${namespace}" has no metadata.uid, so residual PVC cleanup cannot be ownership-preconditioned`,
       };
     }
-    const coreApi = options.persistentVolumeCleanupApi ?? createBunCompatibleCoreV1Api(kubeConfig);
+    const coreApi = boundDeletionCalls(
+      options.persistentVolumeCleanupApi ?? createBunCompatibleCoreV1Api(kubeConfig),
+      'residual-pvc-cleanup'
+    );
     let pvcLeases: Array<{ name: string; uid: string }>;
     try {
       const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace });
@@ -693,8 +728,23 @@ const METRICS_AGGREGATION_GROUPS = new Set([
  * never persistent occupants). There is no native-vs-aggregated distinction: anything we
  * can't enumerate is uncertainty.
  */
-export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): NamespaceInventory {
-  const objectApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+export function createClusterNamespaceInventory(
+  kubeConfig: k8s.KubeConfig,
+  options: { requestBudget?: CallDeadlineBudget; abortSignal?: AbortSignal } = {}
+): NamespaceInventory {
+  // Discovery fans out across every served API group, including AGGREGATED ones whose external
+  // backend may be unreachable. An unbounded call to one of those stalls the whole teardown; a
+  // bounded one throws, which this gate already turns into a fail-safe RETAIN.
+  const bound = <T extends object>(api: T, phase: string): T =>
+    withCallDeadline(api, {
+      budget: options.requestBudget ?? callDeadlineBudget(undefined),
+      label: `Namespace inventory (${phase})`,
+      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+    });
+  const objectApi = bound(
+    createBunCompatibleKubernetesObjectApi(kubeConfig),
+    'namespaced-object-list'
+  );
   return {
     async discoverNamespacedTypes(): Promise<NamespacedResourceType[]> {
       // Deduplicate by apiVersion/kind — a kind can surface via more than one path.
@@ -733,20 +783,26 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
       const k8sClient = await import('@kubernetes/client-node');
 
       // 1. Core group (`/api/v1`) — no group name, so use the core client directly.
-      const coreClient = createBunCompatibleApiClient(kubeConfig, k8sClient.CoreV1Api);
+      const coreClient = bound(
+        createBunCompatibleApiClient(kubeConfig, k8sClient.CoreV1Api),
+        'core-discovery'
+      );
       addFromList('v1', await coreClient.getAPIResources());
 
       // 2. EVERY other served API group, enumerated dynamically. `getAPIVersions` lists
       // all served groups; for each we discover its preferred version's resources via
       // the GENERIC per-group endpoint. A group we cannot enumerate (discovery failure,
       // or an unreachable aggregated backend) is UNCERTAINTY → RETAIN (throw).
-      const apisApi = createBunCompatibleApiClient(kubeConfig, k8sClient.ApisApi);
+      const apisApi = bound(
+        createBunCompatibleApiClient(kubeConfig, k8sClient.ApisApi),
+        'group-discovery'
+      );
       const groupList = await apisApi.getAPIVersions();
       // Cast to the CustomObjectsApi shape whose generic `getAPIResources({group, version})`
       // hits `GET /apis/{group}/{version}` for ANY group (built-in or CRD-backed).
-      const customApi = createBunCompatibleApiClient(
-        kubeConfig,
-        k8sClient.CustomObjectsApi
+      const customApi = bound(
+        createBunCompatibleApiClient(kubeConfig, k8sClient.CustomObjectsApi),
+        'group-resource-discovery'
       ) as unknown as {
         getAPIResources(request: {
           group: string;

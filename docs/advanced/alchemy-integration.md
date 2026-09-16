@@ -203,6 +203,41 @@ Use a secured Alchemy state backend regardless: state still contains non-secret 
 
 > **Upgrade note:** Alchemy state written by older TypeKro releases may already contain inline static kubeconfig credentials. The current provider rejects that legacy state rather than silently continuing to persist or consume it. Before upgrading, reconcile affected declarations with a default/file source or named bindings while the previous release is still available, or destroy them with the previous release. A state-driven delete that has only rejected legacy credentials fails closed; TypeKro will not guess a cluster or copy those bytes into the new contract.
 
+## Request timeouts: `httpTimeouts`
+
+Every Kubernetes request the provider issues is bounded. That covers the calls TypeKro's deployment
+engine makes when it applies a resource, and — since the drift check, the safety gates, the
+generated-CRD migrations and the finalizer-safe teardown all talk to the cluster themselves — the
+calls the provider makes around a deploy as well. A request that never returns (a hung `exec`
+credential, a half-open socket, an API server that accepts the connection and never answers) is the
+one failure a poll cannot recover from on its own: the `await` never settles, so the loop never
+re-checks its deadline and the converge hangs with no error and no log line.
+
+The budget is per verb, taken from the factory's `httpTimeouts` and capped by the deployment
+timeout:
+
+```typescript
+const factory = graph.factory('kro', {
+  namespace: 'default',
+  httpTimeouts: {
+    default: 30_000, // GET / LIST
+    create: 120_000, // POST — may sit behind admission webhooks
+    update: 120_000, // PUT / PATCH
+    delete: 180_000, // DELETE — may wait on finalizers
+  },
+});
+```
+
+A call that exceeds its budget rejects with a `PollTimeoutError` naming the resource and the method,
+so the converge fails fast and points at the stuck object instead of stalling.
+
+> **Note on cancellation.** The bound applies to the caller's `await`, not to the socket. Under Bun
+> the client also sets an HTTP-level timeout that aborts the request itself; on Node the stock
+> `@kubernetes/client-node` client takes no timeout configuration, so the in-flight request (and a
+> wedged `exec`-auth subprocess) can outlive the rejection. The durable cure for that failure mode is
+> to avoid per-request `exec` auth — use a pre-minted bearer token in the kubeconfig — so no
+> credential subprocess is spawned at all.
+
 ## Beyond Kubernetes objects: ClickHouseSchema
 
 Not everything a converge has to do is an `apply`. Creating a database, an `S3Queue` table or a

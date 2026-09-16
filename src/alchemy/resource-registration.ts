@@ -24,14 +24,16 @@ import type { Resource as ResourceT } from 'alchemy/Resource';
 import * as ResourceMod from 'alchemy/Resource';
 import { Effect } from 'effect';
 import * as Redacted from 'effect/Redacted';
-import {
-  DEFAULT_DEPLOYMENT_TIMEOUT,
-  DEFAULT_HTTP_READ_TIMEOUT,
-} from '../core/config/defaults.js';
+import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { ResourceReplacementTimeoutError } from '../core/deployment/errors.js';
 import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
-import { withCallDeadline } from '../core/deployment/poll-timeout.js';
+import {
+  type CallDeadlineBudget,
+  callDeadlineBudget,
+  PollTimeoutError,
+  withCallDeadline,
+} from '../core/deployment/poll-timeout.js';
 import {
   migrateLegacyKroArtifactBindingCrd,
   repairRetainedKroGeneratedCrdOwnership,
@@ -265,7 +267,7 @@ export const kroProvider = ProviderMod.effect(
         return { action: 'replace' as const };
       }
       return yield* Effect.tryPromise({
-        try: () => detectKroResourceIdentityDrift(olds, output),
+        try: (abortSignal) => detectKroResourceIdentityDrift(olds, output, undefined, abortSignal),
         catch: ensureError,
       });
     }),
@@ -494,18 +496,18 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   // typekro-hoisted workload Namespace, refuse to proceed if it is still a KRO ApplySet
   // member from a pre-hoist RGD — rolling the new hoisted RGD over the old one would let
   // KRO's prune delete it. Cluster-checked here since `toAlchemyResources` is cluster-free.
-  await _assertNoPreHoistNamespaceConflictAlchemy(props, logger);
+  await _assertNoPreHoistNamespaceConflictAlchemy(props, logger, {}, abortSignal);
   abortSignal?.throwIfAborted();
   // Singleton-owner spec-drift protection (the declarative analog of `assertNoDeployedSingletonSpecDrift`
   // in the imperative deploy path): refuse to clobber a shared singleton that already exists with a
   // different spec. Cluster-checked here since `toAlchemyResources` is intentionally cluster-free.
-  await _assertNoSingletonDrift(props, logger);
+  await _assertNoSingletonDrift(props, logger, abortSignal);
   abortSignal?.throwIfAborted();
   // finding #2 (adopted-namespace): the hoisted workload Namespace is stamped
   // owned-by-this-RGD at BUILD time (cluster-free). READ the live namespace here and
   // KEEP that stamp ONLY when typekro actually creates it (404) or already owns it;
   // otherwise strip it so teardown never deletes a namespace typekro merely adopted.
-  const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger);
+  const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger, abortSignal);
   abortSignal?.throwIfAborted();
   const { deployer, dispose } = await _resolveDeployer(effectiveProps, 'deployment');
   try {
@@ -578,7 +580,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
           _createClientProvider(effectiveProps, 'artifact-binding-migration'),
         resourceForDeploy as unknown as KubernetesResource,
         {
-          requestTimeoutMs: _clusterCallBudgetMs(effectiveProps),
+          requestBudget: _clusterCallBudget(effectiveProps),
           ...(abortSignal ? { abortSignal } : {}),
         }
       );
@@ -602,7 +604,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
           _createClientProvider(effectiveProps, 'retained-crd-adoption'),
         resourceForDeploy as unknown as KubernetesResource,
         {
-          requestTimeoutMs: _clusterCallBudgetMs(effectiveProps),
+          requestBudget: _clusterCallBudget(effectiveProps),
           ...(abortSignal ? { abortSignal } : {}),
         }
       );
@@ -646,24 +648,34 @@ function persistedKroResourceIdentity(
 }
 
 /**
- * The per-request budget for every cluster call this handler makes AROUND `engine.deploy` — the
+ * The per-verb request budget for every cluster call this handler makes ITSELF — the
  * drift/terminating-identity reads, the singleton and pre-hoist safety gates, the hoisted-namespace
- * ownership probe and the generated-CRD migrations. The engine bounds its own requests; these had
- * no bound at all, so one wedged request (a hung exec credential, a half-open socket, an API server
- * that accepts the connection and never answers) left the reconcile hanging with no log line and no
- * error until the caller's outer timeout killed the whole converge.
+ * ownership probe, the generated-CRD migrations, and the client handed to the deployment engine.
+ * None of them had a bound, so one wedged request (a hung exec credential, a half-open socket, an
+ * API server that accepts the connection and never answers) left the reconcile hanging with no log
+ * line and no error until the caller's outer timeout killed the whole converge. The engine's own
+ * readiness polls bound their reads, but nothing bounded the engine's applies — and off Bun the
+ * client's HTTP-level timeouts do not exist at all — so its client is wrapped here too.
  *
- * Capped by the deployment timeout so a single call can never outlive the deploy it precedes.
+ * Derived from `options.httpTimeouts` PER VERB — a read budget applied to a create or a delete
+ * would abort writes that are legitimately slow behind admission webhooks or finalizers — and
+ * capped by the deployment timeout so a single call can never outlive the deploy it belongs to.
  */
-function _clusterCallBudgetMs<T extends Enhanced<unknown, unknown>>(
+function _clusterCallBudget<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>
-): number {
-  const cap = props.options?.httpTimeouts?.default ?? DEFAULT_HTTP_READ_TIMEOUT;
-  const deploymentTimeout = props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT;
-  return Math.max(1, Math.min(cap, deploymentTimeout));
+): CallDeadlineBudget {
+  return callDeadlineBudget(
+    props.options?.httpTimeouts,
+    props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT
+  );
 }
 
-/** A Kubernetes client for the handler's own calls, bounded by {@link _clusterCallBudgetMs}. */
+/**
+ * A Kubernetes client for the handler's own calls, bounded by {@link _clusterCallBudget}.
+ *
+ * An INJECTED client (a test seam) is wrapped too, deliberately: the bound is what these tests
+ * exist to prove, and a seam that escaped it would let a regression reappear as a green run.
+ */
 function _boundClusterCalls<T extends Enhanced<unknown, unknown>, Api extends object>(
   api: Api,
   props: TypeKroResourceProps<T>,
@@ -673,7 +685,7 @@ function _boundClusterCalls<T extends Enhanced<unknown, unknown>, Api extends ob
   const name = props.resource.metadata?.name;
   const kind = props.resource.kind ?? 'resource';
   return withCallDeadline(api, {
-    timeoutMs: _clusterCallBudgetMs(props),
+    budget: _clusterCallBudget(props),
     label: `${kind} ${name ?? '<unnamed>'} (${phase})`,
     ...(abortSignal ? { abortSignal } : {}),
   });
@@ -685,7 +697,7 @@ function identityReader(
   phase: string,
   abortSignal?: AbortSignal
 ): KroResourceIdentityReader {
-  if (reader) return reader;
+  if (reader) return _boundClusterCalls(reader, props, phase, abortSignal);
   const provider = _createClientProvider(props, phase);
   const api = _boundClusterCalls(
     createBunCompatibleKubernetesObjectApi(provider, props.options?.httpTimeouts),
@@ -803,12 +815,13 @@ async function waitForPersistedIdentityDeletion(
 async function detectKroResourceIdentityDrift(
   props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
   output: TypeKroResource<Enhanced<unknown, unknown>> | undefined,
-  reader?: KroResourceIdentityReader
+  reader?: KroResourceIdentityReader,
+  abortSignal?: AbortSignal
 ): Promise<{ readonly action: 'update' } | undefined> {
   const prior = output?.deployedResource;
   const identity = persistedKroResourceIdentity(output);
   if (!prior || !identity) return { action: 'update' };
-  const liveReader = identityReader(props, reader, 'alchemy-drift-check');
+  const liveReader = identityReader(props, reader, 'alchemy-drift-check', abortSignal);
 
   let live: KubernetesResource;
   try {
@@ -855,7 +868,9 @@ export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.
  */
 async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  logger: TypeKroLogger
+  logger: TypeKroLogger,
+  deps: AlchemyPreHoistDeps = {},
+  abortSignal?: AbortSignal
 ): Promise<void> {
   if (props.namespaceEmptyGate !== true) return;
   const incoming = props.resource.metadata?.name;
@@ -865,14 +880,15 @@ async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unkn
   const api = _boundClusterCalls(
     createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
     props,
-    'pre-hoist-check'
+    'pre-hoist-check',
+    abortSignal
   );
 
   // The set of namespaces to check: the incoming one PLUS every EXISTING instance's
   // namespace (finding #7). An upgrade prunes the ApplySet for ALL instances of the
   // shared RGD at once, so missing one would let KRO delete it.
   const namespacesToCheck = new Set<string>([incoming]);
-  for (const ns of await _existingInstanceNamespacesAlchemy(props, kc, logger)) {
+  for (const ns of await _existingInstanceNamespacesAlchemy(props, kc, logger, deps, abortSignal)) {
     namespacesToCheck.add(ns);
   }
 
@@ -964,7 +980,8 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
   props: TypeKroResourceProps<T>,
   kc: KubeConfig,
   logger: TypeKroLogger,
-  deps: AlchemyPreHoistDeps = {}
+  deps: AlchemyPreHoistDeps = {},
+  abortSignal?: AbortSignal
 ): Promise<Set<string>> {
   const result = new Set<string>();
   const query = props.namespacePreHoistQuery;
@@ -974,7 +991,8 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
   const objectApi = _boundClusterCalls(
     deps.objectApi ?? createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
     props,
-    'pre-hoist-instance-scan'
+    'pre-hoist-instance-scan',
+    abortSignal
   );
   const crds = (await objectApi.list(
     'apiextensions.k8s.io/v1',
@@ -1008,7 +1026,8 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
           }>;
         }),
       props,
-      'pre-hoist-instance-scan'
+      'pre-hoist-instance-scan',
+      abortSignal
     );
     const listResponse = await customApi.listClusterCustomObject({
       group: query.group,
@@ -1039,9 +1058,24 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
   if (typeof ownerRgd === 'string' && ownerRgd.length > 0) {
     let owned: string[];
     try {
+      // The owned-namespace listing paginates in its own loop and builds its own client, so it
+      // needs the bound passed IN — it is the last call in this fail-closed gate that runs before
+      // `engine.deploy`, and an unbounded page fetch here wedges the reconcile exactly like the
+      // reads above used to.
       owned = await listNamespacesOwnedByRgd(kc, ownerRgd, {
         logger,
-        ...(deps.ownedNamespaceListApi ? { k8sApi: deps.ownedNamespaceListApi } : {}),
+        requestBudget: _clusterCallBudget(props),
+        ...(abortSignal ? { abortSignal } : {}),
+        ...(deps.ownedNamespaceListApi
+          ? {
+              k8sApi: _boundClusterCalls(
+                deps.ownedNamespaceListApi,
+                props,
+                'pre-hoist-owned-namespaces',
+                abortSignal
+              ),
+            }
+          : {}),
       });
     } catch (error: unknown) {
       throw new Error(
@@ -1112,7 +1146,8 @@ export const existingInstanceNamespacesAlchemyForTest = _existingInstanceNamespa
  */
 async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  logger: TypeKroLogger
+  logger: TypeKroLogger,
+  abortSignal?: AbortSignal
 ): Promise<TypeKroResourceProps<T>> {
   if (props.namespaceEmptyGate !== true || props.namespaceOwnerRgd === undefined) return props;
   const name = props.resource.metadata?.name;
@@ -1122,7 +1157,8 @@ async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unk
   const api = _boundClusterCalls(
     createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
     props,
-    'ownership-check'
+    'ownership-check',
+    abortSignal
   );
 
   // CREATE-FIRST ownership (finding #3), matching the imperative path: attempt to CREATE
@@ -1180,7 +1216,8 @@ function _stripNamespaceOwnerAnnotation<T extends Enhanced<unknown, unknown>>(re
 
 async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  logger: TypeKroLogger
+  logger: TypeKroLogger,
+  abortSignal?: AbortSignal
 ): Promise<void> {
   const resource = props.resource as {
     metadata?: { name?: string; annotations?: Record<string, string> };
@@ -1195,11 +1232,18 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
     const api = _boundClusterCalls(
       createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
       props,
-      'singleton-drift-check'
+      'singleton-drift-check',
+      abortSignal
     );
     live = (await api.read(props.resource as Parameters<typeof api.read>[0])) as LiveSingletonOwner;
-  } catch {
-    return; // not found / CRD not yet created / cluster unreachable → no existing spec to clash with
+  } catch (error: unknown) {
+    // A WEDGED call is not evidence that nothing exists to clash with, and swallowing it would
+    // silently skip this assertion after the full budget had elapsed. Fail closed on a timeout (and
+    // on an abort); only the pre-existing cases — not found, CRD not yet created, cluster
+    // unreachable — still fall through to "no existing spec to clash with".
+    if (error instanceof PollTimeoutError) throw error;
+    if (abortSignal?.aborted) throw error;
+    return;
   }
 
   const verdict = singletonDriftVerdict(expected, resource.spec, live);
@@ -1640,12 +1684,22 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   // Use dynamic import to avoid circular dependencies
   const { DirectDeploymentEngine } = await import('../core/deployment/engine.js');
   const { DeploymentMode } = await import('../core/references/index.js');
-  // Forward the caller's HTTP timeout configuration. Without it the engine's own client is built
-  // with no per-request budget on the Node runtime, so a wedged request inside a deploy hangs the
-  // reconcile the same way the handler's own calls used to.
+  // Hand the engine a client that is bounded on EVERY runtime.
+  //
+  // `createBunCompatibleKubernetesObjectApi`'s timeout configuration only takes effect under Bun:
+  // off Bun it returns the stock `KubernetesObjectApi` and DISCARDS the config entirely
+  // (src/core/kubernetes/bun-api-client.ts), so passing `httpTimeouts` alone would leave the
+  // engine's requests unbounded on Node — the same silent hang this handler's own calls had. The
+  // config is still passed so Bun applies it at the socket (which can also cancel the request),
+  // and the deadline wrapper adds the runtime-neutral bound on top. Both use the same per-verb
+  // budgets, so under Bun this changes nothing.
   const engine = new DirectDeploymentEngine(
     kc,
-    undefined,
+    _boundClusterCalls(
+      createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
+      props,
+      'deployment-engine'
+    ),
     undefined,
     DeploymentMode.DIRECT,
     props.options?.httpTimeouts
