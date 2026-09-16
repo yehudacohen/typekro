@@ -5,6 +5,7 @@ import {
   createBunCompatibleApiClient,
   createBunCompatibleCoreV1Api,
   createBunCompatibleKubernetesObjectApi,
+  type HttpTimeoutConfig,
 } from '../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { TypeKroLogger } from '../logging/types.js';
@@ -435,13 +436,15 @@ export async function deleteNamespaceIfEmpty(
     abortSignal?: AbortSignal;
     /** Injectable CoreV1 surface for ownership-safe residual PVC cleanup. */
     persistentVolumeCleanupApi?: NamespacePersistentVolumeCleanupApi;
+    /** Per-verb request timeouts for this teardown's own Kubernetes calls. */
+    httpTimeouts?: HttpTimeoutConfig;
   } = {}
 ): Promise<NamespaceDeletionOutcome> {
   const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
   const context = options.context ?? {};
   // Bound every request this teardown issues: its reads gate a DELETE, and a wedged call would
   // hang the destroy with no error rather than failing safe to RETAIN. See {@link withCallDeadline}.
-  const requestBudget = callDeadlineBudget(undefined, options.timeoutMs);
+  const requestBudget = callDeadlineBudget(options.httpTimeouts, options.timeoutMs);
   const boundDeletionCalls = <T extends object>(api: T, phase: string): T =>
     withCallDeadline(api, {
       budget: requestBudget,

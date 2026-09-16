@@ -84,6 +84,28 @@ describe('KRO teardown bounds every cluster call it makes', () => {
     }
   }
 
+  it('honors a configured httpTimeouts.default rather than the built-in read budget', async () => {
+    const { decideKroRgdDeletionForTest } = await import('../../../src/alchemy/kro-delete.js');
+
+    await expect(
+      settlesWithin(
+        decideKroRgdDeletionForTest(
+          createMockKubeConfig(),
+          {
+            apiVersion: 'demo.example/v1alpha1',
+            kind: 'DemoApp',
+            namespace: 'demo',
+            rgdName: 'demo-owner',
+            plural: 'demoapps',
+            // No `timeout`: the budget must come from httpTimeouts, not from the defaults.
+            httpTimeouts: { default: 30 },
+          },
+          { listClusterCustomObject: () => new Promise(() => undefined) } as never
+        )
+      )
+    ).rejects.toThrow(/exceeded its 30ms request timeout/);
+  });
+
   it('rejects a wedged instance listing instead of hanging the destroy', async () => {
     const { decideKroRgdDeletionForTest } = await import('../../../src/alchemy/kro-delete.js');
     const kubeConfig = createMockKubeConfig();

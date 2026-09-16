@@ -26,17 +26,47 @@ import {
   DEFAULT_HTTP_WRITE_TIMEOUT,
 } from '../config/defaults.js';
 
-/** Thrown when a readiness-poll API call exceeds its per-call budget (distinguishable so callers can fail fast vs. retry). */
-export class PollTimeoutError extends Error {
+/**
+ * A Kubernetes request that did not return within its budget — whichever layer noticed first.
+ *
+ * TWO layers can time the same request out, and callers must not have to care which won. The Bun
+ * HTTP library arms its socket timer synchronously while the request is being issued; a wrapper
+ * added by {@link withCallDeadline} arms its timer afterwards. With equal budgets the socket timer
+ * therefore fires FIRST, so a gate that recognised only the wrapper's error would treat a genuine
+ * timeout as an ordinary failure — and a gate that fails OPEN on ordinary failures would silently
+ * skip its assertion. Both layers raise this type; {@link isRequestTimeoutError} recognises it.
+ */
+export class RequestTimeoutError extends Error {
   readonly timeoutMs: number;
+  /** Structural marker, so recognition survives duplicate module instances where `instanceof` does not. */
+  readonly isRequestTimeout = true as const;
+  constructor(message: string, timeoutMs: number) {
+    super(message);
+    this.name = 'RequestTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** True for a timeout raised by EITHER timing layer — the socket's or a {@link withCallDeadline} wrapper's. */
+export function isRequestTimeoutError(error: unknown): error is RequestTimeoutError {
+  if (error instanceof RequestTimeoutError) return true;
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { isRequestTimeout?: unknown }).isRequestTimeout === true
+  );
+}
+
+/** Thrown when a readiness-poll API call exceeds its per-call budget (distinguishable so callers can fail fast vs. retry). */
+export class PollTimeoutError extends RequestTimeoutError {
   constructor(label: string, timeoutMs: number) {
     super(
       `${label} exceeded its ${timeoutMs}ms request timeout — the Kubernetes API call did not return. ` +
         `The usual cause is a wedged or expired kubeconfig exec credential (e.g. an AWS SSO/EKS token ` +
-        `that expired mid-deploy). Re-run with fresh credentials.`
+        `that expired mid-deploy). Re-run with fresh credentials.`,
+      timeoutMs
     );
     this.name = 'PollTimeoutError';
-    this.timeoutMs = timeoutMs;
   }
 }
 

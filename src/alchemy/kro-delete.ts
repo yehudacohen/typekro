@@ -13,6 +13,7 @@ import { createRollbackManager } from '../core/deployment/rollback-manager.js';
 import {
   createBunCompatibleCustomObjectsApi,
   createBunCompatibleKubernetesObjectApi,
+  type HttpTimeoutConfig,
 } from '../core/kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import type { DeletionRetention, ResourceDeletionResult } from '../core/types/deployment.js';
@@ -31,6 +32,12 @@ export interface KroDeletionOptions {
   group?: string;
   plural?: string;
   timeout?: number;
+  /**
+   * Per-verb request timeouts for the teardown's own Kubernetes calls. Without it the deletion
+   * path silently ignores a caller's configured `httpTimeouts` and falls back to the repo
+   * defaults — a `delete: 300_000` meant for slow finalizers would be cut at 180s.
+   */
+  httpTimeouts?: HttpTimeoutConfig;
 }
 
 function getSchemaVersion(apiVersion: string): string {
@@ -65,7 +72,7 @@ function boundDeletionCalls<T extends object>(
   abortSignal?: AbortSignal
 ): T {
   return withCallDeadline(api, {
-    budget: callDeadlineBudget(undefined, options.timeout),
+    budget: callDeadlineBudget(options.httpTimeouts, options.timeout),
     label: `KRO ${options.kind} ${options.rgdName} (${phase})`,
     ...(abortSignal ? { abortSignal } : {}),
   });

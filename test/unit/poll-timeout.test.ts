@@ -9,8 +9,10 @@ import {
   callDeadlineBudget,
   callDeadlineVerb,
   callWithTimeout,
+  isRequestTimeoutError,
   PollTimeoutError,
   perCallTimeout,
+  RequestTimeoutError,
   withCallDeadline,
 } from '../../src/core/deployment/poll-timeout.js';
 
@@ -188,5 +190,30 @@ describe('withCallDeadline', () => {
     const pending = settlesWithin(api.read(), 1_000);
     controller.abort(new Error('converge cancelled'));
     await expect(pending).rejects.toThrow('converge cancelled');
+  });
+});
+
+describe('request-timeout recognition across timing layers', () => {
+  it('recognises both the socket timeout and a deadline-wrapper timeout', () => {
+    // The Bun HTTP library's timer is armed synchronously while the request is issued, so with
+    // equal budgets it fires BEFORE any wrapper around the call. A caller must not have to know
+    // which layer won: both raise the same recognisable type.
+    expect(isRequestTimeoutError(new PollTimeoutError('Widget demo read', 30_000))).toBe(true);
+    expect(
+      isRequestTimeoutError(new RequestTimeoutError('HTTP request timeout: GET /api', 30_000))
+    ).toBe(true);
+    // A structural marker, so recognition survives duplicate module instances.
+    expect(isRequestTimeoutError({ isRequestTimeout: true })).toBe(true);
+    // ...and nothing else is mistaken for a timeout.
+    expect(isRequestTimeoutError(new Error('connection refused'))).toBe(false);
+    expect(isRequestTimeoutError(Object.assign(new Error('gone'), { statusCode: 404 }))).toBe(
+      false
+    );
+    expect(isRequestTimeoutError(undefined)).toBe(false);
+  });
+
+  it('carries the budget that elapsed', () => {
+    expect(new PollTimeoutError('Widget demo read', 1_234).timeoutMs).toBe(1_234);
+    expect(new RequestTimeoutError('HTTP request timeout', 5_678).timeoutMs).toBe(5_678);
   });
 });

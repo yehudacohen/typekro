@@ -324,9 +324,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The budget comes from `options.httpTimeouts` PER VERB — reads, writes and deletes get
   their own budgets, so a create behind an admission webhook or a delete waiting on a
   finalizer is no longer cut short by the read timeout — and every verb is capped by the
-  deployment timeout. A wedged singleton-drift check now fails closed instead of
-  silently skipping its assertion, and the cancellation signal reaches all of these
-  calls rather than only the terminating-identity wait.
+  deployment timeout. The cancellation signal reaches all of these calls rather than only
+  the terminating-identity wait.
+
+  A wedged singleton-owner spec-drift check now fails CLOSED instead of silently
+  skipping its assertion. That gate treats a failed read as "nothing to clash with", so
+  it has to be able to tell a timeout apart from an absent object — and under Bun the
+  HTTP library's own socket timer is armed while the request is issued, i.e. BEFORE any
+  deadline wrapper around the call, so with equal budgets the socket error is the one the
+  gate actually sees. The HTTP library now raises a typed `RequestTimeoutError` (the
+  message is unchanged) that `PollTimeoutError` extends, so either timing layer is
+  recognised by `isRequestTimeoutError`.
 
   The bound applies to the caller's `await`, not to the socket: under Bun the client
   also sets an HTTP-level timeout that aborts the request, but on Node

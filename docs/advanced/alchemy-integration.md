@@ -229,7 +229,13 @@ const factory = graph.factory('kro', {
 ```
 
 A call that exceeds its budget rejects with a `PollTimeoutError` naming the resource and the method,
-so the converge fails fast and points at the stuck object instead of stalling.
+so the converge fails fast and points at the stuck object instead of stalling. The same budgets
+govern teardown — instance and definition deletion, the empty-gated Namespace delete, and the
+cluster inventory behind it.
+
+Two layers can time the same request out: the HTTP client's own socket timer (under Bun) and the
+deadline around the call. Both raise a `RequestTimeoutError` — `PollTimeoutError` extends it — so a
+caller never has to know which one won.
 
 > **Note on cancellation.** The bound applies to the caller's `await`, not to the socket. Under Bun
 > the client also sets an HTTP-level timeout that aborts the request itself; on Node the stock

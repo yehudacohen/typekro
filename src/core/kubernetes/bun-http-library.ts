@@ -26,6 +26,7 @@ import {
   DEFAULT_HTTP_WATCH_TIMEOUT,
   DEFAULT_HTTP_WRITE_TIMEOUT,
 } from '../config/defaults.js';
+import { RequestTimeoutError } from '../deployment/poll-timeout.js';
 import { getComponentLogger } from '../logging/index.js';
 
 /**
@@ -318,7 +319,11 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       if (shouldSetTimeout) {
         timeoutId = setTimeout(() => {
           req.destroy(); // Abort the request
-          const timeoutError = new Error(
+          // A TYPED timeout (not a bare Error): this timer is armed synchronously as the request is
+          // issued, so with equal budgets it fires BEFORE any deadline wrapper around the call and
+          // is the error a caller actually sees. A gate that fails open on ordinary failures must be
+          // able to tell this apart from "the object does not exist". See `isRequestTimeoutError`.
+          const timeoutError = new RequestTimeoutError(
             `HTTP request timeout: ${method} ${url.pathname} timed out after ${timeoutMs}ms\n` +
               `URL: ${url.toString()}\n` +
               `\n` +
@@ -332,7 +337,8 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
               `  • Verify Kubernetes API server is running: kubectl cluster-info\n` +
               `  • Check webhook status: kubectl get validatingwebhookconfigurations\n` +
               `  • Increase timeout via httpTimeouts option if needed\n` +
-              `  • For watch operations: timeouts are disabled (API server controls via timeoutSeconds)`
+              `  • For watch operations: timeouts are disabled (API server controls via timeoutSeconds)`,
+            timeoutMs
           );
           reject(timeoutError);
         }, timeoutMs);

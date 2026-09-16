@@ -31,7 +31,7 @@ import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
 import {
   type CallDeadlineBudget,
   callDeadlineBudget,
-  PollTimeoutError,
+  isRequestTimeoutError,
   withCallDeadline,
 } from '../core/deployment/poll-timeout.js';
 import {
@@ -509,7 +509,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   // otherwise strip it so teardown never deletes a namespace typekro merely adopted.
   const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger, abortSignal);
   abortSignal?.throwIfAborted();
-  const { deployer, dispose } = await _resolveDeployer(effectiveProps, 'deployment');
+  const { deployer, dispose } = await _resolveDeployer(effectiveProps, 'deployment', abortSignal);
   try {
     // Direct mode: hand the deployer the live state of this resource's dependencies so the engine
     // resolves its cross-resource references + CEL expressions against them (the deps deployed
@@ -844,6 +844,9 @@ async function detectKroResourceIdentityDrift(
 
   return undefined;
 }
+
+/** Test hook for the singleton-owner spec-drift gate (fail-closed on a wedged read). */
+export const assertNoSingletonDriftForTest = _assertNoSingletonDrift;
 
 /** Test hook for persisted-state Kubernetes drift decisions. */
 export const detectKroResourceIdentityDriftForTest = detectKroResourceIdentityDrift;
@@ -1217,7 +1220,8 @@ function _stripNamespaceOwnerAnnotation<T extends Enhanced<unknown, unknown>>(re
 async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  deps: { readonly api?: { read(spec: unknown): Promise<unknown> } } = {}
 ): Promise<void> {
   const resource = props.resource as {
     metadata?: { name?: string; annotations?: Record<string, string> };
@@ -1228,20 +1232,23 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
 
   let live: LiveSingletonOwner | undefined;
   try {
-    const kc = _createClientProvider(props, 'singleton-drift-check');
-    const api = _boundClusterCalls(
-      createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
-      props,
-      'singleton-drift-check',
-      abortSignal
-    );
-    live = (await api.read(props.resource as Parameters<typeof api.read>[0])) as LiveSingletonOwner;
+    const rawApi =
+      deps.api ??
+      createBunCompatibleKubernetesObjectApi(
+        _createClientProvider(props, 'singleton-drift-check'),
+        props.options?.httpTimeouts
+      );
+    const api = _boundClusterCalls(rawApi, props, 'singleton-drift-check', abortSignal);
+    live = (await (api as { read(spec: unknown): Promise<unknown> }).read(
+      props.resource
+    )) as LiveSingletonOwner;
   } catch (error: unknown) {
     // A WEDGED call is not evidence that nothing exists to clash with, and swallowing it would
-    // silently skip this assertion after the full budget had elapsed. Fail closed on a timeout (and
-    // on an abort); only the pre-existing cases — not found, CRD not yet created, cluster
-    // unreachable — still fall through to "no existing spec to clash with".
-    if (error instanceof PollTimeoutError) throw error;
+    // silently skip this assertion after the full budget had elapsed. Fail closed on ANY request
+    // timeout — the socket's as well as this handler's deadline wrapper's, since the socket timer is
+    // armed first and therefore usually wins — and on an abort. Only the pre-existing cases (not
+    // found, CRD not yet created, cluster unreachable) still fall through to "nothing to clash with".
+    if (isRequestTimeoutError(error)) throw error;
     if (abortSignal?.aborted) throw error;
     return;
   }
@@ -1679,7 +1686,8 @@ function _createClientProvider<T extends Enhanced<unknown, unknown>>(
  */
 async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   kc: import('@kubernetes/client-node').KubeConfig,
-  props: TypeKroResourceProps<T>
+  props: TypeKroResourceProps<T>,
+  abortSignal?: AbortSignal
 ): Promise<TypeKroDeployer> {
   // Use dynamic import to avoid circular dependencies
   const { DirectDeploymentEngine } = await import('../core/deployment/engine.js');
@@ -1698,7 +1706,8 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
     _boundClusterCalls(
       createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
       props,
-      'deployment-engine'
+      'deployment-engine',
+      abortSignal
     ),
     undefined,
     DeploymentMode.DIRECT,
@@ -1799,6 +1808,9 @@ function inferKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
           : props.namespace,
       rgdName: resource.metadata.name,
       timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+      ...(props.options?.httpTimeouts !== undefined && {
+        httpTimeouts: props.options.httpTimeouts,
+      }),
     };
   }
 
@@ -1822,6 +1834,9 @@ function inferKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
         : props.namespace,
     rgdName,
     timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+    ...(props.options?.httpTimeouts !== undefined && {
+      httpTimeouts: props.options.httpTimeouts,
+    }),
   };
 }
 
@@ -1859,14 +1874,15 @@ export const enrichKroDeletionOptionsForTest = enrichKroDeletionOptions;
 
 async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  phase: string
+  phase: string,
+  abortSignal?: AbortSignal
 ): Promise<{ deployer: TypeKroDeployer; dispose: () => Promise<void> }> {
   if (props.deployer) {
     return { deployer: props.deployer, dispose: async () => {} };
   }
 
   const kc = _createClientProvider(props, phase);
-  const deployer = await _createDeployer(kc, props);
+  const deployer = await _createDeployer(kc, props, abortSignal);
   return {
     deployer,
     dispose: async () => {
@@ -1925,12 +1941,19 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
       // namespace this composition's RGD created, and gate it to a real 404.
       ...(props.namespaceOwnerRgd !== undefined && { ownedByRgd: props.namespaceOwnerRgd }),
       ...(props.options?.timeout !== undefined && { timeoutMs: props.options.timeout }),
+      // Bound and cancel the teardown's own calls with the caller's configuration: its inventory
+      // fans out across every served API group, including aggregated ones whose backend may be
+      // unreachable, and each of those calls gates a DELETE.
+      ...(props.options?.httpTimeouts !== undefined && {
+        httpTimeouts: props.options.httpTimeouts,
+      }),
+      ...(abortSignal ? { abortSignal } : {}),
       context: { alchemyType: KRO_RESOURCE_TYPE },
     });
     abortSignal?.throwIfAborted();
     return;
   }
-  const { deployer, dispose } = await _resolveDeployer(props, 'delete');
+  const { deployer, dispose } = await _resolveDeployer(props, 'delete', abortSignal);
   try {
     await deployer.delete(props.resource, {
       mode: props.deploymentStrategy,
