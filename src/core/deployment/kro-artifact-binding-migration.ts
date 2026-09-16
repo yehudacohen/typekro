@@ -5,6 +5,7 @@ import {
   getErrorStatusCode,
 } from '../kubernetes/index.js';
 import { KRO_ARTIFACT_BINDINGS_SPEC_FIELD } from '../planning/values.js';
+import { type CallDeadlineBudget, callDeadlineBudget, withCallDeadline } from './poll-timeout.js';
 
 const STABLE_BINDING_SCHEMA = 'map[string]map[string]string';
 const MAX_CRD_PATCH_ATTEMPTS = 5;
@@ -15,6 +16,40 @@ type MigrationApi = Pick<
   ReturnType<typeof createBunCompatibleKubernetesObjectApi>,
   'read' | 'list' | 'replace'
 >;
+
+/**
+ * Injectable seams shared by both cluster operations in this module.
+ *
+ * `requestBudget` / `abortSignal` bound every request the operation issues. Without a bound, a
+ * wedged Kubernetes call here never settles: the caller (the Alchemy reconcile handler) then never
+ * returns and never throws, emits no further log line, and the converge only dies on its outer
+ * timeout. See {@link withCallDeadline}.
+ */
+interface MigrationDependencies {
+  readonly api?: MigrationApi;
+  /** Per-verb request budget. Defaults to the repo's HTTP read/write/delete timeouts. */
+  readonly requestBudget?: CallDeadlineBudget;
+  readonly abortSignal?: AbortSignal;
+}
+
+/**
+ * The bounded client for one RGD operation: the caller's injected API or a fresh one, wrapped so
+ * every request rejects — naming the ResourceGraphDefinition — instead of hanging forever. The
+ * injected API is wrapped too: a test that supplies a wedged client must see the bound, not a hang.
+ */
+function migrationApi(
+  kubeConfig: KubeConfig,
+  rgdName: string,
+  reason: string,
+  dependencies: MigrationDependencies
+): MigrationApi {
+  const api = dependencies.api ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  return withCallDeadline(api, {
+    budget: dependencies.requestBudget ?? callDeadlineBudget(undefined),
+    label: `ResourceGraphDefinition ${rgdName} (${reason})`,
+    ...(dependencies.abortSignal ? { abortSignal: dependencies.abortSignal } : {}),
+  });
+}
 
 interface ResourceGraphDefinition extends KubernetesObject {
   spec?: {
@@ -234,7 +269,7 @@ async function requestRgdReconcile(
 export async function repairRetainedKroGeneratedCrdOwnership(
   kubeConfig: KubeConfig,
   desiredResource: KubernetesObject,
-  dependencies: { readonly api?: MigrationApi } = {}
+  dependencies: MigrationDependencies = {}
 ): Promise<void> {
   const desiredRgd = desiredResource as ResourceGraphDefinition;
   const rgdName = desiredRgd.metadata?.name;
@@ -242,7 +277,7 @@ export async function repairRetainedKroGeneratedCrdOwnership(
   const kind = desiredRgd.spec?.schema?.kind;
   if (!rgdName || !apiVersion || !kind) return;
 
-  const api = dependencies.api ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  const api = migrationApi(kubeConfig, rgdName, 'retained-crd-adoption', dependencies);
   const liveRgd = (await api.read({
     apiVersion: 'kro.run/v1alpha1',
     kind: 'ResourceGraphDefinition',
@@ -314,7 +349,7 @@ export async function repairRetainedKroGeneratedCrdOwnership(
 export async function migrateLegacyKroArtifactBindingCrd(
   kubeConfig: KubeConfig,
   desiredResource: KubernetesObject,
-  dependencies: { readonly api?: MigrationApi } = {}
+  dependencies: MigrationDependencies = {}
 ): Promise<void> {
   const desiredRgd = desiredResource as ResourceGraphDefinition;
   if (desiredRgd.spec?.schema?.spec?.[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] !== STABLE_BINDING_SCHEMA) {
@@ -325,7 +360,7 @@ export async function migrateLegacyKroArtifactBindingCrd(
   const kind = desiredRgd.spec.schema.kind;
   if (!rgdName || !apiVersion || !kind) return;
 
-  const api = dependencies.api ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  const api = migrationApi(kubeConfig, rgdName, 'artifact-binding-migration', dependencies);
   let liveRgd: ResourceGraphDefinition;
   try {
     liveRgd = (await api.read({

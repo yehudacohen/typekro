@@ -304,6 +304,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every Kubernetes request the Alchemy KRO provider issues is now bounded by a per-verb
+  deadline — the drift and terminating-identity reads, the singleton and pre-hoist
+  safety gates (including the owned-namespace pagination), the hoisted-namespace
+  ownership probe, the two generated-CRD migrations, the client handed to the
+  deployment engine, and the finalizer-safe teardown (instance and definition
+  deletion, the empty-gated Namespace delete and its cluster inventory, whose
+  discovery fans out across aggregated API groups that may be unreachable). None of
+  them had a bound: a
+  wedged call (a hung exec credential, a half-open socket, an API server that accepts
+  the connection and never answers) left `reconcile` hanging with no log line and no
+  error, and the converge only died on the caller's outer timeout — with no indication
+  of which resource was stuck. Observed on an update of a `ResourceGraphDefinition`
+  whose live object had been deleted out-of-band while its generated CRD was retained:
+  the handler never reached the deployment engine, so not even `Starting deployment`
+  was logged.
+
+  Each call now rejects with a `PollTimeoutError` naming the resource and the method.
+  The budget comes from `options.httpTimeouts` PER VERB — reads, writes and deletes get
+  their own budgets, so a create behind an admission webhook or a delete waiting on a
+  finalizer is no longer cut short by the read timeout — and every verb is capped by the
+  deployment timeout. The cancellation signal reaches all of these calls rather than only
+  the terminating-identity wait.
+
+  A wedged singleton-owner spec-drift check now fails CLOSED instead of silently
+  skipping its assertion. That gate treats a failed read as "nothing to clash with", so
+  it has to be able to tell a timeout apart from an absent object — and under Bun the
+  HTTP library's own socket timer is armed while the request is issued, i.e. BEFORE any
+  deadline wrapper around the call, so with equal budgets the socket error is the one the
+  gate actually sees. The HTTP library now raises a typed `RequestTimeoutError` (the
+  message is unchanged) that `PollTimeoutError` extends, so either timing layer is
+  recognised by `isRequestTimeoutError`.
+
+  The bound applies to the caller's `await`, not to the socket: under Bun the client
+  also sets an HTTP-level timeout that aborts the request, but on Node
+  `@kubernetes/client-node` takes no timeout configuration, so an in-flight request (or
+  a wedged exec-auth subprocess) can outlive the rejection. See
+  `docs/advanced/alchemy-integration.md`.
+
 - `Composable<T>` mangled `readonly` array fields. Its passthrough list tested
   the mutable `unknown[]`, which a `readonly T[]` does not satisfy, so those
   fields fell into the object branch and were rebuilt element-wise as
