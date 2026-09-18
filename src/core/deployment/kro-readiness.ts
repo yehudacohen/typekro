@@ -19,7 +19,7 @@ import {
 import { CRDInstanceError, DeploymentTimeoutError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { RGDManifest } from '../types/kubernetes.js';
-import { callWithTimeout, PollTimeoutError, perCallTimeout } from './poll-timeout.js';
+import { callWithTimeout, isRequestTimeoutError, perCallTimeout } from './poll-timeout.js';
 
 /** Options for Kro instance readiness polling. */
 export interface KroReadinessOptions {
@@ -218,11 +218,16 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
           expectedCustomStatusFields,
         });
       } catch (error: unknown) {
-        // A per-call TIMEOUT (wedged/expired credential) is NOT a fetchable-RGD failure — do not fall
-        // through to the permissive path, which would let an ACTIVE/synced instance be declared ready
-        // WITHOUT validating expected status fields (and after the deadline). Surface it so the outer
-        // catch re-throws it (fail fast).
-        if (error instanceof PollTimeoutError) {
+        // A request TIMEOUT (wedged/expired credential, a half-open socket, a response truncated
+        // mid-body) is NOT a fetchable-RGD failure — do not fall through to the permissive path,
+        // which would let an ACTIVE/synced instance be declared ready WITHOUT validating expected
+        // status fields (and after the deadline). Recognise EVERY timing layer, not just this
+        // module's wrapper: the HTTP library's socket timer is armed synchronously as the request is
+        // issued, so it usually fires FIRST and raises a bare `RequestTimeoutError`, and a mid-
+        // response disconnect raises `PrematureCloseError`. Both would have slipped past an
+        // `instanceof PollTimeoutError` gate and failed open. Surface it so the outer catch
+        // re-throws it (fail fast).
+        if (isRequestTimeoutError(error)) {
           throw error;
         }
         readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {

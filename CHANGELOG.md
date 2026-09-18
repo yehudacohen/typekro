@@ -304,6 +304,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The KRO instance readiness check could still declare an instance ready WITHOUT
+  confirming its expected custom status fields when the ResourceGraphDefinition
+  status-schema lookup timed out. That lookup deliberately fails closed on a wedged
+  call — a call that never answered is not evidence that the schema is unfetchable —
+  but the gate recognised only the readiness poll's own per-call timeout class. A
+  request can time out at either of two layers: the HTTP library arms its socket timer
+  synchronously while the request is issued, so with comparable budgets it fires FIRST
+  and raises the base request-timeout type, and a connection dropped mid-response
+  raises the premature-close type. Neither was the class the gate tested for, so both
+  fell through to the permissive branch and an ACTIVE, synced instance was declared
+  ready with its status fields never validated — and after the deadline had elapsed.
+  The gate now uses the shared `isRequestTimeoutError` predicate, which recognises
+  every timeout class through a structural marker (so it also survives duplicate module
+  instances, where `instanceof` does not). Genuinely unfetchable schemas — a 403, a 404
+  — keep the documented permissive fallback.
+
+- `callDeadlineBudget()` collapsed `create` and `update` into a single write budget, so
+  a caller who configured both got the `create` value on every POST, PUT, PATCH and
+  apply, and the configured `update` was honoured only when `create` was absent —
+  contradicting the separate `create` and `update` knobs the HTTP timeout configuration
+  exposes and the split the HTTP layer itself already makes by method. The per-verb
+  budget is now `{ read, create, update, delete }`, method-name classification
+  distinguishes a create (POST, `create*`) from an update (PUT/PATCH, `replace*`,
+  `patch*`, server-side apply), and there is NO cross-fallback between the two: an
+  unconfigured verb takes the shared write default, never its sibling's configured
+  value. Deletes still win over both, and an unrecognised method still takes the short
+  read budget so a misclassified call fails fast rather than hanging.
+
 - A Kubernetes request whose connection dropped part-way through the response hung
   forever instead of failing. The Bun-compatible HTTP library wrapped `https.request`
   in a promise that settled only on the response's `end` event or the request's

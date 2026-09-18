@@ -475,7 +475,7 @@ describe('Alchemy KRO handler bounds every cluster call it makes', () => {
       settlesWithin(
         listNamespacesOwnedByRgd(createMockKubeConfig(), RGD_NAME, {
           k8sApi: { list: wedgedCall } as never,
-          requestBudget: { read: 40, write: 40, delete: 40 },
+          requestBudget: { read: 40, create: 40, update: 40, delete: 40 },
         })
       )
     ).rejects.toThrow(

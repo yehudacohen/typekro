@@ -122,15 +122,19 @@ export function perCallTimeout(remainingMs: number, capMs: number): number {
 
 /**
  * The per-verb request budget {@link withCallDeadline} applies. Reads are expected to be quick;
- * writes may sit behind admission webhooks; deletes may wait on finalizers — the same split the
- * repo's HTTP defaults already make, so a caller's configured `httpTimeouts` is honored per verb
- * instead of being flattened onto the read budget.
+ * creates and updates may sit behind admission webhooks; deletes may wait on finalizers — the same
+ * split the repo's HTTP defaults already make, so a caller's configured `httpTimeouts` is honored
+ * per verb instead of being flattened onto the read budget. `create` and `update` are kept APART
+ * because `HttpTimeoutConfig` exposes them separately: collapsing them into one write budget makes
+ * one of the two configured values unreachable.
  */
 export interface CallDeadlineBudget {
-  /** GET / LIST and anything not classified as a write or a delete. */
+  /** GET / LIST and anything not classified as a create, an update or a delete. */
   readonly read: number;
-  /** POST / PUT / PATCH. */
-  readonly write: number;
+  /** POST — `create*`. */
+  readonly create: number;
+  /** PUT / PATCH — `replace*`, `patch*`, server-side apply. */
+  readonly update: number;
   /** DELETE. */
   readonly delete: number;
 }
@@ -158,31 +162,37 @@ export function callDeadlineBudget(
   capMs?: number
 ): CallDeadlineBudget {
   const cap = positiveOr(capMs, Number.POSITIVE_INFINITY);
-  const write = Math.min(
-    positiveOr(timeouts?.create ?? timeouts?.update, DEFAULT_HTTP_WRITE_TIMEOUT),
-    cap
-  );
+  // NO cross-fallback between `create` and `update`: they are separate knobs in `HttpTimeoutConfig`
+  // and each falls back only to the shared write default. Letting one stand in for the other means a
+  // caller who configured `{ create: 180_000, update: 30_000 }` silently gets 180s on every PATCH —
+  // exactly the conflation this budget exists to avoid.
   return {
     read: Math.min(positiveOr(timeouts?.default, DEFAULT_HTTP_READ_TIMEOUT), cap),
-    write,
+    create: Math.min(positiveOr(timeouts?.create, DEFAULT_HTTP_WRITE_TIMEOUT), cap),
+    update: Math.min(positiveOr(timeouts?.update, DEFAULT_HTTP_WRITE_TIMEOUT), cap),
     delete: Math.min(positiveOr(timeouts?.delete, DEFAULT_HTTP_DELETE_TIMEOUT), cap),
   };
 }
 
-/** Method-name fragments that identify a write. Matched case-insensitively. */
-const WRITE_METHOD_PATTERN = /create|replace|patch|update|put|post|apply/i;
+/** Method-name fragments that identify a create (POST). Matched case-insensitively. */
+const CREATE_METHOD_PATTERN = /create|post/i;
+/** Method-name fragments that identify an update (PUT / PATCH, including server-side apply). */
+const UPDATE_METHOD_PATTERN = /replace|patch|update|put|apply/i;
 /** Method-name fragments that identify a delete. Matched case-insensitively, checked FIRST. */
 const DELETE_METHOD_PATTERN = /delete|remove/i;
 
 /**
- * Classify a client method by name so it is bounded by its own verb's budget. Anything that is
- * neither a delete nor a write — `read`, `list`, `get*`, `listClusterCustomObject`, and any method
- * a future client version adds — is treated as a READ, the shortest budget. Erring toward the short
- * budget is deliberate: a misclassified call fails fast and visibly rather than hanging.
+ * Classify a client method by name so it is bounded by its own verb's budget, matching the split the
+ * HTTP layer already makes by method (POST → create, PUT/PATCH → update, DELETE → delete). Anything
+ * else — `read`, `list`, `get*`, `listClusterCustomObject`, and any method a future client version
+ * adds — is treated as a READ, the shortest budget. Erring toward the short budget is deliberate: a
+ * misclassified call fails fast and visibly rather than hanging. A combined name (`createOrReplace`)
+ * resolves to `create`, the verb such a helper attempts first.
  */
 export function callDeadlineVerb(method: string): keyof CallDeadlineBudget {
   if (DELETE_METHOD_PATTERN.test(method)) return 'delete';
-  if (WRITE_METHOD_PATTERN.test(method)) return 'write';
+  if (CREATE_METHOD_PATTERN.test(method)) return 'create';
+  if (UPDATE_METHOD_PATTERN.test(method)) return 'update';
   return 'read';
 }
 

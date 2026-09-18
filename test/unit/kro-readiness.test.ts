@@ -8,7 +8,12 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import type { KroReadinessOptions } from '../../src/core/deployment/kro-readiness.js';
 import { waitForKroInstanceReady } from '../../src/core/deployment/kro-readiness.js';
+import {
+  PollTimeoutError,
+  RequestTimeoutError,
+} from '../../src/core/deployment/poll-timeout.js';
 import { CRDInstanceError, DeploymentTimeoutError } from '../../src/core/errors.js';
+import { PrematureCloseError } from '../../src/core/kubernetes/bun-http-library.js';
 import { createK8sError } from '../utils/mock-factories.js';
 
 // =============================================================================
@@ -755,6 +760,86 @@ describe('waitForKroInstanceReady', () => {
           })
         )
       ).rejects.toThrow(/did not return|request timeout/);
+    });
+
+    // A request can time out at EITHER timing layer. The HTTP library arms its socket timer
+    // synchronously while the request is issued, so with comparable budgets it fires BEFORE the
+    // `callWithTimeout` wrapper and raises a bare `RequestTimeoutError`; a mid-response disconnect
+    // raises `PrematureCloseError`. An `instanceof PollTimeoutError` gate recognised neither, so both
+    // fell through to the permissive branch and an ACTIVE/synced instance was declared ready without
+    // its expected status fields ever being confirmed. Every timeout class must propagate.
+    const propagatingTimeouts: [string, () => Error][] = [
+      [
+        'a bare RequestTimeoutError from the socket timer',
+        () => new RequestTimeoutError('HTTP request timeout: GET /apis/kro.run/v1alpha1', 30_000),
+      ],
+      [
+        'a PrematureCloseError from a mid-response disconnect',
+        () =>
+          new PrematureCloseError(
+            'GET',
+            '/apis/kro.run/v1alpha1/resourcegraphdefinitions/web-app',
+            12,
+            'the response body was truncated'
+          ),
+      ],
+      [
+        'a PollTimeoutError from the deadline wrapper',
+        () => new PollTimeoutError('read ResourceGraphDefinition/web-app', 30_000),
+      ],
+    ];
+
+    for (const [label, makeError] of propagatingTimeouts) {
+      it(`propagates ${label} instead of falling through to the permissive path`, async () => {
+        mockK8sApi.read.mockResolvedValue(
+          kroInstance({
+            state: 'ACTIVE',
+            conditions: [{ type: 'Ready', status: 'True' }],
+          })
+        );
+        const failure = makeError();
+        mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(failure);
+
+        await expect(
+          waitForKroInstanceReady(
+            defaultOptions({
+              k8sApi: mockK8sApi,
+              customObjectsApi: mockCustomObjectsApi,
+              timeout: 500,
+            })
+          )
+        ).rejects.toThrow(failure);
+      });
+    }
+
+    it('still takes the documented permissive fallback for a non-timeout RGD failure', async () => {
+      // The fail-closed gate must stay narrow: a 403 (or a 404 for an RGD that is not readable) is
+      // the pre-existing "cannot fetch the schema" case and keeps its permissive behaviour.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({
+          state: 'ACTIVE',
+          conditions: [{ type: 'Ready', status: 'True' }],
+        })
+      );
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
+        createK8sError('resourcegraphdefinitions.kro.run is forbidden', 403)
+      );
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
+        )
+      ).resolves.toBeUndefined();
+
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
+        createK8sError('resourcegraphdefinitions.kro.run "web-app" not found', 404)
+      );
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
+        )
+      ).resolves.toBeUndefined();
     });
   });
 
