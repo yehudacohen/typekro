@@ -270,9 +270,19 @@ function isTlsConfigurationCode(code: string): boolean {
   return (
     TLS_CERTIFICATE_CODES.has(code) ||
     TLS_PROTOCOL_CONFIGURATION_CODES.has(code) ||
-    code.startsWith('CERT_')
+    code.startsWith('CERT_') ||
+    // Node's own `ERR_TLS_*` family (https://nodejs.org/api/errors.html) is configuration, security-state
+    // and programming errors: `ERR_TLS_DH_PARAM_SIZE` (the peer offered too small a Diffie-Hellman
+    // parameter), `ERR_TLS_INVALID_PROTOCOL_VERSION`, `ERR_TLS_PROTOCOL_VERSION_CONFLICT`,
+    // `ERR_TLS_INVALID_CONTEXT`, renegotiation policy, … — none of which a retry a second later can
+    // change. The one member that IS a passing condition, `ERR_TLS_HANDSHAKE_TIMEOUT`, is carved out
+    // by the caller before this predicate runs.
+    (code.startsWith('ERR_TLS_') && code !== TLS_HANDSHAKE_TIMEOUT_CODE)
   );
 }
+
+/** Node's one transient `ERR_TLS_*` code: the handshake did not finish in time — ask again. */
+const TLS_HANDSHAKE_TIMEOUT_CODE = 'ERR_TLS_HANDSHAKE_TIMEOUT';
 
 /**
  * The transport `code`, following one level of `cause`.
@@ -464,6 +474,10 @@ function classifyReadErrorKind(
   // so consulting the code first is the whole of what keeps a misconfigured CA bundle out of the
   // retry loop instead of burning the readiness budget on it.
   const transportCode = transportErrorCode(error);
+  // A handshake that merely ran out of time is the one TLS-namespaced failure that is transient.
+  if (transportCode === TLS_HANDSHAKE_TIMEOUT_CODE) {
+    return 'transient';
+  }
   if (transportCode && isTlsConfigurationCode(transportCode)) {
     return 'tls-configuration-error';
   }

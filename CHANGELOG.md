@@ -428,6 +428,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the engine's required external-reference resolver — whose documented policy is that a
   permanent failure fails immediately — gets the same fail-fast behaviour, instead of spending
   its read budget on a certificate that will never be accepted.
+  Node's own `ERR_TLS_*` family is treated the same way by prefix (`ERR_TLS_DH_PARAM_SIZE`,
+  `ERR_TLS_INVALID_PROTOCOL_VERSION`, …), with `ERR_TLS_HANDSHAKE_TIMEOUT` carved out as the one
+  transient member.
 
   A 404 for the RGD OBJECT stays strict rather than permissive for the same reason the
   whole policy is: the RGD name the poll looks up is the name the factory emitted — both

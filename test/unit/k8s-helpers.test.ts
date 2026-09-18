@@ -308,6 +308,29 @@ describe('classifyReadError', () => {
     expect(assessment.detail).not.toContain('cluster CA');
   });
 
+  // Node's own `ERR_TLS_*` namespace is configuration / security-state: `ERR_TLS_DH_PARAM_SIZE` is the
+  // peer offering too small a Diffie-Hellman parameter — a server setting, not a passing fault. It is
+  // in neither explicit set, so only the `ERR_TLS_` prefix rule keeps it out of the retry loop.
+  it('fails fast on a fetch-wrapped ERR_TLS_DH_PARAM_SIZE via the ERR_TLS_ prefix rule', () => {
+    const assessment = classifyReadError(
+      new TypeError('fetch failed', { cause: { code: 'ERR_TLS_DH_PARAM_SIZE' } })
+    );
+
+    expect(assessment.classification).toBe('tls-configuration-error');
+    expect(assessment.retryable).toBe(false);
+    expect(assessment.detail).toContain('ERR_TLS_DH_PARAM_SIZE');
+  });
+
+  // …and the prefix rule must NOT swallow the one `ERR_TLS_*` member that is a passing condition.
+  it('keeps a fetch-wrapped ERR_TLS_HANDSHAKE_TIMEOUT retryable', () => {
+    const assessment = classifyReadError(
+      new TypeError('fetch failed', { cause: { code: 'ERR_TLS_HANDSHAKE_TIMEOUT' } })
+    );
+
+    expect(assessment.classification).toBe('transient');
+    expect(assessment.retryable).toBe(true);
+  });
+
   // ---------------------------------------------------------------------------
   // The classification must be COMPLETE, not a hand-picked sample.
   //
