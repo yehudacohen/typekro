@@ -94,6 +94,34 @@ export interface AgentTlsOptions {
   ciphers?: string;
 }
 
+/**
+ * The transport dropped before the response was complete.
+ *
+ * WHY THIS TYPE EXISTS: a request whose socket dies mid-response must REJECT, and must reject as
+ * something callers already understand. It is modelled as a {@link RequestTimeoutError} because the
+ * caller's situation is identical to a timeout — the call did not return an answer — so gates that
+ * fail CLOSED on a wedged call (they must not read "no answer" as "nothing is there") keep working
+ * without knowing this class exists. `code` is `ECONNRESET` and the message contains
+ * `socket hang up`, the two shapes the transient/retryable classifiers already match on, so a
+ * retry loop treats it as the transient transport blip it usually is.
+ */
+export class PrematureCloseError extends RequestTimeoutError {
+  /** Node's system-error code for a peer-reset socket; transient-error classifiers match on it. */
+  readonly code = 'ECONNRESET' as const;
+  constructor(method: string, path: string, timeoutMs: number, phase: string, cause?: unknown) {
+    super(
+      `socket hang up: the connection closed before the response completed (${method} ${path}) — ${phase}.\n` +
+        (cause instanceof Error ? `Underlying transport error: ${cause.message}\n` : '') +
+        `\n` +
+        `The Kubernetes API server, or something between it and this client (load balancer, proxy, ` +
+        `NAT gateway), dropped the connection mid-flight. This is usually transient; retry.`,
+      timeoutMs
+    );
+    this.name = 'PrematureCloseError';
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
 /** Extract the TLS material KubeConfig placed on an https.Agent. */
 export function extractAgentTlsOptions(agent: unknown): AgentTlsOptions {
   return agent && typeof agent === 'object' && 'options' in agent
@@ -250,15 +278,43 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         }
       };
 
+      // EVERY terminal path goes through here, and the FIRST one wins. Resolve/reject are latched so
+      // a socket teardown that emits several events in a row (`aborted`, then `error`, then `close`)
+      // cannot settle twice, and — the bug this guards — so no path can disarm the timer WITHOUT
+      // settling. Clearing the timer is the guard's job alone; nothing else touches it.
+      let settled = false;
+      const settle = (finish: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearRequestTimeout();
+        finish();
+      };
+
+      // Bun's `node:http` emits the REQUEST's 'close' as soon as the response headers arrive, long
+      // before the body is done (Node emits it after the exchange ends). So 'close' on the request
+      // only means "the exchange ended" while no response has begun; once one has, the response's own
+      // terminal events are what tell us whether it completed.
+      let responseStarted = false;
+      const failPrematureClose = (phase: string, cause?: unknown) =>
+        settle(() =>
+          reject(new PrematureCloseError(method, url.pathname, timeoutMs, phase, cause))
+        );
+
       const req = httpModule.request(options, (res) => {
+        responseStarted = true;
         const chunks: Buffer[] = [];
 
         res.on('data', (chunk: Buffer) => {
           chunks.push(chunk);
         });
 
+        // The socket died with the body half-delivered. Unhandled, these leave the promise pending
+        // FOREVER: 'end' never fires, and the request's 'error' does not fire either.
+        res.on('aborted', () => failPrematureClose('the response body was truncated'));
+        res.on('error', (err: Error) => failPrematureClose('the response stream failed', err));
+        res.on('close', () => failPrematureClose('the response stream closed before it ended'));
+
         res.on('end', () => {
-          clearRequestTimeout();
           const buffer = Buffer.concat(chunks);
           const responseHeaders: Record<string, string> = {};
 
@@ -296,13 +352,12 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
             },
           };
 
-          resolve(response as ResponseContext);
+          settle(() => resolve(response as ResponseContext));
         });
       });
 
       req.on('error', (err) => {
-        clearRequestTimeout();
-        reject(err);
+        settle(() => reject(err));
       });
 
       req.on('socket', (socket) => {
@@ -318,7 +373,6 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // Watch operations are handled by the API server via timeoutSeconds parameter
       if (shouldSetTimeout) {
         timeoutId = setTimeout(() => {
-          req.destroy(); // Abort the request
           // A TYPED timeout (not a bare Error): this timer is armed synchronously as the request is
           // issued, so with equal budgets it fires BEFORE any deadline wrapper around the call and
           // is the error a caller actually sees. A gate that fails open on ordinary failures must be
@@ -340,8 +394,22 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
               `  • For watch operations: timeouts are disabled (API server controls via timeoutSeconds)`,
             timeoutMs
           );
-          reject(timeoutError);
+          // Settle BEFORE tearing the socket down: `req.destroy()` emits 'error'/'close', and the
+          // caller must see the timeout — not the ECONNRESET our own abort produced. The latch makes
+          // that teardown a no-op.
+          settle(() => reject(timeoutError));
+          req.destroy();
         }, timeoutMs);
+
+        // Belt and braces for the pre-connect phase. The wall-clock timer above is armed
+        // synchronously, so it already covers a DNS or TCP/TLS connect that never completes — but it
+        // can only bound the caller's `await`; it cannot guarantee the runtime actually releases a
+        // socket still stuck in connect. `setTimeout` on the request tears that socket down from the
+        // inside. It is an IDLE timer, so on a live connection it can never fire before the wall
+        // clock, which means it never shortens a legitimately slow request.
+        req.setTimeout(timeoutMs, () => {
+          req.destroy();
+        });
       }
 
       // Handle abort signal (if available - added in newer versions).
@@ -353,15 +421,20 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         signal.addEventListener(
           'abort',
           () => {
-            clearRequestTimeout();
-            req.destroy(new Error('Request aborted'));
+            settle(() => reject(new Error('Request aborted')));
+            req.destroy();
           },
           { once: true }
         );
       }
 
+      // The request ended without the promise having settled. On Bun this fires as soon as the
+      // response headers land, so it is only terminal while NO response has started; after that the
+      // response's own 'aborted'/'error'/'close' are the terminal events. Either way the timer stays
+      // armed until something settles — clearing it here WITHOUT settling was the hang.
       req.on('close', () => {
-        clearRequestTimeout();
+        if (responseStarted) return;
+        failPrematureClose('the socket closed before any response was received');
       });
 
       // Send body if present
