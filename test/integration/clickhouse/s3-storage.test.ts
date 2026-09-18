@@ -36,6 +36,7 @@ import {
   createBunCompatibleBatchV1Api,
   createBunCompatibleCustomObjectsApi,
 } from '../../../src/core/kubernetes/index.js';
+import { CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX } from '../../../src/factories/clickhouse/compositions/clickhouse-cluster.js';
 import type { ClickHouseClusterStatus } from '../../../src/factories/clickhouse/types.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import { waitUntilGone } from '../shared-absence.js';
@@ -728,7 +729,7 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
         // child with the resolved values in it.
         const contract = await createCoreV1ApiClient(kubeConfig).readNamespacedConfigMap({
           namespace: chiNs,
-          name: `${kroInstanceName}-contract`,
+          name: `${kroInstanceName}${CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX}`,
         });
         expect(contract.data?.storageDiskType).toBe('s3_plain_rewritable');
         expect(contract.data?.storageSelfDescribingBucket).toBe('true');
@@ -834,7 +835,7 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
         await pollGone(() =>
           createCoreV1ApiClient(kubeConfig).readNamespacedConfigMap({
             namespace: chiNs,
-            name: `${kroInstanceName}-contract`,
+            name: `${kroInstanceName}${CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX}`,
           })
         )
       ).toBe(true);
