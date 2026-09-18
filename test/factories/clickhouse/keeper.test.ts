@@ -231,13 +231,48 @@ describe('ClickHouseKeeperInstallation Factory', () => {
     it.each([
       ['space', 'my cluster'],
       ['underscore (the CRD pattern forbids it)', 'my_cluster'],
+      // The CRD's alphabet allows a leading digit; TypeKro does not, because
+      // the operator writes the cluster name verbatim as an XML element name
+      // in `remote_servers.xml` and `<9keeper>` is not a legal XML name.
       ['leading digit', '9keeper'],
-      ['trailing dash', 'keeper-'],
+      ['leading dash', '-keeper'],
       ['empty (the CRD sets minLength 1)', ''],
     ])('rejects a keeper cluster name with a %s', (_label, clusterName) => {
       expect(() => clickHouseKeeperInstallation({ name: 'keeper', clusterName })).toThrow(
         /clickHouseKeeperInstallation: 'clusterName' must match/
       );
+    });
+
+    it.each([
+      // Allowed BECAUSE the CRD allows them — TypeKro adds only the
+      // leading-letter rule, and nothing else beyond the CRD's own alphabet.
+      ['a trailing dash', 'keeper-'],
+      ['interior digits', 'keeper9'],
+      ['interior dashes', 'a-b-c-d'],
+    ])('accepts a keeper cluster name with %s', (_label, clusterName) => {
+      expect(
+        clickHouseKeeperInstallation({ name: 'keeper', clusterName }).spec.configuration
+          ?.clusters?.[0]?.name
+      ).toBe(clusterName);
+    });
+
+    it('accepts a trailing-dash INSTALLATION name, since the derived cluster name is legal', () => {
+      expect(
+        clickHouseKeeperInstallation({ name: 'keeper-' }).spec.configuration?.clusters?.[0]?.name
+      ).toBe('keeper-');
+    });
+
+    it("explains the leading-letter rule as TypeKro's own, with the reason", () => {
+      let message = '';
+      try {
+        clickHouseKeeperInstallation({ name: 'keeper', clusterName: '9keeper' });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('XML ELEMENT NAME');
+      expect(message).toContain('remote_servers.xml');
+      expect(message).toContain('A trailing dash is fine.');
     });
   });
 
@@ -293,8 +328,6 @@ describe('ClickHouseKeeperInstallation Factory', () => {
     }
 
     it('emits the reference and warns once when clusterName is unset', () => {
-      // The namespace is what keys the once-per-build dedupe, so each case
-      // needs its own.
       const yaml = renderKeeperComposition('Unset', 'chk-warn-unset');
 
       // The cluster name follows the instance name into the RGD.
@@ -323,6 +356,78 @@ describe('ClickHouseKeeperInstallation Factory', () => {
       expect(yaml).toMatch(/clusters:[\s\S]*?name: keeper/);
       expect(yaml).not.toMatch(/clusters:[\s\S]*?name: \$\{schema\.spec\.name\}/);
       expect(keeperWarnings()).toHaveLength(0);
+    });
+
+    /**
+     * THE DEDUPE IS BUILD-SCOPED, NOT PROCESS-GLOBAL. Collapsing the repeats
+     * with a module-level set keyed on `namespace|id` would have silenced a
+     * genuine warning for any composition built later in the same process with
+     * the same namespace and id — and two keepers in one namespace with no
+     * explicit `id` would have shared a key. The gate is the framework's own
+     * `suppressResourceDiagnostics`, which marks the internal analysis passes,
+     * so nothing is remembered between builds.
+     */
+    it('warns again for an INDEPENDENT composition with the same namespace and id', () => {
+      renderKeeperComposition('First', 'chk-shared-ns');
+      expect(keeperWarnings()).toHaveLength(1);
+
+      // A brand-new composition, same namespace, same resource id.
+      renderKeeperComposition('Second', 'chk-shared-ns');
+      expect(keeperWarnings()).toHaveLength(2);
+    });
+
+    /**
+     * The un-`id`ed collision the old key could have produced cannot actually
+     * arise for a reference name: the composition machinery refuses to generate
+     * a deterministic resource ID for a `KubernetesRef` name and demands an
+     * explicit `id` first. Two keepers in one namespace therefore always differ
+     * by id — and each still gets its own warning.
+     */
+    it('warns for EACH keeper in one composition', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'chk-pair',
+          apiVersion: 'test.typekro.dev/v1',
+          kind: 'ChkRefPair',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec: { name: string }) => {
+          const a = clickHouseKeeperInstallation({
+            name: spec.name,
+            namespace: 'chk-pair-ns',
+            id: 'keeperA',
+          });
+          const b = clickHouseKeeperInstallation({
+            name: `${spec.name}-b`,
+            namespace: 'chk-pair-ns',
+            id: 'keeperB',
+          });
+          return {
+            ready: true as unknown as boolean,
+            a: a.metadata.name,
+            b: b.metadata.name,
+          } as never;
+        }
+      );
+      composition.toYaml();
+
+      expect(keeperWarnings()).toHaveLength(2);
+    });
+
+    it('never validates a TEMPLATE-LITERAL name as a real installation name', () => {
+      // `${spec.name}-b` stringifies to a plain string carrying the schema
+      // proxy's `__KUBERNETES_REF_...__` marker, which the serializer rewrites
+      // to CEL later. Validating it would throw on a valid kro-mode build.
+      expect(() =>
+        clickHouseKeeperInstallation({
+          name: '__KUBERNETES_REF___schema___spec.name__-b',
+          namespace: 'chk-template-literal',
+          // A dynamic name needs an explicit id — the composition machinery
+          // cannot derive a deterministic resource ID from one.
+          id: 'chKeeperTemplate',
+        })
+      ).not.toThrow();
     });
 
     it('never validates the required-field sentinel as a real installation name', () => {

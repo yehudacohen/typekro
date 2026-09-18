@@ -182,9 +182,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [Zoo]Keeper, a topology with more than one shard or replica that declares
   `storage.backup` without a keeper is rejected at construction. Because
   `clusterName` is interpolated into that statement, it is constrained to
-  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$` — the intersection of the
-  Altinity CRD's own pattern and 15-character cap on `clusters[].name` with
-  ClickHouse's use of the value as an identifier. A literal is rejected at
+  `^[a-zA-Z][a-zA-Z0-9-]{0,14}$` — the Altinity CRD's own alphabet and
+  15-character cap on `clusters[].name`, plus a leading-letter rule. A literal is rejected at
   construction, the pattern travels into the generated KRO schema so a bad
   instance is rejected by the operator, and the backup script re-checks and
   escapes the name it receives before building the statement.
@@ -340,15 +339,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema reference the value is unknown at build time — the RGD carries
   `clusters[0].name: ${schema.spec.name}` and the generated KRO schema types `spec.name`
   as a bare `string` with no length bound — so an over-long INSTANCE name still reaches
-  Altinity's admission check. The factory emits one build-time WARNING per CHK saying
+  Altinity's admission check. The factory emits a build-time WARNING saying
   that, recommending `clusterName: DEFAULT_CHK_CLUSTER_NAME` for a NEW deployment (with
   the state-loss caveat for an existing one) and pointing at the other option: bounding
   the enclosing composition's own spec field with `ClickHouseClusterNameSchema`, whose
   `maxLength` and `pattern` the schema generator carries into the RGD so KRO rejects a
   bad instance at admission. `clusterName` is deliberately NOT made mandatory for
-  references — that would force it on existing KRO-mode deployments. The same change
-  stops the defaults-extraction pass's `REQUIRED_FIELD_SENTINEL` placeholder from being
-  validated as if it were a real installation name.
+  references — that would force it on existing KRO-mode deployments.
+
+  The warning is emitted once per build with NO cross-build state. Serializing a
+  composition re-executes its body several times, and every repeat is one of the
+  framework's internal ANALYSIS passes, which it already marks with
+  `suppressResourceDiagnostics` — the same gate `createResource` uses for its own
+  resource-construction diagnostics. Nothing is remembered between builds, so an
+  independent composition built later in the same process, even with the same namespace
+  and resource id, still gets its own warning.
+
+  The same change stops two framework placeholders from being validated as if they were a
+  user's installation name: the defaults-extraction pass's `REQUIRED_FIELD_SENTINEL`, and
+  the `__KUBERNETES_REF_…__` marker string that a template literal over a schema proxy
+  produces (`` `${spec.name}-keeper` ``).
 
   Anything that needs the value — a `keeper_path` prefix, an operator-generated Service
   name, and on the CHI side the `ON CLUSTER '<name>'` target of a consumer's DDL — must
@@ -496,6 +506,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct-mode status resolution.
 
 ### Changed
+
+- **`CLICKHOUSE_CLUSTER_NAME_PATTERN` now matches the Altinity CRD's alphabet and cap,
+  plus exactly one intentional TypeKro restriction.** It was
+  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`; it is now `^[a-zA-Z][a-zA-Z0-9-]{0,14}$`.
+  A TRAILING DASH IS NOW ACCEPTED — `cluster-` is legal under the CRD's
+  `^[a-zA-Z0-9-]{0,15}$`, `-` is a legal XML `NameChar` in every position but the first,
+  and `chi-<chi>-cluster--0-0` is still a valid DNS-1123 label, so the old prohibition was
+  cosmetic. This widens what is accepted, so nothing that used to build stops building. The
+  backup CronJob's in-container guard drops the matching `*-` case arm.
+
+  THE LEADING-LETTER RULE IS KEPT, deliberately, and it is stricter than the CRD. The
+  operator writes the cluster name VERBATIM AS AN XML ELEMENT NAME when it renders
+  `remote_servers.xml` — `util.Iline(b, indent, "<%s>", cluster.GetName())` in
+  `pkg/model/chi/config/generator.go` (release-0.27.1), with no escaping — and an XML
+  `NameStartChar` may be neither a digit nor a hyphen. A cluster named `9cluster` therefore
+  produces `<9cluster>`, an unparseable `remote_servers.xml`, and a server that will not
+  start, so such a name was never a working deployment. The rule applies to the CHK too, so
+  the exported schema, the RGD `pattern=` marker and the backup script's guard stay one
+  alphabet; on the CHK alone it is a choice rather than a requirement, because the keeper's
+  generator builds `<raft_configuration>` from HOST names
+  (`pkg/model/chk/config/generator.go`, `getRaftConfig`) and never uses the cluster name as
+  an element name.
 
 - **The ClickHouse cluster composition's status-contract ConfigMap is renamed** from
   `<installation>-contract` to `<installation>-clickhouse-contract`

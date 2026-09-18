@@ -872,7 +872,10 @@ describe('clickHouseS3BackupCronJob', () => {
       // actually reaches the statement is an env var on a rendered CronJob.
       const { text } = script({ onCluster: true, clusterName: 'cluster' });
       expect(text).toContain('case "$CLUSTER" in');
-      expect(text).toContain('"" | *[!A-Za-z0-9-]* | [!A-Za-z]* | *-)');
+      // Same alphabet as CLICKHOUSE_CLUSTER_NAME_PATTERN: a trailing dash is
+      // allowed (the CRD allows it), a leading non-letter is not.
+      expect(text).toContain('"" | *[!A-Za-z0-9-]* | [!A-Za-z]*)');
+      expect(text).not.toContain('| *-)');
       expect(text).toContain('is not a cluster identifier');
       expect(text).toContain('exit 1');
       // The CRD's own 15-character cap, re-asserted at run time.
@@ -938,18 +941,27 @@ describe('clickHouseS3BackupCronJob', () => {
     });
 
     it('rejects names the operator or ClickHouse itself would refuse', () => {
-      // Leading digit / dash: not an identifier. Underscore and >15 chars: the
-      // Altinity CRD's own `^[a-zA-Z0-9-]{0,15}$` / maxLength 15 on
+      // Leading digit / dash: the operator writes the cluster name verbatim as
+      // an XML element name in `remote_servers.xml`, and neither may start one.
+      // Underscore and >15 chars: the Altinity CRD's own
+      // `^[a-zA-Z0-9-]{0,15}$` / minLength 1 / maxLength 15 on
       // `clusters[].name`, so accepting them would just defer the failure to
       // apply time.
       expect(() => script({ onCluster: true, clusterName: '9cluster' })).toThrow(/must match/);
       expect(() => script({ onCluster: true, clusterName: '-cluster' })).toThrow(/must match/);
-      expect(() => script({ onCluster: true, clusterName: 'cluster-' })).toThrow(/must match/);
       expect(() => script({ onCluster: true, clusterName: 'my_cluster' })).toThrow(/must match/);
       expect(() => script({ onCluster: true, clusterName: 'abcdefghijklmnop' })).toThrow(
         /must match/
       );
       expect(() => script({ onCluster: true, clusterName: '' })).toThrow(/must match/);
+    });
+
+    it('accepts a trailing dash, which the CRD allows and XML does not forbid', () => {
+      // `-` is a legal XML NameChar in every position but the first, and
+      // `chi-<chi>-cluster--0-0` is still a valid DNS-1123 label, so TypeKro
+      // adds no restriction here.
+      const { env } = script({ onCluster: true, clusterName: 'cluster-' });
+      expect(env).toContainEqual({ name: 'CLICKHOUSE_CLUSTER', value: 'cluster-' });
     });
 
     it('leaves a schema reference to KRO rather than rejecting it', () => {

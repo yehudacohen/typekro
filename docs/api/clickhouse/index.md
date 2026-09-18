@@ -102,14 +102,18 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
   The value is the cluster identity the operator concatenates into every generated object name
   **and** the `ON CLUSTER '<name>'` target of the [scheduled backup](#scheduled-backups-and-restore) — where a
   quote or a semicolon would be extra SQL rather than a bad name. It must match
-  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`: a letter, then up to 14 more letters, digits or
-  dashes, not ending in a dash.
+  `^[a-zA-Z][a-zA-Z0-9-]{0,14}$`: a letter, then up to 14 more letters, digits or dashes. A
+  trailing dash is fine.
 
-  That is the *intersection* of two independent limits, not a house style. The Altinity CRD
-  constrains `spec.configuration.clusters[].name` to `^[a-zA-Z0-9-]{0,15}$` with `maxLength: 15`
-  (`namePartClusterMaxLen`), so an underscore or a 16th character is rejected by the API server
-  whatever TypeKro accepts; ClickHouse reads the same value as an identifier, so a leading digit or
-  dash is not one.
+  That is the Altinity CRD's own alphabet and cap plus **one** TypeKro restriction, not a house
+  style. The CRD constrains `spec.configuration.clusters[].name` to `^[a-zA-Z0-9-]{0,15}$` with
+  `minLength: 1` / `maxLength: 15` (`namePartClusterMaxLen`), so an underscore, an empty value or a
+  16th character is rejected by the API server whatever TypeKro accepts. The added rule is the
+  **leading letter**: the operator writes the cluster name verbatim as an XML element name when it
+  renders `remote_servers.xml` (`pkg/model/chi/config/generator.go`, `Iline(b, indent, "<%s>",
+  cluster.GetName())`), and an XML name may not begin with a digit or a dash — `<9cluster>` is an
+  unparseable configuration file and the server will not start. Nothing else is added: a trailing
+  dash is legal XML and leaves a valid DNS-1123 object name, so it is accepted.
 
   A **literal** is rejected at construction. A **schema reference** cannot be — so the pattern
   travels into the generated RGD (`clusterName: string | maxLength=15 pattern="…"`) and KRO rejects

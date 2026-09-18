@@ -57,15 +57,37 @@ export function assertPositiveIntegerCount(
  *   into a SQL string literal. A quote, a semicolon or whitespace there is not
  *   a naming problem, it is extra SQL.
  *
- * The intersection additionally requires a LEADING LETTER (ClickHouse reads
- * the value as a bare identifier in the cluster configuration, and a leading
- * digit or dash is not one) and forbids a TRAILING dash (it would leave a
- * dangling separator in every generated object name).
+ * ONE RESTRICTION BEYOND THE CRD, AND ONLY ONE: a LEADING LETTER.
+ *
+ * The CRD's alphabet (`^[a-zA-Z0-9-]{0,15}$`) admits a leading digit and a
+ * leading dash, but the operator writes the cluster name VERBATIM AS AN XML
+ * ELEMENT NAME when it renders `remote_servers.xml`:
+ *
+ *     util.Iline(b, indent, "<%s>", cluster.GetName())
+ *     — pkg/model/chi/config/generator.go (release-0.27.1), the
+ *       getRemoteServers cluster block
+ *
+ * Nothing escapes or sanitises that path, and an XML `NameStartChar` may be
+ * neither a digit nor a hyphen — so a cluster named `9cluster` renders
+ * `<9cluster>`, an unparseable `remote_servers.xml`, and a server that will not
+ * start. Such a name is therefore not a working deployment TypeKro is
+ * regressing; it could never have worked. The rule is kept as an INTENTIONAL
+ * TypeKro restriction, and it applies to the CHK too so that the exported
+ * schema, the RGD `pattern=` marker and the backup script's guard stay one
+ * alphabet. (On the CHK alone it is a choice rather than a requirement: the
+ * keeper's generator builds `<raft_configuration>` from HOST names —
+ * `pkg/model/chk/config/generator.go`, `getRaftConfig` — and never uses the
+ * cluster name as an element name.)
+ *
+ * A TRAILING dash is ALLOWED, matching the CRD. `-` is a legal XML `NameChar`
+ * everywhere but the first position, and `chi-<chi>-<cluster>--0-0` is still a
+ * valid DNS-1123 label, so the prohibition this rule used to carry was
+ * cosmetic.
  *
  * RE2-compatible on purpose: the same source is the `pattern=` marker of the
  * generated KRO schema, and Kubernetes validates OpenAPI patterns with RE2.
  */
-export const CLICKHOUSE_CLUSTER_NAME_PATTERN = /^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$/;
+export const CLICKHOUSE_CLUSTER_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9-]{0,14}$/;
 
 /**
  * The CRD's own byte cap on a cluster name (`namePartClusterMaxLen`).
@@ -114,13 +136,15 @@ export function assertClickHouseClusterName(
   if (typeof value !== 'string') return;
   if (CLICKHOUSE_CLUSTER_NAME_PATTERN.test(value)) return;
   throw new Error(
-    `${context}: '${field}' must match ${CLICKHOUSE_CLUSTER_NAME_PATTERN.source} — a letter, ` +
-      `then up to 14 more letters, digits or dashes, not ending in a dash (got ` +
-      `${JSON.stringify(value)}). The bound is the intersection of the Altinity CRD's own ` +
-      `\`^[a-zA-Z0-9-]{0,15}\$\` / maxLength 15 on \`clusters[].name\` (the name is a fragment ` +
-      `of every generated object name) and ClickHouse's use of the value as an identifier — ` +
-      `including inside the \`ON CLUSTER '<name>'\` string literal of the backup statement, ` +
-      `where a quote or a semicolon would be extra SQL rather than a bad name.`
+    `${context}: '${field}' must match ${CLICKHOUSE_CLUSTER_NAME_PATTERN.source} — a LETTER, ` +
+      `then up to ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES - 1} more letters, digits or dashes (got ` +
+      `${JSON.stringify(value)}). The alphabet and the ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}-byte ` +
+      `cap are the Altinity CRD's own \`^[a-zA-Z0-9-]{0,15}\$\` / minLength 1 / maxLength 15 on ` +
+      `\`clusters[].name\`; the leading-letter rule is TypeKro's one addition, because the ` +
+      `operator writes the cluster name verbatim as an XML ELEMENT NAME in ` +
+      `\`remote_servers.xml\` (pkg/model/chi/config/generator.go: \`Iline(b, indent, "<%s>", ` +
+      `cluster.GetName())\`) and an XML name may not begin with a digit or a dash — the server ` +
+      `would fail to parse its own configuration. A trailing dash is fine.`
   );
 }
 

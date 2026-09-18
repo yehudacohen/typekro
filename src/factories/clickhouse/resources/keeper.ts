@@ -8,6 +8,7 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { REQUIRED_FIELD_SENTINEL } from '../../../core/serialization/schema.js';
@@ -72,47 +73,42 @@ const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
 export const DEFAULT_CHK_CLUSTER_NAME = 'keeper';
 
 /**
- * Warnings already emitted, so a composition body that re-executes (the
- * imperative analyzer runs it several times per serialization) reports once per
- * factory build rather than once per pass.
+ * Marker a schema proxy stringifies to inside a TEMPLATE LITERAL.
+ *
+ * `` `${spec.name}-keeper` `` produces the plain string
+ * `__KUBERNETES_REF___schema___spec.name__-keeper`, which the serializer later
+ * rewrites to CEL. It is a string, so only the marker distinguishes it from a
+ * real name. Matched as a substring, the way the resolver and the YAML
+ * serializer do (`core/references/resolver.ts`, `core/serialization/yaml.ts`).
  */
-const keeperClusterNameWarnings = new Set<string>();
+const KUBERNETES_REF_MARKER_PREFIX = '__KUBERNETES_REF_';
 
 /**
  * Is this a CONCRETE installation name a build-time check can judge?
  *
- * Three things arrive here that are not one, and all of them show up while
+ * Four things arrive here that are not one, and all of them show up while
  * serializing a single composition:
  *
  * - a `KubernetesRef` / CEL expression — the schema proxy itself;
+ * - a STRING carrying {@link KUBERNETES_REF_MARKER_PREFIX}, from a template
+ *   literal built over the proxy;
  * - {@link REQUIRED_FIELD_SENTINEL}, the placeholder the defaults-extraction
  *   re-execution substitutes for required spec fields (possibly with a suffix
- *   concatenated onto it by a template literal);
+ *   concatenated onto it by the same kind of template literal);
  * - `undefined`, on the passes that run with no spec at all.
  *
- * None of them is the user's value, so none may be validated as one — the
- * sentinel in particular contains underscores and is 19 bytes, so validating it
- * would throw on a perfectly valid KRO-mode build.
+ * None of them is the user's value, so none may be validated as one. Both
+ * marker strings are long and full of underscores, so validating either would
+ * throw on a perfectly valid kro-mode build.
  */
 function isConcreteInstallationName(value: unknown): value is string {
   return (
     typeof value === 'string' &&
+    !value.includes(KUBERNETES_REF_MARKER_PREFIX) &&
     !value.includes(REQUIRED_FIELD_SENTINEL) &&
     !isKubernetesRef(value) &&
     !isCelExpression(value)
   );
-}
-
-/**
- * Stable identity for one CHK inside one build.
- *
- * Keyed by the graph identity rather than by the reference, because a single
- * serialization re-executes the composition body several times and hands the
- * factory a DIFFERENT shape each pass (a ref, then the sentinel, then
- * `undefined`). Keying on the value would warn once per shape.
- */
-function keeperWarningKey(config: Composable<ClickHouseKeeperInstallationConfig>): string {
-  return `${String(config.namespace ?? '')}|${String(config.id ?? '')}`;
 }
 
 /**
@@ -122,13 +118,23 @@ function keeperWarningKey(config: Composable<ClickHouseKeeperInstallationConfig>
  * Not an error: `clusterName` is intentionally optional for references, because
  * requiring it would force every existing KRO-mode deployment to set one, and
  * changing a cluster name replaces the StatefulSet and loses keeper state.
+ *
+ * ONE WARNING PER BUILD, WITH NO CROSS-BUILD STATE. Serializing a composition
+ * re-executes its body several times, and all but the first pass are internal
+ * ANALYSIS executions that the framework already marks with
+ * `suppressResourceDiagnostics` — the same gate `createResource` uses for its
+ * own resource-construction warnings (`core/proxy/create-resource.ts`). Keying
+ * off that flag collapses the repeats without remembering anything between
+ * builds, so an independent composition built later in the same process — even
+ * with the same namespace and id, or with no id at all — still gets its own
+ * warning. Suppressing a real warning is the worse failure, so on the paths
+ * with no composition context at all (a bare factory call) the warning is
+ * simply emitted every time.
  */
 function warnKeeperClusterNameFollowsReference(
   config: Composable<ClickHouseKeeperInstallationConfig>
 ): void {
-  const key = keeperWarningKey(config);
-  if (keeperClusterNameWarnings.has(key)) return;
-  keeperClusterNameWarnings.add(key);
+  if (getCurrentCompositionContext()?.suppressResourceDiagnostics) return;
 
   logger.warn(
     `clickHouseKeeperInstallation: 'name' is a schema reference, so the keeper's internal ` +
