@@ -78,13 +78,20 @@ interface ClickHouseSchemaTransport {
  * An injected executor is still identified when a kubeConfig accompanies it: the caller
  * supplying its own transport does not make the target cluster unknowable. Only an
  * injected executor with no kubeConfig at all has no identity to record.
+ *
+ * @internal — exported for tests
  */
-function resolveTransport(props: ClickHouseSchemaResourceProps): ClickHouseSchemaTransport {
+export function resolveTransport(props: ClickHouseSchemaResourceProps): ClickHouseSchemaTransport {
+  // The provider must ALWAYS be handed a config object here: `createKubernetesClientProvider`
+  // only calls `initialize` when its argument is truthy, so `undefined` for the ambient case
+  // returned an uninitialized provider whose `getKubeConfig()` threw on the first exec (#219).
+  // `{}` runs `initialize`, which reaches `loadFromDefault()` — `KUBECONFIG`, then
+  // `~/.kube/config` — which is what "omit kubeConfig for the ambient kubeconfig" promises.
   const kubeConfig: KubeConfig | undefined =
     props.executor && !props.kubeConfig
       ? undefined
       : createKubernetesClientProvider(
-          props.kubeConfig ? materializeSerializableKubeConfigOptions(props.kubeConfig) : undefined
+          props.kubeConfig ? materializeSerializableKubeConfigOptions(props.kubeConfig) : {}
         ).getKubeConfig();
 
   return {

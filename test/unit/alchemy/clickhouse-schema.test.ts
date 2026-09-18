@@ -9,6 +9,9 @@
  * `test/integration/alchemy/clickhouse-schema.test.ts`.
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'bun:test';
 import { KubeConfig } from '@kubernetes/client-node';
 import { type } from 'arktype';
@@ -39,6 +42,8 @@ import {
   tokenizeClickHouseSql,
 } from '../../../src/alchemy/index.js';
 import type { ClickHouseSchemaRuntimeDeps } from '../../../src/alchemy/index.js';
+import { KubeExecClickHouseExecutor } from '../../../src/alchemy/index.js';
+import { resolveTransport } from '../../../src/alchemy/clickhouse-schema/resource.js';
 import { clusterIdentity } from '../../../src/core/kubernetes/api-capability.js';
 
 const RESOURCE_ID = 'orders-schema';
@@ -1565,5 +1570,73 @@ describe('ClickHouseSchema — redaction', () => {
   it('parses ClickHouse error codes out of server output', () => {
     expect(parseClickHouseErrorCode('Code: 81. DB::Exception: Database does not exist')).toBe(81);
     expect(parseClickHouseErrorCode('no code here')).toBeUndefined();
+  });
+});
+
+describe('ClickHouseSchema — transport resolution (#219)', () => {
+  const AMBIENT_SERVER = 'https://ambient.example.invalid:6443';
+
+  /** A minimal, credential-free kubeconfig file standing in for the operator's ambient one. */
+  const ambientKubeConfigYaml = [
+    'apiVersion: v1',
+    'kind: Config',
+    'clusters:',
+    '  - name: ambient',
+    '    cluster:',
+    `      server: ${AMBIENT_SERVER}`,
+    '      insecure-skip-tls-verify: true',
+    'users:',
+    '  - name: runner',
+    '    user: {}',
+    'contexts:',
+    '  - name: ambient',
+    '    context:',
+    '      cluster: ambient',
+    '      user: runner',
+    'current-context: ambient',
+    '',
+  ].join('\n');
+
+  /** Runs `fn` with `KUBECONFIG` pointed at the fixture, restoring the variable afterwards. */
+  const withAmbientKubeConfig = <T>(fn: (kubeconfigPath: string) => T): T => {
+    const dir = mkdtempSync(join(tmpdir(), 'typekro-clickhouse-schema-'));
+    const kubeconfigPath = join(dir, 'kubeconfig');
+    writeFileSync(kubeconfigPath, ambientKubeConfigYaml);
+    const previous = process.env.KUBECONFIG;
+    process.env.KUBECONFIG = kubeconfigPath;
+    try {
+      return fn(kubeconfigPath);
+    } finally {
+      if (previous === undefined) delete process.env.KUBECONFIG;
+      else process.env.KUBECONFIG = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('loads the ambient kubeconfig when neither executor nor kubeConfig is supplied', () => {
+    withAmbientKubeConfig((kubeconfigPath) => {
+      const expected = new KubeConfig();
+      expected.loadFromFile(kubeconfigPath);
+
+      // The documented "omit kubeConfig for the ambient kubeconfig" form. Before the fix
+      // this threw `KubernetesClientProvider not initialized. Call initialize() first.`
+      const transport = resolveTransport(validConfig());
+
+      expect(transport.executor).toBeInstanceOf(KubeExecClickHouseExecutor);
+      expect(transport.clusterId).toBeDefined();
+      expect(transport.clusterId).toBe(clusterIdentity(expected) as string);
+    });
+  });
+
+  it('identifies no cluster for an injected executor without a kubeConfig', () => {
+    withAmbientKubeConfig(() => {
+      const { executor } = fakeExecutor();
+      const transport = resolveTransport({ ...validConfig(), executor });
+
+      // The injected transport is used as-is, and the ambient kubeconfig is NOT consulted
+      // to invent an identity the caller did not supply.
+      expect(transport.executor).toBe(executor);
+      expect(transport.clusterId).toBeUndefined();
+    });
   });
 });
