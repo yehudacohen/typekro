@@ -24,11 +24,13 @@ import {
 import {
   CLICKSTACK_RETENTION_TABLES,
   DEFAULT_QUEUE_EXPORTER_NAMES,
+  DEFAULT_QUEUE_FS_GROUP,
   clickStackQueueClaimName,
   normalizeRenderedTtl,
   parseRetentionDuration,
   persistentQueueConfigFragment,
   renderPersistentQueueClaimSpec,
+  renderPersistentQueuePostRenderer,
   renderPersistentQueueValues,
   renderRetentionScript,
   resolveClickStackStorage,
@@ -700,6 +702,7 @@ describe('collector overlay keys cannot reach the object model', () => {
       persistentQueueConfigFragment({
         directory: '/var/lib/otelcol/file_storage',
         size: '10Gi',
+        fsGroup: 10001,
         accessModes: ['ReadWriteOnce'],
         exporterNames: ['__proto__'],
         extensions: ['health_check', 'file_storage/hyperdx'],
@@ -898,6 +901,243 @@ describe('the persistent queue outlives the collector Pod', () => {
 
   it('derives the claim name from the release name, for mount and claim alike', () => {
     expect(clickStackQueueClaimName('clickstack')).toBe('clickstack-otel-queue');
+  });
+
+  // LIVE FINDING (#222): on a block PVC (the AWS EBS CSI default StorageClass)
+  // the fresh filesystem is root:root 0755, the collector runs as uid/gid
+  // 10001, and nothing chowns the mount — so the exporter fails to start with
+  // `open …/file_storage/exporter_clickhouse__logs: permission denied` and the
+  // gateway crash-loops. The chart has no securityContext hook for the
+  // collector, so the fix is a Kustomize patch on the rendered Deployment.
+  it('makes the queue volume writable: an fsGroup post-renderer on the gateway Deployment', () => {
+    const renderer = renderPersistentQueuePostRenderer(resolveQueue({}), 'clickstack');
+    const [patch, ...rest] = renderer.kustomize.patches;
+    expect(rest).toHaveLength(0);
+    if (patch === undefined) throw new Error('expected exactly one patch');
+
+    // Selected by target, never by the placeholder name inside the patch body.
+    expect(patch.target).toEqual({
+      group: 'apps',
+      version: 'v1',
+      kind: 'Deployment',
+      name: 'clickstack-otel-collector',
+    });
+
+    const body = yaml.load(patch.patch) as {
+      apiVersion: string;
+      kind: string;
+      spec: { template: { spec: { securityContext: Record<string, unknown> } } };
+    };
+    expect(body.apiVersion).toBe('apps/v1');
+    expect(body.kind).toBe('Deployment');
+    expect(body.spec.template.spec.securityContext).toEqual({
+      fsGroup: 10001,
+      // Skip the recursive chown once the root already carries the group: the
+      // queue directory can hold gigabytes of bbolt pages.
+      fsGroupChangePolicy: 'OnRootMismatch',
+    });
+    // A strategic-merge patch, not a JSON 6902 one — it must not carry a `$patch` directive.
+    expect(patch.patch).not.toContain('$patch');
+  });
+
+  it("defaults fsGroup to the collector image's otel group (10001) and honours an override", () => {
+    expect(DEFAULT_QUEUE_FS_GROUP).toBe(10001);
+    expect(resolveQueue({}).fsGroup).toBe(10001);
+    expect(resolveQueue({ fsGroup: 2000 }).fsGroup).toBe(2000);
+
+    const custom = renderPersistentQueuePostRenderer(resolveQueue({ fsGroup: 2000 }), 'c');
+    expect(custom.kustomize.patches[0]?.target.name).toBe('c-otel-collector');
+    expect(custom.kustomize.patches[0]?.patch).toContain('fsGroup: 2000');
+    expect(custom.kustomize.patches[0]?.patch).not.toContain('10001');
+  });
+
+  it('rejects an fsGroup that is not a positive integer, naming the option', () => {
+    for (const fsGroup of [0, -1, 1.5, Number.NaN]) {
+      expect(() => resolveQueue({ fsGroup })).toThrow(
+        /'storage\.persistentQueue\.fsGroup' must be a positive integer/
+      );
+    }
+    // Validated only when the queue is on — an unused option is not an error,
+    // consistent with `exporterNames` / `extensions`.
+    expect(
+      resolveClickStackStorage('t', {
+        mode: 's3',
+        persistentQueue: { enabled: false, fsGroup: -1 },
+      }).persistentQueue
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The `postRenderers` of the composition's HelmRelease, from a serialized RGD
+ * bundle (`composition.toYaml()`), or `undefined` when it carries none.
+ */
+function helmReleasePostRenderers(rgdYaml: string): unknown[] | undefined {
+  for (const document of yaml.loadAll(rgdYaml) as Array<{
+    kind?: string;
+    spec?: {
+      resources?: Array<{ id?: string; template?: { spec?: { postRenderers?: unknown[] } } }>;
+    };
+  }>) {
+    if (document?.kind !== 'ResourceGraphDefinition') continue;
+    const release = document.spec?.resources?.find(
+      (resource) => resource.id === 'clickstackHelmRelease'
+    );
+    if (release !== undefined) return release.template?.spec?.postRenderers;
+  }
+  throw new Error('expected an RGD carrying the clickstackHelmRelease resource');
+}
+
+/** Parsed `spec.template.spec.securityContext` of a strategic-merge Deployment patch. */
+function patchedSecurityContext(renderer: unknown): Record<string, unknown> | undefined {
+  const patch = (renderer as { kustomize?: { patches?: Array<{ patch?: string }> } }).kustomize
+    ?.patches?.[0]?.patch;
+  if (patch === undefined) return undefined;
+  return (
+    yaml.load(patch) as {
+      spec?: { template?: { spec?: { securityContext?: Record<string, unknown> } } };
+    }
+  ).spec?.template?.spec?.securityContext;
+}
+
+/** The single patch target of a post-renderer, for assertions on the graph-aware name. */
+function rendererTarget(renderer: unknown): Record<string, unknown> | undefined {
+  return (renderer as { kustomize?: { patches?: Array<{ target?: Record<string, unknown> }> } })
+    .kustomize?.patches?.[0]?.target;
+}
+
+describe('the queue volume is writable by the collector (#222)', () => {
+  it('carries the fsGroup post-renderer in the KRO RGD, targeting the graph-aware gateway name', () => {
+    const yamlText = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-fsgroup',
+      kind: 'ClickStackS3QueueFsGroup',
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+    }).toYaml();
+
+    // The target name is `<release>-otel-collector` — in KRO mode a CEL
+    // expression over the instance spec, exactly like the claim name.
+    expect(yamlText).toContain('postRenderers:');
+    expect(yamlText).toContain('name: ${string(schema.spec.name)}-otel-collector');
+    expect(yamlText).toContain('fsGroup: 10001');
+    expect(yamlText).toContain('fsGroupChangePolicy: OnRootMismatch');
+
+    const renderers = helmReleasePostRenderers(yamlText);
+    expect(renderers).toHaveLength(1);
+    expect(rendererTarget(renderers?.[0])).toEqual({
+      group: 'apps',
+      version: 'v1',
+      kind: 'Deployment',
+      name: '${string(schema.spec.name)}-otel-collector',
+    });
+    expect(patchedSecurityContext(renderers?.[0])).toEqual({
+      fsGroup: 10001,
+      fsGroupChangePolicy: 'OnRootMismatch',
+    });
+  });
+
+  it('renders NO post-renderer when the queue is off', () => {
+    const yamlText = makeClickstackBootstrap({
+      name: 'clickstack-s3-noqueue-fsgroup',
+      kind: 'ClickStackS3NoQueueFsGroup',
+      storage: { mode: 's3' },
+    }).toYaml();
+
+    expect(yamlText).not.toContain('postRenderers');
+    expect(yamlText).not.toContain('fsGroup');
+    expect(helmReleasePostRenderers(yamlText)).toBeUndefined();
+  });
+
+  it('honours a custom fsGroup', () => {
+    const yamlText = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-fsgroup-custom',
+      kind: 'ClickStackS3QueueFsGroupCustom',
+      storage: { mode: 's3', persistentQueue: { enabled: true, fsGroup: 2000 } },
+    }).toYaml();
+
+    expect(yamlText).toContain('fsGroup: 2000');
+    expect(yamlText).not.toContain('fsGroup: 10001');
+    expect(patchedSecurityContext(helmReleasePostRenderers(yamlText)?.[0])).toEqual({
+      fsGroup: 2000,
+      fsGroupChangePolicy: 'OnRootMismatch',
+    });
+  });
+
+  it('preserves caller-supplied postRenderers and APPENDS the queue patch after them', () => {
+    const callerRenderer = {
+      kustomize: {
+        patches: [
+          {
+            target: { kind: 'Deployment', name: 'clickstack' },
+            patch: 'metadata:\n  annotations:\n    example.com/owner: platform\n',
+          },
+        ],
+      },
+    };
+
+    const withQueue = helmReleasePostRenderers(
+      makeClickstackBootstrap({
+        name: 'clickstack-s3-queue-fsgroup-caller',
+        kind: 'ClickStackS3QueueFsGroupCaller',
+        storage: { mode: 's3', persistentQueue: { enabled: true } },
+        postRenderers: [callerRenderer],
+      }).toYaml()
+    );
+    expect(withQueue).toHaveLength(2);
+    // The caller's entry survives verbatim, first…
+    expect(withQueue?.[0]).toEqual(callerRenderer);
+    // …and the composition's pin comes after it, so it wins on the same field.
+    expect(rendererTarget(withQueue?.[1])?.name).toBe('${string(schema.spec.name)}-otel-collector');
+    expect(patchedSecurityContext(withQueue?.[1])?.fsGroup).toBe(10001);
+
+    // With no queue the caller's post-renderers are the only ones — never dropped.
+    const withoutQueue = helmReleasePostRenderers(
+      makeClickstackBootstrap({
+        name: 'clickstack-s3-noqueue-fsgroup-caller',
+        kind: 'ClickStackS3NoQueueFsGroupCaller',
+        storage: { mode: 's3' },
+        postRenderers: [callerRenderer],
+      }).toYaml()
+    );
+    expect(withoutQueue).toEqual([callerRenderer]);
+  });
+
+  it('rejects an invalid fsGroup at CONSTRUCTION time', () => {
+    expect(() =>
+      makeClickstackBootstrap({
+        storage: { mode: 's3', persistentQueue: { enabled: true, fsGroup: 0 } },
+      })
+    ).toThrow(/'storage\.persistentQueue\.fsGroup' must be a positive integer/);
+    expect(() =>
+      makeClickstackBootstrap({
+        storage: { mode: 's3', persistentQueue: { enabled: true, fsGroup: 1.5 } },
+      })
+    ).toThrow(/'storage\.persistentQueue\.fsGroup' must be a positive integer/);
+  });
+
+  it('rejects a schema reference in build-time postRenderers, like every build-time option', () => {
+    expect(() =>
+      makeClickstackBootstrap({
+        postRenderers: [
+          {
+            kustomize: {
+              patches: [
+                {
+                  target: {
+                    kind: 'Deployment',
+                    name: {
+                      [KUBERNETES_REF_BRAND]: true,
+                      resourceId: '__schema__',
+                      fieldPath: 'spec.name',
+                    } as unknown as string,
+                  },
+                  patch: 'a: b',
+                },
+              ],
+            },
+          },
+        ],
+      })
+    ).toThrow(/build-time options contain a schema\/resource reference/);
   });
 });
 

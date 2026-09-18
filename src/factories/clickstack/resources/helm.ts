@@ -90,6 +90,20 @@ export const CLICKSTACK_OTLP_GRPC_PORT = 4317;
 export const CLICKSTACK_GATEWAY_NAME_SUFFIX = '-otel-collector';
 
 /**
+ * Name of the gateway collector workload AND Service the chart renders for a
+ * release (`<release>-otel-collector` — the subchart names off
+ * `.Release.Name`). Accepts a schema reference for `releaseName` the same way
+ * every other name in this family does: the template literal serializes to
+ * CEL in KRO mode.
+ *
+ * @param releaseName - Helm release name (`spec.name`)
+ * @returns The gateway collector name
+ */
+export function clickStackGatewayName(releaseName: string): string {
+  return `${releaseName}${CLICKSTACK_GATEWAY_NAME_SUFFIX}`;
+}
+
+/**
  * Create a Flux HelmRepository for the official ClickStack chart repository.
  */
 export function clickstackHelmRepository(
@@ -155,6 +169,7 @@ export function clickstackHelmRelease(
     driftDetection: { mode: 'enabled' },
     values: config.values || {},
     ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
+    ...(config.postRenderers && { postRenderers: config.postRenderers }),
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
     createLabeledHelmReleaseEvaluator('ClickStack')

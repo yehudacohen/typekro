@@ -389,6 +389,34 @@ describe('clickstackBootstrap factory modes', () => {
       expect(release).toContain('"tableName":"otel_logs"');
     });
 
+    it('renders the queue fsGroup post-renderer with the CONCRETE gateway name (#222)', () => {
+      const factory = makeClickstackBootstrap({
+        storage: { persistentQueue: { enabled: true } },
+      }).factory('direct', { namespace: 'clickstack' });
+      const yaml = factory.toYaml(BOOTSTRAP_SPEC as never);
+      const release = splitDocs(yaml).find((doc) => docKind(doc) === 'HelmRelease');
+      expect(release).toBeDefined();
+
+      // Direct mode resolves the graph-aware target name to the concrete
+      // `<release>-otel-collector` the chart renders — no CEL survives.
+      expect(release).toContain('postRenderers:');
+      expect(release).toMatch(
+        /target:\s*\n\s+group: apps\s*\n\s+kind: Deployment\s*\n\s+name: clickstack-otel-collector\s*\n\s+version: v1/
+      );
+      expect(release).toContain('fsGroup: 10001');
+      expect(release).toContain('fsGroupChangePolicy: OnRootMismatch');
+      expect(release).not.toContain('${');
+
+      // And the default composition (no queue) carries no post-renderer at all.
+      const plain = clickstackBootstrap
+        .factory('direct', { namespace: 'clickstack' })
+        .toYaml(BOOTSTRAP_SPEC as never);
+      const plainRelease = splitDocs(plain).find((doc) => docKind(doc) === 'HelmRelease');
+      expect(plainRelease).toBeDefined();
+      expect(plainRelease).not.toContain('postRenderers');
+      expect(plainRelease).not.toContain('fsGroup');
+    });
+
     it('protects the OTLP pipeline attachment from chart-value passthrough overrides', () => {
       const bootstrap = makeClickstackBootstrap({
         values: { global: { otelCollector: { customConfig: '' } } },

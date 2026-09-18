@@ -37,6 +37,7 @@
  * materialization pass is the only thing worth skipping.
  */
 
+import { clickStackGatewayName } from '../resources/helm.js';
 import type { ClickStackPersistentQueueOptions, ClickStackStorageOptions } from '../types.js';
 import { assertSafeCollectorConfigKey, type CollectorConfigFragment } from './collector-config.js';
 
@@ -124,6 +125,28 @@ export const CHART_CUSTOM_CONFIG_MOUNT_PATH = '/etc/otelcol-contrib/custom';
 
 /** Default size of the persistent-queue PersistentVolumeClaim. */
 export const DEFAULT_QUEUE_SIZE = '10Gi';
+
+/**
+ * Default `fsGroup` for the gateway collector Pod when the queue is enabled.
+ *
+ * This is the primary group of the `otel` user the collector image runs as
+ * (`clickstack-otel-collector`, uid/gid 10001 — verified on image 2.35.0, the
+ * appVersion of chart 3.2.0). A block PVC's fresh filesystem is `root:root`
+ * 0755 and nothing in the chart chowns it, so without this group the collector
+ * cannot create its bbolt databases and the exporter fails to start with
+ * `open …/file_storage/exporter_clickhouse__logs: permission denied`.
+ *
+ * @see https://github.com/yehudacohen/typekro/issues/222
+ */
+export const DEFAULT_QUEUE_FS_GROUP = 10001;
+
+/**
+ * `fsGroupChangePolicy` for the queue volume. `OnRootMismatch` skips the
+ * recursive chown when the volume root already carries the right group, which
+ * keeps every restart after the first from walking a queue directory that can
+ * hold gigabytes of bbolt pages.
+ */
+export const QUEUE_FS_GROUP_CHANGE_POLICY = 'OnRootMismatch';
 
 /**
  * Access modes of the persistent-queue PersistentVolumeClaim — not an option.
@@ -324,6 +347,11 @@ export interface ResolvedClickStackStorage {
     /** PVC size — always present: there is no ephemeral fallback. */
     readonly size: string;
     readonly storageClassName?: string;
+    /**
+     * Group the collector Pod's volumes are chowned to — always present
+     * (default {@link DEFAULT_QUEUE_FS_GROUP}); a positive integer.
+     */
+    readonly fsGroup: number;
     /** Always {@link QUEUE_ACCESS_MODES} — see the constant for why. */
     readonly accessModes: readonly string[];
     /** Always non-empty — `resolveClickStackStorage` rejects an empty list. */
@@ -468,6 +496,15 @@ export function resolveClickStackStorage(
         `${JSON.stringify([...queueExtensions])}.`
     );
   }
+  const fsGroup = queue?.fsGroup ?? DEFAULT_QUEUE_FS_GROUP;
+  if (queue?.enabled === true && !(Number.isInteger(fsGroup) && fsGroup > 0)) {
+    throw new Error(
+      `${context}: 'storage.persistentQueue.fsGroup' must be a positive integer — it is the ` +
+        `group id the collector Pod's queue volume is chowned to (Pod securityContext.fsGroup). ` +
+        `Got ${JSON.stringify(fsGroup)}. Omit the option to use ${DEFAULT_QUEUE_FS_GROUP}, the ` +
+        `primary group of the collector image's 'otel' user.`
+    );
+  }
   if (queue?.enabled === true) {
     // BOTH lists carry COMPONENT NAMES, and a component name becomes a mapping
     // key in the rendered overlay — `exporters.<name>` directly, and an
@@ -502,6 +539,7 @@ export function resolveClickStackStorage(
         ...(queue.storageClassName !== undefined && {
           storageClassName: queue.storageClassName,
         }),
+        fsGroup,
         accessModes: [...QUEUE_ACCESS_MODES],
         exporterNames,
         extensions: queueExtensions,
@@ -849,5 +887,73 @@ export function renderPersistentQueueClaimSpec(
     ...(queue.storageClassName !== undefined && {
       storageClassName: queue.storageClassName,
     }),
+  };
+}
+
+/**
+ * Flux post-renderer that makes the queue volume WRITABLE by the collector.
+ *
+ * LIVE FINDING (AWS EBS CSI default StorageClass, chart 3.2.0 / image 2.35.0,
+ * Kubernetes 1.36): with the queue enabled the gateway crash-looped forever on
+ *
+ *   Error: cannot start pipelines: failed to start "clickhouse" exporter:
+ *   open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied
+ *
+ * The line is in the OpAMP supervisor's `agent.log`, not the Pod log — the Pod
+ * only reports `Agent crashed during config application` — so it reads like a
+ * config-merge failure when it is a plain ownership one: a block PVC's fresh
+ * filesystem is `root:root` 0755, the collector runs as uid/gid 10001, and
+ * nothing chowns the mount. A Pod `securityContext.fsGroup` is the Kubernetes
+ * answer (the kubelet applies the group on mount), but the chart renders a
+ * security context for the HyperDX Deployment ONLY; its `otel-collector`
+ * template has no securityContext or initContainer hook, so no `values` can
+ * carry it. Hence a Kustomize strategic-merge patch on the rendered
+ * Deployment, through the `postRenderers` seam the `helmRelease` factory
+ * already exposes.
+ *
+ * The patch selects the Deployment by `target` (group/version/kind/name), so
+ * the `metadata.name` inside the patch body is a placeholder and only the
+ * target name has to be graph-aware — `releaseName` may be a schema reference
+ * in KRO mode and serializes to CEL there, exactly like the claim name.
+ *
+ * The return type is left INFERRED on purpose: a named `HelmReleasePostRenderer`
+ * cannot satisfy the graph-aware `TypeKroValue<HelmReleasePostRenderer>` the
+ * `helmRelease` factory accepts (its object branch carries an index
+ * signature), while this literal shape is assignable to both.
+ *
+ * @param queue - Resolved persistent-queue configuration
+ * @param releaseName - Helm release name (`spec.name`)
+ * @returns A Flux HelmRelease post-renderer entry
+ * @see https://github.com/yehudacohen/typekro/issues/222
+ */
+export function renderPersistentQueuePostRenderer(
+  queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>,
+  releaseName: string
+) {
+  return {
+    kustomize: {
+      patches: [
+        {
+          target: {
+            group: 'apps',
+            version: 'v1',
+            kind: 'Deployment',
+            name: clickStackGatewayName(releaseName),
+          },
+          patch: [
+            'apiVersion: apps/v1',
+            'kind: Deployment',
+            'metadata:',
+            '  name: ignored-by-target-selector',
+            'spec:',
+            '  template:',
+            '    spec:',
+            '      securityContext:',
+            `        fsGroup: ${queue.fsGroup}`,
+            `        fsGroupChangePolicy: ${QUEUE_FS_GROUP_CHANGE_POLICY}`,
+          ].join('\n'),
+        },
+      ],
+    },
   };
 }
