@@ -16,37 +16,95 @@ import type {
   ClickHouseKeeperInstallationSpec,
   ClickHouseKeeperInstallationStatus,
 } from '../types.js';
-import { assertClickHouseClusterName, assertPositiveIntegerCount } from '../utils/validation.js';
+import {
+  assertClickHouseClusterName,
+  assertPositiveIntegerCount,
+  CLICKHOUSE_CLUSTER_NAME_MAX_BYTES,
+  CLICKHOUSE_CLUSTER_NAME_PATTERN,
+} from '../utils/validation.js';
 import { chiReadinessEvaluator } from './installation.js';
 
 /** Name of the generated keeper data volume claim template. */
 const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
 
 /**
- * Default logical keeper cluster name.
+ * The RECOMMENDED explicit keeper cluster name — not an implicit default.
  *
- * DELIBERATELY INDEPENDENT OF THE INSTALLATION NAME. The Altinity CRD caps
- * `spec.configuration.clusters[].name` at 15 bytes on the CHK exactly as it
- * does on the CHI (`maxLength: 15`, `pattern: ^[a-zA-Z0-9-]{0,15}$`, annotated
- * `See namePartClusterMaxLen const`), while `metadata.name` is uncapped — so
- * echoing the installation name into the cluster name made every keeper whose
- * release name was longer than 15 bytes fail admission on its FIRST apply with
- * `spec.configuration.clusters[0].name: Too long: may not be more than 15
- * bytes`.
+ * WHAT THE CAP IS. The Altinity CRD constrains
+ * `spec.configuration.clusters[].name` on the CHK exactly as on the CHI:
+ * `minLength: 1`, `maxLength: 15`, `pattern: ^[a-zA-Z0-9-]{0,15}$`, annotated
+ * `See namePartClusterMaxLen const`. `metadata.name` is uncapped, so a keeper
+ * whose installation name was longer than 15 bytes used to fail admission on
+ * its FIRST apply with `spec.configuration.clusters[0].name: Too long: may not
+ * be more than 15 bytes`. The same 15-byte cap (with `minLength: 1`) applies to
+ * the shard, replica and `templates.hostTemplates[].spec.name` host names;
+ * TypeKro emits none of those today. Pod, volume-claim and service template
+ * names are NOT capped.
  *
- * The internal cluster name is a NAME FRAGMENT, not an identity: the operator
- * builds `chk-<installation>-<cluster>-<shard>-<replica>` from it, so it is
- * already disambiguated by the installation name in front of it and only has
- * to be short and stable. A constant is therefore the right default, mirroring
- * `DEFAULT_CHI_CLUSTER_NAME` (`cluster`) on the CHI side. Pass `clusterName`
- * to override it.
+ * WHY IT IS NOT THE DEFAULT. The cluster name is a fragment of every object
+ * name the operator generates (`chk-<installation>-<cluster>-<shard>-<replica>`),
+ * so switching an existing deployment's cluster name REPLACES its StatefulSet
+ * with fresh volumes — losing the coordination state every `Replicated*` table
+ * in the ClickHouse cluster depends on. Silently swapping the default would do
+ * that to every deployment whose installation name already fitted the cap, and
+ * those deployments were never broken. So the default still DERIVES from the
+ * installation name, and a name that cannot fit is a loud BUILD error pointing
+ * at this constant rather than a silent rename or a silent truncation.
  *
  * Anything that needs the value — a `keeper_path` prefix, an
- * operator-generated Service name — must read it from this constant or from
- * the rendered `spec.configuration.clusters[0].name`, never by assuming it
- * equals the installation name.
+ * operator-generated Service name — must read it from the rendered
+ * `spec.configuration.clusters[0].name` (or from the `clusterName` it passed
+ * in), never by assuming a particular derivation.
  */
 export const DEFAULT_CHK_CLUSTER_NAME = 'keeper';
+
+/**
+ * Resolve the CHK's logical cluster name.
+ *
+ * BACKWARD COMPATIBLE BY CONSTRUCTION. With no `clusterName`, the value is the
+ * installation name — unchanged behaviour for every deployment that already
+ * worked, because every deployment that already worked had a name within the
+ * cap. When the installation name cannot be a legal cluster name, the factory
+ * fails at BUILD time naming the field, the length, the cap and the remedy,
+ * instead of letting the operator reject the object on apply.
+ *
+ * A non-string `name` is a schema reference: it is passed through exactly as
+ * before and validated by the CRD (and by the generated KRO schema) instead.
+ */
+function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallationConfig>): string {
+  if (config.clusterName !== undefined) {
+    // Explicit override: the same check the CHI applies to its own
+    // `clusterName`, so both resources fail identically.
+    assertClickHouseClusterName('clickHouseKeeperInstallation', 'clusterName', config.clusterName);
+    return config.clusterName as string;
+  }
+
+  const derived = config.name;
+  if (typeof derived !== 'string' || CLICKHOUSE_CLUSTER_NAME_PATTERN.test(derived)) {
+    return derived as string;
+  }
+
+  const byteLength = Buffer.byteLength(derived, 'utf8');
+  const reason =
+    byteLength > CLICKHOUSE_CLUSTER_NAME_MAX_BYTES
+      ? `it is ${byteLength} bytes and the cap is ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}`
+      : `it does not match ${CLICKHOUSE_CLUSTER_NAME_PATTERN.source}`;
+
+  throw new Error(
+    `clickHouseKeeperInstallation: 'clusterName' defaults to the installation name ` +
+      `(${JSON.stringify(derived)}), which cannot be a cluster name — ${reason}. The Altinity ` +
+      `CRD constrains \`spec.configuration.clusters[].name\` to minLength 1 / maxLength 15 / ` +
+      `\`^[a-zA-Z0-9-]{0,15}\$\` (\`See namePartClusterMaxLen const\`) while \`metadata.name\` ` +
+      `is uncapped, so the operator would reject this object on its first apply with ` +
+      `"spec.configuration.clusters[0].name: Too long: may not be more than 15 bytes". ` +
+      `Set an explicit clusterName — e.g. clusterName: '${DEFAULT_CHK_CLUSTER_NAME}'. It is a ` +
+      `fragment of the generated object names ` +
+      `(\`chk-<installation>-<cluster>-<shard>-<replica>\`), already disambiguated by the ` +
+      `installation name, so any short stable value works — but CHANGING it on an existing ` +
+      `deployment replaces the StatefulSet with fresh volumes and loses keeper coordination ` +
+      `state, so pick it once.`
+  );
+}
 
 /**
  * CHK Readiness Evaluator
@@ -88,12 +146,11 @@ function compileKeeperSpec(
   // invalid operator input — same shared validation as the CHI paths.
   assertPositiveIntegerCount('clickHouseKeeperInstallation', 'replicas', replicas);
 
-  // NOT `config.name`: the installation name is uncapped, the CLUSTER name is
-  // capped at 15 bytes by the CRD (see DEFAULT_CHK_CLUSTER_NAME). Validated
-  // with the SAME assertion the CHI uses, so CHI and CHK fail identically —
-  // at build time, with the cap named — instead of at apply time.
-  const clusterName = config.clusterName ?? DEFAULT_CHK_CLUSTER_NAME;
-  assertClickHouseClusterName('clickHouseKeeperInstallation', 'clusterName', clusterName);
+  // Derived from the installation name (unchanged behaviour) unless that name
+  // cannot be a legal cluster name, in which case this throws at BUILD time
+  // rather than letting the operator reject the object. See
+  // `resolveKeeperClusterName`.
+  const clusterName = resolveKeeperClusterName(config);
 
   return {
     configuration: {
@@ -132,13 +189,16 @@ function compileKeeperSpec(
 /**
  * ClickHouseKeeperInstallation Factory
  *
- * The internal cluster name defaults to {@link DEFAULT_CHK_CLUSTER_NAME} and
- * is independent of `name` — the CRD caps it at 15 bytes while `name` is
- * uncapped.
+ * The internal cluster name defaults to the installation name and is capped at
+ * 15 bytes by the CRD while `name` is not, so an installation name that cannot
+ * be a cluster name is a BUILD error asking for an explicit `clusterName` (see
+ * {@link DEFAULT_CHK_CLUSTER_NAME}) rather than a silent rename.
  *
  * @param config - High-level keeper configuration
  * @returns Enhanced ClickHouseKeeperInstallation resource with readiness
  *   evaluation
+ * @throws Error when no `clusterName` is given and the installation name is
+ *   longer than 15 bytes or otherwise illegal as a cluster name
  *
  * @example
  * ```typescript
@@ -148,6 +208,15 @@ function compileKeeperSpec(
  *   replicas: 3, // odd count for quorum
  *   storage: { size: '10Gi', storageClassName: 'gp3-expandable' },
  *   id: 'clickhouseKeeper',
+ * });
+ * ```
+ *
+ * @example An installation name past the 15-byte cluster-name cap
+ * ```typescript
+ * const keeper = clickHouseKeeperInstallation({
+ *   name: 'observability-keeper',     // 20 bytes — fine as an object name
+ *   clusterName: DEFAULT_CHK_CLUSTER_NAME, // required: 'keeper'
+ *   replicas: 3,
  * });
  * ```
  */

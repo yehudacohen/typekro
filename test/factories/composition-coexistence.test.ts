@@ -27,7 +27,10 @@ import { describe, expect, it } from 'bun:test';
 import { dump } from 'js-yaml';
 
 import { clickHouseCluster } from '../../src/factories/clickhouse/compositions/clickhouse-cluster.js';
-import { clickHouseKeeperInstallation } from '../../src/factories/clickhouse/resources/keeper.js';
+import {
+  clickHouseKeeperInstallation,
+  DEFAULT_CHK_CLUSTER_NAME,
+} from '../../src/factories/clickhouse/resources/keeper.js';
 import { clickstackBootstrap } from '../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import { clickstackK8sTelemetry } from '../../src/factories/clickstack/compositions/k8s-telemetry.js';
 import {
@@ -37,8 +40,8 @@ import {
 } from '../utils/duplicate-declarations.js';
 
 /**
- * The live failure's own shape: one 23-byte name shared by every component of
- * the stack, in one namespace.
+ * The live failure's own shape: one over-long (24-byte) name shared by every
+ * component of the stack, in one namespace.
  */
 const RELEASE_NAME = 'observability-clickstack';
 const NAMESPACE = 'observability';
@@ -79,6 +82,9 @@ function renderStack(): RenderedComposition[] {
     name: RELEASE_NAME,
     namespace: NAMESPACE,
     replicas: 3,
+    // The release name is past the CRD's 15-byte cap on the internal cluster
+    // name, so the keeper requires an explicit one (see keeper.test.ts).
+    clusterName: DEFAULT_CHK_CLUSTER_NAME,
   });
   const keeperYaml = dump({
     apiVersion: keeper.apiVersion,

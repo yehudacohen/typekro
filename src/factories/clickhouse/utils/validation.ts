@@ -68,6 +68,17 @@ export function assertPositiveIntegerCount(
 export const CLICKHOUSE_CLUSTER_NAME_PATTERN = /^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$/;
 
 /**
+ * The CRD's own byte cap on a cluster name (`namePartClusterMaxLen`).
+ *
+ * The identical 15-byte cap — with `minLength: 1` and the same pattern —
+ * applies to the shard name, the replica name and
+ * `spec.templates.hostTemplates[].spec.name` (the generated host's name), on
+ * the CHI, the CHIT and the CHK alike. TypeKro emits none of those today. Pod,
+ * volume-claim and service TEMPLATE names carry no cap in the CRD.
+ */
+export const CLICKHOUSE_CLUSTER_NAME_MAX_BYTES = 15;
+
+/**
  * ArkType schema for a runtime `clusterName`.
  *
  * Used as the spec-schema type of `makeClickHouseCluster`'s optional

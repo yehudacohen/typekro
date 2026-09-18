@@ -526,13 +526,16 @@ The CHI consumes it through the operator's `zookeeper` configuration section (wh
 
 ### Cluster names are capped at 15 bytes
 
-The Altinity CRD constrains `spec.configuration.clusters[].name` to `maxLength: 15` / `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on **both** the CHI and the CHK, while `metadata.name` is uncapped. The internal cluster name is therefore never derived from the installation name — it is a fragment of the object names the operator generates (`chi-<installation>-<cluster>-<shard>-<replica>`, `chk-…`), already disambiguated by the installation name in front of it.
+The Altinity CRD constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` / `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on **both** the CHI and the CHK, while `metadata.name` is uncapped. The value is a fragment of the object names the operator generates (`chi-<installation>-<cluster>-<shard>-<replica>`, `chk-…`); an empty value is rejected too — the CRD does not allow one.
 
-Both factories default it to a short constant — `DEFAULT_CHI_CLUSTER_NAME` (`cluster`) and `DEFAULT_CHK_CLUSTER_NAME` (`keeper`) — and accept an optional `clusterName` override that is validated at **build time** against the CRD pattern and the 15-byte cap, so an illegal value fails at graph construction rather than at apply.
+- **CHI** — `clusterName` defaults to `DEFAULT_CHI_CLUSTER_NAME` (`cluster`). SigNoz's migrations hardcode that name, so keep the default for a SigNoz consumer.
+- **CHK** — `clusterName` defaults to the **installation name**, and the factory throws at **build time** when that name cannot be a legal cluster name, naming the length, the cap and the remedy. Deriving from the installation name is kept on purpose: changing a cluster name replaces the StatefulSet with fresh volumes and loses the keeper's coordination state, so an installation whose name already fitted the cap keeps exactly the object names it had. Pass `clusterName: DEFAULT_CHK_CLUSTER_NAME` (`'keeper'`) — or any short stable value — for a longer installation name.
 
-Consumers that need the value — a `keeper_path` prefix, an operator-generated Service name, or the `ON CLUSTER '<name>'` target of their own DDL — must read it from the exported constant, or from the cluster composition's status (`status.clickhouse.clusterName`, projected from the CHI's own `spec.configuration.clusters[0].name`). It is **not** the installation name.
+An explicit `clusterName` is validated at build time against the CRD pattern and the 15-byte cap on both resources, so an illegal value fails at graph construction rather than at apply.
 
-Shard and replica names carry the same 15-byte cap; TypeKro emits neither. Pod, volume-claim and service template names are uncapped.
+Consumers that need the value — a `keeper_path` prefix, an operator-generated Service name, or the `ON CLUSTER '<name>'` target of their own DDL — must read it from the exported constant or the `clusterName` they passed, or from the cluster composition's status (`status.clickhouse.clusterName`, projected from the CHI's own `spec.configuration.clusters[0].name`). Never assume a particular derivation.
+
+**What else is capped.** The same 15-byte cap, with `minLength: 1` and the same pattern, applies to the shard name, the replica name and `spec.templates.hostTemplates[].spec.name` (the generated host's name), on the CHI, the CHIT and the CHK alike. TypeKro emits none of those today — the zone-pinned layout emits only `templates.podTemplate` per replica, and no `hostTemplates` at all. Pod, volume-claim and service **template** names carry no cap in the CRD.
 
 ## Operator Bootstrap Options
 

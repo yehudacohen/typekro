@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `clusterName` on `clickHouseKeeperInstallation()`, with `DEFAULT_CHK_CLUSTER_NAME`
+  (`keeper`) exported as the recommended explicit value. It is required whenever the
+  installation name is longer than 15 bytes or otherwise illegal as a cluster name, which
+  the CRD caps independently of `metadata.name` (see Fixed). It mirrors the CHI's existing
+  `clusterName` and carries the same `ClickHouseClusterNameSchema` bound.
+
 - `ClickHouseSchema`, an Alchemy v2 resource (`TypeKro.ClickHouseSchema`) that applies
   ClickHouse DDL to a cluster the `clickhouse`/`clickstack` factories deployed, at
   converge time, with state. Nothing in TypeKro previously ran a deployment's own
@@ -304,63 +310,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `clickHouseKeeperInstallation()` no longer copies the installation name into
-  `spec.configuration.clusters[0].name`. The Altinity CRD caps that field at 15 bytes
-  (`maxLength: 15`, `pattern: ^[a-zA-Z0-9-]{0,15}$`, annotated `See
-  namePartClusterMaxLen const`) on the ClickHouseKeeperInstallation exactly as it does
-  on the ClickHouseInstallation, while `metadata.name` is uncapped — so the FIRST apply
-  of any keeper whose release name was longer than 15 bytes was rejected by the API
-  server: `ClickHouseKeeperInstallation … is invalid:
-  spec.configuration.clusters[0].name: Too long: may not be more than 15 bytes`.
+- `clickHouseKeeperInstallation()` now fails at BUILD time, instead of at the operator,
+  when the installation name cannot be the CHK's internal cluster name. The Altinity CRD
+  constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` /
+  `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on the
+  ClickHouseKeeperInstallation exactly as it does on the ClickHouseInstallation, while
+  `metadata.name` is uncapped — so the FIRST apply of any keeper whose release name was
+  longer than 15 bytes was rejected by the API server with
+  `spec.configuration.clusters[0].name: Too long: may not be more than 15 bytes`, at a
+  point where nothing in the graph could explain it.
 
-  The cluster name is a NAME FRAGMENT, not an identity — the operator builds
-  `chk-<installation>-<cluster>-<shard>-<replica>` from it, so it is already
-  disambiguated by the installation name in front of it — and it is now the short
-  constant `DEFAULT_CHK_CLUSTER_NAME` (`keeper`), mirroring `DEFAULT_CHI_CLUSTER_NAME`
-  (`cluster`) on the CHI side, with a new optional `clusterName` to override it. The CHI
-  had the constant and the validation already, which is why only the keeper failed; both
-  factories now run the SAME `assertClickHouseClusterName` check and carry the same
-  `ClickHouseClusterNameSchema` bound on their config schema, so a concrete over-long or
-  otherwise illegal name fails at BUILD time, naming the cap, on either resource. Unit
-  tests pin the boundary (15 accepted, 16 rejected) for both.
+  The default still DERIVES from the installation name, so every deployment that already
+  worked keeps exactly the object names it had. That is deliberate: the cluster name is a
+  fragment of every generated object name
+  (`chk-<installation>-<cluster>-<shard>-<replica>`), so changing it replaces the
+  StatefulSet with fresh volumes and loses the coordination state every `Replicated*`
+  table depends on — a silent default swap would have done that to every keeper whose
+  name already fitted the cap. Only names that could never have worked change behaviour,
+  from an operator rejection into an error naming the field, the byte length, the cap and
+  the remedy. No truncation, no silent rename.
 
-  BEHAVIOUR CHANGE for existing keepers: the generated object names change from
-  `chk-<installation>-<installation>-…` to `chk-<installation>-keeper-…`. Set
-  `clusterName` to the old installation name to keep the previous names — possible only
-  where that name was within the cap, which is exactly where the bug did not bite.
+  An explicit `clusterName` (see Added) runs the same `assertClickHouseClusterName` check
+  and carries the same `ClickHouseClusterNameSchema` bound as the CHI's, so both resources
+  reject an illegal value identically; unit tests pin the boundary at 15 accepted / 16
+  rejected on both. The CHI is unchanged — its `cluster` default was already independent
+  of the installation name, which is why only the keeper failed.
 
   Anything that needs the value — a `keeper_path` prefix, an operator-generated Service
   name, and on the CHI side the `ON CLUSTER '<name>'` target of a consumer's DDL — must
-  read it from the exported constant or from the resource (`clickhouse.clusterName` on
-  the cluster composition's status, projected from the CHI's own
-  `spec.configuration.clusters[0].name`), never by assuming it equals the installation
-  name. Only `clusters[].name` — and the shard/replica names, which TypeKro does not
-  emit — carries the 15-byte cap; pod, volume-claim and service template names are
-  uncapped.
-
-- The ClickHouse cluster composition's status-contract ConfigMap is renamed from
-  `<installation>-contract` to `<installation>-clickhouse-contract`
-  (`CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX`); its keys are unchanged. It collided with the
-  ClickStack bootstrap composition's own `<release>-contract`, so a stack whose
-  ClickHouse cluster and ClickStack release were both named after the stack — the normal
-  way to name one — put two independently-owned ConfigMaps on one
-  `(kind, namespace, name)`, and KRO refused the second instance on its first deploy:
-  `resource belongs to a different ApplySet: <ns>/<release>-contract (ConfigMap) belongs
-  to ApplySet "<A>", cannot reassign to "<B>"`.
-
-  The two ConfigMaps are different contracts — the ClickHouse one carries the
-  database/ports/user and the durability block, the ClickStack one the app ports and
-  retention — so neither composition could consume the other's; they only ever collided
-  on the NAME. The ClickStack bootstrap remains the sole declarer of
-  `<release>-contract` and is untouched; component-scoping the ClickHouse one follows
-  the convention the Envoy AI Gateway family already used (`<name>-platform-contract`,
-  `<name>-gateway-contract`).
-
-  A reusable guard comes with it: `assertNoDuplicateDeclarations` renders any set of
-  compositions against one name and namespace and fails on any `(kind, namespace, name)`
-  declared by more than one of them. It is applied across the compositions that
-  realistically co-exist in a namespace — ClickStack bootstrap, ClickStack k8s telemetry,
-  the ClickHouse cluster and the keeper.
+  read it from the exported constant or the `clusterName` it passed, or from the resource
+  (`clickhouse.clusterName` on the cluster composition's status, projected from the CHI's
+  own `spec.configuration.clusters[0].name`), never by assuming a particular derivation.
+  The 15-byte cap with `minLength: 1` covers the cluster, shard and replica names and
+  `spec.templates.hostTemplates[].spec.name`, on the CHI, the CHIT and the CHK alike;
+  TypeKro emits none of the shard, replica or hostTemplate names today. Pod, volume-claim
+  and service TEMPLATE names are uncapped.
 
 - Every Kubernetes request the Alchemy KRO provider issues is now bounded by a per-verb
   deadline — the drift and terminating-identity reads, the singleton and pre-hoist
@@ -471,6 +455,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct-mode status resolution.
 
 ### Changed
+
+- **The ClickHouse cluster composition's status-contract ConfigMap is renamed** from
+  `<installation>-contract` to `<installation>-clickhouse-contract`
+  (`CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX`); its keys are unchanged. Affected: anything
+  OUTSIDE the resource graph that read the old object by name — a GitOps check, a
+  dashboard, a script doing `kubectl get configmap <installation>-contract`. Readers
+  inside the graph are unaffected, because the status projection reaches it through its
+  graph resource id (`clickhouseContract.data.*`), not by object name.
+
+  The old name collided with the ClickStack bootstrap composition's own
+  `<release>-contract`, so a stack whose ClickHouse cluster and ClickStack release were
+  both named after the stack — the normal way to name one — put two independently-owned
+  ConfigMaps on one `(kind, namespace, name)`, and KRO refused the second instance on its
+  first deploy: `resource belongs to a different ApplySet: <ns>/<release>-contract
+  (ConfigMap) belongs to ApplySet "<A>", cannot reassign to "<B>"`. The two ConfigMaps are
+  different contracts — the ClickHouse one carries the database/ports/user and the
+  durability block, the ClickStack one the app ports and retention — so neither
+  composition could consume the other's; they only ever collided on the NAME. The
+  ClickStack bootstrap remains the sole declarer of `<release>-contract` and is untouched;
+  component-scoping the ClickHouse one follows the convention the Envoy AI Gateway family
+  already used (`<name>-platform-contract`, `<name>-gateway-contract`).
+
+  A reusable guard comes with it: `assertNoDuplicateDeclarations` renders any set of
+  compositions against one name and namespace and fails on any `(kind, namespace, name)`
+  declared by more than one of them. It is applied across the compositions that
+  realistically co-exist in a namespace — ClickStack bootstrap, ClickStack k8s telemetry,
+  the ClickHouse cluster and the keeper.
 
 - `HelmReleaseSpec` gained `install.crds` and `upgrade.crds`
   (`HelmReleaseCrdsPolicy`). Flux defaults the upgrade action to `Skip`, so a

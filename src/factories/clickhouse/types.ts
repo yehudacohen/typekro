@@ -1009,13 +1009,17 @@ export const ClickHouseKeeperInstallationConfigSchema = type({
   /** Resource ID for composition references. */
   'id?': 'string',
   /**
-   * Logical cluster name inside the CHK (default: 'keeper').
+   * Logical cluster name inside the CHK (default: the installation `name`).
    *
-   * NOT derived from `name`: the Altinity CRD caps
-   * `spec.configuration.clusters[].name` at 15 bytes on the CHK exactly as it
-   * does on the CHI, while `metadata.name` is uncapped. The bound rides on the
-   * schema, and a concrete over-long value is additionally rejected at BUILD
-   * time by `assertClickHouseClusterName`.
+   * REQUIRED when `name` cannot be one. The Altinity CRD constrains
+   * `spec.configuration.clusters[].name` to minLength 1 / maxLength 15 /
+   * `^[a-zA-Z0-9-]{0,15}$` on the CHK exactly as on the CHI, while
+   * `metadata.name` is uncapped — so the factory throws at BUILD time, naming
+   * the cap and suggesting `DEFAULT_CHK_CLUSTER_NAME`, rather than silently
+   * renaming the cluster (which would replace the StatefulSet and lose the
+   * keeper's coordination state). The bound rides on the schema, and a
+   * concrete illegal override is additionally rejected by
+   * `assertClickHouseClusterName`.
    */
   'clusterName?': ClickHouseClusterNameSchema,
   /** Keeper replica count (default: 1; use an odd number for quorum). */
