@@ -322,6 +322,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clickstackBootstrap` with `storage.persistentQueue.enabled: true` was unusable on block PVCs:
+  the freshly provisioned filesystem is `root:root` 0755, the gateway collector image
+  (`clickstack-otel-collector` 2.35.0) runs as `otel` (uid/gid 10001), no `fsGroup` was set and
+  nothing chowned the mount, so the collector crash-looped forever on
+  `open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied` — a line that
+  only appears in the OpAMP supervisor's `agent.log`, while the Pod reported a generic
+  `Agent crashed during config application`. The ClickStack chart (3.2.0) renders a Pod security
+  context for the HyperDX Deployment only and has no securityContext or initContainer hook for
+  the `otel-collector` template, so chart `values` cannot fix it. Whenever the queue is enabled the
+  composition now adds a Flux `postRenderers` Kustomize strategic-merge patch to the HelmRelease
+  that sets `spec.template.spec.securityContext.fsGroup` (with
+  `fsGroupChangePolicy: OnRootMismatch`) on the `<release>-otel-collector` Deployment. The
+  target name is graph-aware, so the patch is carried in both direct-mode manifests and the KRO
+  RGD (`${string(schema.spec.name)}-otel-collector`). Two options come with it:
+  `storage.persistentQueue.fsGroup` (default `10001`, the collector image's `otel` group;
+  validated as a positive integer at construction) and a build-time `postRenderers` on
+  `makeClickstackBootstrap`, which `clickstackHelmRelease` now threads through — caller entries
+  are preserved and the queue patch is appended after them. Exported alongside:
+  `DEFAULT_QUEUE_FS_GROUP`, `QUEUE_FS_GROUP_CHANGE_POLICY`, `renderPersistentQueuePostRenderer`
+  and `clickStackGatewayName`. ([#222](https://github.com/yehudacohen/typekro/issues/222))
+
 - A KRO instance that had ALREADY failed could be reported as a generic readiness
   timeout instead of the error it actually hit. The readiness poll checked the
   ResourceGraphDefinition status schema before it checked the instance's own terminal

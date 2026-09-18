@@ -43,7 +43,7 @@
 import { type } from 'arktype';
 import type { ValuesMergeExpression } from '../../core/aspects/values-merge.js';
 import type { TypeKroChartValues, TypeKroValue } from '../../core/types/common.js';
-import type { HelmReleaseValuesFromSource } from '../helm/types.js';
+import type { HelmReleasePostRenderer, HelmReleaseValuesFromSource } from '../helm/types.js';
 
 // ============================================================================
 // ClickHouse version-coupling guidance
@@ -278,6 +278,34 @@ export interface ClickStackPersistentQueueOptions {
   /** StorageClass for the queue PVC (cluster default when omitted). */
   storageClassName?: string;
   /**
+   * Group id the queue volume is made writable for (default: `10001`, a
+   * positive integer).
+   *
+   * WHY IT EXISTS: a freshly provisioned BLOCK volume (the AWS EBS CSI default
+   * StorageClass, and most other block provisioners) is formatted with a
+   * `root:root` 0755 filesystem, and nothing in the chart chowns the mount.
+   * The gateway collector image (`clickstack-otel-collector`, verified on
+   * 2.35.0) runs as its `otel` user, uid/gid 10001, so the collector cannot
+   * create its bbolt databases in the mounted directory and the exporter
+   * refuses to start:
+   *
+   *   open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied
+   *
+   * Kubernetes fixes exactly this with a Pod `securityContext.fsGroup` — the
+   * kubelet chowns the volume to that group on mount — but the ClickStack
+   * chart (3.2.0) renders a Pod security context for the HyperDX Deployment
+   * only; the `otel-collector` template has no securityContext or
+   * initContainer hook, so chart values cannot carry it. TypeKro therefore
+   * adds a Flux `postRenderers` Kustomize patch on the HelmRelease that sets
+   * `spec.template.spec.securityContext.fsGroup` (with
+   * `fsGroupChangePolicy: OnRootMismatch`) on the `<release>-otel-collector`
+   * Deployment whenever the queue is enabled. Override this when running a
+   * collector image whose user has a different primary group.
+   *
+   * @see https://github.com/yehudacohen/typekro/issues/222
+   */
+  fsGroup?: number;
+  /**
    * Exporters whose `sending_queue` is switched to file storage. Must be
    * non-empty when the queue is enabled; defaults to the single ClickHouse
    * exporter the ClickStack collector defines.
@@ -348,6 +376,18 @@ interface ClickStackBuildOptionsBase {
    * `ClickStackBootstrapRuntimeConfig`'s doc comment below).
    */
   values?: TypeKroChartValues<ClickStackHelmValues>;
+  /**
+   * Static Flux Kustomize post-renderers applied to the ClickStack HelmRelease
+   * after Helm renders the chart. Build-time and concrete for the same reason
+   * `values` is. The composition APPENDS its own post-renderers after these
+   * (today: the persistent queue's `fsGroup` patch — see
+   * {@link ClickStackPersistentQueueOptions.fsGroup}); Kustomize applies
+   * patches in order, so a composition-owned pin wins over a caller patch
+   * touching the same field. Typed graph-aware like `values` so it plugs into
+   * the `helmRelease` factory; a reference in it is still rejected loudly at
+   * construction like every other build-time option.
+   */
+  postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
   /** RGD name override (needed when registering both variants in one cluster). */
   name?: string;
   /** KRO kind override. */
@@ -782,6 +822,13 @@ export const ClickStackHelmReleaseConfigSchema = type({
   'values?': type('object').as<ClickStackMappedHelmValues>(),
   /** Secret/ConfigMap values overlays resolved by Flux before inline values. */
   'valuesFrom?': type('object[]').as<TypeKroValue<HelmReleaseValuesFromSource>[]>(),
+  /**
+   * Flux Kustomize transformations applied after Helm renders the chart. Patch
+   * targets stay graph-aware so a `<release>-…` name can be a schema
+   * reference in KRO mode (same `object[]` + `.as<>()` reasoning as
+   * `valuesFrom`).
+   */
+  'postRenderers?': type('object[]').as<TypeKroValue<HelmReleasePostRenderer>[]>(),
   'id?': 'string',
 });
 

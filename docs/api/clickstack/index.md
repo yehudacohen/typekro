@@ -111,7 +111,9 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
 credential source, the external ClickHouse's [`storage`](#s3-backed-clickhouse) story,
-static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name,
+static raw chart `values`, static Flux `postRenderers` on the ClickStack HelmRelease (the composition
+appends its own after them — see the [queue `fsGroup` patch](#and-an-fsgroup-because-a-block-pvc-mounts-root-owned)),
+RGD `name`/`kind`. Runtime spec (proxy-safe): release name,
 namespace, chart version, the ClickHouse connection, credential Secret coordinates or inline API key,
 and HyperDX conveniences.
 
@@ -347,6 +349,61 @@ gateway keeps the chart's `RollingUpdate` default** and stays available across a
 Unlike `replicaCount`, a build-time `values['otel-collector'].rollout.strategy` is not rejected at
 construction — it is simply **overridden**. The deadlock is a property of the queue, not a
 trade-off the caller gets to take.
+
+#### …and an `fsGroup`, because a block PVC mounts root-owned
+
+A freshly provisioned **block** volume — the AWS EBS CSI default StorageClass, and most other block
+provisioners — comes formatted with a `root:root` 0755 filesystem, and nothing in the chart chowns
+the mount. The gateway collector image (`clickstack-otel-collector`, verified on 2.35.0) runs as its
+`otel` user, uid/gid **10001**, so it cannot create its bbolt databases in the mounted directory and
+the exporter refuses to start:
+
+```
+Error: cannot start pipelines: failed to start "clickhouse" exporter:
+open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied
+```
+
+That line is in the OpAMP supervisor's `agent.log` (`/etc/otel/supervisor-data/agent.log`), not in
+the Pod log, which only says `Agent crashed during config application, reporting FAILED status` — so
+the gateway `CrashLoopBackOff`, the HelmRelease install timing out and the k8s-telemetry collectors
+with nowhere to ship all read like a config-merge problem when the merged config is perfectly valid.
+(A hostPath-style class such as kind's `local-path` happens to mount world-writable, which is why
+the symptom only appears once the queue meets a real block PVC.)
+
+Kubernetes fixes exactly this with a Pod `securityContext.fsGroup`: the kubelet applies the group to
+the volume on mount. But the ClickStack chart (3.2.0) renders `podSecurityContext` for the HyperDX
+Deployment **only** — its `otel-collector` template has no securityContext or initContainer hook —
+so no chart `values` can carry it. Whenever `persistentQueue` is enabled, TypeKro therefore adds a
+Flux [`postRenderers`](https://fluxcd.io/flux/components/helm/helmreleases/#post-renderers)
+Kustomize strategic-merge patch to the HelmRelease, targeting the `<release>-otel-collector`
+Deployment:
+
+```yaml
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+```
+
+`fsGroupChangePolicy: OnRootMismatch` skips the recursive chown once the volume root already carries
+the group, so restarts after the first do not walk a queue directory that can hold gigabytes of bbolt
+pages. The group is `persistentQueue.fsGroup` (default `10001`, a positive integer) — override it
+when running a collector image whose user has a different primary group:
+
+```typescript
+makeClickstackBootstrap({
+  storage: { mode: 's3', persistentQueue: { enabled: true, fsGroup: 2000 } },
+});
+```
+
+The patch's target name is graph-aware, so in KRO mode it serializes to
+`${string(schema.spec.name)}-otel-collector` like every other `<release>-…` name here. Build-time
+`postRenderers` you pass to `makeClickstackBootstrap` are preserved and the queue patch is
+**appended after them**; Kustomize applies patches in order, so the composition's pin wins over a
+caller patch on the same field. With no `persistentQueue` no post-renderer is added, and the
+collector Pod keeps the chart's own (empty) security context.
 
 ::: info Future path: per-replica queues
 Running several collectors each with their **own** queue is a real design, and a different one: it

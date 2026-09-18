@@ -82,8 +82,10 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/portable-strategies.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import type { TypeKroValue } from '../../../core/types/common.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
+import type { HelmReleasePostRenderer } from '../../helm/types.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { persistentVolumeClaim } from '../../kubernetes/storage/persistent-volume-claim.js';
@@ -131,6 +133,7 @@ import {
   assertQueueReplicaCompatible,
   clickStackQueueClaimName,
   renderPersistentQueueClaimSpec,
+  renderPersistentQueuePostRenderer,
   renderRetentionScript,
   resolveClickStackStorage,
 } from '../utils/storage.js';
@@ -143,6 +146,8 @@ interface ResolvedBuildConfig {
   /** Internal-Mongo PVC sizing (build-time; shapes the StatefulSet template). */
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
+  /** Caller-supplied Flux post-renderers; the composition appends its own after them. */
+  postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
   /**
    * The EXTERNAL ClickHouse's storage story: retention DDL, the collector's
    * persistent queue, and the status contract. Distinct from `storage` above,
@@ -447,11 +452,26 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // dagster/clickhouse bootstraps. The HyperDX pod's own waitForMongodb
     // init container gates on Mongo reachability, so no explicit dependency
     // on the internal Mongo is needed.
+    //
+    // POST-RENDERERS: the caller's static ones first, then the composition's
+    // own pins APPENDED — Kustomize applies patches in order, so a pin wins
+    // over a caller patch on the same field. Today's only pin is the queue's
+    // `fsGroup` patch: a block PVC mounts `root:root` and the chart offers no
+    // securityContext hook for the collector, so without it the collector
+    // cannot write its queue (#222). The target name is graph-aware — a CEL
+    // expression in KRO mode — like every other `<release>-…` name here.
+    const postRenderers: TypeKroValue<HelmReleasePostRenderer>[] = [
+      ...(build.postRenderers ?? []),
+      ...(build.clickhouseStorage.persistentQueue === undefined
+        ? []
+        : [renderPersistentQueuePostRenderer(build.clickhouseStorage.persistentQueue, spec.name)]),
+    ];
     const _clickstackHelmRelease = clickstackHelmRelease({
       name: spec.name,
       namespace: resolvedNamespace,
       version: resolvedVersion,
       values: helmValues,
+      ...(postRenderers.length > 0 && { postRenderers }),
       ...(build.credentialSource === 'secretValues'
         ? {
             valuesFrom: [
@@ -802,6 +822,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
+    ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
   };
 }
@@ -811,6 +832,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
+    ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
   };
 }
