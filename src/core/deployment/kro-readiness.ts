@@ -19,7 +19,7 @@ import {
 import { CRDInstanceError, DeploymentTimeoutError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { RGDManifest } from '../types/kubernetes.js';
-import { classifyApiReadError, describeApiReadFailure } from './k8s-helpers.js';
+import { classifyReadError } from './k8s-helpers.js';
 import { callWithTimeout, perCallTimeout } from './poll-timeout.js';
 
 /** Options for Kro instance readiness polling. */
@@ -111,30 +111,38 @@ async function delayWithinBudget(
  * 3. Either custom status fields are populated OR the RGD declares no status schema
  *
  * A TERMINAL instance state (`FAILED`/`ERROR`) is checked first, on the instance read alone, before
- * the RGD lookup below. Under the strict lookup policy a broken lookup retries to the deadline, and
- * an instance that has already failed carries the most actionable message this function can return —
- * it must not be buried behind retries and downgraded to a generic timeout.
+ * the RGD lookup below, and only when the failure evidence belongs to the CURRENT
+ * `metadata.generation` — Kubernetes keeps the status subresource across spec updates, so on an
+ * update the previous deployment's verdict can still be on the object while the new generation is
+ * about to reconcile. A current terminal state carries the most actionable message this function can
+ * return and must not be buried behind lookup retries; a stale one is history and falls through to
+ * normal polling, still bounded by the overall deadline.
  *
  * RGD STATUS-SCHEMA LOOKUP POLICY. Step 3 needs the ResourceGraphDefinition's declared status schema.
  * An UNCERTAIN read of that schema is never converted into an EMPTY schema: "we did not learn what
  * this instance's status should contain" must not become "this instance has no custom status", which
  * is what declares an ACTIVE/synced instance ready without validating any of its expected fields.
- * Failures are classified with the repo's shared {@link classifyApiReadError}:
+ * Being uncertain is not, however, a reason to retry forever. Failures are classified with the
+ * repo's shared retry policy, {@link classifyReadError}:
  *
- * - `forbidden` (401/403) FAILS FAST. RBAC is the one cause waiting cannot fix, and every other
- *   401/403 in this codebase — including the instance read in this same loop — already fails fast.
- * - EVERY other classification — `timeout` (a wedged/expired exec credential, a half-open socket),
- *   `unreachable` (a premature close, a refused connection, DNS, TLS), `notFound`, and the
- *   deliberately conservative `other` bucket that catches 5xx and anything unrecognised — ABANDONS
- *   the iteration: neither ready nor permissive. The loop polls again, so the caller's overall
- *   `timeout` stays the single authority on how long to keep trying, and one transient blip is
- *   ridden out rather than failing the deploy. A lookup that never succeeds simply never satisfies
- *   step 3, and the wait ends in the overall {@link DeploymentTimeoutError}, whose message carries
- *   the last lookup failure so the diagnosis is not lost.
+ * - RETRYABLE — `object-not-found` (the RGD is missing or not yet created) and `transient` (5xx,
+ *   rate limiting, a wedged request, a dropped socket, DNS/TLS) — ABANDONS the iteration: neither
+ *   ready nor permissive. The loop polls again, so the caller's overall `timeout` stays the single
+ *   authority on how long to keep trying, and one blip is ridden out rather than failing the deploy.
+ *   A lookup that never succeeds simply never satisfies step 3, and the wait ends in the overall
+ *   {@link DeploymentTimeoutError}, whose message carries the last lookup failure so the diagnosis
+ *   is not lost.
+ * - DETERMINISTIC — `permission-denied` (401/403), `unknown-resource-type` (the RGD API resource is
+ *   not served), `invalid-request` (400/405/422) and `not-a-kubernetes-error` (a `TypeError` from a
+ *   programming bug, a client signature mismatch) — FAILS FAST with the original error. Each reads
+ *   identically on every attempt, so polling it only spends the budget and then reports a timeout
+ *   that hides the real cause. RBAC is the canonical member: every other 401/403 in this codebase,
+ *   including the instance read in this same loop, already fails fast.
  *
- * `notFound` is strict for the same reason: the RGD name this poll looks up is the name the compiler
- * emitted (`convertToKubernetesName(composition.name)`, threaded through the deployment plan), so a
- * 404 means the RGD is missing or not yet created, not that the instance has no status schema.
+ * `object-not-found` is strict rather than permissive for the same reason the whole policy is: the
+ * RGD name this poll looks up is the name the compiler emitted
+ * (`convertToKubernetesName(composition.name)`, threaded through the deployment plan), so a 404
+ * means the RGD is missing or not yet created, not that the instance has no status schema.
  *
  * @throws {CRDInstanceError} if the instance enters a FAILED or ERROR state
  * @throws {DeploymentTimeoutError} if the timeout is exceeded
@@ -168,6 +176,14 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
 
   while (Date.now() - startTime < timeout) {
     abortSignal?.throwIfAborted();
+    /**
+     * Set immediately before the RGD status-schema lookup re-throws a DETERMINISTIC failure, so the
+     * catch below lets it out. That catch's job is to swallow a 404 on the INSTANCE read ("not
+     * created yet, keep waiting"); without this flag it would also swallow the lookup's own
+     * fail-fast 404 — the one that means the ResourceGraphDefinition API resource is not served at
+     * all — and poll to the deadline on an error that can never change.
+     */
+    let fatalLookupError = false;
     try {
       // Bound the read so a wedged/expired kubeconfig exec credential rejects (and is re-thrown below)
       // instead of hanging the poll forever — see poll-timeout.ts. A ≤0 budget means the deadline is
@@ -228,32 +244,69 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
 
       const state = status.state;
       const conditions = status.conditions || [];
+      const generation = instance.metadata?.generation;
 
-      // TERMINAL STATE IS CHECKED FIRST, BEFORE ANY RGD LOOKUP.
+      // TERMINAL STATE IS CHECKED FIRST, BEFORE ANY RGD LOOKUP — BUT ONLY WHEN IT IS CURRENT.
       //
       // Kro v0.8.x uses "ERROR", v0.3.x uses "FAILED". Either way the instance is done: no amount of
       // further polling changes it, and the condition message is the single most actionable thing
       // this function can hand the caller. The check therefore runs on the instance read alone —
       // the RGD status-schema lookup below cannot make a failed instance succeed, and under the
-      // strict lookup policy (every non-forbidden failure abandons the iteration and retries) a
+      // strict lookup policy (every non-retryable failure fails fast, everything else retries) a
       // lookup that is itself broken would otherwise bury this message behind retries until the
       // deadline, turning a precise CRDInstanceError into a generic DeploymentTimeoutError.
+      //
+      // GENERATION AWARENESS. Kubernetes keeps the status subresource across spec updates, so on an
+      // UPDATE the very first read can legitimately return `generation: 7` alongside the PREVIOUS
+      // deployment's verdict — `state: FAILED`, `Ready=False` with `observedGeneration: 6` and that
+      // deployment's message — while generation 7 is about to reconcile perfectly well. KRO
+      // documents `observedGeneration < metadata.generation` as "not yet processed", so a terminal
+      // state is only authoritative when the failure evidence is current: a `False` condition that
+      // has observed this generation. Absent that evidence the state is stale history; it falls
+      // through to normal polling and the outer deadline still bounds the wait.
+      //
+      // Backward compatible by construction: an instance with no `metadata.generation`, or
+      // conditions from an older KRO that carry no `observedGeneration` at all, has no way to be
+      // stale, so the terminal state stays authoritative exactly as before.
       if (state === 'FAILED' || state === 'ERROR') {
-        const failedCondition = conditions.find((c) => c.status === 'False');
-        const errorMessage = failedCondition?.message || 'Unknown error';
-        throw new CRDInstanceError(
-          `Kro instance deployment failed (state=${state}): ${errorMessage}`,
-          apiVersion,
-          kind,
-          instanceName,
-          'creation'
+        const failedCondition = conditions.find(
+          (c) =>
+            c.status === 'False' &&
+            (generation === undefined ||
+              c.observedGeneration === undefined ||
+              c.observedGeneration >= generation)
+        );
+        const hasGenerationAwareConditions = conditions.some(
+          (c) => c.observedGeneration !== undefined
+        );
+        const terminalStateIsCurrent =
+          failedCondition !== undefined ||
+          generation === undefined ||
+          !hasGenerationAwareConditions;
+        if (terminalStateIsCurrent) {
+          const errorMessage = failedCondition?.message || 'Unknown error';
+          throw new CRDInstanceError(
+            `Kro instance deployment failed (state=${state}): ${errorMessage}`,
+            apiVersion,
+            kind,
+            instanceName,
+            'creation'
+          );
+        }
+        readinessLogger.debug(
+          'Terminal state belongs to an earlier generation — treating it as stale and continuing to poll',
+          {
+            instanceName,
+            state,
+            generation,
+            conditionObservedGenerations: conditions.map((c) => c.observedGeneration),
+          }
         );
       }
 
       // Support both Kro v0.3.x (InstanceSynced) and v0.8.x (Ready) conditions
       const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
       const readyCondition = conditions.find((c) => c.type === 'Ready');
-      const generation = instance.metadata?.generation;
       const conditionIsCurrent = (condition: (typeof conditions)[number] | undefined) =>
         condition?.status === 'True' &&
         (generation === undefined ||
@@ -313,24 +366,37 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         // failure alike, so any request that did not produce an answer let an ACTIVE/synced instance
         // be declared ready WITHOUT validating the status fields it was supposed to have. The
         // question is not which error class this is, it is whether the server actually ANSWERED.
-        // `classifyApiReadError` is the repo's shared answer to that, and it already folds in the
-        // socket-level cases this gate previously missed: `PrematureCloseError` carries `ECONNRESET`
-        // → `unreachable`, and both `RequestTimeoutError` and `PollTimeoutError` → `timeout`.
-        const failure = classifyApiReadError(error);
-
-        // RBAC is the one failure that waiting cannot fix, and the repo fails fast on 401/403
-        // everywhere else (including the instance read in this very loop). Spending the whole
-        // readiness budget re-asking a question that will keep being refused only buries the cause.
-        if (failure === 'forbidden') {
+        //
+        // WHAT IT IS NOT is a reason to retry FOREVER. Retrying every failure alike — which is what
+        // "fail fast only on forbidden" amounted to — spends the entire readiness budget on errors
+        // that will read identically on every attempt (an HTTP 400/405/422, a client signature
+        // mismatch, a plain `TypeError` from a programming bug) and then reports a
+        // DeploymentTimeoutError that HIDES them. `classifyReadError` is the file-local retry
+        // policy this repo already applies to the same question elsewhere (see the external-
+        // reference read in `engine.ts`), so use it here rather than growing a second one:
+        // object-not-found and transient retry; unknown-resource-type, permission-denied,
+        // invalid-request and not-a-kubernetes-error fail fast with the REAL error.
+        //
+        // It is used ALONE, with no local carve-out, because it now recognises the timeout and
+        // transport shapes this loop depends on: a bare `RequestTimeoutError` from the socket timer,
+        // a `PollTimeoutError` from the deadline wrapper and a `PrematureCloseError` from a
+        // mid-response disconnect all classify as `transient` (see `classifyReadErrorKind`). One
+        // classifier, one taxonomy — a carve-out here would have to be kept in sync with it forever.
+        const assessment = classifyReadError(error);
+        if (!assessment.retryable) {
+          // RBAC (401/403) is the canonical case — the repo fails fast on it everywhere else,
+          // including the instance read in this very loop — but a malformed request or a kind the
+          // cluster does not serve is just as fixed. Waiting cannot change any of them.
+          fatalLookupError = true;
           throw error;
         }
 
-        // Everything else — `timeout`, `unreachable`, `notFound`, and the deliberately conservative
-        // `other` bucket that catches 5xx and anything unrecognised — means we did not learn the
-        // schema. Abandon this iteration (neither ready nor permissive) and poll again, so the
-        // caller's overall `timeout` stays the single authority on how long to keep trying. One
-        // transient blip is what a poll loop exists to ride out; a persistent failure ends in the
-        // overall DeploymentTimeoutError, carrying this message.
+        // Retryable: an absent RGD (404 for the object) or a transient fault (5xx, rate limiting, a
+        // wedged request, a dropped socket). We did not learn the schema, so abandon this iteration
+        // — neither ready nor permissive — and poll again, leaving the caller's overall `timeout`
+        // as the single authority on how long to keep trying. One transient blip is what a poll
+        // loop exists to ride out; a persistent failure ends in the overall DeploymentTimeoutError,
+        // carrying this message.
         lastLookupError = ensureError(error);
         if (!warnedLookupFailures.has(lastLookupError.message)) {
           warnedLookupFailures.add(lastLookupError.message);
@@ -338,8 +404,8 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
             'ResourceGraphDefinition status-schema lookup did not produce an answer — retrying until the readiness deadline',
             {
               rgdName,
-              failure,
-              reason: describeApiReadFailure(failure),
+              classification: assessment.classification,
+              reason: assessment.summary,
               error: lastLookupError.message,
             }
           );
@@ -419,8 +485,9 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         projectedStatusIsCurrent,
       });
     } catch (error: unknown) {
-      // Re-throw CRDInstanceError as-is
-      if (error instanceof CRDInstanceError) {
+      // Re-throw CRDInstanceError as-is, and likewise a deterministic RGD-lookup failure that the
+      // lookup already decided is fatal — the 404 swallow below is for the INSTANCE read only.
+      if (error instanceof CRDInstanceError || fatalLookupError) {
         throw error;
       }
       const k8sError = error as {

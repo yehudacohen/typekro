@@ -307,12 +307,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A KRO instance that had ALREADY failed could be reported as a generic readiness
   timeout instead of the error it actually hit. The readiness poll checked the
   ResourceGraphDefinition status schema before it checked the instance's own terminal
-  state, and under the strict schema-lookup policy every non-RBAC lookup failure
-  abandons the iteration and retries — so an instance sitting in `FAILED`/`ERROR` with a
-  precise controller message stayed hidden behind lookup retries until the deadline. The
+  state, and under the strict schema-lookup policy a retryable lookup failure abandons
+  the iteration and retries — so an instance sitting in `FAILED`/`ERROR` with a precise
+  controller message stayed hidden behind lookup retries until the deadline. The
   terminal-state check now runs as soon as the state and conditions have been read from
   the instance, before any schema lookup is attempted, so the instance's own message is
   what the caller gets, immediately.
+
+  **Behaviour clarification:** that terminal state is treated as authoritative only when
+  it describes the CURRENT `metadata.generation`. Kubernetes keeps the status
+  subresource across spec updates, so the first read after an update can return the new
+  generation alongside the PREVIOUS deployment's verdict — a failed state, a `False`
+  condition whose `observedGeneration` is one behind, and that deployment's message —
+  while the new generation is about to reconcile perfectly well; KRO documents
+  `observedGeneration < metadata.generation` as "not yet processed". A terminal state is
+  therefore reported only when some `False` condition has observed the current
+  generation. Stale failure evidence falls through to ordinary polling, still bounded by
+  the caller's timeout. Instances that report no generation, and conditions from an
+  older KRO that carry no `observedGeneration` at all, cannot be shown to be stale and
+  keep the previous behaviour exactly.
 
 - The readiness timeout message could blame a status-schema lookup failure that had
   since recovered. The remembered lookup error is now cleared as soon as a later lookup
@@ -355,22 +368,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the engine uses, and the question it answers is the right one — did the server
   actually ANSWER? — rather than which error class this happens to be.
 
-  A refused request (401/403) fails fast, matching every other 401/403 in the codebase
-  and the documented policy that waiting cannot fix RBAC. Every other outcome —
-  timeouts, unreachable (premature close, refused connection, DNS, TLS), 404, and the
-  conservative "unrecognised" bucket that catches 5xx — ABANDONS that poll iteration:
-  neither ready nor permissive. The loop polls again, so the caller's overall `timeout`
-  stays the single authority on how long to keep trying and one transient blip is ridden
-  out instead of failing the deploy; the poll interval is honoured before the retry, so
-  a fast-rejecting premature close cannot spin. A read that never succeeds simply never
-  satisfies the status-field check, and the resulting overall timeout error now carries
-  the last lookup failure so the diagnosis is not lost.
+  Being uncertain is not, however, a reason to retry forever. Failures are split by the
+  shared retry policy the engine already applies to the same question. A failure that
+  could plausibly resolve on its own — the RGD object is absent (404), or the request hit
+  a transient fault (5xx, rate limiting, a wedged request, a dropped socket, DNS, TLS) —
+  ABANDONS that poll iteration: neither ready nor permissive. The loop polls again, so
+  the caller's overall `timeout` stays the single authority on how long to keep trying
+  and one blip is ridden out instead of failing the deploy; the poll interval is honoured
+  before the retry, so a fast-rejecting premature close cannot spin. A read that never
+  succeeds simply never satisfies the status-field check, and the resulting overall
+  timeout error now carries the last lookup failure so the diagnosis is not lost.
 
-  404 is strict for the same reason: the RGD name the poll looks up is the name the
-  factory emitted — both read one stored field — so a 404 means the RGD is missing, not
-  that the instance has no status schema. A new repo-wide test asserts that property
-  against every shipped composition, so a future refactor that re-derived the lookup
-  name from the instance's kind or apiVersion could not pass unnoticed.
+  A DETERMINISTIC failure instead fails fast with the original error. A refused request
+  (401/403) is the canonical case, matching every other 401/403 in the codebase and the
+  documented policy that waiting cannot fix RBAC — but a malformed or rejected request
+  (400/405/422), a 404 meaning the ResourceGraphDefinition API resource is not served at
+  all, and an error with no Kubernetes shape whatsoever (a `TypeError` from a client
+  signature mismatch or a plain programming bug) are just as fixed. Previously all of
+  them were retried to the deadline and then reported as a readiness timeout, which hid
+  the actual cause behind a message about the KRO controller. The shared classifier also
+  learned the two "the request never got an answer" shapes it did not previously
+  recognise — this project's own request-timeout types, and socket/DNS/TLS failures
+  identified only by their system `code` — so they count as transient wherever that
+  classifier is used, rather than reading as unrecognised programming errors.
+
+  A 404 for the RGD OBJECT stays strict rather than permissive for the same reason the
+  whole policy is: the RGD name the poll looks up is the name the factory emitted — both
+  read one stored field — so it means the RGD is missing, not that the instance has no
+  status schema. A repo-wide test asserts that property against every shipped
+  composition, so a future refactor that re-derived the lookup name from the instance's
+  kind or apiVersion could not pass unnoticed.
 
 - A cancelled deployment could still issue the write it was cancelled to prevent. The
   per-request deadline wrapper raced an already-aborted signal against the operation,

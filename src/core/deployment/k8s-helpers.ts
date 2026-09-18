@@ -14,6 +14,7 @@ import {
 } from '../kubernetes/errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesApiError } from '../types.js';
+import { isRequestTimeoutError } from './poll-timeout.js';
 
 const logger = getComponentLogger('k8s-helpers');
 
@@ -281,6 +282,20 @@ function classifyReadErrorKind(
   if (statusCode === 404) return 'object-not-found';
   // Covers 408/429/5xx plus connection resets, DNS failures and fetch-level TypeErrors.
   if (isRetryableError(error)) return 'transient';
+  // The two "the request never got an answer" shapes `isRetryableError` does not recognise, both of
+  // which are as transient as the 408 it does recognise — ask again and the server may well answer:
+  //   1. This repo's own timing layers. A bare `RequestTimeoutError` (the Bun HTTP library's socket
+  //      timer) and its subclasses `PollTimeoutError` / `PrematureCloseError` carry no HTTP status,
+  //      so without this they land in `not-a-kubernetes-error` and a retry loop gives up on a blip.
+  //   2. Node's socket/DNS/TLS `code`s. `isRetryableError` only sniffs MESSAGES, so `ECONNRESET`
+  //      whose message is the bare `read ECONNRESET` is missed. Reuse the code sets this file
+  //      already keeps for {@link classifyApiReadError}, so the retry policy and the
+  //      did-the-server-answer taxonomy agree about the transport rather than diverging.
+  if (isRequestTimeoutError(error)) return 'transient';
+  const systemCode = systemErrorCode(error);
+  if (systemCode && (TIMEOUT_CODES.has(systemCode) || UNREACHABLE_CODES.has(systemCode))) {
+    return 'transient';
+  }
   if (statusCode === undefined) return 'not-a-kubernetes-error';
   if (statusCode >= 400 && statusCode < 500) return 'invalid-request';
   return 'transient';
@@ -291,7 +306,10 @@ function classifyReadErrorKind(
  *
  * Built on the shared predicates in `../kubernetes/errors.js` — {@link getErrorStatusCode} for the
  * status across every client-version error shape, and {@link isRetryableError} for the transient
- * set — so this adds a retry policy rather than a second error taxonomy.
+ * set — so this adds a retry policy rather than a second error taxonomy. It additionally recognises
+ * the two transport shapes those predicates miss, {@link isRequestTimeoutError} and Node's
+ * socket/DNS/TLS `code`s, so "the request never got an answer" is `transient` here however it was
+ * spelled.
  */
 export function classifyReadError(error: unknown): ReadErrorAssessment {
   const statusCode = getErrorStatusCode(error);

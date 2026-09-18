@@ -15,6 +15,8 @@ import {
   isUnsupportedMediaTypeError,
   patchResourceWithCorrectContentType,
 } from '../../src/core/deployment/k8s-helpers.js';
+import { PollTimeoutError, RequestTimeoutError } from '../../src/core/deployment/poll-timeout.js';
+import { PrematureCloseError } from '../../src/core/kubernetes/bun-http-library.js';
 import type { KubernetesApiError } from '../../src/core/types.js';
 import { createK8sError, createMockK8sApi } from '../utils/mock-factories.js';
 
@@ -179,6 +181,60 @@ describe('classifyReadError', () => {
     expect(assessment.retryable).toBe(false);
     expect(assessment.summary).toBe('not a Kubernetes API error');
     expect(assessment.detail).toContain('resourceRef.metadata is undefined');
+  });
+
+  // A request that never got an answer is as transient as the HTTP 408 this classifier already
+  // retries, however it was spelled. Neither shape below carries a status code, so without explicit
+  // recognition both land in `not-a-kubernetes-error` and a retry loop gives up on a blip.
+  const unanswered: [string, () => unknown][] = [
+    [
+      'a bare RequestTimeoutError from the socket timer',
+      () => new RequestTimeoutError('HTTP request timeout: GET /api/v1/namespaces/default', 30_000),
+    ],
+    [
+      'a PollTimeoutError from a deadline wrapper',
+      () => new PollTimeoutError('read ConfigMap/app-config', 30_000),
+    ],
+    [
+      'a PrematureCloseError from a mid-response disconnect',
+      () => new PrematureCloseError('GET', '/api/v1/namespaces/default', 12, 'body truncated'),
+    ],
+    [
+      // Node sets the `code`; the message is just `read ECONNRESET`, which no message sniff matches.
+      'a socket reset identified only by its code',
+      () => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+    ],
+    [
+      'a DNS failure identified only by its code',
+      () => Object.assign(new Error('lookup failed'), { code: 'ENOTFOUND' }),
+    ],
+    [
+      'a connect timeout identified only by its code',
+      () => Object.assign(new Error('connect failed'), { code: 'ETIMEDOUT' }),
+    ],
+    [
+      'an expired server certificate',
+      () => Object.assign(new Error('certificate problem'), { code: 'CERT_HAS_EXPIRED' }),
+    ],
+  ];
+
+  for (const [label, makeError] of unanswered) {
+    it(`retries ${label}`, () => {
+      const assessment = classifyReadError(makeError());
+
+      expect(assessment.classification).toBe('transient');
+      expect(assessment.retryable).toBe(true);
+    });
+  }
+
+  it('still fails fast on a status-bearing error whose `code` is a string', () => {
+    // The system-code recognition must not outrank a definitive answer from the server.
+    const assessment = classifyReadError(
+      Object.assign(new Error('Forbidden'), { statusCode: 403, code: 'ECONNRESET' })
+    );
+
+    expect(assessment.classification).toBe('permission-denied');
+    expect(assessment.retryable).toBe(false);
   });
 });
 

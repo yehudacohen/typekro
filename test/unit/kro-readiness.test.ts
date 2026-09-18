@@ -46,22 +46,28 @@ function createMockCustomObjectsApi() {
   };
 }
 
-/** Build a Kro instance response with the given status fields. */
-function kroInstance(status?: {
-  state?: string;
-  conditions?: Array<{
-    type: string;
-    status: string;
-    reason?: string;
-    message?: string;
-    observedGeneration?: number;
-  }>;
-  [key: string]: unknown;
-}): k8s.KubernetesObject {
+/**
+ * Build a Kro instance response with the given status fields, and optionally a
+ * `metadata.generation` — the spec revision a condition's `observedGeneration` is measured against.
+ */
+function kroInstance(
+  status?: {
+    state?: string;
+    conditions?: Array<{
+      type: string;
+      status: string;
+      reason?: string;
+      message?: string;
+      observedGeneration?: number;
+    }>;
+    [key: string]: unknown;
+  },
+  metadata?: { generation?: number }
+): k8s.KubernetesObject {
   return {
     apiVersion: 'example.com/v1alpha1',
     kind: 'WebApp',
-    metadata: { name: 'test-instance', namespace: 'default' },
+    metadata: { name: 'test-instance', namespace: 'default', ...metadata },
     ...(status !== undefined ? { status } : {}),
   };
 }
@@ -691,17 +697,26 @@ describe('waitForKroInstanceReady', () => {
 
     it('reports a FAILED instance immediately even while the RGD lookup keeps resetting', async () => {
       // Ordering regression. The RGD status-schema lookup used to run BEFORE the terminal-state
-      // check, and under the strict lookup policy every non-forbidden failure abandons the
-      // iteration and retries. A broken lookup therefore hid an instance that had ALREADY failed,
-      // with a perfectly good message, behind retries until the deadline — a precise
-      // CRDInstanceError downgraded to a generic DeploymentTimeoutError.
+      // check, and under the strict lookup policy a retryable failure abandons the iteration and
+      // retries. A broken lookup therefore hid an instance that had ALREADY failed, with a
+      // perfectly good message, behind retries until the deadline — a precise CRDInstanceError
+      // downgraded to a generic DeploymentTimeoutError. The failure is current-generation, so the
+      // terminal state is authoritative and this measures the ORDERING alone.
       mockK8sApi.read.mockResolvedValue(
-        kroInstance({
-          state: 'FAILED',
-          conditions: [
-            { type: 'Ready', status: 'False', message: 'Deployment failed: image pull error' },
-          ],
-        })
+        kroInstance(
+          {
+            state: 'FAILED',
+            conditions: [
+              {
+                type: 'Ready',
+                status: 'False',
+                message: 'Deployment failed: image pull error',
+                observedGeneration: 3,
+              },
+            ],
+          },
+          { generation: 3 }
+        )
       );
       mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
         Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
@@ -728,15 +743,24 @@ describe('waitForKroInstanceReady', () => {
     });
 
     it('reports an ERROR instance immediately even while the RGD lookup 404s', async () => {
-      // Same ordering guarantee for the v0.8.x spelling, with the other strict classification: a
-      // 404 on the RGD is retried to the deadline, and must not delay a terminal instance.
+      // Same ordering guarantee for the v0.8.x spelling, with the other retryable classification: a
+      // 404 for the RGD object is retried to the deadline, and must not delay a terminal instance.
+      // Current-generation failure evidence again, so only the ordering is under test.
       mockK8sApi.read.mockResolvedValue(
-        kroInstance({
-          state: 'ERROR',
-          conditions: [
-            { type: 'InstanceSynced', status: 'False', message: 'Resource reconciliation error' },
-          ],
-        })
+        kroInstance(
+          {
+            state: 'ERROR',
+            conditions: [
+              {
+                type: 'InstanceSynced',
+                status: 'False',
+                message: 'Resource reconciliation error',
+                observedGeneration: 3,
+              },
+            ],
+          },
+          { generation: 3 }
+        )
       );
       mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
         createK8sError('resourcegraphdefinitions.kro.run "web-app" not found', 404)
@@ -777,6 +801,148 @@ describe('waitForKroInstanceReady', () => {
         expect((error as CRDInstanceError).message).toContain('Unknown error');
       }
     });
+
+    // -------------------------------------------------------------------------
+    // A TERMINAL STATE IS ONLY AUTHORITATIVE WHEN IT IS CURRENT.
+    //
+    // Kubernetes keeps the status subresource across spec updates, so the first read after an
+    // update can return the PREVIOUS deployment's verdict next to the NEW generation. KRO documents
+    // `observedGeneration < metadata.generation` as "not yet processed", so failure evidence that
+    // has not observed this generation is history, not a verdict on the deploy now in flight.
+    // -------------------------------------------------------------------------
+
+    it('does not report a FAILED state whose failure evidence belongs to an earlier generation', async () => {
+      // generation=2 is being reconciled; state and conditions still describe generation 1. Throwing
+      // here would fail an update that is about to succeed — and would do it on the very first poll,
+      // so no timeout could ever rescue it.
+      mockK8sApi.read
+        .mockResolvedValueOnce(
+          kroInstance(
+            {
+              state: 'FAILED',
+              conditions: [
+                {
+                  type: 'Ready',
+                  status: 'False',
+                  message: 'previous deployment failed: image pull error',
+                  observedGeneration: 1,
+                },
+              ],
+            },
+            { generation: 2 }
+          )
+        )
+        .mockResolvedValue(
+          kroInstance(
+            {
+              state: 'ACTIVE',
+              conditions: [{ type: 'Ready', status: 'True', observedGeneration: 2 }],
+            },
+            { generation: 2 }
+          )
+        );
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 2_000,
+            pollInterval: 10,
+          })
+        )
+      ).resolves.toBeUndefined();
+
+      // Proof it really polled past the stale verdict rather than resolving on some other path.
+      expect(mockK8sApi.read.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it('throws immediately when the FAILED state has observed the current generation', async () => {
+      // The same shape as above with ONE field changed: the failure has seen generation 2. That is
+      // a verdict on the deploy in flight, and it must not be softened into polling.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance(
+          {
+            state: 'FAILED',
+            conditions: [
+              {
+                type: 'Ready',
+                status: 'False',
+                message: 'Deployment failed: image pull error',
+                observedGeneration: 2,
+              },
+            ],
+          },
+          { generation: 2 }
+        )
+      );
+
+      const started = Date.now();
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 5_000,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(CRDInstanceError);
+      expect((failure as Error).message).toContain('FAILED');
+      expect((failure as Error).message).toContain('image pull error');
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
+    it('throws immediately for an older KRO whose conditions carry no observedGeneration', async () => {
+      // Backward compatibility. Conditions without `observedGeneration` cannot be shown to be stale,
+      // so the generation-aware rule must not turn a real failure into a silent poll-to-timeout on
+      // every cluster running a KRO that does not report generations.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance(
+          {
+            state: 'FAILED',
+            conditions: [
+              { type: 'Ready', status: 'False', message: 'Deployment failed: image pull error' },
+            ],
+          },
+          { generation: 2 }
+        )
+      );
+
+      const started = Date.now();
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 5_000,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(CRDInstanceError);
+      expect((failure as Error).message).toContain('image pull error');
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
+    it('throws immediately for a FAILED state with no conditions at all, even when generations are reported', async () => {
+      // No condition means no evidence either way, and "no evidence" must not read as "stale":
+      // the instance still says FAILED and nothing suggests that verdict belongs to an older spec.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'FAILED', conditions: [] }, { generation: 2 })
+      );
+
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 2_000,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(CRDInstanceError);
+      expect((failure as Error).message).toContain('Unknown error');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -785,10 +951,13 @@ describe('waitForKroInstanceReady', () => {
 
   describe('RGD fetch error handling', () => {
     it('no longer treats an unclassifiable RGD fetch failure as an empty status schema', async () => {
-      // This used to resolve: ANY lookup failure set `expectedCustomStatusFields = false`, so an
+      // This used to RESOLVE: ANY lookup failure set `expectedCustomStatusFields = false`, so an
       // ACTIVE + synced instance was declared ready without its status fields ever being checked.
-      // An unrecognised error classifies as `other` — "we did not learn the answer" — and is strict.
-      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(new Error('RGD not found'));
+      // An error with no Kubernetes shape at all is `not-a-kubernetes-error` — we did not learn the
+      // answer, and re-asking cannot change that — so the wait fails with the error itself rather
+      // than taking the permissive path or spending the whole budget on it.
+      const unclassifiable = new Error('RGD lookup blew up');
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(unclassifiable);
 
       mockK8sApi.read.mockResolvedValue(
         kroInstance({
@@ -797,16 +966,17 @@ describe('waitForKroInstanceReady', () => {
         })
       );
 
-      await expect(
-        waitForKroInstanceReady(
-          defaultOptions({
-            k8sApi: mockK8sApi,
-            customObjectsApi: mockCustomObjectsApi,
-            timeout: 200,
-            pollInterval: 10,
-          })
-        )
-      ).rejects.toBeInstanceOf(DeploymentTimeoutError);
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 200,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBe(unclassifiable);
+      expect(failure).not.toBeInstanceOf(DeploymentTimeoutError);
     });
 
     it('does NOT swallow a WEDGED RGD read as readiness — fails fast instead of returning ready late', async () => {
@@ -937,16 +1107,35 @@ describe('waitForKroInstanceReady', () => {
     // An UNCERTAIN read must never become an EMPTY schema. Every classification below means the
     // server did not answer the question, so none of them may take the old permissive path.
     const strictLookupFailures: [string, () => Error][] = [
-      ['timeout (socket timer)', () => new RequestTimeoutError('HTTP request timeout: GET /apis', 30_000)],
+      [
+        'timeout (socket timer)',
+        () => new RequestTimeoutError('HTTP request timeout: GET /apis', 30_000),
+      ],
       [
         'unreachable (premature close)',
-        () => new PrematureCloseError('GET', '/apis/kro.run/v1alpha1', 12, 'the body was truncated'),
+        () =>
+          new PrematureCloseError('GET', '/apis/kro.run/v1alpha1', 12, 'the body was truncated'),
       ],
       [
         'unreachable (connection refused)',
-        () => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6443'), { code: 'ECONNREFUSED' }),
+        () =>
+          Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6443'), { code: 'ECONNREFUSED' }),
       ],
-      ['notFound (404)', () => createK8sError('resourcegraphdefinitions.kro.run "web-app" not found', 404)],
+      [
+        'unreachable (connection reset)',
+        () => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      ],
+      [
+        'unreachable (DNS failure)',
+        () =>
+          Object.assign(new Error('getaddrinfo ENOTFOUND kubernetes.default.svc'), {
+            code: 'ENOTFOUND',
+          }),
+      ],
+      [
+        'notFound (404)',
+        () => createK8sError('resourcegraphdefinitions.kro.run "web-app" not found', 404),
+      ],
       ['other (500)', () => createK8sError('an internal server error occurred', 500)],
     ];
 
@@ -998,6 +1187,94 @@ describe('waitForKroInstanceReady', () => {
       // Fast, not after the 5s budget.
       expect(Date.now() - started).toBeLessThan(2_000);
       expect(mockCustomObjectsApi.getClusterCustomObject.mock.calls.length).toBe(1);
+    });
+
+    // -------------------------------------------------------------------------
+    // A DETERMINISTIC LOOKUP FAILURE IS NOT WORTH RETRYING.
+    //
+    // "We did not learn the schema" is a reason not to take the permissive path; it is not a reason
+    // to keep asking. These errors read identically on every attempt, so polling them to the
+    // deadline spends the whole budget and then reports a DeploymentTimeoutError that HIDES the
+    // cause. Each must surface as ITSELF, on the first attempt. (Mutation check: revert the lookup
+    // to "retry everything except forbidden" and every case here fails.)
+    // -------------------------------------------------------------------------
+
+    const deterministicLookupFailures: [string, () => Error][] = [
+      ['permission-denied (401)', () => createK8sError('Unauthorized', 401)],
+      ['invalid-request (400)', () => createK8sError('the request body is malformed', 400)],
+      [
+        'invalid-request (422)',
+        () =>
+          createK8sError('ResourceGraphDefinition in version "v1alpha1" cannot be handled', 422),
+      ],
+      [
+        // A 404 that means the RGD API RESOURCE is not served at all — the CRD is not installed —
+        // as opposed to a 404 for the RGD object, which stays retryable. This one also proves the
+        // instance read's "404 means not created yet, keep waiting" handler does not swallow it.
+        'unknown-resource-type (404 with no object named)',
+        () =>
+          Object.assign(new Error('the server could not find the requested resource'), {
+            statusCode: 404,
+            body: { code: 404, message: 'the server could not find the requested resource' },
+          }),
+      ],
+      [
+        // A programming bug — a client signature mismatch, a typo — has no Kubernetes shape at all.
+        // It must reach the caller as the TypeError it is, not as a deadline.
+        'not-a-kubernetes-error (TypeError)',
+        () => new TypeError('customObjectsApi.getClusterCustomObject is not a function'),
+      ],
+    ];
+
+    for (const [label, makeError] of deterministicLookupFailures) {
+      it(`fails fast on a ${label} lookup, surfacing the real error`, async () => {
+        mockK8sApi.read.mockResolvedValue(
+          kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+        );
+        const deterministic = makeError();
+        mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(deterministic);
+
+        const started = Date.now();
+        const failure = await waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 5_000,
+            pollInterval: 10,
+          })
+        ).catch((error: unknown) => error);
+
+        // The original error object, not a DeploymentTimeoutError wrapping nothing useful.
+        expect(failure).toBe(deterministic);
+        expect(failure).not.toBeInstanceOf(DeploymentTimeoutError);
+        // On the first attempt, not after the 5s budget.
+        expect(Date.now() - started).toBeLessThan(2_000);
+        expect(mockCustomObjectsApi.getClusterCustomObject.mock.calls.length).toBe(1);
+      });
+    }
+
+    it('surfaces a TypeError from the lookup as that TypeError, never as a deadline', async () => {
+      // Spelled out separately because this is the class the old "retry everything but forbidden"
+      // policy hid most completely: a programming bug became a multi-minute wait and then a
+      // timeout message about the Kro controller.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+      );
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
+        new TypeError('customObjectsApi.getClusterCustomObject is not a function')
+      );
+
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 5_000,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(TypeError);
+      expect((failure as Error).message).toContain('is not a function');
     });
 
     it('does not blame a recovered lookup for a timeout the projected status caused', async () => {
