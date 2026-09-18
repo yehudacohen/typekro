@@ -1022,11 +1022,15 @@ export const ClickHouseKeeperInstallationConfigSchema = type({
    * (which would replace the StatefulSet and lose the keeper's coordination
    * state).
    *
-   * That CRD rule is the WHOLE rule here: unlike the CHI's `clusterName`, the
-   * keeper's adds no leading-letter requirement, because the keeper's
-   * generated configuration never uses the value as an XML element name. The
-   * bound rides on the schema, and a concrete illegal override is additionally
-   * rejected by `assertClickHouseKeeperClusterName`.
+   * Unlike the CHI's `clusterName`, the keeper's adds no leading-letter
+   * requirement, because the keeper's generated configuration never uses the
+   * value as an XML element name — so `9keeper` and `-keeper` are fine. The one
+   * thing added to the CRD rule is AT LEAST ONE ALPHANUMERIC: the operator
+   * sanitizes the cluster name with `strings.Trim(s, "-_.")`, so an all-dash
+   * name becomes the empty string and the CHK's default PodDisruptionBudget
+   * (`chk-{chk}-{cluster}`) gets a name ending in a dash, which Kubernetes
+   * rejects. The bound rides on the schema, and a concrete illegal override is
+   * additionally rejected by `assertClickHouseKeeperClusterName`.
    */
   'clusterName?': ClickHouseKeeperClusterNameSchema,
   /** Keeper replica count (default: 1; use an odd number for quorum). */

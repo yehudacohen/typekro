@@ -38,9 +38,12 @@ const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
  * WHAT THE CAP IS. The Altinity CRD constrains
  * `spec.configuration.clusters[].name` on the CHK exactly as on the CHI:
  * `minLength: 1`, `maxLength: 15`, `pattern: ^[a-zA-Z0-9-]{0,15}$`, annotated
- * `See namePartClusterMaxLen const`. That CRD rule is the WHOLE rule the CHK
- * enforces — see `CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN` for why the keeper
- * does not inherit the CHI's extra leading-letter requirement.
+ * `See namePartClusterMaxLen const`. The CHK enforces that CRD rule plus ONE
+ * addition the operator's own naming requires — at least one alphanumeric, so
+ * an all-dash name cannot sanitize to the empty string and generate a PDB name
+ * ending in a dash. See `CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN` for that, and
+ * for why the keeper does not inherit the CHI's extra leading-letter
+ * requirement.
  * `metadata.name` is uncapped, so a keeper
  * whose installation name was longer than 15 bytes used to fail admission on
  * its FIRST apply with `spec.configuration.clusters[0].name: Too long: may not
@@ -184,9 +187,9 @@ function warnKeeperClusterNameFollowsReference(
  */
 function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallationConfig>): string {
   if (config.clusterName !== undefined) {
-    // The KEEPER's own rule — Altinity's contract exactly. Wider than the
-    // CHI's, which adds a leading-letter requirement the keeper's generated
-    // configuration does not justify. See
+    // The KEEPER's own rule — Altinity's alphabet and cap, plus at least one
+    // alphanumeric. Wider than the CHI's, which adds a leading-letter
+    // requirement the keeper's generated configuration does not justify. See
     // CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.
     assertClickHouseKeeperClusterName(
       'clickHouseKeeperInstallation',
@@ -201,23 +204,38 @@ function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallatio
     warnKeeperClusterNameFollowsReference(config);
     return derived as string;
   }
-  if (CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.test(derived)) {
+  // The pattern carries the ALPHABET only — the CRD's 15-byte cap lives in
+  // CLICKHOUSE_CLUSTER_NAME_MAX_BYTES and has to be checked alongside it.
+  const byteLength = Buffer.byteLength(derived, 'utf8');
+  if (
+    byteLength <= CLICKHOUSE_CLUSTER_NAME_MAX_BYTES &&
+    CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.test(derived)
+  ) {
     return derived;
   }
 
-  const byteLength = Buffer.byteLength(derived, 'utf8');
+  const isAllDashes = derived.length > 0 && !/[A-Za-z0-9]/.test(derived);
   const reason =
     byteLength > CLICKHOUSE_CLUSTER_NAME_MAX_BYTES
       ? `it is ${byteLength} bytes and the cap is ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}`
-      : `it does not match ${CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.source}`;
+      : `it does not match ${CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.source} — letters, digits ` +
+        `and dashes, with at least one letter or digit`;
+  // Only the LENGTH case is caught by Altinity's admission check. An all-dash
+  // name passes admission and then cannot reconcile, so say which one it is.
+  const consequence = isAllDashes
+    ? `the operator would ADMIT this object and then fail to reconcile it: it sanitizes the ` +
+      `cluster name with \`strings.Trim(s, "-_.")\`, which leaves the EMPTY string, and the ` +
+      `PodDisruptionBudget the CHK creates by default is named \`chk-{chk}-{cluster}\`, which ` +
+      `then ends in a dash and is not valid Kubernetes metadata`
+    : `the operator would reject this object on its first apply with ` +
+      `"spec.configuration.clusters[0].name: Too long: may not be more than 15 bytes"`;
 
   throw new Error(
     `clickHouseKeeperInstallation: 'clusterName' defaults to the installation name ` +
       `(${JSON.stringify(derived)}), which cannot be a cluster name — ${reason}. The Altinity ` +
       `CRD constrains \`spec.configuration.clusters[].name\` to minLength 1 / maxLength 15 / ` +
       `\`^[a-zA-Z0-9-]{0,15}\$\` (\`See namePartClusterMaxLen const\`) while \`metadata.name\` ` +
-      `is uncapped, so the operator would reject this object on its first apply with ` +
-      `"spec.configuration.clusters[0].name: Too long: may not be more than 15 bytes". ` +
+      `is uncapped, so ${consequence}. ` +
       `Set an explicit clusterName — e.g. clusterName: '${DEFAULT_CHK_CLUSTER_NAME}'. It is a ` +
       `fragment of the generated object names ` +
       `(\`chk-<installation>-<cluster>-<shard>-<replica>\`), already disambiguated by the ` +

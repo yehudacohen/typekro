@@ -12,6 +12,7 @@ import {
   clickHouseKeeperInstallation,
   DEFAULT_CHK_CLUSTER_NAME,
 } from '../../../src/factories/clickhouse/resources/keeper.js';
+import { CLICKHOUSE_CLUSTER_NAME_PATTERN } from '../../../src/factories/clickhouse/utils/validation.js';
 
 /**
  * The keeper factory holds a module-private component logger. Every logger
@@ -240,14 +241,16 @@ describe('ClickHouseKeeperInstallation Factory', () => {
     });
 
     it.each([
-      // The keeper's rule is Altinity's contract EXACTLY: one to 15 letters,
-      // digits or dashes, in any order. Nothing is added to it.
+      // The keeper's rule is Altinity's alphabet and cap — one to 15 letters,
+      // digits or dashes, in any order — plus the single rule the operator's
+      // own naming requires: at least one alphanumeric.
       ['a trailing dash', 'keeper-'],
       ['a leading digit', '9keeper'],
       ['a leading dash', '-keeper'],
       ['only digits', '2024'],
       ['interior digits', 'keeper9'],
       ['interior dashes', 'a-b-c-d'],
+      ['a single alphanumeric between dashes', '-a-'],
     ])('accepts a keeper cluster name with %s', (_label, clusterName) => {
       expect(
         clickHouseKeeperInstallation({ name: 'keeper', clusterName }).spec.configuration
@@ -295,6 +298,54 @@ describe('ClickHouseKeeperInstallation Factory', () => {
         expect(chi('9cluster')).toThrow(/clickHouseInstallation: 'clusterName' must match/);
       });
 
+      /**
+       * THE ONE RULE THE CHK ADDS TO ALTINITY'S CONTRACT. An all-dash name
+       * satisfies the CRD's `^[a-zA-Z0-9-]{0,15}$`, so ADMISSION ACCEPTS IT —
+       * and the object then cannot reconcile. The operator runs the cluster
+       * name through its short-name sanitizer `strings.Trim(s, "-_.")`, which
+       * strips every leading and trailing `-`, `_` and `.`, so an all-dash
+       * name becomes the EMPTY string; the CHK defaults `pdbManaged` to true
+       * and names its PodDisruptionBudget `chk-{chk}-{cluster}`, which then
+       * ends in a dash and is not valid Kubernetes metadata.
+       *
+       * Mutation check: revert the pattern to `{1,15}` and every case here
+       * fails.
+       */
+      it.each([
+        ['a single dash', '-'],
+        ['two dashes', '--'],
+        ['15 dashes (inside the byte cap)', '---------------'],
+      ])('rejects an all-dash keeper cluster name — %s', (_label, clusterName) => {
+        expect(Buffer.byteLength(clusterName, 'utf8')).toBeLessThanOrEqual(CLUSTER_NAME_MAX_BYTES);
+        expect(chk(clusterName)).toThrow(/clickHouseKeeperInstallation: 'clusterName' must match/);
+      });
+
+      it.each([
+        ['a leading digit', '9keeper'],
+        ['a leading dash', '-keeper'],
+        ['a trailing dash', 'keeper-'],
+        ['one alphanumeric between dashes', '-a-'],
+        ['only digits', '2024'],
+      ])('still accepts %s for the CHK — one alphanumeric is all it takes', (_l, clusterName) => {
+        expect(chk(clusterName)).not.toThrow();
+      });
+
+      /**
+       * THE CHI HAS NO ANALOGOUS HOLE, and needs no analogous rule. Its
+       * pattern `^[a-zA-Z][a-zA-Z0-9-]{0,14}$` requires a LEADING LETTER, so
+       * every name it accepts already carries an alphanumeric and can never be
+       * all dashes — the sanitizer can never reduce it to the empty string.
+       */
+      it('cannot be all dashes on the CHI either, via the leading-letter rule', () => {
+        for (const allDashes of ['-', '--', '---------------']) {
+          expect(CLICKHOUSE_CLUSTER_NAME_PATTERN.test(allDashes)).toBe(false);
+          expect(chi(allDashes)).toThrow(/clickHouseInstallation: 'clusterName' must match/);
+        }
+        // Stronger than "these three": the CHI alphabet's first character must
+        // be a letter, so an alphanumeric is structurally guaranteed.
+        expect(CLICKHOUSE_CLUSTER_NAME_PATTERN.source.startsWith('^[a-zA-Z]')).toBe(true);
+      });
+
       it('accepts a trailing dash for BOTH', () => {
         expect(chk('keeper-')).not.toThrow();
         expect(chi('cluster-')).not.toThrow();
@@ -331,6 +382,19 @@ describe('ClickHouseKeeperInstallation Factory', () => {
         }
         expect(chkMessage).toContain("the Altinity CRD's own rule");
         expect(chkMessage).toContain('never uses the value as an XML element name');
+
+        // And the all-dash rejection says WHY: the operator's own sanitizer,
+        // and the object name it would generate.
+        let allDashMessage = '';
+        try {
+          chk('---')();
+        } catch (error) {
+          allDashMessage = (error as Error).message;
+        }
+        expect(allDashMessage).toContain('AT LEAST ONE LETTER OR DIGIT');
+        expect(allDashMessage).toContain('strings.Trim(s, "-_.")');
+        expect(allDashMessage).toContain('chk-{chk}-{cluster}');
+        expect(allDashMessage).toContain('never reconcile');
       });
     });
   });

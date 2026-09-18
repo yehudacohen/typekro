@@ -10,20 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `ClickHouseKeeperClusterNameSchema` and `assertClickHouseKeeperClusterName` — the CHK's
-  own cluster-name contract, `^[a-zA-Z0-9-]{1,15}$`, which is Altinity's rule exactly. It
-  is deliberately WIDER than the CHI's `ClickHouseClusterNameSchema`: the CHI adds a
-  leading-letter requirement because its generator renders the cluster name as a raw XML
-  element name, and the keeper's generator does not (see `### Changed`). `9keeper` is
-  therefore accepted for a CHK and rejected for a CHI.
+  own cluster-name contract: Altinity's CRD alphabet and cap, plus the one rule the
+  operator's own naming requires (at least one alphanumeric) —
+  `^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$` bounded at 15 bytes. It is deliberately WIDER
+  than the CHI's `ClickHouseClusterNameSchema`: the CHI adds a LEADING-letter requirement
+  because its generator renders the cluster name as a raw XML element name, and the
+  keeper's generator does not (see `### Changed`). `9keeper` is therefore accepted for a
+  CHK and rejected for a CHI.
 
 - `clusterName` on `clickHouseKeeperInstallation()`, with `DEFAULT_CHK_CLUSTER_NAME`
   (`keeper`) exported as the recommended explicit value. It is required whenever the
   installation name is longer than 15 bytes or otherwise illegal as a cluster name, which
   the CRD caps independently of `metadata.name` (see Fixed). It mirrors the CHI's existing
   `clusterName`, but is bound by the CHK's own `ClickHouseKeeperClusterNameSchema`
-  (`^[a-zA-Z0-9-]{1,15}$`), not the CHI's `ClickHouseClusterNameSchema`: the CHK deliberately
-  accepts a leading digit or dash, which the CHI does not, because the CHI's config generator
-  renders the cluster name as an XML element name.
+  (`^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, capped at 15 bytes), not the CHI's
+  `ClickHouseClusterNameSchema`: the CHK deliberately accepts a LEADING digit or dash,
+  which the CHI does not, because the CHI's config generator renders the cluster name as an
+  XML element name.
 
 - `ClickHouseSchema`, an Alchemy v2 resource (`TypeKro.ClickHouseSchema`) that applies
   ClickHouse DDL to a cluster the `clickhouse`/`clickstack` factories deployed, at
@@ -340,8 +343,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the remedy. No truncation, no silent rename.
 
   An explicit `clusterName` (see Added) runs `assertClickHouseKeeperClusterName`, the CHK's
-  own check, bound by `ClickHouseKeeperClusterNameSchema` (`^[a-zA-Z0-9-]{1,15}$`) rather
-  than the CHI's `ClickHouseClusterNameSchema`: the CHK deliberately accepts a leading digit
+  own check, bound by `ClickHouseKeeperClusterNameSchema`
+  (`^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, capped at 15 bytes) rather
+  than the CHI's `ClickHouseClusterNameSchema`: the CHK deliberately accepts a LEADING digit
   or dash, which the CHI's `assertClickHouseClusterName` rejects, because the CHI's config
   generator renders the cluster name as an XML element name and the keeper's does not. Both
   resources reject an over-long value identically; unit tests pin the length boundary at 15
@@ -358,7 +362,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the state-loss caveat for an existing one) and pointing at the other option: bounding
   the enclosing composition's own spec field with `ClickHouseKeeperClusterNameSchema` — the
   CHK's own contract, not the CHI's `ClickHouseClusterNameSchema` — whose `maxLength` and
-  `pattern` (`^[a-zA-Z0-9-]{1,15}$`, permitting a leading digit or dash) the schema
+  `pattern` (`^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, permitting a LEADING digit or dash) the schema
   generator carries into the RGD so KRO rejects a bad instance at admission. `clusterName`
   is deliberately NOT made mandatory for
   references — that would force it on existing KRO-mode deployments.
@@ -526,14 +530,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The CHI and the CHK no longer share one cluster-name rule.**
   `CLICKHOUSE_CLUSTER_NAME_PATTERN` (CHI) was
   `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`; it is now `^[a-zA-Z][a-zA-Z0-9-]{0,14}$`.
-  The CHK gets its own `CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN` = `^[a-zA-Z0-9-]{1,15}$`,
-  Altinity's contract verbatim (see `### Added`), because the leading-letter rule below is
-  justified for the CHI only: the keeper's generator emits
-  `<server><id>/<hostname>/<port>` from HOST names (`pkg/model/chk/config/generator.go`,
-  `getRaftConfig`) and the cluster name reaches only the sanitized macro behind generated
-  StatefulSet / Service / ConfigMap names, where a leading digit is a fine DNS-1123 label.
-  `clickHouseKeeperInstallation({ name: '9keeper' })` was valid upstream and is valid
-  again.
+  The CHK gets its own `CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN` =
+  `^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, with the 15-byte cap carried by
+  `ClickHouseKeeperClusterNameSchema` and by the concrete assertion: **Altinity's CRD
+  alphabet and cap, plus the one rule the operator's own naming requires (at least one
+  alphanumeric)** (see `### Added`). The leading-letter rule below is justified for the CHI
+  only: the keeper's generator emits `<server><id>/<hostname>/<port>` from HOST names
+  (`pkg/model/chk/config/generator.go`, `getRaftConfig`) and the cluster name reaches only
+  the sanitized macro behind generated StatefulSet / Service / ConfigMap names, where a
+  leading digit is a fine DNS-1123 label. `clickHouseKeeperInstallation({ name: '9keeper' })`
+  was valid upstream and is valid again, and `-keeper`, `keeper-` and `2024` are accepted
+  too.
+
+  AT LEAST ONE ALPHANUMERIC IS REQUIRED, and it is the only thing added to the CRD's rule.
+  An ALL-DASH name (`-`, `---`) satisfies Altinity's `^[a-zA-Z0-9-]{0,15}$`, so admission
+  accepts it — and the object then cannot reconcile. The operator feeds the cluster name
+  through its short-name sanitizer `strings.Trim(s, "-_.")`, which strips every leading and
+  trailing `-`, `_` and `.`, so an all-dash name sanitizes to the EMPTY string; the CHK
+  (whose `pdbManaged` defaults to true) names the PodDisruptionBudget it creates by the
+  pattern `chk-{chk}-{cluster}`, which then yields e.g. `chk-keeper-` — a name ending in a
+  dash, invalid as Kubernetes metadata. The CHI needs no equivalent rule: its
+  leading-letter requirement already guarantees an alphanumeric, so a CHI cluster name can
+  never be all dashes.
 
   A TRAILING DASH IS NOW ACCEPTED ON BOTH — `cluster-` is legal under the CRD's
   `^[a-zA-Z0-9-]{0,15}$`, `-` is a legal XML `NameChar` in every position but the first,
@@ -548,7 +566,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NameStartChar` may be neither a digit nor a hyphen. A cluster named `9cluster` therefore
   produces `<9cluster>`, an unparseable `remote_servers.xml`, and a server that will not
   start, so such a name was never a working deployment. It stays on the CHI ONLY; the
-  keeper keeps Altinity's rule untouched.
+  keeper takes no LEADING-character rule at all.
 
 - **The ClickHouse cluster composition's status-contract ConfigMap is renamed** from
   `<installation>-contract` to `<installation>-clickhouse-contract`
