@@ -1104,6 +1104,35 @@ describe('waitForKroInstanceReady', () => {
       expect((failure as Error).message).toContain('status-schema lookup could not be read');
     });
 
+    it('diagnoses a status-shaped rejection by its message, not as `[object Object]`', async () => {
+      // The client rejects with a bare Status object on several paths. `String(thatObject)` is
+      // `[object Object]`, so remembering `ensureError(error)` and printing its `.message` would put
+      // exactly that in the one line an operator has to work from. The classifier's `detail` falls
+      // back through the Status body instead — and the original object stays reachable as the cause.
+      const statusShaped = {
+        statusCode: 503,
+        body: { code: 503, reason: 'ServiceUnavailable', message: 'etcd leader changed' },
+      };
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+      );
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(statusShaped);
+
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 300,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(DeploymentTimeoutError);
+      expect((failure as Error).message).toContain('etcd leader changed');
+      expect((failure as Error).message).not.toContain('[object Object]');
+      expect((failure as Error).cause).toBeDefined();
+    });
+
     // An UNCERTAIN read must never become an EMPTY schema. Every classification below means the
     // server did not answer the question, so none of them may take the old permissive path.
     const strictLookupFailures: [string, () => Error][] = [
@@ -1131,6 +1160,19 @@ describe('waitForKroInstanceReady', () => {
           Object.assign(new Error('getaddrinfo ENOTFOUND kubernetes.default.svc'), {
             code: 'ENOTFOUND',
           }),
+      ],
+      [
+        'unreachable (temporary DNS failure)',
+        () =>
+          Object.assign(new Error('getaddrinfo EAI_AGAIN kubernetes.default.svc'), {
+            code: 'EAI_AGAIN',
+          }),
+      ],
+      [
+        // Node's `fetch()` hides the real code on `cause`. A reset socket is still a blip worth
+        // riding out, so reading the cause must not turn every `fetch failed` into a fail-fast.
+        'unreachable (connection reset behind `fetch failed`)',
+        () => new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }),
       ],
       [
         'notFound (404)',
@@ -1223,6 +1265,20 @@ describe('waitForKroInstanceReady', () => {
         // It must reach the caller as the TypeError it is, not as a deadline.
         'not-a-kubernetes-error (TypeError)',
         () => new TypeError('customObjectsApi.getClusterCustomObject is not a function'),
+      ],
+      [
+        // A rejected server certificate is a CONFIGURATION fact — the wrong CA bundle, a stale
+        // kubeconfig, an expired cluster certificate. The transport will be rejected identically on
+        // every attempt, so retrying it for the readiness budget only hides what to fix.
+        'tls-configuration-error (expired server certificate)',
+        () => Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' }),
+      ],
+      [
+        // The shape Node's `fetch()` produces: an opaque `TypeError: fetch failed` with the real
+        // code on `cause`. The generic "a TypeError mentioning fetch is retryable" rule would send
+        // this back into the loop, so the cause must be inspected first.
+        'tls-configuration-error (rejected certificate behind `fetch failed`)',
+        () => new TypeError('fetch failed', { cause: { code: 'ERR_TLS_CERT_ALTNAME_INVALID' } }),
       ],
     ];
 

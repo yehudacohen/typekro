@@ -126,15 +126,16 @@ async function delayWithinBudget(
  * repo's shared retry policy, {@link classifyReadError}:
  *
  * - RETRYABLE — `object-not-found` (the RGD is missing or not yet created) and `transient` (5xx,
- *   rate limiting, a wedged request, a dropped socket, DNS/TLS) — ABANDONS the iteration: neither
+ *   rate limiting, a wedged request, a dropped socket, a DNS blip) — ABANDONS the iteration: neither
  *   ready nor permissive. The loop polls again, so the caller's overall `timeout` stays the single
  *   authority on how long to keep trying, and one blip is ridden out rather than failing the deploy.
  *   A lookup that never succeeds simply never satisfies step 3, and the wait ends in the overall
  *   {@link DeploymentTimeoutError}, whose message carries the last lookup failure so the diagnosis
  *   is not lost.
  * - DETERMINISTIC — `permission-denied` (401/403), `unknown-resource-type` (the RGD API resource is
- *   not served), `invalid-request` (400/405/422) and `not-a-kubernetes-error` (a `TypeError` from a
- *   programming bug, a client signature mismatch) — FAILS FAST with the original error. Each reads
+ *   not served), `invalid-request` (400/405/422), `tls-configuration-error` (an expired, self-signed
+ *   or misnamed server certificate, an untrusted CA) and `not-a-kubernetes-error` (a `TypeError`
+ *   from a programming bug, a client signature mismatch) — FAILS FAST with the original error. Each reads
  *   identically on every attempt, so polling it only spends the budget and then reports a timeout
  *   that hides the real cause. RBAC is the canonical member: every other 401/403 in this codebase,
  *   including the instance read in this same loop, already fails fast.
@@ -166,11 +167,19 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
   const readinessLogger = logger.child({ instanceName, rgdName });
   const startTime = Date.now();
   /**
-   * The last RGD status-schema lookup that timed out and was retried. Folded into the overall
-   * timeout message: without it a persistently wedged lookup reports only "not ready in time" and
-   * the actionable diagnosis (a wedged request / a premature close, and its cause) is lost.
+   * The last RGD status-schema lookup that failed and was retried, as `classifyReadError`'s
+   * Kubernetes-aware `detail`. Folded into the overall timeout message: without it a persistently
+   * wedged lookup reports only "not ready in time" and the actionable diagnosis (a wedged request /
+   * a premature close, and its cause) is lost.
+   *
+   * The DETAIL rather than `ensureError(error).message`, because the client surfaces a Status-shaped
+   * rejection as a bare object: `ensureError({ statusCode: 503, body: { message: … } })` stringifies
+   * to `[object Object]`, which would put exactly that in the deadline diagnosis. `detail` falls
+   * back through the Status body and the formatted API error instead.
    */
-  let lastLookupError: Error | undefined;
+  let lastLookupDetail: string | undefined;
+  /** The error object behind {@link lastLookupDetail}, attached to the deadline error as its cause. */
+  let lastLookupCause: Error | undefined;
   /** Lookup failure messages already logged, so a retry loop warns once per distinct message. */
   const warnedLookupFailures = new Set<string>();
 
@@ -353,7 +362,8 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         // The schema HAS now been read, so any earlier failure is spent history. Leaving it set
         // would misattribute a later timeout — one caused by the projected status never becoming
         // ready — to a lookup that has since been answered.
-        lastLookupError = undefined;
+        lastLookupDetail = undefined;
+        lastLookupCause = undefined;
 
         readinessLogger.debug('ResourceGraphDefinition status schema check', {
           rgdName,
@@ -397,16 +407,17 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         // as the single authority on how long to keep trying. One transient blip is what a poll
         // loop exists to ride out; a persistent failure ends in the overall DeploymentTimeoutError,
         // carrying this message.
-        lastLookupError = ensureError(error);
-        if (!warnedLookupFailures.has(lastLookupError.message)) {
-          warnedLookupFailures.add(lastLookupError.message);
+        lastLookupDetail = assessment.detail;
+        lastLookupCause = ensureError(error);
+        if (!warnedLookupFailures.has(lastLookupDetail)) {
+          warnedLookupFailures.add(lastLookupDetail);
           readinessLogger.warn(
             'ResourceGraphDefinition status-schema lookup did not produce an answer — retrying until the readiness deadline',
             {
               rgdName,
               classification: assessment.classification,
               reason: assessment.summary,
-              error: lastLookupError.message,
+              error: lastLookupDetail,
             }
           );
         }
@@ -523,14 +534,18 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
   // the message reports only "not ready in time" and the wedged-request diagnosis is lost. It is
   // cleared as soon as a later lookup succeeds, so this only ever describes a lookup that was still
   // failing when the budget ran out.
-  const lookupDiagnosis = lastLookupError
-    ? ` The ResourceGraphDefinition status-schema lookup could not be read, so readiness could not be confirmed; its last failure was: ${lastLookupError.message}`
+  const lookupDiagnosis = lastLookupDetail
+    ? ` The ResourceGraphDefinition status-schema lookup could not be read, so readiness could not be confirmed; its last failure was: ${lastLookupDetail}`
     : '';
-  throw new DeploymentTimeoutError(
+  const timeoutError = new DeploymentTimeoutError(
     `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms).${factoryContext ? ` This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro` : ''}${lookupDiagnosis}`,
     kind,
     instanceName,
     timeout,
     'instance-readiness'
   );
+  // The message carries the readable detail; the original rejection stays reachable as the cause so
+  // a caller that inspects `statusCode` / `body` still can.
+  if (lastLookupCause) timeoutError.cause = lastLookupCause;
+  throw timeoutError;
 }

@@ -213,8 +213,14 @@ describe('classifyReadError', () => {
       () => Object.assign(new Error('connect failed'), { code: 'ETIMEDOUT' }),
     ],
     [
-      'an expired server certificate',
-      () => Object.assign(new Error('certificate problem'), { code: 'CERT_HAS_EXPIRED' }),
+      'a DNS failure Node reported through fetch()',
+      () => new TypeError('fetch failed', { cause: { code: 'EAI_AGAIN' } }),
+    ],
+    [
+      // Node's `fetch()` hides every transport failure behind the same opaque message, so the
+      // retryable ones must still be found through `cause`.
+      'a socket reset Node reported through fetch()',
+      () => new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }),
     ],
   ];
 
@@ -226,6 +232,66 @@ describe('classifyReadError', () => {
       expect(assessment.retryable).toBe(true);
     });
   }
+
+  // -------------------------------------------------------------------------
+  // A REJECTED TLS HANDSHAKE IS A CONFIGURATION FACT, NOT A BLIP.
+  //
+  // The wrong CA bundle, a stale kubeconfig, an expired or misnamed server certificate, a
+  // plain-HTTP endpoint addressed as HTTPS: each reads identically on every attempt. Retrying them
+  // for a 5–25 minute readiness budget only buries the cause under a timeout, and this classifier
+  // is shared with the engine's external-reference resolver, whose policy is fail-fast.
+  // -------------------------------------------------------------------------
+  const tlsFailures: [string, () => unknown][] = [
+    [
+      'an expired server certificate',
+      () => Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' }),
+    ],
+    [
+      'a certificate that does not name the host',
+      () =>
+        Object.assign(new Error("Hostname/IP does not match certificate's altnames"), {
+          code: 'ERR_TLS_CERT_ALTNAME_INVALID',
+        }),
+    ],
+    [
+      'a self-signed certificate in the chain',
+      () =>
+        Object.assign(new Error('self signed certificate in certificate chain'), {
+          code: 'SELF_SIGNED_CERT_IN_CHAIN',
+        }),
+    ],
+    [
+      // A handshake the two ends cannot perform at all — persistent, not transient.
+      'a protocol mismatch',
+      () => Object.assign(new Error('write EPROTO'), { code: 'EPROTO' }),
+    ],
+    [
+      // The shape that matters most: Node's `fetch()` reports this as a bare `TypeError` whose
+      // message mentions `fetch`, which `isRetryableError` retries. The `cause` code must be read
+      // BEFORE that rule or a permanent TLS failure is retried to the deadline.
+      'a rejected certificate Node reported through fetch()',
+      () => new TypeError('fetch failed', { cause: { code: 'CERT_HAS_EXPIRED' } }),
+    ],
+  ];
+
+  for (const [label, makeError] of tlsFailures) {
+    it(`fails fast on ${label}`, () => {
+      const assessment = classifyReadError(makeError());
+
+      expect(assessment.classification).toBe('tls-configuration-error');
+      expect(assessment.retryable).toBe(false);
+      expect(assessment.summary).toBe('TLS configuration error');
+    });
+  }
+
+  it('names the TLS code and what to check, so `fetch failed` is not the whole diagnosis', () => {
+    const assessment = classifyReadError(
+      new TypeError('fetch failed', { cause: { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' } })
+    );
+
+    expect(assessment.detail).toContain('UNABLE_TO_VERIFY_LEAF_SIGNATURE');
+    expect(assessment.detail).toContain('check the cluster CA / server certificate');
+  });
 
   it('still fails fast on a status-bearing error whose `code` is a string', () => {
     // The system-code recognition must not outrank a definitive answer from the server.

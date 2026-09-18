@@ -117,6 +117,67 @@ const UNREACHABLE_CODES = new Set([
 ]);
 
 /**
+ * Transport `code`s that describe a connection which may come up on a later attempt: a refused or
+ * reset socket, an unreachable route, a DNS blip, a connect timeout.
+ *
+ * Deliberately NOT {@link UNREACHABLE_CODES}. That set answers a different question — "did the
+ * server ever answer?" — and so it also lists the TLS trust codes, which answer "did the transport
+ * come up?" with a permanent no. Retrying those for a multi-minute readiness budget only hides a
+ * misconfiguration behind a timeout, so the retry policy keeps its own, narrower set.
+ */
+const RETRYABLE_SYSTEM_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ESOCKETTIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+/**
+ * TLS trust/identity and protocol failures: the client refused the server's certificate, or the two
+ * ends could not agree on a protocol at all.
+ *
+ * Every one of these is a configuration fact — the wrong CA bundle, a stale kubeconfig, an expired
+ * or misnamed server certificate, a plain-HTTP endpoint addressed as HTTPS. None of them changes
+ * because the deployment asked again, so they must fail fast and name the code rather than spend a
+ * 5–25 minute budget and then report a timeout that hides the real cause. `EPROTO` belongs here
+ * rather than with the retryable codes for the same reason: a handshake the two ends cannot perform
+ * is persistent, not a blip.
+ */
+const TLS_CONFIGURATION_CODES = new Set([
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_UNTRUSTED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'EPROTO',
+]);
+
+/**
+ * The transport `code`, following one level of `cause`.
+ *
+ * Node's `fetch()` — what the 1.x client uses — reports every transport failure as the same opaque
+ * `TypeError: fetch failed` and hangs the real error off `cause`. Reading only the top-level `code`
+ * therefore sees nothing at all on the shape that matters most, and the failure falls through to
+ * the message sniff in {@link isRetryableError}, which retries any `TypeError` mentioning `fetch`.
+ */
+function transportErrorCode(error: unknown): string | undefined {
+  const own = systemErrorCode(error);
+  if (own) return own;
+  if (!error || typeof error !== 'object') return undefined;
+  return systemErrorCode((error as { cause?: unknown }).cause);
+}
+
+/**
  * Classify why a read against the API server failed.
  *
  * Deliberately conservative: anything not positively recognised is `other`,
@@ -203,6 +264,8 @@ export type ReadErrorClassification =
   | 'permission-denied'
   /** 400/405/422 and other client errors — the request itself is malformed or rejected. */
   | 'invalid-request'
+  /** The TLS handshake failed on trust, identity or protocol — a client/cluster misconfiguration. */
+  | 'tls-configuration-error'
   /** A programming error with no Kubernetes API shape at all. */
   | 'not-a-kubernetes-error';
 
@@ -224,6 +287,7 @@ const READ_ERROR_SUMMARIES: Record<ReadErrorClassification, string> = {
   'unknown-resource-type': 'unknown resource type',
   'permission-denied': 'permission denied',
   'invalid-request': 'invalid request',
+  'tls-configuration-error': 'TLS configuration error',
   'not-a-kubernetes-error': 'not a Kubernetes API error',
 };
 
@@ -280,22 +344,29 @@ function classifyReadErrorKind(
   if (isUnknownResourceTypeError(error, statusCode)) return 'unknown-resource-type';
   if (statusCode === 401 || statusCode === 403) return 'permission-denied';
   if (statusCode === 404) return 'object-not-found';
-  // Covers 408/429/5xx plus connection resets, DNS failures and fetch-level TypeErrors.
-  if (isRetryableError(error)) return 'transient';
+
+  // The transport `code` is read BEFORE `isRetryableError`, and a permanent TLS failure is
+  // recognised before any retryable shape, because that predicate's last resort is a message sniff:
+  // it retries ANY `TypeError` whose message mentions `fetch`. Node's `fetch()` reports a rejected
+  // server certificate as exactly that — `TypeError: fetch failed` with the real code on `cause` —
+  // so consulting the code first is the whole of what keeps a misconfigured CA bundle out of the
+  // retry loop instead of burning the readiness budget on it.
+  const transportCode = transportErrorCode(error);
+  if (transportCode && TLS_CONFIGURATION_CODES.has(transportCode)) {
+    return 'tls-configuration-error';
+  }
   // The two "the request never got an answer" shapes `isRetryableError` does not recognise, both of
   // which are as transient as the 408 it does recognise — ask again and the server may well answer:
   //   1. This repo's own timing layers. A bare `RequestTimeoutError` (the Bun HTTP library's socket
   //      timer) and its subclasses `PollTimeoutError` / `PrematureCloseError` carry no HTTP status,
   //      so without this they land in `not-a-kubernetes-error` and a retry loop gives up on a blip.
-  //   2. Node's socket/DNS/TLS `code`s. `isRetryableError` only sniffs MESSAGES, so `ECONNRESET`
-  //      whose message is the bare `read ECONNRESET` is missed. Reuse the code sets this file
-  //      already keeps for {@link classifyApiReadError}, so the retry policy and the
-  //      did-the-server-answer taxonomy agree about the transport rather than diverging.
+  //   2. Node's socket/DNS `code`s. `isRetryableError` only sniffs MESSAGES, so `ECONNRESET` whose
+  //      message is the bare `read ECONNRESET` is missed.
   if (isRequestTimeoutError(error)) return 'transient';
-  const systemCode = systemErrorCode(error);
-  if (systemCode && (TIMEOUT_CODES.has(systemCode) || UNREACHABLE_CODES.has(systemCode))) {
-    return 'transient';
-  }
+  if (transportCode && RETRYABLE_SYSTEM_CODES.has(transportCode)) return 'transient';
+
+  // Covers 408/429/5xx plus connection resets, DNS failures and fetch-level TypeErrors.
+  if (isRetryableError(error)) return 'transient';
   if (statusCode === undefined) return 'not-a-kubernetes-error';
   if (statusCode >= 400 && statusCode < 500) return 'invalid-request';
   return 'transient';
@@ -307,20 +378,30 @@ function classifyReadErrorKind(
  * Built on the shared predicates in `../kubernetes/errors.js` — {@link getErrorStatusCode} for the
  * status across every client-version error shape, and {@link isRetryableError} for the transient
  * set — so this adds a retry policy rather than a second error taxonomy. It additionally recognises
- * the two transport shapes those predicates miss, {@link isRequestTimeoutError} and Node's
- * socket/DNS/TLS `code`s, so "the request never got an answer" is `transient` here however it was
- * spelled.
+ * the transport shapes those predicates miss: {@link isRequestTimeoutError} and Node's socket/DNS
+ * `code`s make "the request never got an answer" `transient` however it was spelled, while a TLS
+ * trust/protocol `code` — including one buried in a `fetch failed` `cause` — is separated out as
+ * the permanent misconfiguration it is.
+ *
+ * Shared with the engine's external-reference resolver, whose policy is that a permanent failure
+ * fails immediately, so a classification is only `retryable` when asking again could plausibly
+ * succeed with nothing else changing.
  */
 export function classifyReadError(error: unknown): ReadErrorAssessment {
   const statusCode = getErrorStatusCode(error);
   const classification = classifyReadErrorKind(error, statusCode);
   const label = READ_ERROR_SUMMARIES[classification];
+  const detail = describeReadError(error);
+  // `TypeError: fetch failed` says nothing an operator can act on, so a TLS failure names the code
+  // and what to look at. Everything else already carries its own message.
+  const tlsCode =
+    classification === 'tls-configuration-error' ? transportErrorCode(error) : undefined;
 
   return {
     classification,
     retryable: RETRYABLE_READ_CLASSIFICATIONS.has(classification),
     summary: statusCode === undefined ? label : `${label} (HTTP ${statusCode})`,
-    detail: describeReadError(error),
+    detail: tlsCode ? `${detail} (${tlsCode}: check the cluster CA / server certificate)` : detail,
     statusCode,
   };
 }

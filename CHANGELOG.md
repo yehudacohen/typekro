@@ -332,7 +332,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   succeeds, so a timeout caused by an instance never projecting its declared status is
   no longer misattributed to a transport blip on an earlier poll. The wording is also
   corrected from "never returned" to "could not be read", since a persistent 404 or 5xx
-  does return — with an error.
+  does return — with an error. The remembered failure is now the classifier's
+  Kubernetes-aware description rather than a stringified exception, so a client that rejects
+  with a bare `Status` object no longer prints as `[object Object]` in the one line an
+  operator has to work from; the original rejection stays reachable as the timeout error's
+  `cause`.
 
 - KRO instance readiness could overshoot its own declared timeout by up to a full poll
   interval. Each sleep between polls ran to completion before the loop re-checked the
@@ -371,7 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Being uncertain is not, however, a reason to retry forever. Failures are split by the
   shared retry policy the engine already applies to the same question. A failure that
   could plausibly resolve on its own — the RGD object is absent (404), or the request hit
-  a transient fault (5xx, rate limiting, a wedged request, a dropped socket, DNS, TLS) —
+  a transient fault (5xx, rate limiting, a wedged request, a dropped socket, a DNS blip) —
   ABANDONS that poll iteration: neither ready nor permissive. The loop polls again, so
   the caller's overall `timeout` stays the single authority on how long to keep trying
   and one blip is ridden out instead of failing the deploy; the poll interval is honoured
@@ -383,14 +387,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (401/403) is the canonical case, matching every other 401/403 in the codebase and the
   documented policy that waiting cannot fix RBAC — but a malformed or rejected request
   (400/405/422), a 404 meaning the ResourceGraphDefinition API resource is not served at
-  all, and an error with no Kubernetes shape whatsoever (a `TypeError` from a client
-  signature mismatch or a plain programming bug) are just as fixed. Previously all of
-  them were retried to the deadline and then reported as a readiness timeout, which hid
-  the actual cause behind a message about the KRO controller. The shared classifier also
-  learned the two "the request never got an answer" shapes it did not previously
-  recognise — this project's own request-timeout types, and socket/DNS/TLS failures
-  identified only by their system `code` — so they count as transient wherever that
-  classifier is used, rather than reading as unrecognised programming errors.
+  all, a rejected TLS handshake, and an error with no Kubernetes shape whatsoever (a
+  `TypeError` from a client signature mismatch or a plain programming bug) are just as
+  fixed. Previously all of them were retried to the deadline and then reported as a
+  readiness timeout, which hid the actual cause behind a message about the KRO
+  controller. The shared classifier also learned the two "the request never got an
+  answer" shapes it did not previously recognise — this project's own request-timeout
+  types, and socket/DNS failures identified only by their system `code` — so they count
+  as transient wherever that classifier is used, rather than reading as unrecognised
+  programming errors.
+
+  **TLS trust, identity and protocol failures are NOT retryable.** An expired, not-yet-valid,
+  self-signed or wrongly-named server certificate, an unverifiable chain, or a protocol
+  mismatch (`EPROTO`) is a configuration fact: the wrong CA bundle, a stale kubeconfig, a
+  plain-HTTP endpoint addressed as HTTPS. Each is rejected identically on every attempt, so
+  polling one for a multi-minute budget only buries what to fix under a timeout. They now
+  classify as a TLS configuration error that fails fast, and the reported detail names the
+  system code and points at the cluster CA / server certificate. This is deliberately
+  narrower than the "was the server reachable?" taxonomy used elsewhere in the same module,
+  which counts a rejected handshake as "unreachable" because the server never answered —
+  correct for that question, wrong for "is it worth asking again?". The codes are also read
+  through one level of `cause`, because Node's `fetch()` reports every transport failure as
+  the same opaque `TypeError: fetch failed`; without that, a rejected certificate matched the
+  classifier's generic fetch-failure rule and was retried. Because this classifier is SHARED,
+  the engine's required external-reference resolver — whose documented policy is that a
+  permanent failure fails immediately — gets the same fail-fast behaviour, instead of spending
+  its read budget on a certificate that will never be accepted.
 
   A 404 for the RGD OBJECT stays strict rather than permissive for the same reason the
   whole policy is: the RGD name the poll looks up is the name the factory emitted — both
