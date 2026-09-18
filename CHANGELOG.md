@@ -322,18 +322,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `clickHouseSchema(...)` without a `kubeConfig` — the documented "omit for the ambient
-  kubeconfig" form — failed on its first exec with `KubernetesClientProvider not
-  initialized. Call initialize() first.` (#219). `resolveTransport` handed
-  `createKubernetesClientProvider` an `undefined` config for the ambient case, and that
-  factory only initializes the provider when it is given a config object, so the resource
-  got back a fresh, uninitialized provider and `getKubeConfig()` threw; every `KroResource`
-  in the same process worked because its registration always passes an object. The
-  ambient case now passes `{}`, which runs `initialize` and reaches `loadFromDefault()`
-  (`KUBECONFIG`, then `~/.kube/config`). An injected `executor` with no `kubeConfig` is
-  unchanged: it is still used as-is and still records no `clusterId`. Covered by a unit
-  test that points `KUBECONFIG` at a fixture file and asserts the resolved `clusterId` is
-  that file's `clusterIdentity()`.
+- `createKubernetesClientProvider(config?)` initialized the provider only when a config
+  object was passed, although its signature and documentation promised "create and
+  initialize" for an omitted config too. Any caller that omitted it got back a fresh,
+  uninitialized provider whose first `getKubeConfig()` threw `KubernetesClientProvider not
+  initialized. Call initialize() first.` (#219). Two documented forms hit this:
+  `clickHouseSchema(...)` without a `kubeConfig` (the "omit for the ambient kubeconfig"
+  form, which failed on its first exec) and a manually constructed `KroResource` without
+  `kubeConfigOptions`. Fixed centrally: the factory now always initializes, and with no
+  config `initialize` reaches `loadFromDefault()` (`KUBECONFIG`, then `~/.kube/config`).
+  `KubernetesClientProvider.createInstance()` remains the way to get a deliberately
+  uninitialized provider. Covered by a provider-level test that points `KUBECONFIG` at a
+  fixture file and asserts `createKubernetesClientProvider()` is initialized from it, and by
+  a `clickHouseSchema` test asserting the resolved `clusterId` is that file's
+  `clusterIdentity()`. An injected `executor` with no `kubeConfig` is unchanged: it is still
+  used as-is and still records no `clusterId`.
+
+- `clickHouseSchema` with `onDelete: 'run'` now refuses a destructive teardown when the
+  transport does not reach the cluster the state records. With the ambient kubeconfig the
+  delete transport is whatever `KUBECONFIG` names at destroy time, and `namespace` +
+  `podSelector` match pods on any cluster, so the `deleteStatements` (DROP statements)
+  could have run against a different cluster than the one the schema was created in. The
+  provider's `delete` hook now compares the persisted `output.clusterId` against the
+  current transport's identity BEFORE any pod is listed or statement sent, and throws a
+  `ClickHouseSchemaError` (`Refusing destructive schema teardown ... recorded <id>, current
+  <id-or-none>`) on a mismatch. A recorded identity against an unknown current one (an
+  injected `executor` with no `kubeConfig`) is rejected too; state that recorded no
+  identity has nothing to compare against and behaves as before. `onDelete: 'retain'`
+  still never reaches the cluster.
 
 - A KRO instance that had ALREADY failed could be reported as a generic readiness
   timeout instead of the error it actually hit. The readiness poll checked the

@@ -43,7 +43,11 @@ import {
 } from '../../../src/alchemy/index.js';
 import type { ClickHouseSchemaRuntimeDeps } from '../../../src/alchemy/index.js';
 import { KubeExecClickHouseExecutor } from '../../../src/alchemy/index.js';
-import { resolveTransport } from '../../../src/alchemy/clickhouse-schema/resource.js';
+import {
+  assertTeardownTargetsRecordedCluster,
+  resolveTransport,
+  teardownClickHouseSchema,
+} from '../../../src/alchemy/clickhouse-schema/resource.js';
 import { clusterIdentity } from '../../../src/core/kubernetes/api-capability.js';
 
 const RESOURCE_ID = 'orders-schema';
@@ -1573,17 +1577,15 @@ describe('ClickHouseSchema — redaction', () => {
   });
 });
 
-describe('ClickHouseSchema — transport resolution (#219)', () => {
-  const AMBIENT_SERVER = 'https://ambient.example.invalid:6443';
-
-  /** A minimal, credential-free kubeconfig file standing in for the operator's ambient one. */
-  const ambientKubeConfigYaml = [
+/** A minimal, credential-free kubeconfig file naming exactly one cluster. */
+function kubeConfigYamlFor(server: string): string {
+  return [
     'apiVersion: v1',
     'kind: Config',
     'clusters:',
     '  - name: ambient',
     '    cluster:',
-    `      server: ${AMBIENT_SERVER}`,
+    `      server: ${server}`,
     '      insecure-skip-tls-verify: true',
     'users:',
     '  - name: runner',
@@ -1596,40 +1598,54 @@ describe('ClickHouseSchema — transport resolution (#219)', () => {
     'current-context: ambient',
     '',
   ].join('\n');
+}
 
-  /** Runs `fn` with `KUBECONFIG` pointed at the fixture, restoring the variable afterwards. */
-  const withAmbientKubeConfig = <T>(fn: (kubeconfigPath: string) => T): T => {
-    const dir = mkdtempSync(join(tmpdir(), 'typekro-clickhouse-schema-'));
-    const kubeconfigPath = join(dir, 'kubeconfig');
-    writeFileSync(kubeconfigPath, ambientKubeConfigYaml);
-    const previous = process.env.KUBECONFIG;
-    process.env.KUBECONFIG = kubeconfigPath;
-    try {
-      return fn(kubeconfigPath);
-    } finally {
-      if (previous === undefined) delete process.env.KUBECONFIG;
-      else process.env.KUBECONFIG = previous;
-      rmSync(dir, { recursive: true, force: true });
-    }
-  };
+/**
+ * Runs `fn` with `KUBECONFIG` pointed at a fixture for `server`, standing in for the
+ * operator's ambient kubeconfig, and restores the variable afterwards.
+ */
+async function withAmbientKubeConfig<T>(
+  server: string,
+  fn: (kubeconfigPath: string) => T | Promise<T>
+): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'typekro-clickhouse-schema-'));
+  const kubeconfigPath = join(dir, 'kubeconfig');
+  writeFileSync(kubeconfigPath, kubeConfigYamlFor(server));
+  const previous = process.env.KUBECONFIG;
+  process.env.KUBECONFIG = kubeconfigPath;
+  try {
+    return await fn(kubeconfigPath);
+  } finally {
+    if (previous === undefined) delete process.env.KUBECONFIG;
+    else process.env.KUBECONFIG = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
-  it('loads the ambient kubeconfig when neither executor nor kubeConfig is supplied', () => {
-    withAmbientKubeConfig((kubeconfigPath) => {
-      const expected = new KubeConfig();
-      expected.loadFromFile(kubeconfigPath);
+function clusterIdOfFile(kubeconfigPath: string): string {
+  const kc = new KubeConfig();
+  kc.loadFromFile(kubeconfigPath);
+  const id = clusterIdentity(kc);
+  if (id === undefined) throw new Error(`fixture ${kubeconfigPath} names no current cluster`);
+  return id;
+}
 
+describe('ClickHouseSchema — transport resolution (#219)', () => {
+  const AMBIENT_SERVER = 'https://ambient.example.invalid:6443';
+
+  it('loads the ambient kubeconfig when neither executor nor kubeConfig is supplied', async () => {
+    await withAmbientKubeConfig(AMBIENT_SERVER, (kubeconfigPath) => {
       // The documented "omit kubeConfig for the ambient kubeconfig" form. Before the fix
       // this threw `KubernetesClientProvider not initialized. Call initialize() first.`
       const transport = resolveTransport(validConfig());
 
       expect(transport.executor).toBeInstanceOf(KubeExecClickHouseExecutor);
-      expect(transport.clusterId).toBeDefined();
-      expect(transport.clusterId).toBe(clusterIdentity(expected) as string);
+      expect(transport.clusterId).toBe(clusterIdOfFile(kubeconfigPath));
     });
   });
 
-  it('identifies no cluster for an injected executor without a kubeConfig', () => {
-    withAmbientKubeConfig(() => {
+  it('identifies no cluster for an injected executor without a kubeConfig', async () => {
+    await withAmbientKubeConfig(AMBIENT_SERVER, () => {
       const { executor } = fakeExecutor();
       const transport = resolveTransport({ ...validConfig(), executor });
 
@@ -1638,5 +1654,134 @@ describe('ClickHouseSchema — transport resolution (#219)', () => {
       expect(transport.executor).toBe(executor);
       expect(transport.clusterId).toBeUndefined();
     });
+  });
+});
+
+describe('ClickHouseSchema — destructive teardown is bound to the recorded cluster', () => {
+  const CLUSTER_A = 'https://cluster-a.example.invalid:6443';
+  const CLUSTER_B = 'https://cluster-b.example.invalid:6443';
+
+  const destructive = () =>
+    validConfig({
+      onDelete: 'run',
+      deleteStatements: ['DROP TABLE IF EXISTS orders.events', 'DROP DATABASE IF EXISTS orders'],
+    });
+
+  /** Explicit, credential-free kubeConfig props naming `server`, so no ambient lookup. */
+  const explicitKubeConfigFor = (server: string) => ({
+    cluster: { name: 'explicit', server, skipTLSVerify: true },
+    user: { name: 'runner' },
+    context: 'explicit',
+  });
+
+  it('refuses when the ambient kubeconfig now names a different cluster than the state records', async () => {
+    const config = destructive();
+
+    // Created against cluster A through the ambient kubeconfig: state records A's identity.
+    const recorded = await withAmbientKubeConfig(CLUSTER_A, () => {
+      const created = resolveTransport(config);
+      expect(created.clusterId).toBeDefined();
+      return stateFor(config, { clusterId: created.clusterId as string });
+    });
+
+    // Destroyed later with KUBECONFIG pointing at cluster B. The failure must be the
+    // identity guard, raised BEFORE any list or exec: cluster B is unreachable, so had the
+    // transport been used the error would have been a connection failure against
+    // `cluster-b.example.invalid`, not this one.
+    await withAmbientKubeConfig(CLUSTER_B, async (kubeconfigPath) => {
+      const currentId = clusterIdOfFile(kubeconfigPath);
+      expect(currentId).not.toBe(recorded.clusterId);
+
+      const failure = await teardownClickHouseSchema({
+        id: RESOURCE_ID,
+        olds: config,
+        output: recorded,
+      }).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+      expect(failure).toBeInstanceOf(ClickHouseSchemaError);
+      const error = failure as ClickHouseSchemaError;
+      expect(error.message).toContain('Refusing destructive schema teardown');
+      expect(error.message).toContain(`recorded ${recorded.clusterId}`);
+      expect(error.message).toContain(`current ${currentId}`);
+      expect(error.message).not.toContain('cluster-b.example.invalid');
+      expect(error.resourceId).toBe(RESOURCE_ID);
+      expect(error.statementIndex).toBeUndefined();
+    });
+  });
+
+  it('proceeds when the current kubeconfig names the recorded cluster', async () => {
+    const { executor, execCalls, listCalls } = fakeExecutor();
+    const kubeConfig = explicitKubeConfigFor(CLUSTER_A);
+    const config = { ...destructive(), executor, kubeConfig };
+
+    const created = resolveTransport(config);
+    expect(created.executor).toBe(executor);
+    expect(created.clusterId).toBeDefined();
+    const recorded = stateFor(config, { clusterId: created.clusterId as string });
+
+    await teardownClickHouseSchema({ id: RESOURCE_ID, olds: config, output: recorded });
+
+    expect(listCalls).toHaveLength(1);
+    expect(execCalls.map((call) => call.stdin.trim())).toEqual([
+      'DROP TABLE IF EXISTS orders.events',
+      'DROP DATABASE IF EXISTS orders',
+    ]);
+  });
+
+  it('refuses an injected executor with no kubeConfig when the state records a cluster', async () => {
+    const { executor, execCalls, listCalls } = fakeExecutor();
+    const config = { ...destructive(), executor };
+    const recorded = stateFor(config, { clusterId: 'a'.repeat(64) });
+
+    // The current identity is UNKNOWN (no kubeConfig to derive it from), and unknown is
+    // not "the same cluster".
+    await expect(
+      teardownClickHouseSchema({ id: RESOURCE_ID, olds: config, output: recorded })
+    ).rejects.toThrow(/Refusing destructive schema teardown.*current none/);
+
+    expect(listCalls).toHaveLength(0);
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it('proceeds when the state recorded no cluster identity', async () => {
+    const { executor, execCalls } = fakeExecutor();
+    const config = { ...destructive(), executor };
+
+    // State written by a create that itself had no identity (injected executor, no
+    // kubeConfig) has nothing to compare against; this configuration behaves as before.
+    await teardownClickHouseSchema({ id: RESOURCE_ID, olds: config, output: stateFor(config) });
+
+    expect(execCalls).toHaveLength(2);
+  });
+
+  it("never touches the cluster under 'retain', whatever the state records", async () => {
+    const { executor, execCalls, listCalls } = fakeExecutor();
+    const config = { ...validConfig(), executor };
+
+    await teardownClickHouseSchema({
+      id: RESOURCE_ID,
+      olds: config,
+      output: stateFor(config, { clusterId: 'a'.repeat(64) }),
+    });
+
+    expect(listCalls).toHaveLength(0);
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it('the guard itself: mismatch and unknown-vs-known reject, same and unrecorded pass', () => {
+    expect(() => assertTeardownTargetsRecordedCluster(RESOURCE_ID, 'abc', 'abc')).not.toThrow();
+    expect(() => assertTeardownTargetsRecordedCluster(RESOURCE_ID, undefined, 'abc')).not.toThrow();
+    expect(() =>
+      assertTeardownTargetsRecordedCluster(RESOURCE_ID, undefined, undefined)
+    ).not.toThrow();
+    expect(() => assertTeardownTargetsRecordedCluster(RESOURCE_ID, 'abc', 'def')).toThrow(
+      ClickHouseSchemaError
+    );
+    expect(() => assertTeardownTargetsRecordedCluster(RESOURCE_ID, 'abc', undefined)).toThrow(
+      /recorded abc, current none/
+    );
   });
 });
