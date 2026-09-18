@@ -1281,6 +1281,20 @@ describe('waitForKroInstanceReady', () => {
         'tls-configuration-error (rejected certificate behind `fetch failed`)',
         () => new TypeError('fetch failed', { cause: { code: 'ERR_TLS_CERT_ALTNAME_INVALID' } }),
       ],
+      [
+        // A REVOKED certificate: the code the classifier's original hand-written TLS list omitted.
+        // Through `fetch()` it is indistinguishable from any other failure by message alone, so
+        // until the classification covered every code Node documents, this one alone kept polling
+        // to the deadline — the exact bug the fail-fast rule exists to remove.
+        'tls-configuration-error (revoked certificate behind `fetch failed`)',
+        () => new TypeError('fetch failed', { cause: { code: 'CERT_REVOKED' } }),
+      ],
+      [
+        // Not a certificate at all: the server URL says `https` but the endpoint speaks plain
+        // HTTP, so the handshake can never complete. Undici reports it as this `cause.code`.
+        'tls-configuration-error (protocol mismatch behind `fetch failed`)',
+        () => new TypeError('fetch failed', { cause: { code: 'ERR_SSL_WRONG_VERSION_NUMBER' } }),
+      ],
     ];
 
     for (const [label, makeError] of deterministicLookupFailures) {

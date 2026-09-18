@@ -139,28 +139,140 @@ const RETRYABLE_SYSTEM_CODES = new Set([
 ]);
 
 /**
- * TLS trust/identity and protocol failures: the client refused the server's certificate, or the two
- * ends could not agree on a protocol at all.
+ * Certificate verification failures: one end refused the other's certificate.
  *
- * Every one of these is a configuration fact — the wrong CA bundle, a stale kubeconfig, an expired
- * or misnamed server certificate, a plain-HTTP endpoint addressed as HTTPS. None of them changes
- * because the deployment asked again, so they must fail fast and name the code rather than spend a
- * 5–25 minute budget and then report a timeout that hides the real cause. `EPROTO` belongs here
- * rather than with the retryable codes for the same reason: a handshake the two ends cannot perform
- * is persistent, not a blip.
+ * This is the COMPLETE set of certificate-verification codes Node documents under "OpenSSL error
+ * codes" in https://nodejs.org/api/errors.html — every subsection of it (Time Validity, Trust or
+ * Chain Related, Basic Extension, Name Related, Usage and Policy, Formatting) — rather than the
+ * handful a reader happens to have seen. Completeness is the point: a code missing from this set
+ * falls through to {@link isRetryableError}, whose last rule retries ANY `TypeError` mentioning
+ * `fetch`, and Node's `fetch()` spells every one of these as exactly that. One omission therefore
+ * does not degrade gracefully — it polls a revoked certificate until the deadline and reports a
+ * timeout instead of the cause, which is the bug this classification exists to prevent.
+ *
+ * The one code in that doc section deliberately LEFT OUT is `OUT_OF_MEM`, which lives there because
+ * OpenSSL can raise it during verification but describes a resource shortage, not a verdict on the
+ * certificate — the only member of the section that can read differently on a later attempt.
+ *
+ * `ERR_TLS_CERT_ALTNAME_INVALID` is Node's own (it checks the hostname against the certificate's
+ * subjectAltNames itself, outside OpenSSL's verifier) and is the same kind of deterministic fact.
+ *
+ * Also included, and NOT from that doc page: the fatal TLS certificate alerts a PEER sends when it
+ * rejects OUR certificate — the mTLS direction a kubeconfig client cert takes. OpenSSL surfaces an
+ * incoming alert as its reason string, which Node exposes as `ERR_SSL_` + the uppercased reason, so
+ * a server that rejects a stale kubeconfig certificate arrives as `ERR_SSL_TLSV1_ALERT_UNKNOWN_CA`
+ * rather than any `CERT_*` code. The alert names are those of RFC 5246 §7.2.2 / RFC 8446 §6.2, and
+ * each listed one is a verdict on a certificate that will be reached identically next time.
+ *
+ * @internal Exported only so the unit tests can assert the membership itself — the prefix fallback
+ * in {@link isTlsConfigurationCode} would otherwise let a code silently drop out of this list
+ * without a single test noticing. Not re-exported from the package index.
  */
-const TLS_CONFIGURATION_CODES = new Set([
-  'CERT_HAS_EXPIRED',
+export const TLS_CERTIFICATE_CODES: ReadonlySet<string> = new Set([
+  // --- Node, "OpenSSL error codes": Time Validity Errors -----------------------
   'CERT_NOT_YET_VALID',
-  'CERT_UNTRUSTED',
-  'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_HAS_EXPIRED',
+  'CRL_NOT_YET_VALID',
+  'CRL_HAS_EXPIRED',
+  'CERT_REVOKED',
+  // --- Trust or Chain Related Errors -------------------------------------------
   'UNABLE_TO_GET_ISSUER_CERT',
   'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_CHAIN_TOO_LONG',
+  'UNABLE_TO_GET_CRL',
   'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_UNTRUSTED',
+  // --- Basic Extension Errors ---------------------------------------------------
+  'INVALID_CA',
+  'PATH_LENGTH_EXCEEDED',
+  // --- Name Related Errors ------------------------------------------------------
+  'HOSTNAME_MISMATCH',
+  // --- Usage and Policy Errors --------------------------------------------------
+  'INVALID_PURPOSE',
+  'CERT_REJECTED',
+  // --- Formatting Errors --------------------------------------------------------
+  'CERT_SIGNATURE_FAILURE',
+  'CRL_SIGNATURE_FAILURE',
+  'ERROR_IN_CERT_NOT_BEFORE_FIELD',
+  'ERROR_IN_CERT_NOT_AFTER_FIELD',
+  'ERROR_IN_CRL_LAST_UPDATE_FIELD',
+  'ERROR_IN_CRL_NEXT_UPDATE_FIELD',
+  'UNABLE_TO_DECRYPT_CERT_SIGNATURE',
+  'UNABLE_TO_DECRYPT_CRL_SIGNATURE',
+  'UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY',
+  // (`OUT_OF_MEM` is the one member of that section NOT listed — see the note above.)
+  // --- Node's own hostname check ------------------------------------------------
   'ERR_TLS_CERT_ALTNAME_INVALID',
-  'EPROTO',
+  // --- Fatal certificate alerts received FROM the peer (our client cert refused) --
+  'ERR_SSL_SSLV3_ALERT_BAD_CERTIFICATE',
+  'ERR_SSL_SSLV3_ALERT_UNSUPPORTED_CERTIFICATE',
+  'ERR_SSL_SSLV3_ALERT_CERTIFICATE_REVOKED',
+  'ERR_SSL_SSLV3_ALERT_CERTIFICATE_EXPIRED',
+  'ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN',
+  'ERR_SSL_TLSV1_ALERT_UNKNOWN_CA',
+  'ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED',
 ]);
+
+/**
+ * Handshake failures that are not about a certificate: the two ends cannot agree on a protocol.
+ *
+ * Every member is a persistent mismatch between two configurations, so each is listed with the
+ * reason it qualifies rather than swept in by an `ERR_SSL_*` prefix — most `ERR_SSL_*` codes are
+ * pass-throughs of arbitrary OpenSSL reasons, and some (an allocation failure, a decrypt error on a
+ * corrupted record) genuinely can differ on the next attempt.
+ *
+ * - `EPROTO` — libuv's errno for a handshake OpenSSL aborted. The two ends could not complete a
+ *   handshake at all; nothing about asking again changes what they support.
+ * - `ERR_SSL_WRONG_VERSION_NUMBER` — the bytes on the wire are not a TLS record. Classically an
+ *   `https://` URL pointing at a plain-HTTP listener: an address/scheme fact, fixed in config.
+ * - `ERR_SSL_UNKNOWN_PROTOCOL` — the same situation as reported by OpenSSL's older reason string.
+ * - `ERR_SSL_UNSUPPORTED_PROTOCOL` — the peer's protocol version is not enabled on this side.
+ * - `ERR_SSL_VERSION_TOO_LOW` / `ERR_SSL_VERSION_TOO_HIGH` — the version the peer offers falls
+ *   outside this side's configured `minVersion`/`maxVersion` window.
+ * - `ERR_SSL_NO_PROTOCOLS_AVAILABLE` — this side's own TLS context has every version disabled, a
+ *   purely local configuration error that cannot resolve itself.
+ * - `ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION` — the peer's fatal alert (RFC 5246 §7.2.2) stating that
+ *   the version we offered is unacceptable to it.
+ *
+ * Note what is NOT here: generic handshake alerts such as `ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE`,
+ * which OpenSSL emits for several unrelated conditions and which therefore cannot be called a
+ * persistent mismatch on the strength of the code alone.
+ *
+ * @internal Exported for the same reason as {@link TLS_CERTIFICATE_CODES}.
+ */
+export const TLS_PROTOCOL_CONFIGURATION_CODES: ReadonlySet<string> = new Set([
+  'EPROTO',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_SSL_UNKNOWN_PROTOCOL',
+  'ERR_SSL_UNSUPPORTED_PROTOCOL',
+  'ERR_SSL_VERSION_TOO_LOW',
+  'ERR_SSL_VERSION_TOO_HIGH',
+  'ERR_SSL_NO_PROTOCOLS_AVAILABLE',
+  'ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION',
+]);
+
+/**
+ * Whether a transport `code` names a TLS failure that will recur identically on every attempt.
+ *
+ * The union of {@link TLS_CERTIFICATE_CODES} and {@link TLS_PROTOCOL_CONFIGURATION_CODES}, plus one
+ * deliberate catch-all: an UNRECOGNISED code beginning `CERT_` is also treated as a certificate
+ * verdict. Every `CERT_*` code OpenSSL defines is a verification result — a statement about the
+ * certificate presented, not about the network — so a code this list has not caught up with (a
+ * newer OpenSSL, a reason Node has not documented) is far better failed fast and named in the
+ * message than polled for a 25-minute budget and then reported as a timeout. The explicit list is
+ * kept rather than replaced by the prefix, both because most of the codes above do not start with
+ * `CERT_` and so the prefix could never stand alone, and so the tests keep asserting the real
+ * membership instead of a pattern that would pass for any invented string.
+ */
+function isTlsConfigurationCode(code: string): boolean {
+  return (
+    TLS_CERTIFICATE_CODES.has(code) ||
+    TLS_PROTOCOL_CONFIGURATION_CODES.has(code) ||
+    code.startsWith('CERT_')
+  );
+}
 
 /**
  * The transport `code`, following one level of `cause`.
@@ -352,7 +464,7 @@ function classifyReadErrorKind(
   // so consulting the code first is the whole of what keeps a misconfigured CA bundle out of the
   // retry loop instead of burning the readiness budget on it.
   const transportCode = transportErrorCode(error);
-  if (transportCode && TLS_CONFIGURATION_CODES.has(transportCode)) {
+  if (transportCode && isTlsConfigurationCode(transportCode)) {
     return 'tls-configuration-error';
   }
   // The two "the request never got an answer" shapes `isRetryableError` does not recognise, both of
@@ -393,15 +505,21 @@ export function classifyReadError(error: unknown): ReadErrorAssessment {
   const label = READ_ERROR_SUMMARIES[classification];
   const detail = describeReadError(error);
   // `TypeError: fetch failed` says nothing an operator can act on, so a TLS failure names the code
-  // and what to look at. Everything else already carries its own message.
+  // and what to look at. Everything else already carries its own message. The two kinds of TLS
+  // failure point at different settings — a certificate verdict at the trust material, a protocol
+  // mismatch at the address and the TLS version window — so the hint follows the code.
   const tlsCode =
     classification === 'tls-configuration-error' ? transportErrorCode(error) : undefined;
+  const tlsHint =
+    tlsCode && TLS_PROTOCOL_CONFIGURATION_CODES.has(tlsCode)
+      ? 'check the server URL scheme / port and the TLS version settings'
+      : 'check the cluster CA / server certificate';
 
   return {
     classification,
     retryable: RETRYABLE_READ_CLASSIFICATIONS.has(classification),
     summary: statusCode === undefined ? label : `${label} (HTTP ${statusCode})`,
-    detail: tlsCode ? `${detail} (${tlsCode}: check the cluster CA / server certificate)` : detail,
+    detail: tlsCode ? `${detail} (${tlsCode}: ${tlsHint})` : detail,
     statusCode,
   };
 }

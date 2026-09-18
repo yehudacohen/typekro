@@ -403,7 +403,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plain-HTTP endpoint addressed as HTTPS. Each is rejected identically on every attempt, so
   polling one for a multi-minute budget only buries what to fix under a timeout. They now
   classify as a TLS configuration error that fails fast, and the reported detail names the
-  system code and points at the cluster CA / server certificate. This is deliberately
+  system code and points at the setting to look at — the cluster CA / server certificate for a
+  certificate verdict, the server URL and TLS version window for a protocol mismatch.
+
+  The recognised codes are the COMPLETE set, not a sample: every certificate-verification code
+  Node documents under "OpenSSL error codes" (`nodejs.org/api/errors.html`) — including
+  `CERT_REVOKED`, the CRL codes, `HOSTNAME_MISMATCH`, `INVALID_CA` and the signature/field
+  formatting errors — plus Node's own `ERR_TLS_CERT_ALTNAME_INVALID`, the fatal certificate
+  alerts a server sends when it rejects a client certificate (a stale kubeconfig arrives as
+  `ERR_SSL_TLSV1_ALERT_UNKNOWN_CA`, not as any `CERT_*` code), and the protocol-mismatch codes
+  `EPROTO`, `ERR_SSL_WRONG_VERSION_NUMBER` and the TLS-version family. Completeness matters
+  because the failure mode is not graceful: an unrecognised code falls through to the generic
+  "a `TypeError` mentioning fetch is retryable" rule, so a single omission means that code
+  alone polls to the deadline. An unknown code beginning `CERT_` is treated the same way for
+  the same reason — every `CERT_*` code OpenSSL defines is a verdict on the certificate.
+  `OUT_OF_MEM`, which shares that doc section, is deliberately excluded: it reports a resource
+  shortage rather than anything about the certificate. This is deliberately
   narrower than the "was the server reachable?" taxonomy used elsewhere in the same module,
   which counts a rejected handshake as "unreachable" because the server never answered —
   correct for that question, wrong for "is it worth asking again?". The codes are also read

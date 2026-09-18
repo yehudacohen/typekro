@@ -14,6 +14,8 @@ import {
   isNotFoundError,
   isUnsupportedMediaTypeError,
   patchResourceWithCorrectContentType,
+  TLS_CERTIFICATE_CODES,
+  TLS_PROTOCOL_CONFIGURATION_CODES,
 } from '../../src/core/deployment/k8s-helpers.js';
 import { PollTimeoutError, RequestTimeoutError } from '../../src/core/deployment/poll-timeout.js';
 import { PrematureCloseError } from '../../src/core/kubernetes/bun-http-library.js';
@@ -292,6 +294,107 @@ describe('classifyReadError', () => {
     expect(assessment.detail).toContain('UNABLE_TO_VERIFY_LEAF_SIGNATURE');
     expect(assessment.detail).toContain('check the cluster CA / server certificate');
   });
+
+  it('points a protocol mismatch at the URL and version settings, not at the CA bundle', () => {
+    // `ERR_SSL_WRONG_VERSION_NUMBER` means the peer is not speaking TLS at all — an `https://`
+    // server URL aimed at a plain-HTTP listener. Telling the operator to check their certificates
+    // would send them to the one thing that is not wrong.
+    const assessment = classifyReadError(
+      new TypeError('fetch failed', { cause: { code: 'ERR_SSL_WRONG_VERSION_NUMBER' } })
+    );
+
+    expect(assessment.detail).toContain('ERR_SSL_WRONG_VERSION_NUMBER');
+    expect(assessment.detail).toContain('check the server URL scheme / port');
+    expect(assessment.detail).not.toContain('cluster CA');
+  });
+
+  // ---------------------------------------------------------------------------
+  // The classification must be COMPLETE, not a hand-picked sample.
+  //
+  // Every one of these arrives from Node's `fetch()` as the same opaque
+  // `TypeError: fetch failed` with the real code on `cause`, and `isRetryableError`'s last rule
+  // retries ANY `TypeError` mentioning `fetch`. So a code the classifier does not recognise is not
+  // merely unclassified — it is actively RETRIED, polling a permanently rejected handshake until
+  // the readiness budget expires and then reporting a timeout that hides the cause. The fetch-
+  // wrapped shape is therefore the one these are asserted through.
+  // ---------------------------------------------------------------------------
+  const namedFetchWrappedTlsCodes: [string, string][] = [
+    // The code that motivated the round-8 widening: a REVOKED certificate. Node documents it, the
+    // original hand-list omitted it, and nothing else in the chain would have stopped it.
+    ['CERT_REVOKED', 'a revoked server certificate'],
+    // Undici's protocol-mismatch code, likewise absent from the original list.
+    ['ERR_SSL_WRONG_VERSION_NUMBER', 'an endpoint that is not speaking TLS'],
+  ];
+
+  for (const [code, label] of namedFetchWrappedTlsCodes) {
+    it(`fails fast on ${label} (${code}) reported through fetch()`, () => {
+      const assessment = classifyReadError(new TypeError('fetch failed', { cause: { code } }));
+
+      expect(assessment.classification).toBe('tls-configuration-error');
+      expect(assessment.retryable).toBe(false);
+      expect(assessment.detail).toContain(code);
+    });
+  }
+
+  // Membership is asserted directly, not just through the classifier, because
+  // `isTlsConfigurationCode` also has an unknown-`CERT_`-prefix fallback: without these, deleting
+  // `CERT_REVOKED` from the explicit set would leave every behavioural test above still passing.
+  const mutationSentinels: [ReadonlySet<string>, string][] = [
+    [TLS_CERTIFICATE_CODES, 'CERT_REVOKED'],
+    [TLS_CERTIFICATE_CODES, 'CRL_HAS_EXPIRED'],
+    [TLS_CERTIFICATE_CODES, 'HOSTNAME_MISMATCH'],
+    [TLS_CERTIFICATE_CODES, 'ERR_TLS_CERT_ALTNAME_INVALID'],
+    [TLS_PROTOCOL_CONFIGURATION_CODES, 'EPROTO'],
+    [TLS_PROTOCOL_CONFIGURATION_CODES, 'ERR_SSL_WRONG_VERSION_NUMBER'],
+  ];
+
+  for (const [set, code] of mutationSentinels) {
+    it(`lists ${code} explicitly, not only via a prefix rule`, () => {
+      expect(set.has(code)).toBe(true);
+    });
+  }
+
+  it('does not treat OpenSSL OUT_OF_MEM as a certificate verdict', () => {
+    // It sits in the same doc section, but it reports a resource shortage rather than anything
+    // about the certificate — the one member of that section that can read differently next time.
+    expect(TLS_CERTIFICATE_CODES.has('OUT_OF_MEM')).toBe(false);
+  });
+
+  const everyTlsCode = [...TLS_CERTIFICATE_CODES, ...TLS_PROTOCOL_CONFIGURATION_CODES];
+
+  for (const code of everyTlsCode) {
+    it(`never retries ${code}, even behind \`fetch failed\``, () => {
+      const assessment = classifyReadError(new TypeError('fetch failed', { cause: { code } }));
+
+      expect(assessment.classification).toBe('tls-configuration-error');
+      expect(assessment.retryable).toBe(false);
+    });
+  }
+
+  it('treats an unrecognised CERT_* code as a certificate verdict', () => {
+    // Every `CERT_*` code OpenSSL defines is a verification RESULT, so one this list has not caught
+    // up with is better named and failed fast than polled to the deadline.
+    const assessment = classifyReadError(
+      new TypeError('fetch failed', { cause: { code: 'CERT_SOMETHING_OPENSSL_ADDED_LATER' } })
+    );
+
+    expect(assessment.classification).toBe('tls-configuration-error');
+    expect(assessment.retryable).toBe(false);
+  });
+
+  // Positive controls: the widening must not swallow the genuinely transient transport failures.
+  // These share the exact `TypeError: fetch failed` shape, so if the TLS branch were too greedy a
+  // dropped socket or a DNS blip would become a hard deployment failure.
+  const retryableFetchWrappedCodes = ['ECONNRESET', 'EAI_AGAIN'];
+
+  for (const code of retryableFetchWrappedCodes) {
+    it(`still retries ${code} behind \`fetch failed\``, () => {
+      const assessment = classifyReadError(new TypeError('fetch failed', { cause: { code } }));
+
+      expect(assessment.classification).toBe('transient');
+      expect(assessment.retryable).toBe(true);
+    });
+  }
 
   it('still fails fast on a status-bearing error whose `code` is a string', () => {
     // The system-code recognition must not outrank a definitive answer from the server.
