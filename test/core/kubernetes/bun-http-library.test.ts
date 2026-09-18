@@ -120,6 +120,11 @@ describe('BunCompatibleHttpLibrary request timeout', () => {
  * 'close' after the exchange ends, so the same code merely disarms the timer a little later and hangs
  * too; Bun just reaches the hang on every truncated response.
  *
+ * Traced on bun 1.3.10 and node 22.22.0, with and without listeners on the response: for a TRUNCATED
+ * response the request's own 'error' fires on NEITHER runtime, for a reset or a FIN alike. It fires
+ * only when the peer drops before any headers — which is why that one case was already covered by the
+ * old code, and the truncations were not.
+ *
  * Each test therefore races the call against a watchdog FAR longer than the configured timeout: a
  * regression shows up as the watchdog winning, never as a slow pass.
  */
@@ -202,6 +207,12 @@ describe('BunCompatibleHttpLibrary premature close', () => {
       expect(classifyApiReadError(outcome)).not.toBe('notFound');
       // Recognisable to the request-timeout gates, which fail CLOSED on a call that never answered.
       expect(isRequestTimeoutError(outcome)).toBe(true);
+      // Nothing EXPIRED here: the inherited `timeoutMs` must report how long the connection actually
+      // lasted, not the untouched 30s budget, or a reader concludes the deadline was reached.
+      const reported = (outcome as { timeoutMs: number; elapsedMs: number }).timeoutMs;
+      expect(reported).toBe((outcome as { elapsedMs: number }).elapsedMs);
+      expect(reported).toBeLessThan(3_000);
+      expect((outcome as Error).message).toContain('its budget had not expired');
     } finally {
       await server.close();
     }
@@ -292,6 +303,52 @@ describe('BunCompatibleHttpLibrary premature close', () => {
 
       // The timer was armed, and it was disarmed — a leaked one would keep a CLI process alive for
       // its full budget after the work is done.
+      expect(armed.size).toBe(1);
+      for (const handle of armed) expect(cleared.has(handle)).toBe(true);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+      await server.close();
+    }
+  });
+
+  // A synchronous throw while the request is being issued escapes the Promise executor, which
+  // rejects the promise but does NOT run the latch. The timer would then stay armed and hold the
+  // process open for its whole budget after the call had already failed.
+  it('clears the timer when issuing the request throws synchronously', async () => {
+    const server = await rawServer((socket) => socket.end('HTTP/1.1 200 OK\r\n\r\n'));
+
+    const UNIQUE_TIMEOUT_MS = 876_543;
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const armed = new Set<unknown>();
+    const cleared = new Set<unknown>();
+    globalThis.setTimeout = ((handler: never, delay?: number, ...args: never[]) => {
+      const handle = realSetTimeout(handler, delay as number, ...args);
+      if (delay === UNIQUE_TIMEOUT_MS) armed.add(handle);
+      return handle;
+    }) as typeof globalThis.setTimeout;
+    globalThis.clearTimeout = ((handle: never) => {
+      cleared.add(handle);
+      return realClearTimeout(handle);
+    }) as typeof globalThis.clearTimeout;
+
+    try {
+      // A body that is neither a string nor a Buffer: `req.write` rejects it synchronously with
+      // ERR_INVALID_ARG_TYPE, the real shape of this failure.
+      const library = new BunCompatibleHttpLibrary({ create: UNIQUE_TIMEOUT_MS });
+      const request = {
+        ...requestContext(server.port, 'POST'),
+        getBody: () => ({ not: 'a serialised body' }),
+      };
+
+      const { outcome } = await settleOrHang(
+        library.send(request as never).toPromise() as Promise<unknown>,
+        3_000
+      );
+
+      expect(outcome).not.toBe(HUNG);
+      expect(outcome).toBeInstanceOf(Error);
       expect(armed.size).toBe(1);
       for (const handle of armed) expect(cleared.has(handle)).toBe(true);
     } finally {

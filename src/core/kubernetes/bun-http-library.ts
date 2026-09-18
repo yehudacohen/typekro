@@ -104,20 +104,29 @@ export interface AgentTlsOptions {
  * without knowing this class exists. `code` is `ECONNRESET` and the message contains
  * `socket hang up`, the two shapes the transient/retryable classifiers already match on, so a
  * retry loop treats it as the transient transport blip it usually is.
+ *
+ * NOTE ON `timeoutMs`: nothing here EXPIRED — the socket died with budget to spare, typically in
+ * milliseconds out of minutes. The inherited field therefore carries how long the request actually
+ * ran ({@link elapsedMs}), never the configured budget, so a log line or a retry heuristic reading
+ * it cannot conclude that the deadline was reached.
  */
 export class PrematureCloseError extends RequestTimeoutError {
   /** Node's system-error code for a peer-reset socket; transient-error classifiers match on it. */
   readonly code = 'ECONNRESET' as const;
-  constructor(method: string, path: string, timeoutMs: number, phase: string, cause?: unknown) {
+  /** How long the request ran before the transport died. Same value as the inherited `timeoutMs`. */
+  readonly elapsedMs: number;
+  constructor(method: string, path: string, elapsedMs: number, phase: string, cause?: unknown) {
     super(
       `socket hang up: the connection closed before the response completed (${method} ${path}) — ${phase}.\n` +
+        `The connection lasted ${elapsedMs}ms; its budget had not expired.\n` +
         (cause instanceof Error ? `Underlying transport error: ${cause.message}\n` : '') +
         `\n` +
         `The Kubernetes API server, or something between it and this client (load balancer, proxy, ` +
         `NAT gateway), dropped the connection mid-flight. This is usually transient; retry.`,
-      timeoutMs
+      elapsedMs
     );
     this.name = 'PrematureCloseError';
+    this.elapsedMs = elapsedMs;
     if (cause !== undefined) this.cause = cause;
   }
 }
@@ -295,9 +304,12 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // only means "the exchange ended" while no response has begun; once one has, the response's own
       // terminal events are what tell us whether it completed.
       let responseStarted = false;
+      // The elapsed time, not the budget: a premature close happens with budget to spare, and the
+      // error must not read as "the deadline was reached". See {@link PrematureCloseError}.
+      const issuedAt = Date.now();
       const failPrematureClose = (phase: string, cause?: unknown) =>
         settle(() =>
-          reject(new PrematureCloseError(method, url.pathname, timeoutMs, phase, cause))
+          reject(new PrematureCloseError(method, url.pathname, Date.now() - issuedAt, phase, cause))
         );
 
       const req = httpModule.request(options, (res) => {
@@ -437,12 +449,22 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         failPrematureClose('the socket closed before any response was received');
       });
 
-      // Send body if present
-      if (body) {
-        req.write(body);
+      // Send body if present.
+      //
+      // These can throw SYNCHRONOUSLY — `write` rejects a body that is not a string or Buffer with
+      // ERR_INVALID_ARG_TYPE, for instance. A throw here escapes the Promise executor, which rejects
+      // the promise for us but does NOT run the latch, so the timer would stay armed and hold a
+      // short-lived CLI process open for its whole budget after the call had already failed. Route
+      // it through the latch instead, and tear the half-issued request down.
+      try {
+        if (body) {
+          req.write(body);
+        }
+        req.end();
+      } catch (err) {
+        settle(() => reject(err));
+        req.destroy();
       }
-
-      req.end();
     });
   }
 }

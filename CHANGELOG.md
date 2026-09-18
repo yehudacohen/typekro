@@ -313,11 +313,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stalled at an arbitrary API call until some far outer deadline, with no error and
   no indication of which call was stuck.
 
-  The event ordering made this reliable rather than rare: the request's `close` fires
-  as soon as the response HEADERS arrive, before the body, so the timer was disarmed
-  for the whole body phase of every request; and a mid-body socket drop is then
-  reported only on the response (`aborted`, `error`, `close`), which nothing listened
-  to. The promise now settles through a single latch that every terminal event goes
+  The event ordering made this reliable rather than rare. On Bun — and only on Bun —
+  the request's `close` fires as soon as the response HEADERS arrive, before the body,
+  so the timer was disarmed for the whole body phase of every request; Node emits that
+  event after the exchange ends, which delays the same unguarded disarm rather than
+  avoiding it. On both runtimes a mid-body drop is then reported only on the response
+  (`aborted`, `error`, `close`) and never as an error on the request, and nothing
+  listened to those. The promise now settles through a single latch that every terminal
+  event goes
   through — the response's `end`, `aborted`, `error` and a `close` before `end`, the
   request's `error`, a request `close` with no response in flight, the timeout, and an
   abort signal — and the timer is cleared only by that latch, never on its own. A
