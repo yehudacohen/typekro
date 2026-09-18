@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`keeper`) exported as the recommended explicit value. It is required whenever the
   installation name is longer than 15 bytes or otherwise illegal as a cluster name, which
   the CRD caps independently of `metadata.name` (see Fixed). It mirrors the CHI's existing
-  `clusterName` and carries the same `ClickHouseClusterNameSchema` bound.
+  `clusterName`, but is bound by the CHK's own `ClickHouseKeeperClusterNameSchema`
+  (`^[a-zA-Z0-9-]{1,15}$`), not the CHI's `ClickHouseClusterNameSchema`: the CHK deliberately
+  accepts a leading digit or dash, which the CHI does not, because the CHI's config generator
+  renders the cluster name as an XML element name.
 
 - `ClickHouseSchema`, an Alchemy v2 resource (`TypeKro.ClickHouseSchema`) that applies
   ClickHouse DDL to a cluster the `clickhouse`/`clickstack` factories deployed, at
@@ -336,10 +339,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from an operator rejection into an error naming the field, the byte length, the cap and
   the remedy. No truncation, no silent rename.
 
-  An explicit `clusterName` (see Added) runs the same `assertClickHouseClusterName` check
-  and carries the same `ClickHouseClusterNameSchema` bound as the CHI's, so both resources
-  reject an illegal value identically; unit tests pin the boundary at 15 accepted / 16
-  rejected on both. The CHI is unchanged — its `cluster` default was already independent
+  An explicit `clusterName` (see Added) runs `assertClickHouseKeeperClusterName`, the CHK's
+  own check, bound by `ClickHouseKeeperClusterNameSchema` (`^[a-zA-Z0-9-]{1,15}$`) rather
+  than the CHI's `ClickHouseClusterNameSchema`: the CHK deliberately accepts a leading digit
+  or dash, which the CHI's `assertClickHouseClusterName` rejects, because the CHI's config
+  generator renders the cluster name as an XML element name and the keeper's does not. Both
+  resources reject an over-long value identically; unit tests pin the length boundary at 15
+  accepted / 16 rejected on both, and pin the leading-character difference between the two
+  schemas separately. The CHI is unchanged — its `cluster` default was already independent
   of the installation name, which is why only the keeper failed.
 
   KRO MODE: the check moves to the operator, and the factory says so. When `name` is a
@@ -349,9 +356,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Altinity's admission check. The factory emits a build-time WARNING saying
   that, recommending `clusterName: DEFAULT_CHK_CLUSTER_NAME` for a NEW deployment (with
   the state-loss caveat for an existing one) and pointing at the other option: bounding
-  the enclosing composition's own spec field with `ClickHouseClusterNameSchema`, whose
-  `maxLength` and `pattern` the schema generator carries into the RGD so KRO rejects a
-  bad instance at admission. `clusterName` is deliberately NOT made mandatory for
+  the enclosing composition's own spec field with `ClickHouseKeeperClusterNameSchema` — the
+  CHK's own contract, not the CHI's `ClickHouseClusterNameSchema` — whose `maxLength` and
+  `pattern` (`^[a-zA-Z0-9-]{1,15}$`, permitting a leading digit or dash) the schema
+  generator carries into the RGD so KRO rejects a bad instance at admission. `clusterName`
+  is deliberately NOT made mandatory for
   references — that would force it on existing KRO-mode deployments.
 
   The warning is emitted once per build with NO cross-build state. Serializing a
