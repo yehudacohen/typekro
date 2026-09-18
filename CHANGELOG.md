@@ -322,6 +322,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- One stalled idempotent GET no longer fails a whole converge (#213). Since 0.36.0 a
+  Kubernetes read that never returns is reported after the 30 s `read` budget instead of
+  hanging, and in practice the FIRST request of a freshly constructed client intermittently
+  never completes against a healthy API server — the same GET answers in under a second
+  from another client — so a single 30 s stall of a ~2 KB drift-check read was killing
+  20-minute deploys. The alchemy persisted-identity drift check, the singleton drift gate
+  and the engine's single (non-polling) external-reference read now re-issue the read
+  EXACTLY ONCE on a request timeout, via `retryOnceOnRequestTimeout`, and log a warn naming
+  the resource. The retry is a fresh connection — the Bun HTTP library issues every request
+  with `agent: false` and `Connection: close`, so no socket is ever reused — and the worst
+  case is bounded at two read budgets. Only a request timeout (the socket timer's, the
+  deadline wrapper's, or a premature close) is retried; an HTTP error the server answered
+  with, a TLS failure or an abort is thrown immediately, the caller's abort signal is
+  checked before the second attempt, and creates, updates and deletes are never retried.
+  When the retry times out as well, the error says the read was already re-issued once.
+
+- The request-timeout hint no longer blames an exec credential a kubeconfig does not have.
+  `PollTimeoutError` names "a wedged or expired kubeconfig exec credential" only when the
+  current user actually carries an `exec` block (`usesExecCredential`, threaded through
+  `withCallDeadline`); for a pre-minted token or client certificate it says the connection
+  stalled before the API server answered, and where the credential shape is not known it
+  hedges instead of asserting either way.
+
 - A KRO instance that had ALREADY failed could be reported as a generic readiness
   timeout instead of the error it actually hit. The readiness poll checked the
   ResourceGraphDefinition status schema before it checked the instance's own terminal

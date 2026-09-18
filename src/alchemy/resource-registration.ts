@@ -32,6 +32,8 @@ import {
   type CallDeadlineBudget,
   callDeadlineBudget,
   isRequestTimeoutError,
+  retryOnceOnRequestTimeout,
+  usesExecCredential,
   withCallDeadline,
 } from '../core/deployment/poll-timeout.js';
 import {
@@ -675,12 +677,16 @@ function _clusterCallBudget<T extends Enhanced<unknown, unknown>>(
  *
  * An INJECTED client (a test seam) is wrapped too, deliberately: the bound is what these tests
  * exist to prove, and a seam that escaped it would let a regression reappear as a green run.
+ *
+ * `kubeConfig`, when the caller has it, lets a timeout's hint say whether an exec credential is
+ * even a possible cause for this client (see {@link usesExecCredential}); without it the hint hedges.
  */
 function _boundClusterCalls<T extends Enhanced<unknown, unknown>, Api extends object>(
   api: Api,
   props: TypeKroResourceProps<T>,
   phase: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  kubeConfig?: KubeConfig
 ): Api {
   const name = props.resource.metadata?.name;
   const kind = props.resource.kind ?? 'resource';
@@ -688,7 +694,17 @@ function _boundClusterCalls<T extends Enhanced<unknown, unknown>, Api extends ob
     budget: _clusterCallBudget(props),
     label: `${kind} ${name ?? '<unnamed>'} (${phase})`,
     ...(abortSignal ? { abortSignal } : {}),
+    usesExecCredential: usesExecCredential(kubeConfig),
   });
+}
+
+/** The `label` a retried read is reported under: the persisted identity, namespaced when it is. */
+function _identityLabel(identity: KubernetesResource): string {
+  const namespace = identity.metadata?.namespace;
+  return (
+    `${identity.apiVersion}/${identity.kind} ` +
+    `${namespace ? `${namespace}/` : ''}${identity.metadata?.name ?? '<unnamed>'}`
+  );
 }
 
 function identityReader(
@@ -703,7 +719,8 @@ function identityReader(
     createBunCompatibleKubernetesObjectApi(provider, props.options?.httpTimeouts),
     props,
     phase,
-    abortSignal
+    abortSignal,
+    provider
   );
   return {
     read: async (resource: KubernetesResource) =>
@@ -825,7 +842,14 @@ async function detectKroResourceIdentityDrift(
 
   let live: KubernetesResource;
   try {
-    live = await liveReader.read(identity);
+    // A GET is idempotent, so one request timeout — the first request of a freshly constructed
+    // client intermittently never completes against a healthy API server (#213) — is re-issued
+    // once on a fresh connection instead of failing the whole converge. Bounded to two read budgets.
+    live = await retryOnceOnRequestTimeout(() => liveReader.read(identity), {
+      label: `Alchemy drift check of ${_identityLabel(identity)}`,
+      logger: getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE }),
+      abortSignal,
+    });
   } catch (error: unknown) {
     if (isNotFoundError(error)) return { action: 'update' };
     throw new Error(
@@ -884,7 +908,8 @@ async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unkn
     createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
     props,
     'pre-hoist-check',
-    abortSignal
+    abortSignal,
+    kc
   );
 
   // The set of namespaces to check: the incoming one PLUS every EXISTING instance's
@@ -1161,7 +1186,8 @@ async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unk
     createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
     props,
     'ownership-check',
-    abortSignal
+    abortSignal,
+    kc
   );
 
   // CREATE-FIRST ownership (finding #3), matching the imperative path: attempt to CREATE
@@ -1217,6 +1243,28 @@ function _stripNamespaceOwnerAnnotation<T extends Enhanced<unknown, unknown>>(re
   } as unknown as T;
 }
 
+/**
+ * The bounded client the singleton drift gate reads through: the injected seam when a test supplies
+ * one, otherwise a client for this handler's kubeconfig, which is also handed to the bound so a
+ * timeout's hint knows whether an exec credential is a possible cause.
+ */
+function _singletonDriftApi<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  injected: { read(spec: unknown): Promise<unknown> } | undefined,
+  abortSignal?: AbortSignal
+): { read(spec: unknown): Promise<unknown> } {
+  const phase = 'singleton-drift-check';
+  if (injected) return _boundClusterCalls(injected, props, phase, abortSignal);
+  const kc = _createClientProvider(props, phase);
+  return _boundClusterCalls(
+    createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
+    props,
+    phase,
+    abortSignal,
+    kc
+  ) as { read(spec: unknown): Promise<unknown> };
+}
+
 async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger,
@@ -1232,16 +1280,14 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
 
   let live: LiveSingletonOwner | undefined;
   try {
-    const rawApi =
-      deps.api ??
-      createBunCompatibleKubernetesObjectApi(
-        _createClientProvider(props, 'singleton-drift-check'),
-        props.options?.httpTimeouts
-      );
-    const api = _boundClusterCalls(rawApi, props, 'singleton-drift-check', abortSignal);
-    live = (await (api as { read(spec: unknown): Promise<unknown> }).read(
-      props.resource
-    )) as LiveSingletonOwner;
+    const api = _singletonDriftApi(props, deps.api, abortSignal);
+    // Same idempotent-read retry as the persisted-identity drift check: one request timeout on
+    // this GET is re-issued once on a fresh connection before the gate fails closed (#213).
+    live = (await retryOnceOnRequestTimeout(() => api.read(props.resource), {
+      label: `Singleton drift check of ${resource.metadata?.name ?? '<unknown>'}`,
+      logger,
+      abortSignal,
+    })) as LiveSingletonOwner;
   } catch (error: unknown) {
     // A WEDGED call is not evidence that nothing exists to clash with, and swallowing it would
     // silently skip this assertion after the full budget had elapsed. Fail closed on ANY request
@@ -1707,7 +1753,8 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
       createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
       props,
       'deployment-engine',
-      abortSignal
+      abortSignal,
+      kc
     ),
     undefined,
     DeploymentMode.DIRECT,
