@@ -16,7 +16,10 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
-import { ClickHouseClusterNameSchema } from './utils/validation.js';
+import {
+  ClickHouseClusterNameSchema,
+  ClickHouseKeeperClusterNameSchema,
+} from './utils/validation.js';
 
 // ============================================================================
 // Bootstrap Config (Helm Operator Install)
@@ -1013,15 +1016,19 @@ export const ClickHouseKeeperInstallationConfigSchema = type({
    *
    * REQUIRED when `name` cannot be one. The Altinity CRD constrains
    * `spec.configuration.clusters[].name` to minLength 1 / maxLength 15 /
-   * `^[a-zA-Z0-9-]{0,15}$` on the CHK exactly as on the CHI, while
-   * `metadata.name` is uncapped — so the factory throws at BUILD time, naming
-   * the cap and suggesting `DEFAULT_CHK_CLUSTER_NAME`, rather than silently
-   * renaming the cluster (which would replace the StatefulSet and lose the
-   * keeper's coordination state). The bound rides on the schema, and a
-   * concrete illegal override is additionally rejected by
-   * `assertClickHouseClusterName`.
+   * `^[a-zA-Z0-9-]{0,15}$` while `metadata.name` is uncapped — so the factory
+   * throws at BUILD time, naming the cap and suggesting
+   * `DEFAULT_CHK_CLUSTER_NAME`, rather than silently renaming the cluster
+   * (which would replace the StatefulSet and lose the keeper's coordination
+   * state).
+   *
+   * That CRD rule is the WHOLE rule here: unlike the CHI's `clusterName`, the
+   * keeper's adds no leading-letter requirement, because the keeper's
+   * generated configuration never uses the value as an XML element name. The
+   * bound rides on the schema, and a concrete illegal override is additionally
+   * rejected by `assertClickHouseKeeperClusterName`.
    */
-  'clusterName?': ClickHouseClusterNameSchema,
+  'clusterName?': ClickHouseKeeperClusterNameSchema,
   /** Keeper replica count (default: 1; use an odd number for quorum). */
   'replicas?': 'number.integer',
   /** Persistent storage for the keeper log/snapshot data. */

@@ -20,10 +20,10 @@ import type {
   ClickHouseKeeperInstallationStatus,
 } from '../types.js';
 import {
-  assertClickHouseClusterName,
+  assertClickHouseKeeperClusterName,
   assertPositiveIntegerCount,
   CLICKHOUSE_CLUSTER_NAME_MAX_BYTES,
-  CLICKHOUSE_CLUSTER_NAME_PATTERN,
+  CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN,
 } from '../utils/validation.js';
 import { chiReadinessEvaluator } from './installation.js';
 
@@ -38,7 +38,10 @@ const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
  * WHAT THE CAP IS. The Altinity CRD constrains
  * `spec.configuration.clusters[].name` on the CHK exactly as on the CHI:
  * `minLength: 1`, `maxLength: 15`, `pattern: ^[a-zA-Z0-9-]{0,15}$`, annotated
- * `See namePartClusterMaxLen const`. `metadata.name` is uncapped, so a keeper
+ * `See namePartClusterMaxLen const`. That CRD rule is the WHOLE rule the CHK
+ * enforces — see `CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN` for why the keeper
+ * does not inherit the CHI's extra leading-letter requirement.
+ * `metadata.name` is uncapped, so a keeper
  * whose installation name was longer than 15 bytes used to fail admission on
  * its FIRST apply with `spec.configuration.clusters[0].name: Too long: may not
  * be more than 15 bytes`. The same 15-byte cap (with `minLength: 1`) applies to
@@ -62,8 +65,8 @@ const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
  * `spec.name` as a bare `string`. The factory warns instead of throwing, and
  * this constant is what the warning recommends pinning for a NEW deployment.
  * To have KRO reject a bad instance at admission, bound the enclosing
- * composition's own spec field with `ClickHouseClusterNameSchema` — the schema
- * generator carries its `maxLength` and `pattern` into the RGD.
+ * composition's own spec field with `ClickHouseKeeperClusterNameSchema` — the
+ * schema generator carries its `maxLength` and `pattern` into the RGD.
  *
  * Anything that needs the value — a `keeper_path` prefix, an
  * operator-generated Service name — must read it from the rendered
@@ -147,7 +150,7 @@ function warnKeeperClusterNameFollowsReference(
       `EXISTING one, leave it alone: changing the cluster name replaces the StatefulSet with ` +
       `fresh volumes and loses the coordination state every Replicated* table depends on. ` +
       `To have KRO reject a bad instance at admission instead, bound the enclosing ` +
-      `composition's own spec field with ClickHouseClusterNameSchema (or any arktype ` +
+      `composition's own spec field with ClickHouseKeeperClusterNameSchema (or any arktype ` +
       `'string <= ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}' bound) — the schema generator carries ` +
       `maxLength and pattern into the RGD.`,
     {
@@ -181,9 +184,15 @@ function warnKeeperClusterNameFollowsReference(
  */
 function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallationConfig>): string {
   if (config.clusterName !== undefined) {
-    // Explicit override: the same check the CHI applies to its own
-    // `clusterName`, so both resources fail identically.
-    assertClickHouseClusterName('clickHouseKeeperInstallation', 'clusterName', config.clusterName);
+    // The KEEPER's own rule — Altinity's contract exactly. Wider than the
+    // CHI's, which adds a leading-letter requirement the keeper's generated
+    // configuration does not justify. See
+    // CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.
+    assertClickHouseKeeperClusterName(
+      'clickHouseKeeperInstallation',
+      'clusterName',
+      config.clusterName
+    );
     return config.clusterName as string;
   }
 
@@ -192,7 +201,7 @@ function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallatio
     warnKeeperClusterNameFollowsReference(config);
     return derived as string;
   }
-  if (CLICKHOUSE_CLUSTER_NAME_PATTERN.test(derived)) {
+  if (CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.test(derived)) {
     return derived;
   }
 
@@ -200,7 +209,7 @@ function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallatio
   const reason =
     byteLength > CLICKHOUSE_CLUSTER_NAME_MAX_BYTES
       ? `it is ${byteLength} bytes and the cap is ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}`
-      : `it does not match ${CLICKHOUSE_CLUSTER_NAME_PATTERN.source}`;
+      : `it does not match ${CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.source}`;
 
   throw new Error(
     `clickHouseKeeperInstallation: 'clusterName' defaults to the installation name ` +

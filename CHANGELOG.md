@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ClickHouseKeeperClusterNameSchema` and `assertClickHouseKeeperClusterName` — the CHK's
+  own cluster-name contract, `^[a-zA-Z0-9-]{1,15}$`, which is Altinity's rule exactly. It
+  is deliberately WIDER than the CHI's `ClickHouseClusterNameSchema`: the CHI adds a
+  leading-letter requirement because its generator renders the cluster name as a raw XML
+  element name, and the keeper's generator does not (see `### Changed`). `9keeper` is
+  therefore accepted for a CHK and rejected for a CHI.
+
 - `clusterName` on `clickHouseKeeperInstallation()`, with `DEFAULT_CHK_CLUSTER_NAME`
   (`keeper`) exported as the recommended explicit value. It is required whenever the
   installation name is longer than 15 bytes or otherwise illegal as a cluster name, which
@@ -507,10 +514,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`CLICKHOUSE_CLUSTER_NAME_PATTERN` now matches the Altinity CRD's alphabet and cap,
-  plus exactly one intentional TypeKro restriction.** It was
+- **The CHI and the CHK no longer share one cluster-name rule.**
+  `CLICKHOUSE_CLUSTER_NAME_PATTERN` (CHI) was
   `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`; it is now `^[a-zA-Z][a-zA-Z0-9-]{0,14}$`.
-  A TRAILING DASH IS NOW ACCEPTED — `cluster-` is legal under the CRD's
+  The CHK gets its own `CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN` = `^[a-zA-Z0-9-]{1,15}$`,
+  Altinity's contract verbatim (see `### Added`), because the leading-letter rule below is
+  justified for the CHI only: the keeper's generator emits
+  `<server><id>/<hostname>/<port>` from HOST names (`pkg/model/chk/config/generator.go`,
+  `getRaftConfig`) and the cluster name reaches only the sanitized macro behind generated
+  StatefulSet / Service / ConfigMap names, where a leading digit is a fine DNS-1123 label.
+  `clickHouseKeeperInstallation({ name: '9keeper' })` was valid upstream and is valid
+  again.
+
+  A TRAILING DASH IS NOW ACCEPTED ON BOTH — `cluster-` is legal under the CRD's
   `^[a-zA-Z0-9-]{0,15}$`, `-` is a legal XML `NameChar` in every position but the first,
   and `chi-<chi>-cluster--0-0` is still a valid DNS-1123 label, so the old prohibition was
   cosmetic. This widens what is accepted, so nothing that used to build stops building. The
@@ -522,12 +538,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pkg/model/chi/config/generator.go` (release-0.27.1), with no escaping — and an XML
   `NameStartChar` may be neither a digit nor a hyphen. A cluster named `9cluster` therefore
   produces `<9cluster>`, an unparseable `remote_servers.xml`, and a server that will not
-  start, so such a name was never a working deployment. The rule applies to the CHK too, so
-  the exported schema, the RGD `pattern=` marker and the backup script's guard stay one
-  alphabet; on the CHK alone it is a choice rather than a requirement, because the keeper's
-  generator builds `<raft_configuration>` from HOST names
-  (`pkg/model/chk/config/generator.go`, `getRaftConfig`) and never uses the cluster name as
-  an element name.
+  start, so such a name was never a working deployment. It stays on the CHI ONLY; the
+  keeper keeps Altinity's rule untouched.
 
 - **The ClickHouse cluster composition's status-contract ConfigMap is renamed** from
   `<installation>-contract` to `<installation>-clickhouse-contract`
@@ -550,9 +562,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   component-scoping the ClickHouse one follows the convention the Envoy AI Gateway family
   already used (`<name>-platform-contract`, `<name>-gateway-contract`).
 
+  UPGRADING AN EXISTING STACK HAS A TRANSIENT CONFLICT WINDOW. The end state is
+  conflict-free, and a unit test pins it: after the rename the ClickHouse cluster declares
+  only `<installation>-clickhouse-contract` and no longer mentions `<installation>-contract`
+  anywhere, so once its instance reconciles the old ConfigMap falls outside its ApplySet and
+  KRO prunes it, leaving the name free for the ClickStack bootstrap. The ORDER of those two
+  reconciles is not guaranteed, though: the two instances are separate
+  ResourceGraphDefinitions with no dependency between them, and ApplySet pruning is KRO's
+  own server-side behaviour — there is no ordering to assert offline. If both are upgraded at once, the ClickStack
+  instance may briefly still see the ClickHouse instance as the owner of
+  `<release>-contract` and be rejected with the ApplySet error. It clears on the next
+  converge, once the ClickHouse instance has reconciled; re-applying the ClickStack instance
+  (or simply waiting for the next reconcile) is the whole remedy, and no data is involved —
+  both objects are status-projection ConfigMaps. To avoid the window entirely, let the
+  ClickHouse cluster reconcile first, then apply the ClickStack bootstrap.
+
   A reusable guard comes with it: `assertNoDuplicateDeclarations` renders any set of
-  compositions against one name and namespace and fails on any `(kind, namespace, name)`
-  declared by more than one of them. It is applied across the compositions that
+  compositions against one name and namespace and fails on any
+  `(group, kind, namespace, name)` declared by more than one of them — the API GROUP is part
+  of the identity (two `Widget`s from different groups are different objects) while the
+  VERSION is not (one group/kind/name at two versions is one stored object, so it is still
+  reported). It is applied across the compositions that
   realistically co-exist in a namespace — ClickStack bootstrap, ClickStack k8s telemetry,
   the ClickHouse cluster and the keeper.
 

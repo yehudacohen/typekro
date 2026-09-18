@@ -35,6 +35,7 @@ import { clickstackBootstrap } from '../../src/factories/clickstack/compositions
 import { clickstackK8sTelemetry } from '../../src/factories/clickstack/compositions/k8s-telemetry.js';
 import {
   assertNoDuplicateDeclarations,
+  collectDeclaredObjects,
   findDuplicateDeclarations,
   type RenderedComposition,
 } from '../utils/duplicate-declarations.js';
@@ -120,22 +121,72 @@ describe('compositions co-existing in one namespace', () => {
     expect(contracts).toContain(`name: ${RELEASE_NAME}-clickhouse-contract`);
   });
 
+  /**
+   * UPGRADE PATH for the contract-ConfigMap rename.
+   *
+   * WHAT IS ASSERTED HERE, AND WHAT IS NOT. The post-upgrade END STATE is
+   * conflict-free and that is checked below: the ClickHouse cluster declares
+   * only `<name>-clickhouse-contract` and no longer mentions the old
+   * `<name>-contract` anywhere, so once its instance reconciles, the old object
+   * falls outside its ApplySet and KRO prunes it — after which the ClickStack
+   * bootstrap can claim `<name>-contract`.
+   *
+   * The ORDERING of those two reconciles cannot be asserted offline, and is not
+   * guaranteed: the two instances are separate RGDs with no dependency between
+   * them, ApplySet pruning is KRO's own server-side behaviour, and TypeKro has
+   * no prune engine to model. Upgrading both at once therefore has a transient
+   * window in which ClickStack may still see the old owner and be rejected; it
+   * clears on the next converge. That window is documented in the CHANGELOG
+   * `### Changed` entry rather than asserted here.
+   */
+  it('leaves no declarer of the OLD contract name after the rename', () => {
+    const renders = renderStack();
+    const oldName = `${RELEASE_NAME}-contract`;
+
+    const declarersOfOldName = renders
+      .flatMap((rendered) => collectDeclaredObjects(rendered))
+      .filter((object) => object.name === oldName);
+
+    // Exactly one composition may own it, and it is the ClickStack bootstrap —
+    // the ClickHouse cluster has moved off the name entirely.
+    expect(declarersOfOldName.map((object) => object.source)).toEqual(['clickstackBootstrap']);
+
+    const clickhouse = renders.find((rendered) => rendered.source === 'clickHouseCluster');
+    expect(clickhouse?.yaml).not.toContain(`name: ${oldName}\n`);
+    expect(clickhouse?.yaml).toContain(`${RELEASE_NAME}-clickhouse-contract`);
+  });
+
   it('detects a duplicate declaration when one is introduced', () => {
     // The helper is only worth anything if it fails on the real thing: two
     // sources declaring the same (kind, namespace, name).
     const collision = [
       {
         source: 'a',
-        yaml: dump({ kind: 'ConfigMap', metadata: { name: 'x-contract', namespace: NAMESPACE } }),
+        yaml: dump({
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { name: 'x-contract', namespace: NAMESPACE },
+        }),
       },
       {
         source: 'b',
-        yaml: dump({ kind: 'ConfigMap', metadata: { name: 'x-contract', namespace: NAMESPACE } }),
+        yaml: dump({
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { name: 'x-contract', namespace: NAMESPACE },
+        }),
       },
     ];
 
     expect(findDuplicateDeclarations(collision)).toEqual([
-      { kind: 'ConfigMap', namespace: NAMESPACE, name: 'x-contract', sources: ['a', 'b'] },
+      {
+        apiVersion: 'v1',
+        group: '',
+        kind: 'ConfigMap',
+        namespace: NAMESPACE,
+        name: 'x-contract',
+        sources: ['a', 'b'],
+      },
     ]);
     expect(() => assertNoDuplicateDeclarations(collision)).toThrow(
       /declared by more than one composition/
@@ -154,6 +205,59 @@ describe('compositions co-existing in one namespace', () => {
     ];
 
     expect(findDuplicateDeclarations(repeated)).toEqual([]);
+  });
+
+  it('separates objects by API GROUP, so same-named CRs of different groups do not collide', () => {
+    // KRO's identity for an object includes its group. Two `Widget`s from
+    // different API groups are different objects.
+    const differentGroups = [
+      {
+        source: 'a',
+        yaml: dump({
+          apiVersion: 'example.com/v1',
+          kind: 'Widget',
+          metadata: { name: 'w', namespace: NAMESPACE },
+        }),
+      },
+      {
+        source: 'b',
+        yaml: dump({
+          apiVersion: 'other.example.com/v1',
+          kind: 'Widget',
+          metadata: { name: 'w', namespace: NAMESPACE },
+        }),
+      },
+    ];
+
+    expect(findDuplicateDeclarations(differentGroups)).toEqual([]);
+    expect(() => assertNoDuplicateDeclarations(differentGroups)).not.toThrow();
+  });
+
+  it('still flags the SAME group/kind/name declared at two API VERSIONS', () => {
+    // The version is not part of the identity: `example.com/v1` and
+    // `example.com/v1beta1` are one stored object, so this IS a collision.
+    const sameGroupTwoVersions = [
+      {
+        source: 'a',
+        yaml: dump({
+          apiVersion: 'example.com/v1',
+          kind: 'Widget',
+          metadata: { name: 'w', namespace: NAMESPACE },
+        }),
+      },
+      {
+        source: 'b',
+        yaml: dump({
+          apiVersion: 'example.com/v1beta1',
+          kind: 'Widget',
+          metadata: { name: 'w', namespace: NAMESPACE },
+        }),
+      },
+    ];
+
+    const [duplicate] = findDuplicateDeclarations(sameGroupTwoVersions);
+    expect(duplicate?.group).toBe('example.com');
+    expect(duplicate?.sources).toEqual(['a', 'b']);
   });
 
   it('separates objects by kind and by namespace', () => {

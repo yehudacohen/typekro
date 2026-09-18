@@ -201,7 +201,7 @@ describe('ClickHouseKeeperInstallation Factory', () => {
       );
     });
 
-    it('applies the SAME override rule and boundary as the CHI', () => {
+    it('shares the 15-byte boundary with the CHI', () => {
       const atCap = 'abcdefghijklmno';
       const pastCap = 'abcdefghijklmnop';
       const chiConfig = { name: 'observability-clickstack', version: '25.12.5' as const };
@@ -231,11 +231,7 @@ describe('ClickHouseKeeperInstallation Factory', () => {
     it.each([
       ['space', 'my cluster'],
       ['underscore (the CRD pattern forbids it)', 'my_cluster'],
-      // The CRD's alphabet allows a leading digit; TypeKro does not, because
-      // the operator writes the cluster name verbatim as an XML element name
-      // in `remote_servers.xml` and `<9keeper>` is not a legal XML name.
-      ['leading digit', '9keeper'],
-      ['leading dash', '-keeper'],
+      ['dot', 'keeper.prod'],
       ['empty (the CRD sets minLength 1)', ''],
     ])('rejects a keeper cluster name with a %s', (_label, clusterName) => {
       expect(() => clickHouseKeeperInstallation({ name: 'keeper', clusterName })).toThrow(
@@ -244,9 +240,12 @@ describe('ClickHouseKeeperInstallation Factory', () => {
     });
 
     it.each([
-      // Allowed BECAUSE the CRD allows them — TypeKro adds only the
-      // leading-letter rule, and nothing else beyond the CRD's own alphabet.
+      // The keeper's rule is Altinity's contract EXACTLY: one to 15 letters,
+      // digits or dashes, in any order. Nothing is added to it.
       ['a trailing dash', 'keeper-'],
+      ['a leading digit', '9keeper'],
+      ['a leading dash', '-keeper'],
+      ['only digits', '2024'],
       ['interior digits', 'keeper9'],
       ['interior dashes', 'a-b-c-d'],
     ])('accepts a keeper cluster name with %s', (_label, clusterName) => {
@@ -256,23 +255,83 @@ describe('ClickHouseKeeperInstallation Factory', () => {
       ).toBe(clusterName);
     });
 
-    it('accepts a trailing-dash INSTALLATION name, since the derived cluster name is legal', () => {
-      expect(
-        clickHouseKeeperInstallation({ name: 'keeper-' }).spec.configuration?.clusters?.[0]?.name
-      ).toBe('keeper-');
+    it.each([
+      ['a trailing dash', 'keeper-'],
+      ['a leading digit', '9keeper'],
+    ])('accepts %s in the INSTALLATION name, deriving the cluster name from it', (_l, name) => {
+      expect(clickHouseKeeperInstallation({ name }).spec.configuration?.clusters?.[0]?.name).toBe(
+        name
+      );
     });
 
-    it("explains the leading-letter rule as TypeKro's own, with the reason", () => {
-      let message = '';
-      try {
-        clickHouseKeeperInstallation({ name: 'keeper', clusterName: '9keeper' });
-      } catch (error) {
-        message = (error as Error).message;
-      }
+    /**
+     * THE CHI AND THE CHK DO NOT SHARE A RULE, and the difference is
+     * load-bearing rather than an oversight.
+     *
+     * The CHI generator renders the cluster name as a RAW XML ELEMENT NAME
+     * (`util.Iline(b, indent, "<%s>", cluster.GetName())` in
+     * `pkg/model/chi/config/generator.go`), so `<9cluster>` would be an
+     * unparseable `remote_servers.xml`. The keeper's generator emits
+     * `<server><id>/<hostname>/<port>` built from HOST names
+     * (`pkg/model/chk/config/generator.go`, `getRaftConfig`) and never uses the
+     * cluster name as an element name; the value reaches only the sanitized
+     * macro that feeds generated StatefulSet / Service / ConfigMap names, where
+     * a leading digit is a fine DNS-1123 label. `9keeper` was valid upstream,
+     * so it stays valid here.
+     */
+    describe('CHI vs CHK: only the CHI adds the leading-letter rule', () => {
+      const chi = (clusterName: string) => () =>
+        clickHouseInstallation({
+          name: 'ch',
+          version: '25.12.5',
+          storage: { size: '10Gi' },
+          clusterName,
+        });
+      const chk = (clusterName: string) => () =>
+        clickHouseKeeperInstallation({ name: 'keeper', clusterName });
 
-      expect(message).toContain('XML ELEMENT NAME');
-      expect(message).toContain('remote_servers.xml');
-      expect(message).toContain('A trailing dash is fine.');
+      it('accepts a leading digit for the CHK and rejects it for the CHI', () => {
+        expect(chk('9keeper')).not.toThrow();
+        expect(chi('9cluster')).toThrow(/clickHouseInstallation: 'clusterName' must match/);
+      });
+
+      it('accepts a trailing dash for BOTH', () => {
+        expect(chk('keeper-')).not.toThrow();
+        expect(chi('cluster-')).not.toThrow();
+      });
+
+      it('rejects 16 bytes for BOTH, and accepts 15 for both', () => {
+        const atCap = 'abcdefghijklmno';
+        const pastCap = 'abcdefghijklmnop';
+        expect(Buffer.byteLength(atCap, 'utf8')).toBe(CLUSTER_NAME_MAX_BYTES);
+        expect(Buffer.byteLength(pastCap, 'utf8')).toBe(CLUSTER_NAME_MAX_BYTES + 1);
+
+        expect(chk(atCap)).not.toThrow();
+        expect(chi(atCap)).not.toThrow();
+        expect(chk(pastCap)).toThrow(/'clusterName' must match/);
+        expect(chi(pastCap)).toThrow(/'clusterName' must match/);
+      });
+
+      it('explains in each error why the rule is what it is', () => {
+        let chiMessage = '';
+        try {
+          chi('9cluster')();
+        } catch (error) {
+          chiMessage = (error as Error).message;
+        }
+        expect(chiMessage).toContain('XML ELEMENT NAME');
+        expect(chiMessage).toContain('remote_servers.xml');
+        expect(chiMessage).toContain('A trailing dash is fine.');
+
+        let chkMessage = '';
+        try {
+          chk('my_keeper')();
+        } catch (error) {
+          chkMessage = (error as Error).message;
+        }
+        expect(chkMessage).toContain("the Altinity CRD's own rule");
+        expect(chkMessage).toContain('never uses the value as an XML element name');
+      });
     });
   });
 
@@ -345,8 +404,9 @@ describe('ClickHouseKeeperInstallation Factory', () => {
       expect(message).toContain(`clusterName: DEFAULT_CHK_CLUSTER_NAME ('keeper')`);
       // The state-loss caveat keeps an existing deployment from "fixing" it.
       expect(message).toContain('loses the coordination state');
-      // And the way to make KRO validate at admission instead.
-      expect(message).toContain('ClickHouseClusterNameSchema');
+      // And the way to make KRO validate at admission instead — the KEEPER's
+      // schema, which is Altinity's contract exactly.
+      expect(message).toContain('ClickHouseKeeperClusterNameSchema');
     });
 
     it('emits the pinned name and does NOT warn when clusterName is set', () => {

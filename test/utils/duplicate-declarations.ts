@@ -38,6 +38,14 @@ export interface RenderedComposition {
 /** A single declared object, attributed to the composition that declared it. */
 export interface DeclaredObject {
   source: string;
+  /** As written, e.g. `apps/v1` or `v1`. */
+  apiVersion: string;
+  /**
+   * API GROUP, parsed out of `apiVersion` — `apps` for `apps/v1`, `''` for the
+   * core group's bare `v1`. This, not the full `apiVersion`, is half of the
+   * object's identity: see {@link findDuplicateDeclarations}.
+   */
+  group: string;
   kind: string;
   /** Empty string for cluster-scoped objects. */
   namespace: string;
@@ -46,6 +54,9 @@ export interface DeclaredObject {
 
 /** An object declared by more than one composition. */
 export interface DuplicateDeclaration {
+  /** The `apiVersion` of the first declaration seen, for the message. */
+  apiVersion: string;
+  group: string;
   kind: string;
   namespace: string;
   name: string;
@@ -54,8 +65,15 @@ export interface DuplicateDeclaration {
 }
 
 interface ManifestDocument {
+  apiVersion?: unknown;
   kind?: unknown;
   metadata?: { name?: unknown; namespace?: unknown };
+}
+
+/** `apps/v1` -> `apps`; `v1` -> `''` (the core group). */
+function apiGroupOf(apiVersion: string): string {
+  const slash = apiVersion.indexOf('/');
+  return slash === -1 ? '' : apiVersion.slice(0, slash);
 }
 
 /** Parse one rendered composition into its declared objects. */
@@ -72,8 +90,11 @@ export function collectDeclaredObjects(rendered: RenderedComposition): DeclaredO
     // trailing document, or a values blob rendered alongside the manifests).
     if (typeof kind !== 'string' || typeof name !== 'string') continue;
     const namespace = manifest.metadata?.namespace;
+    const apiVersion = typeof manifest.apiVersion === 'string' ? manifest.apiVersion : '';
     declared.push({
       source: rendered.source,
+      apiVersion,
+      group: apiGroupOf(apiVersion),
       kind,
       namespace: typeof namespace === 'string' ? namespace : '',
       name,
@@ -84,7 +105,16 @@ export function collectDeclaredObjects(rendered: RenderedComposition): DeclaredO
 }
 
 /**
- * Find every `(kind, namespace, name)` declared by more than one composition.
+ * Find every `(group, kind, namespace, name)` declared by more than one
+ * composition.
+ *
+ * THE GROUP IS PART OF THE IDENTITY, the VERSION is not. Two `Widget`s from
+ * different API groups (`example.com/v1` and `other.example.com/v1`) are
+ * different objects and must not collide. Two declarations of the same
+ * group/kind/name at different VERSIONS (`example.com/v1` and
+ * `example.com/v1beta1`) are the SAME object stored once, so they must still be
+ * reported — which is why the key is the group rather than the whole
+ * `apiVersion`.
  *
  * Repeats WITHIN one composition are ignored: a single composition is one
  * ApplySet, so it cannot conflict with itself, and a duplicate there is a
@@ -100,7 +130,12 @@ export function findDuplicateDeclarations(
 
   for (const rendered of renders) {
     for (const declared of collectDeclaredObjects(rendered)) {
-      const key = JSON.stringify([declared.kind, declared.namespace, declared.name]);
+      const key = JSON.stringify([
+        declared.group,
+        declared.kind,
+        declared.namespace,
+        declared.name,
+      ]);
       const entry = byObject.get(key) ?? { object: declared, sources: new Set<string>() };
       entry.sources.add(declared.source);
       byObject.set(key, entry);
@@ -111,6 +146,8 @@ export function findDuplicateDeclarations(
   for (const { object, sources } of byObject.values()) {
     if (sources.size < 2) continue;
     duplicates.push({
+      apiVersion: object.apiVersion,
+      group: object.group,
       kind: object.kind,
       namespace: object.namespace,
       name: object.name,
@@ -134,7 +171,8 @@ export function assertNoDuplicateDeclarations(renders: readonly RenderedComposit
   const details = duplicates
     .map(
       (duplicate) =>
-        `  ${duplicate.namespace || '<cluster>'}/${duplicate.name} (${duplicate.kind}) ` +
+        `  ${duplicate.namespace || '<cluster>'}/${duplicate.name} ` +
+        `(${duplicate.kind}.${duplicate.group || 'core'}) ` +
         `declared by: ${duplicate.sources.join(', ')}`
     )
     .join('\n');

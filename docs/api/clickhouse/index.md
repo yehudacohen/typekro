@@ -103,7 +103,8 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
   **and** the `ON CLUSTER '<name>'` target of the [scheduled backup](#scheduled-backups-and-restore) — where a
   quote or a semicolon would be extra SQL rather than a bad name. It must match
   `^[a-zA-Z][a-zA-Z0-9-]{0,14}$`: a letter, then up to 14 more letters, digits or dashes. A
-  trailing dash is fine.
+  trailing dash is fine. (The **keeper**'s `clusterName` is separate and wider — see
+  [Keeper (CHK)](#keeper-chk).)
 
   That is the Altinity CRD's own alphabet and cap plus **one** TypeKro restriction, not a house
   style. The CRD constrains `spec.configuration.clusters[].name` to `^[a-zA-Z0-9-]{0,15}$` with
@@ -533,9 +534,9 @@ The CHI consumes it through the operator's `zookeeper` configuration section (wh
 The Altinity CRD constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` / `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on **both** the CHI and the CHK, while `metadata.name` is uncapped. The value is a fragment of the object names the operator generates (`chi-<installation>-<cluster>-<shard>-<replica>`, `chk-…`); an empty value is rejected too — the CRD does not allow one.
 
 - **CHI** — `clusterName` defaults to `DEFAULT_CHI_CLUSTER_NAME` (`cluster`). SigNoz's migrations hardcode that name, so keep the default for a SigNoz consumer.
-- **CHK** — `clusterName` defaults to the **installation name**. When that name is a **literal** and cannot be a legal cluster name, the factory throws at **build time**, naming the length, the cap and the remedy. Deriving from the installation name is kept on purpose: changing a cluster name replaces the StatefulSet with fresh volumes and loses the keeper's coordination state, so an installation whose name already fitted the cap keeps exactly the object names it had. Pass `clusterName: DEFAULT_CHK_CLUSTER_NAME` (`'keeper'`) — or any short stable value — for a longer installation name.
+- **CHK** — `clusterName` follows **Altinity's contract exactly**, `^[a-zA-Z0-9-]{1,15}$` (`ClickHouseKeeperClusterNameSchema`), with *no* leading-letter rule: the keeper's generator emits `<server><id>/<hostname>/<port>` built from host names (`pkg/model/chk/config/generator.go`, `getRaftConfig`) and never uses the cluster name as an element name, so `9keeper` is valid here and rejected for the CHI. It defaults to the **installation name**. When that name is a **literal** and cannot be a legal cluster name, the factory throws at **build time**, naming the length, the cap and the remedy. Deriving from the installation name is kept on purpose: changing a cluster name replaces the StatefulSet with fresh volumes and loses the keeper's coordination state, so an installation whose name already fitted the cap keeps exactly the object names it had. Pass `clusterName: DEFAULT_CHK_CLUSTER_NAME` (`'keeper'`) — or any short stable value — for a longer installation name.
 
-An explicit `clusterName` is validated at build time against the CRD pattern and the 15-byte cap on both resources, so an illegal value fails at graph construction rather than at apply.
+An explicit `clusterName` is validated at build time on both resources — against its own rule — so an illegal value fails at graph construction rather than at apply. Both share the 15-byte cap and both accept a trailing dash; they differ only in whether a leading digit or dash is allowed.
 
 #### KRO mode: the check moves to the operator
 
@@ -556,7 +557,7 @@ const keeper = clickHouseKeeperInstallation({
 //    bound's maxLength and pattern into the RGD, so KRO rejects the instance
 //    before the operator ever sees it.
 kubernetesComposition(
-  { /* … */ spec: type({ name: ClickHouseClusterNameSchema /* string <= 15, CRD pattern */ }) },
+  { /* … */ spec: type({ name: ClickHouseKeeperClusterNameSchema /* Altinity's rule */ }) },
   (spec) => clickHouseKeeperInstallation({ name: spec.name, replicas: 3 })
 );
 ```
