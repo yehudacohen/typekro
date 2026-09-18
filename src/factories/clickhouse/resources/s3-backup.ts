@@ -234,10 +234,11 @@ function clusterNameGuard(): string[] {
     `CLUSTER="$${BACKUP_CLUSTER_ENV}"`,
     // POSIX `case` globs, matched against the WHOLE word: empty, any
     // disallowed character (the `-` sits last in the bracket expression, where
-    // it is literal), a first character that is not a letter, or a trailing
-    // dash. Same rule as CLICKHOUSE_CLUSTER_NAME_PATTERN.
+    // it is literal), or a first character that is not a letter. Same rule as
+    // CLICKHOUSE_CLUSTER_NAME_PATTERN — including its one addition to the CRD's
+    // alphabet (the leading letter) and, like the CRD, ALLOWING a trailing dash.
     'case "$CLUSTER" in',
-    '  "" | *[!A-Za-z0-9-]* | [!A-Za-z]* | *-)',
+    '  "" | *[!A-Za-z0-9-]* | [!A-Za-z]*)',
     `    echo "Refusing to back up: $${BACKUP_CLUSTER_ENV} is not a cluster identifier" >&2`,
     '    exit 1 ;;',
     'esac',

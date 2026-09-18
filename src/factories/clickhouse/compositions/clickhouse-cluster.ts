@@ -100,8 +100,30 @@ const S3_BACKUP_RESOURCE_ID = 'clickhouseS3Backup';
  */
 const CONTRACT_RESOURCE_ID = 'clickhouseContract';
 
-/** Suffix of the contract ConfigMap's name (`<installation>-contract`). */
-export const CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX = '-contract';
+/**
+ * Suffix of the contract ConfigMap's name
+ * (`<installation>-clickhouse-contract`).
+ *
+ * COMPONENT-SCOPED ON PURPOSE. The suffix used to be a bare `-contract`, which
+ * is also what the ClickStack bootstrap composition appends to ITS release
+ * name. Deploying both into one namespace under one shared name — the normal
+ * shape of an observability stack, where the ClickHouse cluster and the
+ * ClickStack release are named after the stack — made two independent
+ * compositions declare the same `(ConfigMap, namespace, name)`, and KRO
+ * refused the second instance outright: `resource belongs to a different
+ * ApplySet … cannot reassign`.
+ *
+ * The two ConfigMaps are NOT the same contract (this one carries the
+ * database/ports/user/durability block, the ClickStack one carries app ports
+ * and retention), so neither composition can consume the other's — they only
+ * ever collided on the NAME. Scoping this one to its component removes the
+ * collision and follows the convention the Envoy AI Gateway family already
+ * uses (`<name>-platform-contract`, `<name>-gateway-contract`).
+ *
+ * Read this constant rather than hardcoding the suffix; the ConfigMap's KEYS
+ * are unchanged.
+ */
+export const CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX = '-clickhouse-contract';
 
 /**
  * Normalized build-time topology (defaults applied once, at construction).

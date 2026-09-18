@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ClickHouseKeeperClusterNameSchema` and `assertClickHouseKeeperClusterName` — the CHK's
+  own cluster-name contract: Altinity's CRD alphabet and cap, plus the one rule the
+  operator's own naming requires (at least one alphanumeric) —
+  `^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$` bounded at 15 bytes. It is deliberately WIDER
+  than the CHI's `ClickHouseClusterNameSchema`: the CHI adds a LEADING-letter requirement
+  because its generator renders the cluster name as a raw XML element name, and the
+  keeper's generator does not (see `### Changed`). `9keeper` is therefore accepted for a
+  CHK and rejected for a CHI.
+
+- `clusterName` on `clickHouseKeeperInstallation()`, with `DEFAULT_CHK_CLUSTER_NAME`
+  (`keeper`) exported as the recommended explicit value. It is required whenever the
+  installation name is longer than 15 bytes or otherwise illegal as a cluster name, which
+  the CRD caps independently of `metadata.name` (see Fixed). It mirrors the CHI's existing
+  `clusterName`, but is bound by the CHK's own `ClickHouseKeeperClusterNameSchema`
+  (`^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, capped at 15 bytes), not the CHI's
+  `ClickHouseClusterNameSchema`: the CHK deliberately accepts a LEADING digit or dash,
+  which the CHI does not, because the CHI's config generator renders the cluster name as an
+  XML element name.
+
 - `ClickHouseSchema`, an Alchemy v2 resource (`TypeKro.ClickHouseSchema`) that applies
   ClickHouse DDL to a cluster the `clickhouse`/`clickstack` factories deployed, at
   converge time, with state. Nothing in TypeKro previously ran a deployment's own
@@ -176,9 +195,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [Zoo]Keeper, a topology with more than one shard or replica that declares
   `storage.backup` without a keeper is rejected at construction. Because
   `clusterName` is interpolated into that statement, it is constrained to
-  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$` — the intersection of the
-  Altinity CRD's own pattern and 15-character cap on `clusters[].name` with
-  ClickHouse's use of the value as an identifier. A literal is rejected at
+  `^[a-zA-Z][a-zA-Z0-9-]{0,14}$` — the Altinity CRD's own alphabet and
+  15-character cap on `clusters[].name`, plus a leading-letter rule. A literal is rejected at
   construction, the pattern travels into the generated KRO schema so a bad
   instance is rejected by the operator, and the backup script re-checks and
   escapes the name it receives before building the statement.
@@ -485,6 +503,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value. Deletes still win over both, and an unrecognised method still takes the short
   read budget so a misclassified call fails fast rather than hanging.
 
+- `clickHouseKeeperInstallation()` now fails at BUILD time, instead of at the operator,
+  when a LITERAL installation name cannot be the CHK's internal cluster name. The Altinity CRD
+  constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` /
+  `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on the
+  ClickHouseKeeperInstallation exactly as it does on the ClickHouseInstallation, while
+  `metadata.name` is uncapped — so the FIRST apply of any keeper whose release name was
+  longer than 15 bytes was rejected by the API server with
+  `spec.configuration.clusters[0].name: Too long: may not be more than 15 bytes`, at a
+  point where nothing in the graph could explain it.
+
+  The default still DERIVES from the installation name, so every deployment that already
+  worked keeps exactly the object names it had. That is deliberate: the cluster name is a
+  fragment of every generated object name
+  (`chk-<installation>-<cluster>-<shard>-<replica>`), so changing it replaces the
+  StatefulSet with fresh volumes and loses the coordination state every `Replicated*`
+  table depends on — a silent default swap would have done that to every keeper whose
+  name already fitted the cap. Only names that could never have worked change behaviour,
+  from an operator rejection into an error naming the field, the byte length, the cap and
+  the remedy. No truncation, no silent rename.
+
+  An explicit `clusterName` (see Added) runs `assertClickHouseKeeperClusterName`, the CHK's
+  own check, bound by `ClickHouseKeeperClusterNameSchema`
+  (`^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, capped at 15 bytes) rather
+  than the CHI's `ClickHouseClusterNameSchema`: the CHK deliberately accepts a LEADING digit
+  or dash, which the CHI's `assertClickHouseClusterName` rejects, because the CHI's config
+  generator renders the cluster name as an XML element name and the keeper's does not. Both
+  resources reject an over-long value identically; unit tests pin the length boundary at 15
+  accepted / 16 rejected on both, and pin the leading-character difference between the two
+  schemas separately. The CHI is unchanged — its `cluster` default was already independent
+  of the installation name, which is why only the keeper failed.
+
+  KRO MODE: the check moves to the operator, and the factory says so. When `name` is a
+  schema reference the value is unknown at build time — the RGD carries
+  `clusters[0].name: ${schema.spec.name}` and the generated KRO schema types `spec.name`
+  as a bare `string` with no length bound — so an over-long INSTANCE name still reaches
+  Altinity's admission check. The factory emits a build-time WARNING saying
+  that, recommending `clusterName: DEFAULT_CHK_CLUSTER_NAME` for a NEW deployment (with
+  the state-loss caveat for an existing one) and pointing at the other option: bounding
+  the enclosing composition's own spec field with `ClickHouseKeeperClusterNameSchema` — the
+  CHK's own contract, not the CHI's `ClickHouseClusterNameSchema` — whose `maxLength` and
+  `pattern` (`^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, permitting a LEADING digit or dash) the schema
+  generator carries into the RGD so KRO rejects a bad instance at admission. `clusterName`
+  is deliberately NOT made mandatory for
+  references — that would force it on existing KRO-mode deployments.
+
+  The warning is emitted once per build with NO cross-build state. Serializing a
+  composition re-executes its body several times, and every repeat is one of the
+  framework's internal ANALYSIS passes, which it already marks with
+  `suppressResourceDiagnostics` — the same gate `createResource` uses for its own
+  resource-construction diagnostics. Nothing is remembered between builds, so an
+  independent composition built later in the same process, even with the same namespace
+  and resource id, still gets its own warning.
+
+  The same change stops two framework placeholders from being validated as if they were a
+  user's installation name: the defaults-extraction pass's `REQUIRED_FIELD_SENTINEL`, and
+  the `__KUBERNETES_REF_…__` marker string that a template literal over a schema proxy
+  produces (`` `${spec.name}-keeper` ``).
+
+  Anything that needs the value — a `keeper_path` prefix, an operator-generated Service
+  name, and on the CHI side the `ON CLUSTER '<name>'` target of a consumer's DDL — must
+  read it from the exported constant or the `clusterName` it passed, or from the resource
+  (`clickhouse.clusterName` on the cluster composition's status, projected from the CHI's
+  own `spec.configuration.clusters[0].name`), never by assuming a particular derivation.
+  The 15-byte cap with `minLength: 1` covers the cluster, shard and replica names and
+  `spec.templates.hostTemplates[].spec.name`, on the CHI, the CHIT and the CHK alike;
+  TypeKro emits none of the shard, replica or hostTemplate names today. Pod, volume-claim
+  and service TEMPLATE names are uncapped.
+
 - A Kubernetes request whose connection dropped part-way through the response hung
   forever instead of failing. The Bun-compatible HTTP library wrapped `https.request`
   in a promise that settled only on the response's `end` event or the request's
@@ -621,6 +707,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct-mode status resolution.
 
 ### Changed
+
+- **The CHI and the CHK no longer share one cluster-name rule.**
+  `CLICKHOUSE_CLUSTER_NAME_PATTERN` (CHI) was
+  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`; it is now `^[a-zA-Z][a-zA-Z0-9-]{0,14}$`.
+  The CHK gets its own `CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN` =
+  `^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$`, with the 15-byte cap carried by
+  `ClickHouseKeeperClusterNameSchema` and by the concrete assertion: **Altinity's CRD
+  alphabet and cap, plus the one rule the operator's own naming requires (at least one
+  alphanumeric)** (see `### Added`). The leading-letter rule below is justified for the CHI
+  only: the keeper's generator emits `<server><id>/<hostname>/<port>` from HOST names
+  (`pkg/model/chk/config/generator.go`, `getRaftConfig`) and the cluster name reaches only
+  the sanitized macro behind generated StatefulSet / Service / ConfigMap names, where a
+  leading digit is a fine DNS-1123 label. `clickHouseKeeperInstallation({ name: '9keeper' })`
+  was valid upstream and is valid again, and `-keeper`, `keeper-` and `2024` are accepted
+  too.
+
+  AT LEAST ONE ALPHANUMERIC IS REQUIRED, and it is the only thing added to the CRD's rule.
+  An ALL-DASH name (`-`, `---`) satisfies Altinity's `^[a-zA-Z0-9-]{0,15}$`, so admission
+  accepts it — and the object then cannot reconcile. The operator feeds the cluster name
+  through its short-name sanitizer `strings.Trim(s, "-_.")`, which strips every leading and
+  trailing `-`, `_` and `.`, so an all-dash name sanitizes to the EMPTY string; the CHK
+  (whose `pdbManaged` defaults to true) names the PodDisruptionBudget it creates by the
+  pattern `chk-{chk}-{cluster}`, which then yields e.g. `chk-keeper-` — a name ending in a
+  dash, invalid as Kubernetes metadata. The CHI needs no equivalent rule: its
+  leading-letter requirement already guarantees an alphanumeric, so a CHI cluster name can
+  never be all dashes.
+
+  A TRAILING DASH IS NOW ACCEPTED ON BOTH — `cluster-` is legal under the CRD's
+  `^[a-zA-Z0-9-]{0,15}$`, `-` is a legal XML `NameChar` in every position but the first,
+  and `chi-<chi>-cluster--0-0` is still a valid DNS-1123 label, so the old prohibition was
+  cosmetic. This widens what is accepted, so nothing that used to build stops building. The
+  backup CronJob's in-container guard drops the matching `*-` case arm.
+
+  THE LEADING-LETTER RULE IS KEPT, deliberately, and it is stricter than the CRD. The
+  operator writes the cluster name VERBATIM AS AN XML ELEMENT NAME when it renders
+  `remote_servers.xml` — `util.Iline(b, indent, "<%s>", cluster.GetName())` in
+  `pkg/model/chi/config/generator.go` (release-0.27.1), with no escaping — and an XML
+  `NameStartChar` may be neither a digit nor a hyphen. A cluster named `9cluster` therefore
+  produces `<9cluster>`, an unparseable `remote_servers.xml`, and a server that will not
+  start, so such a name was never a working deployment. It stays on the CHI ONLY; the
+  keeper takes no LEADING-character rule at all.
+
+- **The ClickHouse cluster composition's status-contract ConfigMap is renamed** from
+  `<installation>-contract` to `<installation>-clickhouse-contract`
+  (`CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX`); its keys are unchanged. Affected: anything
+  OUTSIDE the resource graph that read the old object by name — a GitOps check, a
+  dashboard, a script doing `kubectl get configmap <installation>-contract`. Readers
+  inside the graph are unaffected, because the status projection reaches it through its
+  graph resource id (`clickhouseContract.data.*`), not by object name.
+
+  The old name collided with the ClickStack bootstrap composition's own
+  `<release>-contract`, so a stack whose ClickHouse cluster and ClickStack release were
+  both named after the stack — the normal way to name one — put two independently-owned
+  ConfigMaps on one `(kind, namespace, name)`, and KRO refused the second instance on its
+  first deploy: `resource belongs to a different ApplySet: <ns>/<release>-contract
+  (ConfigMap) belongs to ApplySet "<A>", cannot reassign to "<B>"`. The two ConfigMaps are
+  different contracts — the ClickHouse one carries the database/ports/user and the
+  durability block, the ClickStack one the app ports and retention — so neither
+  composition could consume the other's; they only ever collided on the NAME. The
+  ClickStack bootstrap remains the sole declarer of `<release>-contract` and is untouched;
+  component-scoping the ClickHouse one follows the convention the Envoy AI Gateway family
+  already used (`<name>-platform-contract`, `<name>-gateway-contract`).
+
+  UPGRADING AN EXISTING STACK HAS A TRANSIENT CONFLICT WINDOW. The end state is
+  conflict-free, and a unit test pins it: after the rename the ClickHouse cluster declares
+  only `<installation>-clickhouse-contract` and no longer mentions `<installation>-contract`
+  anywhere, so once its instance reconciles the old ConfigMap falls outside its ApplySet and
+  KRO prunes it, leaving the name free for the ClickStack bootstrap. The ORDER of those two
+  reconciles is not guaranteed, though: the two instances are separate
+  ResourceGraphDefinitions with no dependency between them, and ApplySet pruning is KRO's
+  own server-side behaviour — there is no ordering to assert offline. If both are upgraded at once, the ClickStack
+  instance may briefly still see the ClickHouse instance as the owner of
+  `<release>-contract` and be rejected with the ApplySet error. It clears on the next
+  converge, once the ClickHouse instance has reconciled; re-applying the ClickStack instance
+  (or simply waiting for the next reconcile) is the whole remedy, and no data is involved —
+  both objects are status-projection ConfigMaps. To avoid the window entirely, let the
+  ClickHouse cluster reconcile first, then apply the ClickStack bootstrap.
+
+  A reusable guard comes with it: `assertNoDuplicateDeclarations` renders any set of
+  compositions against one name and namespace and fails on any
+  `(group, kind, namespace, name)` declared by more than one of them — the API GROUP is part
+  of the identity (two `Widget`s from different groups are different objects) while the
+  VERSION is not (one group/kind/name at two versions is one stored object, so it is still
+  reported). It is applied across the compositions that
+  realistically co-exist in a namespace — ClickStack bootstrap, ClickStack k8s telemetry,
+  the ClickHouse cluster and the keeper.
 
 - `HelmReleaseSpec` gained `install.crds` and `upgrade.crds`
   (`HelmReleaseCrdsPolicy`). Flux defaults the upgrade action to `Skip`, so a

@@ -245,7 +245,21 @@ const CLICKSTACK_HELM_RELEASE_RESOURCE_ID = 'clickstackHelmRelease';
  */
 const CLICKSTACK_CONTRACT_RESOURCE_ID = 'clickstackContract';
 
-/** Suffix of the contract ConfigMap's name (`<release>-contract`). */
+/**
+ * Suffix of the contract ConfigMap's name (`<release>-contract`).
+ *
+ * THIS COMPOSITION IS THE SOLE DECLARER of `<release>-contract`. The ClickHouse
+ * cluster composition used to append the same bare `-contract` to its
+ * installation name, so a stack that named its ClickHouse cluster and its
+ * ClickStack release after the stack put two independently-owned ConfigMaps on
+ * one `(kind, namespace, name)` and KRO refused the second instance with
+ * `resource belongs to a different ApplySet … cannot reassign`. That one is now
+ * `<installation>-clickhouse-contract`; this name and its keys are unchanged.
+ *
+ * Any new contract ConfigMap in a composition that can share a namespace and a
+ * name with these must be component-scoped the same way —
+ * `assertNoDuplicateDeclarations` in the test utilities is the guard.
+ */
 export const CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX = '-contract';
 
 const inlineSchemaFieldValidations = {

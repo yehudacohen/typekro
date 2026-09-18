@@ -319,7 +319,7 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
     it('carries the pattern and the length bound into the generated RGD schema', () => {
       const yaml = makeClickHouseCluster({}).toYaml();
       expect(yaml).toContain(
-        'clusterName: string | maxLength=15 pattern="^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$"'
+        'clusterName: string | maxLength=15 pattern="^[a-zA-Z][a-zA-Z0-9-]{0,14}$"'
       );
     });
 
@@ -336,11 +336,21 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
           backup: { schedule: '0 2 * * *' },
         },
       }).toYaml();
-      expect(yaml).toContain('pattern="^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$"');
+      expect(yaml).toContain('pattern="^[a-zA-Z][a-zA-Z0-9-]{0,14}$"');
     });
 
     it('accepts a valid name through the low-level installation factory', () => {
-      for (const clusterName of ['cluster', 'c', 'my-cluster', 'Cluster9', 'abcdefghijklmno']) {
+      // `cluster-` is accepted on purpose: the CRD allows a trailing dash, and
+      // so does XML (`-` is a legal NameChar everywhere but the first
+      // position), so TypeKro does not invent a restriction there.
+      for (const clusterName of [
+        'cluster',
+        'c',
+        'my-cluster',
+        'Cluster9',
+        'cluster-',
+        'abcdefghijklmno',
+      ]) {
         expect(() =>
           clickHouseInstallation({
             name: 'ch',
@@ -358,7 +368,6 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       ['semicolon', 'a;b'],
       ['leading digit', '9cluster'],
       ['leading dash', '-cluster'],
-      ['trailing dash', 'cluster-'],
       ['underscore (the CRD pattern forbids it)', 'my_cluster'],
       ['16 characters (the CRD caps at 15)', 'abcdefghijklmnop'],
       ['empty', ''],

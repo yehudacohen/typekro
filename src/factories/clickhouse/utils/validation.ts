@@ -7,10 +7,11 @@
  * zone-pinned path, the keeper compiler, and the `makeClickHouseCluster`
  * constructor — validates counts here BEFORE emitting operator input.
  *
- * The cluster NAME is validated here for a second reason on top of the
- * operator's own rules: it is interpolated into the `ON CLUSTER '<name>'`
- * clause of the scheduled backup, so it has to be an identifier and not a
- * value that can terminate a SQL string literal.
+ * The cluster NAME is validated here too, and the CHI and the CHK have
+ * SEPARATE rules: the keeper's is Altinity's alphabet and cap plus the one rule
+ * the operator's own naming requires (at least one alphanumeric), while the
+ * CHI's adds a LEADING-letter requirement that its own generated configuration
+ * demands. See the two patterns below for which is which and why.
  */
 
 import { type } from 'arktype';
@@ -57,15 +58,56 @@ export function assertPositiveIntegerCount(
  *   into a SQL string literal. A quote, a semicolon or whitespace there is not
  *   a naming problem, it is extra SQL.
  *
- * The intersection additionally requires a LEADING LETTER (ClickHouse reads
- * the value as a bare identifier in the cluster configuration, and a leading
- * digit or dash is not one) and forbids a TRAILING dash (it would leave a
- * dangling separator in every generated object name).
+ * ONE RESTRICTION BEYOND THE CRD, AND ONLY ONE: a LEADING LETTER.
+ *
+ * The CRD's alphabet (`^[a-zA-Z0-9-]{0,15}$`) admits a leading digit and a
+ * leading dash, but the operator writes the cluster name VERBATIM AS AN XML
+ * ELEMENT NAME when it renders `remote_servers.xml`:
+ *
+ *     util.Iline(b, indent, "<%s>", cluster.GetName())
+ *     — pkg/model/chi/config/generator.go (release-0.27.1), the
+ *       getRemoteServers cluster block
+ *
+ * Nothing escapes or sanitises that path, and an XML `NameStartChar` may be
+ * neither a digit nor a hyphen — so a cluster named `9cluster` renders
+ * `<9cluster>`, an unparseable `remote_servers.xml`, and a server that will not
+ * start. Such a name is therefore not a working deployment TypeKro is
+ * regressing; it could never have worked. The rule is kept as an INTENTIONAL
+ * TypeKro restriction on the CHI.
+ *
+ * IT DOES NOT APPLY TO THE CHK, which has its own, wider rule — see
+ * {@link CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN}. The keeper's generator emits
+ * no element named after the cluster, so `9keeper` is legal there.
+ *
+ * The leading letter also closes, for free, the hole the CHK's rule has to
+ * close explicitly: a name this pattern accepts always has an alphanumeric, so
+ * it can never be ALL DASHES, can never sanitize to the empty string through
+ * the operator's `strings.Trim(s, "-_.")`, and can never generate an object
+ * name ending in a dash.
+ *
+ * This pattern is also the one the backup CronJob's in-container guard mirrors,
+ * because the `ON CLUSTER` target is a CHI cluster name.
+ *
+ * A TRAILING dash is ALLOWED, matching the CRD. `-` is a legal XML `NameChar`
+ * everywhere but the first position, and `chi-<chi>-<cluster>--0-0` is still a
+ * valid DNS-1123 label, so the prohibition this rule used to carry was
+ * cosmetic.
  *
  * RE2-compatible on purpose: the same source is the `pattern=` marker of the
  * generated KRO schema, and Kubernetes validates OpenAPI patterns with RE2.
  */
-export const CLICKHOUSE_CLUSTER_NAME_PATTERN = /^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$/;
+export const CLICKHOUSE_CLUSTER_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9-]{0,14}$/;
+
+/**
+ * The CRD's own byte cap on a cluster name (`namePartClusterMaxLen`).
+ *
+ * The identical 15-byte cap — with `minLength: 1` and the same pattern —
+ * applies to the shard name, the replica name and
+ * `spec.templates.hostTemplates[].spec.name` (the generated host's name), on
+ * the CHI, the CHIT and the CHK alike. TypeKro emits none of those today. Pod,
+ * volume-claim and service TEMPLATE names carry no cap in the CRD.
+ */
+export const CLICKHOUSE_CLUSTER_NAME_MAX_BYTES = 15;
 
 /**
  * ArkType schema for a runtime `clusterName`.
@@ -81,8 +123,64 @@ export const ClickHouseClusterNameSchema = type(CLICKHOUSE_CLUSTER_NAME_PATTERN)
 );
 
 /**
- * Assert that a CONCRETE cluster name is safe to compile into operator input
- * and into the `ON CLUSTER` clause.
+ * Characters a KEEPER (CHK) cluster name may use — the Altinity CRD's alphabet,
+ * plus the ONE rule the operator's own naming requires: AT LEAST ONE
+ * ALPHANUMERIC.
+ *
+ * DELIBERATELY WIDER THAN {@link CLICKHOUSE_CLUSTER_NAME_PATTERN}, because the
+ * justification for the CHI's extra LEADING-LETTER rule does not exist here.
+ * The CHI generator renders the cluster name as a raw XML element name
+ * (`util.Iline(b, indent, "<%s>", cluster.GetName())` in
+ * `pkg/model/chi/config/generator.go`), so `9cluster` would produce
+ * `<9cluster>` and an unparseable `remote_servers.xml`. The KEEPER generator
+ * emits no such element: its configuration is
+ * `<server><id>…</id><hostname>…</hostname><port>…</port></server>` built from
+ * HOST names (`pkg/model/chk/config/generator.go`, `getRaftConfig`), and the
+ * cluster name reaches only the sanitized `MacrosClusterName` that feeds
+ * generated StatefulSet / Service / ConfigMap names, where a leading digit is
+ * a perfectly good DNS-1123 label. So a CHK named `9keeper` was valid upstream
+ * and stays valid here, and `-keeper`, `keeper-` and `2024` do too.
+ *
+ * THE ONE ADDITION: AT LEAST ONE LETTER OR DIGIT. An ALL-DASH name (`-`,
+ * `---`) satisfies the CRD's `^[a-zA-Z0-9-]{0,15}$`, so admission accepts it,
+ * and the object can then never reconcile. The operator runs the cluster name
+ * through its short-name sanitizer, `strings.Trim(s, "-_.")`, which strips
+ * every leading and trailing `-`, `_` and `.` — an all-dash name sanitizes to
+ * the EMPTY string. The CHK defaults `pdbManaged` to true and names the
+ * PodDisruptionBudget it creates by the pattern `chk-{chk}-{cluster}`, so the
+ * empty sanitized cluster yields `chk-keeper-`: a name ending in a dash, which
+ * is not a valid DNS-1123 subdomain and is rejected as Kubernetes metadata.
+ * Requiring one alphanumeric is therefore not TypeKro tightening Altinity's
+ * contract for taste — it is the smallest rule that keeps the operator's own
+ * generated names legal.
+ *
+ * THE 15-BYTE CAP LIVES SEPARATELY, in
+ * {@link CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}: this pattern carries the alphabet
+ * only, {@link ClickHouseKeeperClusterNameSchema} adds the bound for the
+ * generated RGD, and {@link assertClickHouseKeeperClusterName} checks it
+ * alongside the pattern for a concrete value.
+ *
+ * RE2-compatible (no lookahead), for the same reason as the CHI pattern.
+ */
+export const CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN = /^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$/;
+
+/**
+ * ArkType schema for a runtime CHK `clusterName`.
+ *
+ * Carries the keeper's own bound into a generated RGD, the way
+ * {@link ClickHouseClusterNameSchema} does for the CHI. The pattern holds the
+ * alphabet, the `string <= 15` half holds the CRD's cap.
+ */
+export const ClickHouseKeeperClusterNameSchema = type(CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN).and(
+  'string <= 15'
+);
+
+/**
+ * Assert that a CONCRETE **CHI** cluster name is safe to compile into operator
+ * input and into the `ON CLUSTER` clause.
+ *
+ * The CHK has its own, wider rule — see
+ * {@link assertClickHouseKeeperClusterName}.
  *
  * Only meaningful for literals: in kro mode `spec.clusterName` arrives as a
  * schema reference, and {@link ClickHouseClusterNameSchema} carries the same
@@ -103,13 +201,75 @@ export function assertClickHouseClusterName(
   if (typeof value !== 'string') return;
   if (CLICKHOUSE_CLUSTER_NAME_PATTERN.test(value)) return;
   throw new Error(
-    `${context}: '${field}' must match ${CLICKHOUSE_CLUSTER_NAME_PATTERN.source} — a letter, ` +
-      `then up to 14 more letters, digits or dashes, not ending in a dash (got ` +
-      `${JSON.stringify(value)}). The bound is the intersection of the Altinity CRD's own ` +
-      `\`^[a-zA-Z0-9-]{0,15}\$\` / maxLength 15 on \`clusters[].name\` (the name is a fragment ` +
-      `of every generated object name) and ClickHouse's use of the value as an identifier — ` +
-      `including inside the \`ON CLUSTER '<name>'\` string literal of the backup statement, ` +
-      `where a quote or a semicolon would be extra SQL rather than a bad name.`
+    `${context}: '${field}' must match ${CLICKHOUSE_CLUSTER_NAME_PATTERN.source} — a LETTER, ` +
+      `then up to ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES - 1} more letters, digits or dashes (got ` +
+      `${JSON.stringify(value)}). The alphabet and the ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}-byte ` +
+      `cap are the Altinity CRD's own \`^[a-zA-Z0-9-]{0,15}\$\` / minLength 1 / maxLength 15 on ` +
+      `\`clusters[].name\`; the leading-letter rule is TypeKro's one addition, because the ` +
+      `operator writes the cluster name verbatim as an XML ELEMENT NAME in ` +
+      `\`remote_servers.xml\` (pkg/model/chi/config/generator.go: \`Iline(b, indent, "<%s>", ` +
+      `cluster.GetName())\`) and an XML name may not begin with a digit or a dash — the server ` +
+      `would fail to parse its own configuration. A trailing dash is fine.`
+  );
+}
+
+/**
+ * Assert that a CONCRETE **CHK** cluster name is legal operator input.
+ *
+ * This is the Altinity CRD's alphabet and 15-byte cap, plus the one rule the
+ * operator's own naming requires — at least one alphanumeric — and none of the
+ * CHI's extra leading-letter rule, because the keeper's generator never renders
+ * the cluster name as an XML element name (see
+ * {@link CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN}). `9keeper` is therefore
+ * accepted here and rejected by {@link assertClickHouseClusterName}, and that
+ * difference is the point; an ALL-DASH name is rejected by both, because the
+ * operator's short-name sanitizer would reduce it to the empty string and the
+ * generated PDB name would end in a dash.
+ *
+ * The pattern carries no length bound, so the cap is checked here explicitly
+ * against {@link CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}.
+ *
+ * Only meaningful for literals, like its CHI counterpart: a schema reference is
+ * bounded by {@link ClickHouseKeeperClusterNameSchema} in the generated RGD
+ * instead.
+ *
+ * @param context - The entry point name for the error message
+ * @param field - The offending config field (e.g. `clusterName`)
+ * @param value - The value received; non-strings are ignored (they are
+ *   references, validated by KRO instead)
+ * @throws Error naming the entry point, field, and received value when a
+ *   concrete string does not match
+ *   {@link CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN} or exceeds
+ *   {@link CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}
+ */
+export function assertClickHouseKeeperClusterName(
+  context: string,
+  field: string,
+  value: unknown
+): void {
+  if (typeof value !== 'string') return;
+  if (
+    CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.test(value) &&
+    Buffer.byteLength(value, 'utf8') <= CLICKHOUSE_CLUSTER_NAME_MAX_BYTES
+  ) {
+    return;
+  }
+  throw new Error(
+    `${context}: '${field}' must match ${CLICKHOUSE_KEEPER_CLUSTER_NAME_PATTERN.source} and be at ` +
+      `most ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES} bytes — one to ` +
+      `${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES} letters, digits or dashes, WITH AT LEAST ONE LETTER ` +
+      `OR DIGIT (got ${JSON.stringify(value)}). The alphabet and the cap are the Altinity CRD's ` +
+      `own rule for \`spec.configuration.clusters[].name\` on the ClickHouseKeeperInstallation — ` +
+      `\`^[a-zA-Z0-9-]{0,15}\$\` with minLength 1 and maxLength 15 ` +
+      `(\`See namePartClusterMaxLen const\`). The at-least-one-alphanumeric rule is the only ` +
+      `addition, and the operator's own naming requires it: the operator passes the cluster name ` +
+      `through its short-name sanitizer, \`strings.Trim(s, "-_.")\`, which strips every leading ` +
+      `and trailing \`-\`, \`_\` and \`.\`, so an all-dash name sanitizes to the EMPTY string — ` +
+      `and the CHK (whose \`pdbManaged\` defaults to true) then creates a PodDisruptionBudget ` +
+      `named \`chk-{chk}-{cluster}\`, e.g. \`chk-keeper-\`, which ends in a dash and is not valid ` +
+      `Kubernetes metadata, so such a keeper can never reconcile. Unlike the CHI, the keeper's ` +
+      `generated configuration never uses the value as an XML element name, so a LEADING digit ` +
+      `or dash is fine here.`
   );
 }
 

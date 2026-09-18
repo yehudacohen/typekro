@@ -102,14 +102,19 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
   The value is the cluster identity the operator concatenates into every generated object name
   **and** the `ON CLUSTER '<name>'` target of the [scheduled backup](#scheduled-backups-and-restore) — where a
   quote or a semicolon would be extra SQL rather than a bad name. It must match
-  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`: a letter, then up to 14 more letters, digits or
-  dashes, not ending in a dash.
+  `^[a-zA-Z][a-zA-Z0-9-]{0,14}$`: a letter, then up to 14 more letters, digits or dashes. A
+  trailing dash is fine. (The **keeper**'s `clusterName` is separate and wider — see
+  [Keeper (CHK)](#keeper-chk).)
 
-  That is the *intersection* of two independent limits, not a house style. The Altinity CRD
-  constrains `spec.configuration.clusters[].name` to `^[a-zA-Z0-9-]{0,15}$` with `maxLength: 15`
-  (`namePartClusterMaxLen`), so an underscore or a 16th character is rejected by the API server
-  whatever TypeKro accepts; ClickHouse reads the same value as an identifier, so a leading digit or
-  dash is not one.
+  That is the Altinity CRD's own alphabet and cap plus **one** TypeKro restriction, not a house
+  style. The CRD constrains `spec.configuration.clusters[].name` to `^[a-zA-Z0-9-]{0,15}$` with
+  `minLength: 1` / `maxLength: 15` (`namePartClusterMaxLen`), so an underscore, an empty value or a
+  16th character is rejected by the API server whatever TypeKro accepts. The added rule is the
+  **leading letter**: the operator writes the cluster name verbatim as an XML element name when it
+  renders `remote_servers.xml` (`pkg/model/chi/config/generator.go`, `Iline(b, indent, "<%s>",
+  cluster.GetName())`), and an XML name may not begin with a digit or a dash — `<9cluster>` is an
+  unparseable configuration file and the server will not start. Nothing else is added: a trailing
+  dash is legal XML and leaves a valid DNS-1123 object name, so it is accepted.
 
   A **literal** is rejected at construction. A **schema reference** cannot be — so the pattern
   travels into the generated RGD (`clusterName: string | maxLength=15 pattern="…"`) and KRO rejects
@@ -233,7 +238,7 @@ status: {
 }
 ```
 
-These are construction-time values, so — like `clickhouse.port`, `clickhouse.database` and `clickhouse.user` — they have no natural CHI field to read. Rather than emit them as literals (which KRO drops from the instance status, leaving the declared schema promising fields the live CR never carries), the composition writes them into a **ConfigMap it owns**, `<installation>-contract`, and projects them back from that resource. They therefore appear on the live KRO CR status in both factory modes, and the ConfigMap itself is a readable copy of the cluster's durability contract.
+These are construction-time values, so — like `clickhouse.port`, `clickhouse.database` and `clickhouse.user` — they have no natural CHI field to read. Rather than emit them as literals (which KRO drops from the instance status, leaving the declared schema promising fields the live CR never carries), the composition writes them into a **ConfigMap it owns**, `<installation>-clickhouse-contract`, and projects them back from that resource. They therefore appear on the live KRO CR status in both factory modes, and the ConfigMap itself is a readable copy of the cluster's durability contract.
 
 ### What gets rendered
 
@@ -488,7 +493,7 @@ The connection details are derived from the operator's **verified naming convent
 - `keeper.host` / `keeper.port` — `clickhouse.spec.configuration.zookeeper.nodes[0].*`.
 - `installation.name` / `installation.namespace` — `clickhouse.metadata.*`.
 
-The remaining fields — `clickhouse.port`, `clickhouse.database`, `clickhouse.user`, and the whole `storage` block — are **construction-time values with no natural CHI field to read**. KRO status CEL cannot express a literal-only leaf (nor reference `schema.spec.*`), so emitting them as literals meant the declared schema promised fields the live CR never carried. They are instead written into a ConfigMap the composition **owns** (`<installation>-contract`, resource id `clickhouseContract`) and projected back from it:
+The remaining fields — `clickhouse.port`, `clickhouse.database`, `clickhouse.user`, and the whole `storage` block — are **construction-time values with no natural CHI field to read**. KRO status CEL cannot express a literal-only leaf (nor reference `schema.spec.*`), so emitting them as literals meant the declared schema promised fields the live CR never carried. They are instead written into a ConfigMap the composition **owns** (`<installation>-clickhouse-contract`, resource id `clickhouseContract`) and projected back from it:
 
 - `clickhouse.database` / `clickhouse.user` — `clickhouseContract.data.database` / `.user`.
 - `clickhouse.port` — `int(clickhouseContract.data.nativePort)`; ConfigMap values are strings, so the CEL `int(...)` conversion restores the declared number.
@@ -523,6 +528,49 @@ const keeper = clickHouseKeeperInstallation({
 ```
 
 The CHI consumes it through the operator's `zookeeper` configuration section (which serves clickhouse-keeper too): `keeper: { host, port? }` with port defaulting to `2181`.
+
+### Cluster names are capped at 15 bytes
+
+The Altinity CRD constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` / `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on **both** the CHI and the CHK, while `metadata.name` is uncapped. The value is a fragment of the object names the operator generates (`chi-<installation>-<cluster>-<shard>-<replica>`, `chk-…`); an empty value is rejected too — the CRD does not allow one.
+
+- **CHI** — `clusterName` defaults to `DEFAULT_CHI_CLUSTER_NAME` (`cluster`). SigNoz's migrations hardcode that name, so keep the default for a SigNoz consumer.
+- **CHK** — `clusterName` follows **Altinity's CRD alphabet and cap, plus the one rule the operator's own naming requires**: `^[A-Za-z0-9-]*[A-Za-z0-9][A-Za-z0-9-]*$` with the 15-byte bound (`ClickHouseKeeperClusterNameSchema`) — up to 15 letters, digits and dashes, with **at least one alphanumeric**. There is *no* leading-letter rule: the keeper's generator emits `<server><id>/<hostname>/<port>` built from host names (`pkg/model/chk/config/generator.go`, `getRaftConfig`) and never uses the cluster name as an element name, so `9keeper`, `-keeper`, `keeper-` and `2024` are all valid here while `9cluster` is rejected for the CHI.
+
+  The at-least-one-alphanumeric rule is the only addition, and it is not house style. An **all-dash** name (`-`, `---`) satisfies the CRD's `^[a-zA-Z0-9-]{0,15}$`, so admission accepts it — and the object can then never reconcile. The operator runs the cluster name through its short-name sanitizer `strings.Trim(s, "-_.")`, which strips every leading and trailing `-`, `_` and `.`, so an all-dash name sanitizes to the **empty string**; the CHK defaults `pdbManaged` to true and names the PodDisruptionBudget it creates by the pattern `chk-{chk}-{cluster}`, which then yields e.g. `chk-keeper-` — a name ending in a dash, invalid as Kubernetes metadata. The CHI needs no such rule: its leading-letter requirement already guarantees an alphanumeric, so a CHI cluster name can never be all dashes.
+
+  `clusterName` defaults to the **installation name**. When that name is a **literal** and cannot be a legal cluster name, the factory throws at **build time**, naming the length, the cap and the remedy. Deriving from the installation name is kept on purpose: changing a cluster name replaces the StatefulSet with fresh volumes and loses the keeper's coordination state, so an installation whose name already fitted the cap keeps exactly the object names it had. Pass `clusterName: DEFAULT_CHK_CLUSTER_NAME` (`'keeper'`) — or any short stable value — for a longer installation name.
+
+An explicit `clusterName` is validated at build time on both resources — against its own rule — so an illegal value fails at graph construction rather than at apply. Both share the 15-byte cap, both accept a trailing dash, and both require at least one alphanumeric; they differ only in whether a **leading** digit or dash is allowed.
+
+#### KRO mode: the check moves to the operator
+
+The build-time throw only covers a **literal** name. In `factory('kro')` the keeper's `name` is a schema reference, so the rendered RGD carries `clusters[0].name: ${schema.spec.name}` and the value is unknown until an instance is created. The generated KRO schema types `spec.name` as a bare `string` with no length bound, so an over-long *instance* name is caught by Altinity's admission check, not by TypeKro. The factory emits one build-time **warning** saying exactly that. It does not throw, and `clusterName` is deliberately not mandatory for references: requiring it would force it on existing KRO-mode deployments, where changing the cluster name loses keeper state.
+
+Two ways to close the gap for a **new** deployment:
+
+```typescript
+// 1. Pin the cluster name, so the instance name can never reach it.
+const keeper = clickHouseKeeperInstallation({
+  name: spec.name,                        // any length
+  clusterName: DEFAULT_CHK_CLUSTER_NAME,  // 'keeper'
+  replicas: 3,
+});
+
+// 2. Or have KRO reject a bad instance at admission, by bounding the enclosing
+//    composition's own spec field. The schema generator carries an arktype
+//    bound's maxLength and pattern into the RGD, so KRO rejects the instance
+//    before the operator ever sees it.
+kubernetesComposition(
+  { /* … */ spec: type({ name: ClickHouseKeeperClusterNameSchema /* Altinity's rule */ }) },
+  (spec) => clickHouseKeeperInstallation({ name: spec.name, replicas: 3 })
+);
+```
+
+For an **existing** KRO-mode deployment whose instance names already fit the cap, neither is needed — leave the cluster name alone.
+
+Consumers that need the value — a `keeper_path` prefix, an operator-generated Service name, or the `ON CLUSTER '<name>'` target of their own DDL — must read it from the exported constant or the `clusterName` they passed, or from the cluster composition's status (`status.clickhouse.clusterName`, projected from the CHI's own `spec.configuration.clusters[0].name`). Never assume a particular derivation.
+
+**What else is capped.** The same 15-byte cap, with `minLength: 1` and the same pattern, applies to the shard name, the replica name and `spec.templates.hostTemplates[].spec.name` (the generated host's name), on the CHI, the CHIT and the CHK alike. TypeKro emits none of those today — the zone-pinned layout emits only `templates.podTemplate` per replica, and no `hostTemplates` at all. Pod, volume-claim and service **template** names carry no cap in the CRD.
 
 ## Operator Bootstrap Options
 
