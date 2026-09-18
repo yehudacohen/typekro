@@ -7,6 +7,7 @@
 
 import { describe, expect, it, type mock } from 'bun:test';
 import {
+  classifyApiReadError,
   classifyReadError,
   describeReadError,
   enhanceResourceForEvaluation,
@@ -321,6 +322,27 @@ describe('classifyReadError', () => {
     expect(assessment.detail).toContain('ERR_TLS_DH_PARAM_SIZE');
   });
 
+  // The hint must follow the KIND of TLS failure. A code caught only by the generic `ERR_TLS_`
+  // prefix says nothing about a certificate — `ERR_TLS_DH_PARAM_SIZE` is a Diffie-Hellman parameter
+  // the peer offered, `ERR_TLS_INVALID_CONTEXT` a local API misuse — so sending the operator to the
+  // CA bundle points at the one thing that is not wrong.
+  const genericErrTlsCodes = [
+    'ERR_TLS_DH_PARAM_SIZE',
+    'ERR_TLS_INVALID_CONTEXT',
+    'ERR_TLS_PROTOCOL_VERSION_CONFLICT',
+  ];
+
+  for (const code of genericErrTlsCodes) {
+    it(`points ${code} at the TLS configuration, not at the CA bundle`, () => {
+      const assessment = classifyReadError(new TypeError('fetch failed', { cause: { code } }));
+
+      expect(assessment.detail).toContain(code);
+      expect(assessment.detail).toContain('check the client/server TLS configuration');
+      expect(assessment.detail).not.toContain('cluster CA');
+      expect(assessment.detail).not.toContain('server URL scheme');
+    });
+  }
+
   // …and the prefix rule must NOT swallow the one `ERR_TLS_*` member that is a passing condition.
   it('keeps a fetch-wrapped ERR_TLS_HANDSHAKE_TIMEOUT retryable', () => {
     const assessment = classifyReadError(
@@ -427,6 +449,133 @@ describe('classifyReadError', () => {
 
     expect(assessment.classification).toBe('permission-denied');
     expect(assessment.retryable).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // AN HTTP STATUS OUTRANKS EVERY TRANSPORT HEURISTIC.
+  //
+  // If there is a status, the API server ANSWERED — the request reached it and it formed a
+  // verdict — so a `code` or a message that merely LOOKS like a transport failure cannot overturn
+  // that. Both kinds of evidence really do co-occur: a client can leave a system `code` on a
+  // status-bearing error, and Node's `fetch()` shape is a `TypeError` mentioning `fetch`, which
+  // `isRetryableError`'s last rule retries regardless of any status it carries. Deciding on the
+  // transport evidence first therefore polled requests the server had already REJECTED until the
+  // readiness budget expired, and then reported a timeout instead of the rejection.
+  // ---------------------------------------------------------------------------
+  const statusOutranksTransport: [string, () => unknown][] = [
+    [
+      'a 422 that also carries a socket-reset `code`',
+      () => Object.assign(new Error('read ECONNRESET'), { statusCode: 422, code: 'ECONNRESET' }),
+    ],
+    [
+      // The shape `isRetryableError` retries on its message alone, status or no status.
+      'a 400 reported through the opaque `fetch failed` TypeError',
+      () => Object.assign(new TypeError('fetch failed'), { statusCode: 400 }),
+    ],
+  ];
+
+  for (const [label, makeError] of statusOutranksTransport) {
+    it(`classifies ${label} by its status, not its transport shape`, () => {
+      const assessment = classifyReadError(makeError());
+
+      expect(assessment.classification).toBe('invalid-request');
+      expect(assessment.retryable).toBe(false);
+    });
+  }
+
+  it('still retries a 503 whose message looks like a transport failure', () => {
+    // The positive control for the rule above: status-first must not make every status-bearing
+    // error permanent — a retryable status stays retryable however the message reads.
+    const assessment = classifyReadError(
+      Object.assign(new Error('read ECONNRESET'), { statusCode: 503, code: 'ECONNRESET' })
+    );
+
+    expect(assessment.classification).toBe('transient');
+    expect(assessment.retryable).toBe(true);
+  });
+
+  it('retries a 429 rate limit', () => {
+    const assessment = classifyReadError(createK8sError('Too Many Requests', 429));
+
+    expect(assessment.classification).toBe('transient');
+    expect(assessment.retryable).toBe(true);
+  });
+
+  it.each([418, 409])('fails fast on an unlisted 4xx (%i)', (statusCode) => {
+    // Every client error the server answered with is the server's verdict on the request, whether
+    // or not this classifier has a name for that particular code.
+    const assessment = classifyReadError(createK8sError('Client error', statusCode));
+
+    expect(assessment.classification).toBe('invalid-request');
+    expect(assessment.retryable).toBe(false);
+  });
+
+  it('keeps the TLS verdict for a handshake failure that never produced a status', () => {
+    // The status-first rule must not shadow the TLS branch: a rejected handshake has no status at
+    // all, so the branch below it is still the one that runs.
+    const assessment = classifyReadError(
+      new TypeError('fetch failed', { cause: { code: 'CERT_HAS_EXPIRED' } })
+    );
+
+    expect(assessment.classification).toBe('tls-configuration-error');
+    expect(assessment.statusCode).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// classifyApiReadError
+// =============================================================================
+
+describe('classifyApiReadError', () => {
+  // The answer/no-answer taxonomy is ordered on the SAME invariant as `classifyReadError`: a
+  // status means the server answered, so no transport heuristic may overturn it. The stake is
+  // higher here, because "was the server reached?" is this taxonomy's entire subject — calling a
+  // status-bearing rejection `unreachable` puts the opposite of what the status proves into a log
+  // line about the cluster, and into capability discovery's record of why a lookup failed.
+  it('reports a status-bearing rejection as an answer, not as an unreachable server', () => {
+    const failure = classifyApiReadError(
+      Object.assign(new Error('read ECONNRESET'), { statusCode: 422, code: 'ECONNRESET' })
+    );
+
+    expect(failure).toBe('other');
+  });
+
+  it('does not let a `fetch failed` message overturn a 400', () => {
+    expect(
+      classifyApiReadError(Object.assign(new TypeError('fetch failed'), { statusCode: 400 }))
+    ).toBe('other');
+  });
+
+  it('does not let a timeout-shaped message overturn a 500', () => {
+    const failure = classifyApiReadError(
+      Object.assign(new Error('operation timed out'), { statusCode: 500 })
+    );
+
+    expect(failure).toBe('other');
+  });
+
+  // The statuses the taxonomy DOES name still win, and the transport ladder still runs for the
+  // errors that carry no status at all.
+  it.each([401, 403])('still reports %i as forbidden', (statusCode) => {
+    expect(classifyApiReadError(createK8sError('Forbidden', statusCode))).toBe('forbidden');
+  });
+
+  it.each([408, 504])('still reports %i as a timeout', (statusCode) => {
+    expect(classifyApiReadError(createK8sError('Timeout', statusCode))).toBe('timeout');
+  });
+
+  it('still reports a 404 as the one definitive answer', () => {
+    expect(classifyApiReadError(createK8sError('Not Found', 404))).toBe('notFound');
+  });
+
+  it('still reads the transport `code` when there is no status at all', () => {
+    expect(
+      classifyApiReadError(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))
+    ).toBe('unreachable');
+  });
+
+  it('still reads the message when there is neither a status nor a code', () => {
+    expect(classifyApiReadError(new Error('socket hang up'))).toBe('unreachable');
   });
 });
 

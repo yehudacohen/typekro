@@ -11,6 +11,7 @@ import {
   getErrorDetails,
   getErrorStatusCode,
   isRetryableError,
+  RETRYABLE_STATUS_CODES,
 } from '../kubernetes/errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesApiError } from '../types.js';
@@ -305,13 +306,23 @@ function transportErrorCode(error: unknown): string | undefined {
  * Deliberately conservative: anything not positively recognised is `other`,
  * which callers treat the same as `unreachable` — "we did not learn the answer"
  * — rather than as a negative answer.
+ *
+ * Ordered on the same invariant as {@link classifyReadError}: an HTTP status means the server
+ * ANSWERED, so it outranks every transport heuristic below it. That matters more here than
+ * anywhere, because this taxonomy's whole subject is whether the server was reached: calling a
+ * 422 that happens to carry a stale `ECONNRESET` code `unreachable` would state, in a log line
+ * about the cluster, the opposite of what the status proves. A status the list below does not
+ * name is `other` — the server answered, just not in a way this taxonomy has a word for.
  */
 export function classifyApiReadError(error: unknown): ApiReadFailure {
   if (isNotFoundError(error)) return 'notFound';
 
   const status = apiErrorStatus(error);
-  if (status === 401 || status === 403) return 'forbidden';
-  if (status === 408 || status === 504) return 'timeout';
+  if (status !== undefined) {
+    if (status === 401 || status === 403) return 'forbidden';
+    if (status === 408 || status === 504) return 'timeout';
+    return 'other';
+  }
 
   const code = systemErrorCode(error);
   if (code && TIMEOUT_CODES.has(code)) return 'timeout';
@@ -459,14 +470,46 @@ function isUnknownResourceTypeError(error: unknown, statusCode: number | undefin
   );
 }
 
+/**
+ * The classification, split at the one question that orders everything else: did the API server
+ * ANSWER?
+ *
+ * An HTTP status is proof that it did — the request reached the server, the server formed a
+ * verdict, and it sent one back. That verdict therefore OUTRANKS every piece of evidence that the
+ * transport failed, because a transport that failed could not have carried a status. The two kinds
+ * of evidence do co-occur: a client can attach a system `code` to a status-bearing error (a socket
+ * reset while draining an error body, a `code` copied from an earlier attempt), and Node's
+ * `fetch()` spells its failures as a `TypeError` whose message `isRetryableError` sniffs for the
+ * word `fetch` — which a status-bearing `TypeError` matches just as well. Deciding on the transport
+ * evidence first therefore turned a 422 into `transient` and polled a request the server had
+ * already rejected until the readiness budget expired.
+ *
+ * So: while a status exists, only the status is consulted, and no message or `code` heuristic runs
+ * at all. Only once there is no status does the "the request never produced an HTTP response"
+ * ladder below run — TLS verdict, this repo's own request-timeout types, Node's socket/DNS codes,
+ * then the shared retryable predicate's message sniffs.
+ */
 function classifyReadErrorKind(
   error: unknown,
   statusCode: number | undefined
 ): ReadErrorClassification {
+  // First regardless: the API resource itself not being served is recognised both from a 404 whose
+  // Status body names no object and, with no status at all, from the client's own discovery miss.
   if (isUnknownResourceTypeError(error, statusCode)) return 'unknown-resource-type';
-  if (statusCode === 401 || statusCode === 403) return 'permission-denied';
-  if (statusCode === 404) return 'object-not-found';
 
+  // ---- The server answered. Its answer decides, and nothing else is consulted. ----
+  if (statusCode !== undefined) {
+    if (statusCode === 401 || statusCode === 403) return 'permission-denied';
+    if (statusCode === 404) return 'object-not-found';
+    if (RETRYABLE_STATUS_CODES.has(statusCode)) return 'transient';
+    if (statusCode >= 400 && statusCode < 500) return 'invalid-request';
+    // Any other status the server produced — a 5xx outside the retryable list, or anything the
+    // client turned into an error without a 4xx/5xx code. The server is up and talking, so the
+    // conservative reading is "ask again", not "this is permanently broken".
+    return 'transient';
+  }
+
+  // ---- No status: the request never produced an HTTP response. ----
   // The transport `code` is read BEFORE `isRetryableError`, and a permanent TLS failure is
   // recognised before any retryable shape, because that predicate's last resort is a message sniff:
   // it retries ANY `TypeError` whose message mentions `fetch`. Node's `fetch()` reports a rejected
@@ -491,11 +534,9 @@ function classifyReadErrorKind(
   if (isRequestTimeoutError(error)) return 'transient';
   if (transportCode && RETRYABLE_SYSTEM_CODES.has(transportCode)) return 'transient';
 
-  // Covers 408/429/5xx plus connection resets, DNS failures and fetch-level TypeErrors.
+  // Connection resets, DNS failures and fetch-level TypeErrors, recognised by message.
   if (isRetryableError(error)) return 'transient';
-  if (statusCode === undefined) return 'not-a-kubernetes-error';
-  if (statusCode >= 400 && statusCode < 500) return 'invalid-request';
-  return 'transient';
+  return 'not-a-kubernetes-error';
 }
 
 /**
@@ -519,23 +560,44 @@ export function classifyReadError(error: unknown): ReadErrorAssessment {
   const label = READ_ERROR_SUMMARIES[classification];
   const detail = describeReadError(error);
   // `TypeError: fetch failed` says nothing an operator can act on, so a TLS failure names the code
-  // and what to look at. Everything else already carries its own message. The two kinds of TLS
-  // failure point at different settings — a certificate verdict at the trust material, a protocol
-  // mismatch at the address and the TLS version window — so the hint follows the code.
+  // and what to look at. Everything else already carries its own message.
   const tlsCode =
     classification === 'tls-configuration-error' ? transportErrorCode(error) : undefined;
-  const tlsHint =
-    tlsCode && TLS_PROTOCOL_CONFIGURATION_CODES.has(tlsCode)
-      ? 'check the server URL scheme / port and the TLS version settings'
-      : 'check the cluster CA / server certificate';
 
   return {
     classification,
     retryable: RETRYABLE_READ_CLASSIFICATIONS.has(classification),
     summary: statusCode === undefined ? label : `${label} (HTTP ${statusCode})`,
-    detail: tlsCode ? `${detail} (${tlsCode}: ${tlsHint})` : detail,
+    detail: tlsCode ? `${detail} (${tlsCode}: ${tlsDiagnosticHint(tlsCode)})` : detail,
     statusCode,
   };
+}
+
+/**
+ * Where to send the operator for a given TLS failure code.
+ *
+ * The three groups {@link isTlsConfigurationCode} accepts fail for different reasons and are fixed
+ * in different places, so each gets its own hint rather than one catch-all:
+ *
+ * - A certificate VERDICT — a member of {@link TLS_CERTIFICATE_CODES}, or an unrecognised `CERT_`
+ *   code — is about the trust material: the CA bundle in the kubeconfig, or the certificate the
+ *   API server presents.
+ * - A PROTOCOL mismatch — a member of {@link TLS_PROTOCOL_CONFIGURATION_CODES} — is about what is
+ *   at the other end of the address and which TLS versions each side allows.
+ * - Anything else here reached the classification through the generic `ERR_TLS_` prefix rule:
+ *   `ERR_TLS_DH_PARAM_SIZE`, `ERR_TLS_INVALID_CONTEXT`, `ERR_TLS_PROTOCOL_VERSION_CONFLICT` and
+ *   the rest of Node's own namespace. These say nothing about a certificate, so pointing at the CA
+ *   bundle would send the operator to the one thing that is not wrong; the honest hint is the TLS
+ *   configuration on either side, which is what those codes actually describe.
+ */
+function tlsDiagnosticHint(code: string): string {
+  if (TLS_CERTIFICATE_CODES.has(code) || code.startsWith('CERT_')) {
+    return 'check the cluster CA / server certificate';
+  }
+  if (TLS_PROTOCOL_CONFIGURATION_CODES.has(code)) {
+    return 'check the server URL scheme / port and the TLS version settings';
+  }
+  return 'check the client/server TLS configuration';
 }
 
 /**

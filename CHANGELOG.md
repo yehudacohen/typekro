@@ -397,6 +397,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as transient wherever that classifier is used, rather than reading as unrecognised
   programming errors.
 
+  **An HTTP status outranks every transport heuristic.** If the error carries a status, the API
+  server ANSWERED — the request reached it and it formed a verdict — so evidence that the
+  transport failed cannot overturn it, because a transport that failed could not have carried a
+  status back. The two do co-occur: a client can leave a system `code` on a status-bearing error,
+  and Node's `fetch()` spells its failures as a `TypeError` whose message the shared retry
+  predicate sniffs for the word `fetch` — which a status-bearing `TypeError` matches just as well.
+  Consulting that evidence first turned a 422 the server had already REJECTED into a transient
+  fault and polled it to the deadline, reporting a readiness timeout instead of the rejection.
+  Both classifiers in this module now decide on the status alone while one exists, and only fall
+  through to the TLS / request-timeout / socket-code / message ladder when the request produced no
+  HTTP response at all. A retryable status stays retryable however the message reads, and a 4xx
+  the classifier has no specific name for is still the server's verdict on the request.
+
   **TLS trust, identity and protocol failures are NOT retryable.** An expired, not-yet-valid,
   self-signed or wrongly-named server certificate, an unverifiable chain, or a protocol
   mismatch (`EPROTO`) is a configuration fact: the wrong CA bundle, a stale kubeconfig, a
@@ -404,7 +417,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   polling one for a multi-minute budget only buries what to fix under a timeout. They now
   classify as a TLS configuration error that fails fast, and the reported detail names the
   system code and points at the setting to look at — the cluster CA / server certificate for a
-  certificate verdict, the server URL and TLS version window for a protocol mismatch.
+  certificate verdict, the server URL and TLS version window for a protocol mismatch, and the
+  client/server TLS configuration for the rest of Node's `ERR_TLS_*` namespace
+  (`ERR_TLS_DH_PARAM_SIZE`, `ERR_TLS_INVALID_CONTEXT`, …), which says nothing about a certificate
+  and whose operator would otherwise be sent to the one thing that is not wrong.
 
   The recognised codes are the COMPLETE set, not a sample: every certificate-verification code
   Node documents under "OpenSSL error codes" (`nodejs.org/api/errors.html`) — including
@@ -430,7 +446,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its read budget on a certificate that will never be accepted.
   Node's own `ERR_TLS_*` family is treated the same way by prefix (`ERR_TLS_DH_PARAM_SIZE`,
   `ERR_TLS_INVALID_PROTOCOL_VERSION`, …), with `ERR_TLS_HANDSHAKE_TIMEOUT` carved out as the one
-  transient member.
+  transient member, and with its own diagnostic hint rather than the certificate one.
 
   A 404 for the RGD OBJECT stays strict rather than permissive for the same reason the
   whole policy is: the RGD name the poll looks up is the name the factory emitted — both
