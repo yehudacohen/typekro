@@ -233,7 +233,7 @@ status: {
 }
 ```
 
-These are construction-time values, so — like `clickhouse.port`, `clickhouse.database` and `clickhouse.user` — they have no natural CHI field to read. Rather than emit them as literals (which KRO drops from the instance status, leaving the declared schema promising fields the live CR never carries), the composition writes them into a **ConfigMap it owns**, `<installation>-contract`, and projects them back from that resource. They therefore appear on the live KRO CR status in both factory modes, and the ConfigMap itself is a readable copy of the cluster's durability contract.
+These are construction-time values, so — like `clickhouse.port`, `clickhouse.database` and `clickhouse.user` — they have no natural CHI field to read. Rather than emit them as literals (which KRO drops from the instance status, leaving the declared schema promising fields the live CR never carries), the composition writes them into a **ConfigMap it owns**, `<installation>-clickhouse-contract`, and projects them back from that resource. They therefore appear on the live KRO CR status in both factory modes, and the ConfigMap itself is a readable copy of the cluster's durability contract.
 
 ### What gets rendered
 
@@ -488,7 +488,7 @@ The connection details are derived from the operator's **verified naming convent
 - `keeper.host` / `keeper.port` — `clickhouse.spec.configuration.zookeeper.nodes[0].*`.
 - `installation.name` / `installation.namespace` — `clickhouse.metadata.*`.
 
-The remaining fields — `clickhouse.port`, `clickhouse.database`, `clickhouse.user`, and the whole `storage` block — are **construction-time values with no natural CHI field to read**. KRO status CEL cannot express a literal-only leaf (nor reference `schema.spec.*`), so emitting them as literals meant the declared schema promised fields the live CR never carried. They are instead written into a ConfigMap the composition **owns** (`<installation>-contract`, resource id `clickhouseContract`) and projected back from it:
+The remaining fields — `clickhouse.port`, `clickhouse.database`, `clickhouse.user`, and the whole `storage` block — are **construction-time values with no natural CHI field to read**. KRO status CEL cannot express a literal-only leaf (nor reference `schema.spec.*`), so emitting them as literals meant the declared schema promised fields the live CR never carried. They are instead written into a ConfigMap the composition **owns** (`<installation>-clickhouse-contract`, resource id `clickhouseContract`) and projected back from it:
 
 - `clickhouse.database` / `clickhouse.user` — `clickhouseContract.data.database` / `.user`.
 - `clickhouse.port` — `int(clickhouseContract.data.nativePort)`; ConfigMap values are strings, so the CEL `int(...)` conversion restores the declared number.
@@ -523,6 +523,16 @@ const keeper = clickHouseKeeperInstallation({
 ```
 
 The CHI consumes it through the operator's `zookeeper` configuration section (which serves clickhouse-keeper too): `keeper: { host, port? }` with port defaulting to `2181`.
+
+### Cluster names are capped at 15 bytes
+
+The Altinity CRD constrains `spec.configuration.clusters[].name` to `maxLength: 15` / `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on **both** the CHI and the CHK, while `metadata.name` is uncapped. The internal cluster name is therefore never derived from the installation name — it is a fragment of the object names the operator generates (`chi-<installation>-<cluster>-<shard>-<replica>`, `chk-…`), already disambiguated by the installation name in front of it.
+
+Both factories default it to a short constant — `DEFAULT_CHI_CLUSTER_NAME` (`cluster`) and `DEFAULT_CHK_CLUSTER_NAME` (`keeper`) — and accept an optional `clusterName` override that is validated at **build time** against the CRD pattern and the 15-byte cap, so an illegal value fails at graph construction rather than at apply.
+
+Consumers that need the value — a `keeper_path` prefix, an operator-generated Service name, or the `ON CLUSTER '<name>'` target of their own DDL — must read it from the exported constant, or from the cluster composition's status (`status.clickhouse.clusterName`, projected from the CHI's own `spec.configuration.clusters[0].name`). It is **not** the installation name.
+
+Shard and replica names carry the same 15-byte cap; TypeKro emits neither. Pod, volume-claim and service template names are uncapped.
 
 ## Operator Bootstrap Options
 

@@ -16,6 +16,7 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
+import { ClickHouseClusterNameSchema } from './utils/validation.js';
 
 // ============================================================================
 // Bootstrap Config (Helm Operator Install)
@@ -518,8 +519,12 @@ export const ClickHouseInstallationConfigSchema = type({
    * SIGNOZ COMPATIBILITY: SigNoz's ClickHouse migrations hardcode the cluster
    * name `cluster` — a SigNoz deployment pointed at this CHI only works when
    * the default is kept. Override only for non-SigNoz consumers.
+   *
+   * CAPPED AT 15 BYTES by the Altinity CRD (`namePartClusterMaxLen`). The
+   * bound rides on the schema, and a concrete over-long value is additionally
+   * rejected at BUILD time by `assertClickHouseClusterName`.
    */
-  'clusterName?': 'string',
+  'clusterName?': ClickHouseClusterNameSchema,
   /**
    * ClickHouse server image tag (e.g. '25.12.5'). Compiled into the pod
    * template image `clickhouse/clickhouse-server:<version>` unless `image`
@@ -851,7 +856,7 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
  * `storage` durability block. Rather than emit them as literals (which KRO
  * drops from the instance status, so the declared schema would promise fields
  * the live CR never carries), the composition writes them into a ConfigMap it
- * OWNS (`<installation>-contract`) and projects them back from that resource.
+ * OWNS (`<installation>-clickhouse-contract`) and projects them back from that resource.
  * The result is that `kubectl get clickhouseclusters -o yaml` shows the whole
  * contract, durability included, in both factory modes.
  *
@@ -921,7 +926,7 @@ export interface ClickHouseClusterStatus {
    *
    * PROJECTED FROM THE OWNED CONTRACT CONFIGMAP: these come from the
    * construction-time topology, not from the owned CHI, so the composition
-   * writes them into a ConfigMap it owns (`<installation>-contract`) and reads
+   * writes them into a ConfigMap it owns (`<installation>-clickhouse-contract`) and reads
    * them back from there. That gives them a resource anchor, so — unlike a
    * bare literal, which KRO omits — they appear on the live KRO CR status.
    */
@@ -1003,6 +1008,16 @@ export const ClickHouseKeeperInstallationConfigSchema = type({
   'namespace?': 'string',
   /** Resource ID for composition references. */
   'id?': 'string',
+  /**
+   * Logical cluster name inside the CHK (default: 'keeper').
+   *
+   * NOT derived from `name`: the Altinity CRD caps
+   * `spec.configuration.clusters[].name` at 15 bytes on the CHK exactly as it
+   * does on the CHI, while `metadata.name` is uncapped. The bound rides on the
+   * schema, and a concrete over-long value is additionally rejected at BUILD
+   * time by `assertClickHouseClusterName`.
+   */
+  'clusterName?': ClickHouseClusterNameSchema,
   /** Keeper replica count (default: 1; use an odd number for quorum). */
   'replicas?': 'number.integer',
   /** Persistent storage for the keeper log/snapshot data. */
