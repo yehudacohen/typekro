@@ -16,7 +16,7 @@ import {
   DEFAULT_HTTP_READ_TIMEOUT,
   DEFAULT_POLL_INTERVAL,
 } from '../config/defaults.js';
-import { CRDInstanceError, DeploymentTimeoutError, ensureError } from '../errors.js';
+import { CRDInstanceError, DeploymentTimeoutError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { RGDManifest } from '../types/kubernetes.js';
 import { classifyReadError } from './k8s-helpers.js';
@@ -179,7 +179,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
    */
   let lastLookupDetail: string | undefined;
   /** The error object behind {@link lastLookupDetail}, attached to the deadline error as its cause. */
-  let lastLookupCause: Error | undefined;
+  let lastLookupCause: unknown;
   /** Lookup failure messages already logged, so a retry loop warns once per distinct message. */
   const warnedLookupFailures = new Set<string>();
 
@@ -408,7 +408,9 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         // loop exists to ride out; a persistent failure ends in the overall DeploymentTimeoutError,
         // carrying this message.
         lastLookupDetail = assessment.detail;
-        lastLookupCause = ensureError(error);
+        // Keep the ORIGINAL thrown value, not an `ensureError` coercion: a bare Kubernetes `Status`
+        // object would coerce to `Error('[object Object]')` and lose `statusCode` / `body` for callers.
+        lastLookupCause = error;
         if (!warnedLookupFailures.has(lastLookupDetail)) {
           warnedLookupFailures.add(lastLookupDetail);
           readinessLogger.warn(
@@ -546,6 +548,6 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
   );
   // The message carries the readable detail; the original rejection stays reachable as the cause so
   // a caller that inspects `statusCode` / `body` still can.
-  if (lastLookupCause) timeoutError.cause = lastLookupCause;
+  if (lastLookupCause !== undefined) timeoutError.cause = lastLookupCause;
   throw timeoutError;
 }

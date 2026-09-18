@@ -1130,7 +1130,8 @@ describe('waitForKroInstanceReady', () => {
       expect(failure).toBeInstanceOf(DeploymentTimeoutError);
       expect((failure as Error).message).toContain('etcd leader changed');
       expect((failure as Error).message).not.toContain('[object Object]');
-      expect((failure as Error).cause).toBeDefined();
+      // The original rejection, not a coerced Error: `statusCode` / `body` stay inspectable.
+      expect((failure as Error).cause).toBe(statusShaped);
     });
 
     // An UNCERTAIN read must never become an EMPTY schema. Every classification below means the
