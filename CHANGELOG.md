@@ -304,6 +304,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A KRO instance that had ALREADY failed could be reported as a generic readiness
+  timeout instead of the error it actually hit. The readiness poll checked the
+  ResourceGraphDefinition status schema before it checked the instance's own terminal
+  state, and under the strict schema-lookup policy every non-RBAC lookup failure
+  abandons the iteration and retries — so an instance sitting in `FAILED`/`ERROR` with a
+  precise controller message stayed hidden behind lookup retries until the deadline. The
+  terminal-state check now runs as soon as the state and conditions have been read from
+  the instance, before any schema lookup is attempted, so the instance's own message is
+  what the caller gets, immediately.
+
+- The readiness timeout message could blame a status-schema lookup failure that had
+  since recovered. The remembered lookup error is now cleared as soon as a later lookup
+  succeeds, so a timeout caused by an instance never projecting its declared status is
+  no longer misattributed to a transport blip on an earlier poll. The wording is also
+  corrected from "never returned" to "could not be read", since a persistent 404 or 5xx
+  does return — with an error.
+
+- KRO instance readiness could overshoot its own declared timeout by up to a full poll
+  interval. Each sleep between polls ran to completion before the loop re-checked the
+  deadline, so a short budget with a long interval returned late — most visibly on the
+  path taken while an instance has no status at all, which sleeps the standard poll
+  interval regardless of the caller's configured one. Every sleep in the wait is now
+  capped to whatever is left of the budget, making the declared timeout the real upper
+  bound.
+
+- The Bun-compatible HTTP library ignored an `AbortSignal` that was ALREADY aborted when
+  the request was built, and sent the request anyway. An aborted signal never fires
+  `abort` again, so registering a listener silently missed it — and a converge-wide
+  signal that trips while an earlier call is in flight leaves exactly that state for the
+  next call in the queue. The signal is now checked before the listener is registered:
+  an already-aborted request rejects with the signal's own reason and is torn down
+  before any bytes reach the wire. The live-abort path was made consistent, rejecting
+  with the signal's reason rather than a generic error.
+
 - **Behaviour change.** The KRO instance readiness check no longer converts an
   UNCERTAIN ResourceGraphDefinition status-schema read into an EMPTY status schema. It
   reads that schema to learn which custom status fields an instance is expected to

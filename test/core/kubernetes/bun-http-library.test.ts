@@ -167,6 +167,60 @@ describe('BunCompatibleHttpLibrary abort-listener lifetime', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  /**
+   * An ALREADY-aborted signal never fires 'abort' again, so `addEventListener` alone silently
+   * misses it and the request goes out anyway — the exact opposite of what the caller asked for.
+   * This is not a corner case: a converge-wide signal routinely trips while an earlier call is in
+   * flight, and the next call in the queue is built against the tripped signal.
+   */
+  it('rejects a pre-aborted request with its reason, without sending anything', async () => {
+    const http = await import('node:http');
+    let requestsSeen = 0;
+    const server = http.createServer((_req, res) => {
+      requestsSeen += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const controller = new AbortController();
+      const reason = new Error('converge cancelled before this request was issued');
+      controller.abort(reason);
+
+      const library = new BunCompatibleHttpLibrary({ default: 5_000 });
+      const request = {
+        getUrl: () => `http://127.0.0.1:${port}/api/v1/namespaces/demo`,
+        getHttpMethod: () => 'GET',
+        getHeaders: () => ({}),
+        getBody: () => undefined,
+        getAgent: () => undefined,
+        getSignal: () => controller.signal,
+      };
+
+      const failure = await library
+        .send(request as never)
+        .toPromise()
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+
+      // The caller's OWN reason — not a generic stand-in, and not a transport error produced by
+      // our own teardown of the half-built request.
+      expect(failure).toBe(reason);
+
+      // Give a request that WAS put on the wire time to arrive, so this asserts "never sent"
+      // rather than "not sent yet".
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(requestsSeen).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 /**

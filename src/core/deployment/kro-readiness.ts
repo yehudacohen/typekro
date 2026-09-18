@@ -81,6 +81,27 @@ function abortableDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
 }
 
 /**
+ * Sleep between polls WITHOUT overshooting the caller's deadline.
+ *
+ * A bare `abortableDelay(pollInterval)` can carry the wait up to a full poll interval PAST the
+ * declared `timeout` — a 5s budget polled every 2s could return at 7s — because the `while`
+ * condition is only re-checked after the sleep has already run to completion. Capping the sleep to
+ * whatever is left of the budget keeps the declared timeout the real upper bound, so a caller that
+ * sizes a deploy against it is not silently given more time than it asked for.
+ *
+ * @returns `false` when the budget is already spent, meaning the caller should stop polling.
+ */
+async function delayWithinBudget(
+  ms: number,
+  remaining: number,
+  abortSignal?: AbortSignal
+): Promise<boolean> {
+  if (remaining <= 0) return false;
+  await abortableDelay(Math.min(ms, remaining), abortSignal);
+  return true;
+}
+
+/**
  * Wait for a Kro custom resource instance to become ready.
  *
  * Readiness is determined when:
@@ -88,6 +109,11 @@ function abortableDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
  * 2. Either `InstanceSynced` (v0.3.x) or `Ready` (v0.8.x) condition is `True`
  *    and has observed the current instance generation when KRO reports generations
  * 3. Either custom status fields are populated OR the RGD declares no status schema
+ *
+ * A TERMINAL instance state (`FAILED`/`ERROR`) is checked first, on the instance read alone, before
+ * the RGD lookup below. Under the strict lookup policy a broken lookup retries to the deadline, and
+ * an instance that has already failed carries the most actionable message this function can return —
+ * it must not be buried behind retries and downgraded to a generic timeout.
  *
  * RGD STATUS-SCHEMA LOOKUP POLICY. Step 3 needs the ResourceGraphDefinition's declared status schema.
  * An UNCERTAIN read of that schema is never converted into an EMPTY schema: "we did not learn what
@@ -188,12 +214,42 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       const status = instance.status;
       if (!status) {
         readinessLogger.debug('No status found yet, continuing to wait', { instanceName });
-        await abortableDelay(DEFAULT_POLL_INTERVAL, abortSignal);
+        if (
+          !(await delayWithinBudget(
+            DEFAULT_POLL_INTERVAL,
+            timeout - (Date.now() - startTime),
+            abortSignal
+          ))
+        ) {
+          break;
+        }
         continue;
       }
 
       const state = status.state;
       const conditions = status.conditions || [];
+
+      // TERMINAL STATE IS CHECKED FIRST, BEFORE ANY RGD LOOKUP.
+      //
+      // Kro v0.8.x uses "ERROR", v0.3.x uses "FAILED". Either way the instance is done: no amount of
+      // further polling changes it, and the condition message is the single most actionable thing
+      // this function can hand the caller. The check therefore runs on the instance read alone —
+      // the RGD status-schema lookup below cannot make a failed instance succeed, and under the
+      // strict lookup policy (every non-forbidden failure abandons the iteration and retries) a
+      // lookup that is itself broken would otherwise bury this message behind retries until the
+      // deadline, turning a precise CRDInstanceError into a generic DeploymentTimeoutError.
+      if (state === 'FAILED' || state === 'ERROR') {
+        const failedCondition = conditions.find((c) => c.status === 'False');
+        const errorMessage = failedCondition?.message || 'Unknown error';
+        throw new CRDInstanceError(
+          `Kro instance deployment failed (state=${state}): ${errorMessage}`,
+          apiVersion,
+          kind,
+          instanceName,
+          'creation'
+        );
+      }
+
       // Support both Kro v0.3.x (InstanceSynced) and v0.8.x (Ready) conditions
       const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
       const readyCondition = conditions.find((c) => c.type === 'Ready');
@@ -241,6 +297,10 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
           (key) => !basicKroFields.includes(key)
         );
         expectedCustomStatusFields = expectedStatusKeys.length > 0;
+        // The schema HAS now been read, so any earlier failure is spent history. Leaving it set
+        // would misattribute a later timeout — one caused by the projected status never becoming
+        // ready — to a lookup that has since been answered.
+        lastLookupError = undefined;
 
         readinessLogger.debug('ResourceGraphDefinition status schema check', {
           rgdName,
@@ -286,7 +346,11 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         }
         // Honour the poll interval before retrying: a premature close can reject in milliseconds,
         // so continuing straight to the top of the loop would spin.
-        await abortableDelay(pollInterval, abortSignal);
+        if (
+          !(await delayWithinBudget(pollInterval, timeout - (Date.now() - startTime), abortSignal))
+        ) {
+          break;
+        }
         continue;
       }
 
@@ -345,19 +409,6 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         return;
       }
 
-      // Check for failure states (Kro v0.8.x uses "ERROR", v0.3.x uses "FAILED")
-      if (state === 'FAILED' || state === 'ERROR') {
-        const failedCondition = conditions.find((c) => c.status === 'False');
-        const errorMessage = failedCondition?.message || 'Unknown error';
-        throw new CRDInstanceError(
-          `Kro instance deployment failed (state=${state}): ${errorMessage}`,
-          apiVersion,
-          kind,
-          instanceName,
-          'creation'
-        );
-      }
-
       readinessLogger.debug('Kro instance not ready yet, continuing to wait', {
         instanceName,
         state,
@@ -395,14 +446,18 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
     }
 
     // Wait before checking again
-    await abortableDelay(pollInterval, abortSignal);
+    if (!(await delayWithinBudget(pollInterval, timeout - (Date.now() - startTime), abortSignal))) {
+      break;
+    }
   }
 
   const elapsed = Date.now() - startTime;
-  // A lookup that never returned is the most actionable thing known about this timeout — without it
-  // the message reports only "not ready in time" and the wedged-request diagnosis is lost.
+  // A lookup that never succeeded is the most actionable thing known about this timeout — without it
+  // the message reports only "not ready in time" and the wedged-request diagnosis is lost. It is
+  // cleared as soon as a later lookup succeeds, so this only ever describes a lookup that was still
+  // failing when the budget ran out.
   const lookupDiagnosis = lastLookupError
-    ? ` The ResourceGraphDefinition status-schema lookup never returned, so readiness could not be confirmed; its last failure was: ${lastLookupError.message}`
+    ? ` The ResourceGraphDefinition status-schema lookup could not be read, so readiness could not be confirmed; its last failure was: ${lastLookupError.message}`
     : '';
   throw new DeploymentTimeoutError(
     `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms).${factoryContext ? ` This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro` : ''}${lookupDiagnosis}`,

@@ -689,6 +689,76 @@ describe('waitForKroInstanceReady', () => {
       }
     });
 
+    it('reports a FAILED instance immediately even while the RGD lookup keeps resetting', async () => {
+      // Ordering regression. The RGD status-schema lookup used to run BEFORE the terminal-state
+      // check, and under the strict lookup policy every non-forbidden failure abandons the
+      // iteration and retries. A broken lookup therefore hid an instance that had ALREADY failed,
+      // with a perfectly good message, behind retries until the deadline — a precise
+      // CRDInstanceError downgraded to a generic DeploymentTimeoutError.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({
+          state: 'FAILED',
+          conditions: [
+            { type: 'Ready', status: 'False', message: 'Deployment failed: image pull error' },
+          ],
+        })
+      );
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+      );
+
+      const started = Date.now();
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 5_000,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(CRDInstanceError);
+      // The instance's OWN message, not the transport noise from the lookup.
+      expect((failure as Error).message).toContain('image pull error');
+      expect((failure as Error).message).not.toContain('ECONNRESET');
+      // Immediately: not after the 5s budget.
+      expect(Date.now() - started).toBeLessThan(2_000);
+      // And the lookup was never even attempted — the instance read alone settled it.
+      expect(mockCustomObjectsApi.getClusterCustomObject.mock.calls.length).toBe(0);
+    });
+
+    it('reports an ERROR instance immediately even while the RGD lookup 404s', async () => {
+      // Same ordering guarantee for the v0.8.x spelling, with the other strict classification: a
+      // 404 on the RGD is retried to the deadline, and must not delay a terminal instance.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({
+          state: 'ERROR',
+          conditions: [
+            { type: 'InstanceSynced', status: 'False', message: 'Resource reconciliation error' },
+          ],
+        })
+      );
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
+        createK8sError('resourcegraphdefinitions.kro.run "web-app" not found', 404)
+      );
+
+      const started = Date.now();
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 5_000,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(CRDInstanceError);
+      expect((failure as Error).message).toContain('Resource reconciliation error');
+      expect((failure as Error).message).not.toContain('not found');
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(mockCustomObjectsApi.getClusterCustomObject.mock.calls.length).toBe(0);
+    });
+
     it('uses "Unknown error" when FAILED state has no condition message', async () => {
       mockK8sApi.read.mockResolvedValue(
         kroInstance({
@@ -861,7 +931,7 @@ describe('waitForKroInstanceReady', () => {
 
       expect(failure).toBeInstanceOf(DeploymentTimeoutError);
       expect((failure as Error).message).toContain('socket hang up');
-      expect((failure as Error).message).toContain('status-schema lookup never returned');
+      expect((failure as Error).message).toContain('status-schema lookup could not be read');
     });
 
     // An UNCERTAIN read must never become an EMPTY schema. Every classification below means the
@@ -900,7 +970,7 @@ describe('waitForKroInstanceReady', () => {
         ).catch((error: unknown) => error);
 
         expect(failure).toBeInstanceOf(DeploymentTimeoutError);
-        expect((failure as Error).message).toContain('status-schema lookup never returned');
+        expect((failure as Error).message).toContain('status-schema lookup could not be read');
       });
     }
 
@@ -928,6 +998,124 @@ describe('waitForKroInstanceReady', () => {
       // Fast, not after the 5s budget.
       expect(Date.now() - started).toBeLessThan(2_000);
       expect(mockCustomObjectsApi.getClusterCustomObject.mock.calls.length).toBe(1);
+    });
+
+    it('does not blame a recovered lookup for a timeout the projected status caused', async () => {
+      // The remembered lookup failure exists to rescue a diagnosis that would otherwise be lost.
+      // It must not SUPPLY a wrong one: once a later lookup answers, the schema is known, and a
+      // deadline reached because the instance never populated that schema has nothing to do with
+      // the transport blip that happened on the first poll.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+      );
+
+      let lookups = 0;
+      mockCustomObjectsApi.getClusterCustomObject.mockImplementation(() => {
+        lookups += 1;
+        if (lookups === 1) {
+          return Promise.reject(
+            new PrematureCloseError(
+              'GET',
+              '/apis/kro.run/v1alpha1/resourcegraphdefinitions/web-app',
+              12,
+              'the response body was truncated'
+            )
+          );
+        }
+        // Every later lookup answers: the RGD declares a `url` field the instance never gets.
+        return Promise.resolve({ spec: { schema: { status: { url: 'string' } } } });
+      });
+
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 300,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(DeploymentTimeoutError);
+      // It really did keep looking the schema up after the first failure.
+      expect(lookups).toBeGreaterThan(1);
+      // ...and the stale first failure is not reported as the cause.
+      expect((failure as Error).message).not.toContain('status-schema lookup could not be read');
+      expect((failure as Error).message).not.toContain('socket hang up');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 6b. The declared timeout is the real upper bound on the wait
+  // ---------------------------------------------------------------------------
+
+  describe('poll sleeps stay inside the declared budget', () => {
+    // Each sleep between polls used to run to completion before the loop condition was re-checked,
+    // so the wait could overshoot the declared `timeout` by up to a FULL poll interval. Every case
+    // below gives the sleep an interval far larger than the whole budget, which turns the overshoot
+    // from a few milliseconds into something a wall-clock assertion can see without being flaky.
+    const BUDGET = 150;
+    // Generous enough to absorb scheduler jitter on a loaded CI box, far below the interval each
+    // test would sleep for if its sleep were still uncapped.
+    const EPSILON = 400;
+
+    it('caps the sleep taken when the instance has no status yet (DEFAULT_POLL_INTERVAL, 2s)', async () => {
+      // This path ignores `pollInterval` and sleeps DEFAULT_POLL_INTERVAL, so an uncapped sleep
+      // overshoots a 150ms budget by well over a second.
+      mockK8sApi.read.mockResolvedValue(kroInstance());
+
+      const started = Date.now();
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: BUDGET,
+            pollInterval: 10,
+          })
+        )
+      ).rejects.toBeInstanceOf(DeploymentTimeoutError);
+      expect(Date.now() - started).toBeLessThan(BUDGET + EPSILON);
+    });
+
+    it('caps the sleep taken after a failed RGD status-schema lookup', async () => {
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+      );
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
+        createK8sError('an internal server error occurred', 500)
+      );
+
+      const started = Date.now();
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: BUDGET,
+            pollInterval: 3_000,
+          })
+        )
+      ).rejects.toBeInstanceOf(DeploymentTimeoutError);
+      expect(Date.now() - started).toBeLessThan(BUDGET + EPSILON);
+    });
+
+    it('caps the sleep taken at the bottom of an ordinary not-ready iteration', async () => {
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'IN_PROGRESS', conditions: [{ type: 'Ready', status: 'False' }] })
+      );
+
+      const started = Date.now();
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: BUDGET,
+            pollInterval: 3_000,
+          })
+        )
+      ).rejects.toBeInstanceOf(DeploymentTimeoutError);
+      expect(Date.now() - started).toBeLessThan(BUDGET + EPSILON);
     });
   });
 

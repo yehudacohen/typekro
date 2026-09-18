@@ -444,11 +444,24 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       const signal = getSignal?.();
       if (signal) {
         const onAbort = () => {
-          settle(() => reject(new Error('Request aborted')));
+          settle(() => reject(signal.reason ?? new Error('Request aborted')));
           req.destroy();
         };
-        signal.addEventListener('abort', onAbort, { once: true });
-        detachAbort = () => signal.removeEventListener('abort', onAbort);
+        // An ALREADY-aborted signal never fires 'abort' again, so a listener alone silently misses
+        // it and the request goes out anyway — the exact opposite of what the caller asked for.
+        // A signal is routinely already aborted by the time a request is issued: a converge-wide
+        // signal trips while an earlier call is in flight, and the next call in the queue is built
+        // against it. Reject up front and tear the half-built request down BEFORE `req.end()` puts
+        // any bytes on the wire.
+        if (signal.aborted) {
+          settle(() =>
+            reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+          );
+          req.destroy();
+        } else {
+          signal.addEventListener('abort', onAbort, { once: true });
+          detachAbort = () => signal.removeEventListener('abort', onAbort);
+        }
       }
 
       // The request ended without the promise having settled. On Bun this fires as soon as the
@@ -467,6 +480,12 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // the promise for us but does NOT run the latch, so the timer would stay armed and hold a
       // short-lived CLI process open for its whole budget after the call had already failed. Route
       // it through the latch instead, and tear the half-issued request down.
+      //
+      // A signal that was ALREADY aborted has settled the promise and destroyed the request above;
+      // there is nothing left to send, and writing to a destroyed request would only raise a
+      // spurious ERR_STREAM_DESTROYED. Returning here is also what keeps the promise's contract
+      // honest: the server never sees a request the caller had already cancelled.
+      if (settled) return;
       try {
         if (body) {
           req.write(body);
