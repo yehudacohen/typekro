@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { getComponentLogger } from '../../../src/core/logging/index.js';
+import { REQUIRED_FIELD_SENTINEL } from '../../../src/core/serialization/schema.js';
 import {
   CHI_STATUS,
   clickHouseInstallation,
@@ -8,6 +12,18 @@ import {
   clickHouseKeeperInstallation,
   DEFAULT_CHK_CLUSTER_NAME,
 } from '../../../src/factories/clickhouse/resources/keeper.js';
+
+/**
+ * The keeper factory holds a module-private component logger. Every logger
+ * shares one prototype, so spying there intercepts its `warn` without exporting
+ * the instance for tests (same approach as the nested-status-inliner suite).
+ */
+function spyOnLoggerWarn() {
+  const loggerPrototype = Object.getPrototypeOf(getComponentLogger('keeper-factory-test')) as {
+    warn: (message: string, metadata?: Record<string, unknown>) => void;
+  };
+  return spyOn(loggerPrototype, 'warn');
+}
 
 /**
  * The Altinity CRD's own cap on `spec.configuration.clusters[].name`
@@ -222,6 +238,101 @@ describe('ClickHouseKeeperInstallation Factory', () => {
       expect(() => clickHouseKeeperInstallation({ name: 'keeper', clusterName })).toThrow(
         /clickHouseKeeperInstallation: 'clusterName' must match/
       );
+    });
+  });
+
+  /**
+   * THE ONE CASE A BUILD CHECK CANNOT COVER. In kro mode `name` is a schema
+   * reference, so the rendered RGD carries
+   * `clusters[0].name: ${schema.spec.name}` and the value is only known when an
+   * instance is created. The generated KRO schema types `spec.name` as a bare
+   * `string` with no length bound, so an over-long instance name still reaches
+   * the operator. The factory therefore WARNS at build time instead of
+   * throwing — requiring `clusterName` for references would force it on
+   * existing KRO-mode deployments, where changing it loses keeper state.
+   */
+  describe('kro mode (reference name)', () => {
+    let warnSpy: ReturnType<typeof spyOnLoggerWarn>;
+
+    beforeEach(() => {
+      warnSpy = spyOnLoggerWarn();
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    /** Warnings this factory emitted, message only. */
+    function keeperWarnings(): string[] {
+      return warnSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((message) => message.startsWith('clickHouseKeeperInstallation:'));
+    }
+
+    function renderKeeperComposition(id: string, namespace: string, clusterName?: string): string {
+      const composition = kubernetesComposition(
+        {
+          name: `chk-${id}`,
+          apiVersion: 'test.typekro.dev/v1',
+          kind: `ChkRef${id}`,
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec: { name: string }) => {
+          const chk = clickHouseKeeperInstallation({
+            name: spec.name,
+            namespace,
+            replicas: 3,
+            ...(clusterName !== undefined ? { clusterName } : {}),
+            id: 'chKeeper',
+          });
+          return { ready: true as unknown as boolean, endpoint: chk.metadata.name } as never;
+        }
+      );
+      return composition.toYaml();
+    }
+
+    it('emits the reference and warns once when clusterName is unset', () => {
+      // The namespace is what keys the once-per-build dedupe, so each case
+      // needs its own.
+      const yaml = renderKeeperComposition('Unset', 'chk-warn-unset');
+
+      // The cluster name follows the instance name into the RGD.
+      expect(yaml).toContain('kind: ClickHouseKeeperInstallation');
+      expect(yaml).toMatch(/clusters:[\s\S]*?name: \$\{schema\.spec\.name\}/);
+
+      // Exactly one warning, although the composition body re-executes several
+      // times per serialization.
+      const warnings = keeperWarnings();
+      expect(warnings).toHaveLength(1);
+      const [message] = warnings;
+      expect(message).toContain("'name' is a schema reference");
+      expect(message).toContain('follows the INSTANCE name at runtime');
+      expect(message).toContain('15 bytes');
+      expect(message).toContain(`clusterName: DEFAULT_CHK_CLUSTER_NAME ('keeper')`);
+      // The state-loss caveat keeps an existing deployment from "fixing" it.
+      expect(message).toContain('loses the coordination state');
+      // And the way to make KRO validate at admission instead.
+      expect(message).toContain('ClickHouseClusterNameSchema');
+    });
+
+    it('emits the pinned name and does NOT warn when clusterName is set', () => {
+      const yaml = renderKeeperComposition('Pinned', 'chk-warn-pinned', DEFAULT_CHK_CLUSTER_NAME);
+
+      expect(yaml).toContain('kind: ClickHouseKeeperInstallation');
+      expect(yaml).toMatch(/clusters:[\s\S]*?name: keeper/);
+      expect(yaml).not.toMatch(/clusters:[\s\S]*?name: \$\{schema\.spec\.name\}/);
+      expect(keeperWarnings()).toHaveLength(0);
+    });
+
+    it('never validates the required-field sentinel as a real installation name', () => {
+      // The defaults-extraction pass substitutes `__typekro_default__` for a
+      // required spec field. It contains underscores and is past the cap, so
+      // validating it would throw on a perfectly valid kro-mode build.
+      expect(() => renderKeeperComposition('Sentinel', 'chk-warn-sentinel')).not.toThrow();
+      expect(() =>
+        clickHouseKeeperInstallation({ name: REQUIRED_FIELD_SENTINEL, namespace: 'chk-sentinel' })
+      ).not.toThrow();
     });
   });
 

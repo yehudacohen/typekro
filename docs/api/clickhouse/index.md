@@ -529,9 +529,35 @@ The CHI consumes it through the operator's `zookeeper` configuration section (wh
 The Altinity CRD constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` / `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on **both** the CHI and the CHK, while `metadata.name` is uncapped. The value is a fragment of the object names the operator generates (`chi-<installation>-<cluster>-<shard>-<replica>`, `chk-…`); an empty value is rejected too — the CRD does not allow one.
 
 - **CHI** — `clusterName` defaults to `DEFAULT_CHI_CLUSTER_NAME` (`cluster`). SigNoz's migrations hardcode that name, so keep the default for a SigNoz consumer.
-- **CHK** — `clusterName` defaults to the **installation name**, and the factory throws at **build time** when that name cannot be a legal cluster name, naming the length, the cap and the remedy. Deriving from the installation name is kept on purpose: changing a cluster name replaces the StatefulSet with fresh volumes and loses the keeper's coordination state, so an installation whose name already fitted the cap keeps exactly the object names it had. Pass `clusterName: DEFAULT_CHK_CLUSTER_NAME` (`'keeper'`) — or any short stable value — for a longer installation name.
+- **CHK** — `clusterName` defaults to the **installation name**. When that name is a **literal** and cannot be a legal cluster name, the factory throws at **build time**, naming the length, the cap and the remedy. Deriving from the installation name is kept on purpose: changing a cluster name replaces the StatefulSet with fresh volumes and loses the keeper's coordination state, so an installation whose name already fitted the cap keeps exactly the object names it had. Pass `clusterName: DEFAULT_CHK_CLUSTER_NAME` (`'keeper'`) — or any short stable value — for a longer installation name.
 
 An explicit `clusterName` is validated at build time against the CRD pattern and the 15-byte cap on both resources, so an illegal value fails at graph construction rather than at apply.
+
+#### KRO mode: the check moves to the operator
+
+The build-time throw only covers a **literal** name. In `factory('kro')` the keeper's `name` is a schema reference, so the rendered RGD carries `clusters[0].name: ${schema.spec.name}` and the value is unknown until an instance is created. The generated KRO schema types `spec.name` as a bare `string` with no length bound, so an over-long *instance* name is caught by Altinity's admission check, not by TypeKro. The factory emits one build-time **warning** saying exactly that. It does not throw, and `clusterName` is deliberately not mandatory for references: requiring it would force it on existing KRO-mode deployments, where changing the cluster name loses keeper state.
+
+Two ways to close the gap for a **new** deployment:
+
+```typescript
+// 1. Pin the cluster name, so the instance name can never reach it.
+const keeper = clickHouseKeeperInstallation({
+  name: spec.name,                        // any length
+  clusterName: DEFAULT_CHK_CLUSTER_NAME,  // 'keeper'
+  replicas: 3,
+});
+
+// 2. Or have KRO reject a bad instance at admission, by bounding the enclosing
+//    composition's own spec field. The schema generator carries an arktype
+//    bound's maxLength and pattern into the RGD, so KRO rejects the instance
+//    before the operator ever sees it.
+kubernetesComposition(
+  { /* … */ spec: type({ name: ClickHouseClusterNameSchema /* string <= 15, CRD pattern */ }) },
+  (spec) => clickHouseKeeperInstallation({ name: spec.name, replicas: 3 })
+);
+```
+
+For an **existing** KRO-mode deployment whose instance names already fit the cap, neither is needed — leave the cluster name alone.
 
 Consumers that need the value — a `keeper_path` prefix, an operator-generated Service name, or the `ON CLUSTER '<name>'` target of their own DDL — must read it from the exported constant or the `clusterName` they passed, or from the cluster composition's status (`status.clickhouse.clusterName`, projected from the CHI's own `spec.configuration.clusters[0].name`). Never assume a particular derivation.
 

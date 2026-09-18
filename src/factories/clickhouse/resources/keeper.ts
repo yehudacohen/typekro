@@ -8,7 +8,9 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { getComponentLogger } from '../../../core/logging/index.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
+import { REQUIRED_FIELD_SENTINEL } from '../../../core/serialization/schema.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { createResource } from '../../shared.js';
 import type {
@@ -23,6 +25,8 @@ import {
   CLICKHOUSE_CLUSTER_NAME_PATTERN,
 } from '../utils/validation.js';
 import { chiReadinessEvaluator } from './installation.js';
+
+const logger = getComponentLogger('clickhouse-keeper-factory');
 
 /** Name of the generated keeper data volume claim template. */
 const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
@@ -48,8 +52,17 @@ const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
  * in the ClickHouse cluster depends on. Silently swapping the default would do
  * that to every deployment whose installation name already fitted the cap, and
  * those deployments were never broken. So the default still DERIVES from the
- * installation name, and a name that cannot fit is a loud BUILD error pointing
- * at this constant rather than a silent rename or a silent truncation.
+ * installation name, and a LITERAL name that cannot fit is a loud BUILD error
+ * pointing at this constant rather than a silent rename or a silent truncation.
+ *
+ * KRO MODE. When `name` is a schema reference the value is unknown at build
+ * time, so the check moves to the operator: the RGD carries
+ * `clusters[0].name: ${schema.spec.name}` and the generated schema types
+ * `spec.name` as a bare `string`. The factory warns instead of throwing, and
+ * this constant is what the warning recommends pinning for a NEW deployment.
+ * To have KRO reject a bad instance at admission, bound the enclosing
+ * composition's own spec field with `ClickHouseClusterNameSchema` — the schema
+ * generator carries its `maxLength` and `pattern` into the RGD.
  *
  * Anything that needs the value — a `keeper_path` prefix, an
  * operator-generated Service name — must read it from the rendered
@@ -57,6 +70,88 @@ const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
  * in), never by assuming a particular derivation.
  */
 export const DEFAULT_CHK_CLUSTER_NAME = 'keeper';
+
+/**
+ * Warnings already emitted, so a composition body that re-executes (the
+ * imperative analyzer runs it several times per serialization) reports once per
+ * factory build rather than once per pass.
+ */
+const keeperClusterNameWarnings = new Set<string>();
+
+/**
+ * Is this a CONCRETE installation name a build-time check can judge?
+ *
+ * Three things arrive here that are not one, and all of them show up while
+ * serializing a single composition:
+ *
+ * - a `KubernetesRef` / CEL expression — the schema proxy itself;
+ * - {@link REQUIRED_FIELD_SENTINEL}, the placeholder the defaults-extraction
+ *   re-execution substitutes for required spec fields (possibly with a suffix
+ *   concatenated onto it by a template literal);
+ * - `undefined`, on the passes that run with no spec at all.
+ *
+ * None of them is the user's value, so none may be validated as one — the
+ * sentinel in particular contains underscores and is 19 bytes, so validating it
+ * would throw on a perfectly valid KRO-mode build.
+ */
+function isConcreteInstallationName(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    !value.includes(REQUIRED_FIELD_SENTINEL) &&
+    !isKubernetesRef(value) &&
+    !isCelExpression(value)
+  );
+}
+
+/**
+ * Stable identity for one CHK inside one build.
+ *
+ * Keyed by the graph identity rather than by the reference, because a single
+ * serialization re-executes the composition body several times and hands the
+ * factory a DIFFERENT shape each pass (a ref, then the sentinel, then
+ * `undefined`). Keying on the value would warn once per shape.
+ */
+function keeperWarningKey(config: Composable<ClickHouseKeeperInstallationConfig>): string {
+  return `${String(config.namespace ?? '')}|${String(config.id ?? '')}`;
+}
+
+/**
+ * Warn that the keeper's internal cluster name will follow the INSTANCE name at
+ * runtime, where nothing bounds it before the operator does.
+ *
+ * Not an error: `clusterName` is intentionally optional for references, because
+ * requiring it would force every existing KRO-mode deployment to set one, and
+ * changing a cluster name replaces the StatefulSet and loses keeper state.
+ */
+function warnKeeperClusterNameFollowsReference(
+  config: Composable<ClickHouseKeeperInstallationConfig>
+): void {
+  const key = keeperWarningKey(config);
+  if (keeperClusterNameWarnings.has(key)) return;
+  keeperClusterNameWarnings.add(key);
+
+  logger.warn(
+    `clickHouseKeeperInstallation: 'name' is a schema reference, so the keeper's internal ` +
+      `cluster name follows the INSTANCE name at runtime. Altinity caps ` +
+      `\`spec.configuration.clusters[].name\` at ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES} bytes ` +
+      `(minLength 1, \`^[a-zA-Z0-9-]{0,15}\$\`) while \`metadata.name\` is uncapped, so an ` +
+      `instance whose name is longer is rejected by the operator — a build-time check cannot ` +
+      `see the value. For a NEW deployment, pass ` +
+      `clusterName: DEFAULT_CHK_CLUSTER_NAME ('${DEFAULT_CHK_CLUSTER_NAME}') to pin it. For an ` +
+      `EXISTING one, leave it alone: changing the cluster name replaces the StatefulSet with ` +
+      `fresh volumes and loses the coordination state every Replicated* table depends on. ` +
+      `To have KRO reject a bad instance at admission instead, bound the enclosing ` +
+      `composition's own spec field with ClickHouseClusterNameSchema (or any arktype ` +
+      `'string <= ${CLICKHOUSE_CLUSTER_NAME_MAX_BYTES}' bound) — the schema generator carries ` +
+      `maxLength and pattern into the RGD.`,
+    {
+      namespace: config.namespace,
+      id: config.id,
+      remedy: `clusterName: '${DEFAULT_CHK_CLUSTER_NAME}'`,
+      clusterNameMaxBytes: CLICKHOUSE_CLUSTER_NAME_MAX_BYTES,
+    }
+  );
+}
 
 /**
  * Resolve the CHK's logical cluster name.
@@ -68,8 +163,15 @@ export const DEFAULT_CHK_CLUSTER_NAME = 'keeper';
  * fails at BUILD time naming the field, the length, the cap and the remedy,
  * instead of letting the operator reject the object on apply.
  *
- * A non-string `name` is a schema reference: it is passed through exactly as
- * before and validated by the CRD (and by the generated KRO schema) instead.
+ * KRO MODE IS THE ONE CASE A BUILD CHECK CANNOT COVER. When `name` is a schema
+ * reference the value is not known until an instance is created, so the
+ * reference is passed through (as before) and the rendered RGD carries
+ * `clusters[0].name: ${schema.spec.name}`. The generated KRO schema types that
+ * field as a bare `string` with NO length bound, so an instance name past the
+ * cap still reaches the operator — hence the build-time WARNING, and the
+ * `clusterName` remedy it points at. Making `clusterName` mandatory for
+ * references is deliberately NOT the answer: it would force it on existing
+ * KRO-mode deployments, where changing the cluster name loses keeper state.
  */
 function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallationConfig>): string {
   if (config.clusterName !== undefined) {
@@ -80,8 +182,12 @@ function resolveKeeperClusterName(config: Composable<ClickHouseKeeperInstallatio
   }
 
   const derived = config.name;
-  if (typeof derived !== 'string' || CLICKHOUSE_CLUSTER_NAME_PATTERN.test(derived)) {
+  if (!isConcreteInstallationName(derived)) {
+    warnKeeperClusterNameFollowsReference(config);
     return derived as string;
+  }
+  if (CLICKHOUSE_CLUSTER_NAME_PATTERN.test(derived)) {
+    return derived;
   }
 
   const byteLength = Buffer.byteLength(derived, 'utf8');

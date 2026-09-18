@@ -311,7 +311,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `clickHouseKeeperInstallation()` now fails at BUILD time, instead of at the operator,
-  when the installation name cannot be the CHK's internal cluster name. The Altinity CRD
+  when a LITERAL installation name cannot be the CHK's internal cluster name. The Altinity CRD
   constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` /
   `^[a-zA-Z0-9-]{0,15}$` (`See namePartClusterMaxLen const`) on the
   ClickHouseKeeperInstallation exactly as it does on the ClickHouseInstallation, while
@@ -335,6 +335,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject an illegal value identically; unit tests pin the boundary at 15 accepted / 16
   rejected on both. The CHI is unchanged — its `cluster` default was already independent
   of the installation name, which is why only the keeper failed.
+
+  KRO MODE: the check moves to the operator, and the factory says so. When `name` is a
+  schema reference the value is unknown at build time — the RGD carries
+  `clusters[0].name: ${schema.spec.name}` and the generated KRO schema types `spec.name`
+  as a bare `string` with no length bound — so an over-long INSTANCE name still reaches
+  Altinity's admission check. The factory emits one build-time WARNING per CHK saying
+  that, recommending `clusterName: DEFAULT_CHK_CLUSTER_NAME` for a NEW deployment (with
+  the state-loss caveat for an existing one) and pointing at the other option: bounding
+  the enclosing composition's own spec field with `ClickHouseClusterNameSchema`, whose
+  `maxLength` and `pattern` the schema generator carries into the RGD so KRO rejects a
+  bad instance at admission. `clusterName` is deliberately NOT made mandatory for
+  references — that would force it on existing KRO-mode deployments. The same change
+  stops the defaults-extraction pass's `REQUIRED_FIELD_SENTINEL` placeholder from being
+  validated as if it were a real installation name.
 
   Anything that needs the value — a `keeper_path` prefix, an operator-generated Service
   name, and on the CHI side the `ON CLUSTER '<name>'` target of a consumer's DDL — must
