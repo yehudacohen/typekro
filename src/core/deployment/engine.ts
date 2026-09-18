@@ -60,6 +60,7 @@ import { discoverDeployedResourcesByInstance } from './deployment-state-discover
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { classifyReadError } from './k8s-helpers.js';
+import { retryOnceOnRequestTimeout } from './poll-timeout.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { ReadinessWaiter } from './readiness-waiter.js';
 import { ResourceApplier } from './resource-applier.js';
@@ -923,10 +924,23 @@ export class DirectDeploymentEngine {
     const dependsOnTargets = (reference.dependsOn ?? []).join(', ') || 'none';
     let lastDetail: string | undefined;
 
+    // With a `retry` budget the loop below already re-reads until the deadline, so a request
+    // timeout costs one iteration. Without one this is a single GET before anything is applied, and
+    // one stalled request — the first a fresh client makes, against a healthy server (#213) — must
+    // not fail the deployment: re-issue the idempotent read once, bounded to two read budgets.
+    const readLive = (): Promise<unknown> => this.k8sApi.read(resourceRef);
+    const readOnce = settings.retry
+      ? readLive
+      : () =>
+          retryOnceOnRequestTimeout(readLive, {
+            label: `External reference ${manifest.kind}/${name} ('${referenceId}')`,
+            logger: settings.logger,
+          });
+
     for (;;) {
       settings.retry?.abortSignal.throwIfAborted();
       try {
-        const live = await this.k8sApi.read(resourceRef);
+        const live = await readOnce();
         resourceKeyMapping.set(referenceId, live);
         settings.logger.debug('Resolved required external resource', {
           referenceId,
