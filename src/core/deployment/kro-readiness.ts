@@ -19,7 +19,8 @@ import {
 import { CRDInstanceError, DeploymentTimeoutError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { RGDManifest } from '../types/kubernetes.js';
-import { callWithTimeout, isRequestTimeoutError, perCallTimeout } from './poll-timeout.js';
+import { classifyApiReadError, describeApiReadFailure } from './k8s-helpers.js';
+import { callWithTimeout, perCallTimeout } from './poll-timeout.js';
 
 /** Options for Kro instance readiness polling. */
 export interface KroReadinessOptions {
@@ -88,6 +89,27 @@ function abortableDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
  *    and has observed the current instance generation when KRO reports generations
  * 3. Either custom status fields are populated OR the RGD declares no status schema
  *
+ * RGD STATUS-SCHEMA LOOKUP POLICY. Step 3 needs the ResourceGraphDefinition's declared status schema.
+ * An UNCERTAIN read of that schema is never converted into an EMPTY schema: "we did not learn what
+ * this instance's status should contain" must not become "this instance has no custom status", which
+ * is what declares an ACTIVE/synced instance ready without validating any of its expected fields.
+ * Failures are classified with the repo's shared {@link classifyApiReadError}:
+ *
+ * - `forbidden` (401/403) FAILS FAST. RBAC is the one cause waiting cannot fix, and every other
+ *   401/403 in this codebase — including the instance read in this same loop — already fails fast.
+ * - EVERY other classification — `timeout` (a wedged/expired exec credential, a half-open socket),
+ *   `unreachable` (a premature close, a refused connection, DNS, TLS), `notFound`, and the
+ *   deliberately conservative `other` bucket that catches 5xx and anything unrecognised — ABANDONS
+ *   the iteration: neither ready nor permissive. The loop polls again, so the caller's overall
+ *   `timeout` stays the single authority on how long to keep trying, and one transient blip is
+ *   ridden out rather than failing the deploy. A lookup that never succeeds simply never satisfies
+ *   step 3, and the wait ends in the overall {@link DeploymentTimeoutError}, whose message carries
+ *   the last lookup failure so the diagnosis is not lost.
+ *
+ * `notFound` is strict for the same reason: the RGD name this poll looks up is the name the compiler
+ * emitted (`convertToKubernetesName(composition.name)`, threaded through the deployment plan), so a
+ * 404 means the RGD is missing or not yet created, not that the instance has no status schema.
+ *
  * @throws {CRDInstanceError} if the instance enters a FAILED or ERROR state
  * @throws {DeploymentTimeoutError} if the timeout is exceeded
  */
@@ -109,6 +131,14 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
   const logger = getComponentLogger('kro-readiness');
   const readinessLogger = logger.child({ instanceName, rgdName });
   const startTime = Date.now();
+  /**
+   * The last RGD status-schema lookup that timed out and was retried. Folded into the overall
+   * timeout message: without it a persistently wedged lookup reports only "not ready in time" and
+   * the actionable diagnosis (a wedged request / a premature close, and its cause) is lost.
+   */
+  let lastLookupError: Error | undefined;
+  /** Lookup failure messages already logged, so a retry loop warns once per distinct message. */
+  const warnedLookupFailures = new Set<string>();
 
   while (Date.now() - startTime < timeout) {
     abortSignal?.throwIfAborted();
@@ -218,24 +248,46 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
           expectedCustomStatusFields,
         });
       } catch (error: unknown) {
-        // A request TIMEOUT (wedged/expired credential, a half-open socket, a response truncated
-        // mid-body) is NOT a fetchable-RGD failure — do not fall through to the permissive path,
-        // which would let an ACTIVE/synced instance be declared ready WITHOUT validating expected
-        // status fields (and after the deadline). Recognise EVERY timing layer, not just this
-        // module's wrapper: the HTTP library's socket timer is armed synchronously as the request is
-        // issued, so it usually fires FIRST and raises a bare `RequestTimeoutError`, and a mid-
-        // response disconnect raises `PrematureCloseError`. Both would have slipped past an
-        // `instanceof PollTimeoutError` gate and failed open. Surface it so the outer catch
-        // re-throws it (fail fast).
-        if (isRequestTimeoutError(error)) {
+        // An UNCERTAIN read must never be converted into an empty schema. The old code fell through
+        // to `expectedCustomStatusFields = false` — "the RGD declares no custom status" — for every
+        // failure alike, so any request that did not produce an answer let an ACTIVE/synced instance
+        // be declared ready WITHOUT validating the status fields it was supposed to have. The
+        // question is not which error class this is, it is whether the server actually ANSWERED.
+        // `classifyApiReadError` is the repo's shared answer to that, and it already folds in the
+        // socket-level cases this gate previously missed: `PrematureCloseError` carries `ECONNRESET`
+        // → `unreachable`, and both `RequestTimeoutError` and `PollTimeoutError` → `timeout`.
+        const failure = classifyApiReadError(error);
+
+        // RBAC is the one failure that waiting cannot fix, and the repo fails fast on 401/403
+        // everywhere else (including the instance read in this very loop). Spending the whole
+        // readiness budget re-asking a question that will keep being refused only buries the cause.
+        if (failure === 'forbidden') {
           throw error;
         }
-        readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
-          rgdName,
-          error: ensureError(error).message,
-        });
-        // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
-        expectedCustomStatusFields = false;
+
+        // Everything else — `timeout`, `unreachable`, `notFound`, and the deliberately conservative
+        // `other` bucket that catches 5xx and anything unrecognised — means we did not learn the
+        // schema. Abandon this iteration (neither ready nor permissive) and poll again, so the
+        // caller's overall `timeout` stays the single authority on how long to keep trying. One
+        // transient blip is what a poll loop exists to ride out; a persistent failure ends in the
+        // overall DeploymentTimeoutError, carrying this message.
+        lastLookupError = ensureError(error);
+        if (!warnedLookupFailures.has(lastLookupError.message)) {
+          warnedLookupFailures.add(lastLookupError.message);
+          readinessLogger.warn(
+            'ResourceGraphDefinition status-schema lookup did not produce an answer — retrying until the readiness deadline',
+            {
+              rgdName,
+              failure,
+              reason: describeApiReadFailure(failure),
+              error: lastLookupError.message,
+            }
+          );
+        }
+        // Honour the poll interval before retrying: a premature close can reject in milliseconds,
+        // so continuing straight to the top of the loop would spin.
+        await abortableDelay(pollInterval, abortSignal);
+        continue;
       }
 
       readinessLogger.debug('Kro instance status check', {
@@ -347,8 +399,13 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
   }
 
   const elapsed = Date.now() - startTime;
+  // A lookup that never returned is the most actionable thing known about this timeout — without it
+  // the message reports only "not ready in time" and the wedged-request diagnosis is lost.
+  const lookupDiagnosis = lastLookupError
+    ? ` The ResourceGraphDefinition status-schema lookup never returned, so readiness could not be confirmed; its last failure was: ${lastLookupError.message}`
+    : '';
   throw new DeploymentTimeoutError(
-    `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms).${factoryContext ? ` This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro` : ''}`,
+    `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms).${factoryContext ? ` This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro` : ''}${lookupDiagnosis}`,
     kind,
     instanceName,
     timeout,

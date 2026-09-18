@@ -284,6 +284,12 @@ export function withCallDeadline<T extends object>(
       const method = value as (...args: unknown[]) => unknown;
       const budgetMs = budget[callDeadlineVerb(property)];
       const bound = (...args: unknown[]): unknown => {
+        // Check the signal BEFORE the call, not just inside `raceDeadline`. Racing an
+        // already-aborted signal still STARTS the request: the caller's promise rejects, but the
+        // write or delete has already left for the API server. In a replacement sequence
+        // (delete → wait for the 404 → create) an abort landing in that window would cancel the
+        // deployment and create the object anyway.
+        abortSignal?.throwIfAborted();
         const result = method.apply(target, args);
         if (!isThenable(result)) return result;
         return raceDeadline(result, budgetMs, `${label} ${property}`, abortSignal);

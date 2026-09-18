@@ -227,6 +227,28 @@ describe('withCallDeadline', () => {
     await expect(api.read()).resolves.toEqual({ ok: true });
   });
 
+  it('does not START a call when the signal is already aborted', async () => {
+    // Racing an already-aborted signal still LAUNCHES the request: the caller's promise rejects, but
+    // the write has already left for the API server. In a replacement sequence (delete → wait for
+    // the 404 → create) an abort landing in that window would cancel the deployment and create the
+    // object anyway. The call must never be made at all.
+    const controller = new AbortController();
+    controller.abort(new Error('converge cancelled'));
+    let creates = 0;
+    const api = withCallDeadline(
+      {
+        create: () => {
+          creates += 1;
+          return Promise.resolve({ ok: true });
+        },
+      },
+      { budget, label: 'Widget demo', abortSignal: controller.signal }
+    );
+
+    expect(() => api.create()).toThrow('converge cancelled');
+    expect(creates).toBe(0);
+  });
+
   it('still honors the abort signal when the budget is unusable', async () => {
     // A misconfigured budget must not silently drop the abort plumbing — that is its own hang.
     const controller = new AbortController();

@@ -304,21 +304,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The KRO instance readiness check could still declare an instance ready WITHOUT
-  confirming its expected custom status fields when the ResourceGraphDefinition
-  status-schema lookup timed out. That lookup deliberately fails closed on a wedged
-  call — a call that never answered is not evidence that the schema is unfetchable —
-  but the gate recognised only the readiness poll's own per-call timeout class. A
-  request can time out at either of two layers: the HTTP library arms its socket timer
-  synchronously while the request is issued, so with comparable budgets it fires FIRST
-  and raises the base request-timeout type, and a connection dropped mid-response
-  raises the premature-close type. Neither was the class the gate tested for, so both
-  fell through to the permissive branch and an ACTIVE, synced instance was declared
-  ready with its status fields never validated — and after the deadline had elapsed.
-  The gate now uses the shared `isRequestTimeoutError` predicate, which recognises
-  every timeout class through a structural marker (so it also survives duplicate module
-  instances, where `instanceof` does not). Genuinely unfetchable schemas — a 403, a 404
-  — keep the documented permissive fallback.
+- **Behaviour change.** The KRO instance readiness check no longer converts an
+  UNCERTAIN ResourceGraphDefinition status-schema read into an EMPTY status schema. It
+  reads that schema to learn which custom status fields an instance is expected to
+  project; previously ANY failure of that read set "expects no custom status fields",
+  so a request that never produced an answer let an ACTIVE, synced instance be declared
+  ready without validating a single one of its status fields — and, for a request that
+  burned its whole budget, after the deadline had already passed.
+
+  The gate that was supposed to prevent this recognised only the readiness poll's own
+  per-call timeout class, and a request can fail at several layers: the HTTP library
+  arms its socket timer synchronously while the request is issued, so with comparable
+  budgets it fires FIRST and raises the base request-timeout type; a connection dropped
+  mid-response raises the premature-close type; a 5xx or an unrecognised transport error
+  raises neither. Failures are now classified with the same shared classifier the rest
+  of the engine uses, and the question it answers is the right one — did the server
+  actually ANSWER? — rather than which error class this happens to be.
+
+  A refused request (401/403) fails fast, matching every other 401/403 in the codebase
+  and the documented policy that waiting cannot fix RBAC. Every other outcome —
+  timeouts, unreachable (premature close, refused connection, DNS, TLS), 404, and the
+  conservative "unrecognised" bucket that catches 5xx — ABANDONS that poll iteration:
+  neither ready nor permissive. The loop polls again, so the caller's overall `timeout`
+  stays the single authority on how long to keep trying and one transient blip is ridden
+  out instead of failing the deploy; the poll interval is honoured before the retry, so
+  a fast-rejecting premature close cannot spin. A read that never succeeds simply never
+  satisfies the status-field check, and the resulting overall timeout error now carries
+  the last lookup failure so the diagnosis is not lost.
+
+  404 is strict for the same reason: the RGD name the poll looks up is the name the
+  factory emitted — both read one stored field — so a 404 means the RGD is missing, not
+  that the instance has no status schema. A new repo-wide test asserts that property
+  against every shipped composition, so a future refactor that re-derived the lookup
+  name from the instance's kind or apiVersion could not pass unnoticed.
+
+- A cancelled deployment could still issue the write it was cancelled to prevent. The
+  per-request deadline wrapper raced an already-aborted signal against the operation,
+  but the race is set up AFTER the call has been made: the caller's promise rejected
+  while the create or delete had already left for the API server. In a replacement
+  sequence — delete, wait for the 404, create — an abort landing in that window
+  cancelled the deployment and created the object anyway. The wrapper now checks the
+  signal BEFORE invoking the client method, so an aborted converge cannot launch new
+  cluster mutations.
+
+- The Bun-compatible HTTP library leaked an abort listener per successful request. The
+  listener was registered with `{ once: true }`, which removes it only when the event
+  FIRES — and the overwhelmingly common case is that it never fires, because the request
+  succeeded. A caller's `AbortSignal` typically spans a whole converge, so every
+  completed request left its closure (and the request object it captured) attached, and
+  the signal's listener list grew for the life of the operation. Detaching is now part
+  of the same latch that every terminal path already goes through, alongside clearing
+  the request timer.
 
 - `callDeadlineBudget()` collapsed `create` and `update` into a single write budget, so
   a caller who configured both got the `create` value on every POST, PUT, PATCH and

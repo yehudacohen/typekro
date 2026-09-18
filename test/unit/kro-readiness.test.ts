@@ -8,10 +8,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import type { KroReadinessOptions } from '../../src/core/deployment/kro-readiness.js';
 import { waitForKroInstanceReady } from '../../src/core/deployment/kro-readiness.js';
-import {
-  PollTimeoutError,
-  RequestTimeoutError,
-} from '../../src/core/deployment/poll-timeout.js';
+import { PollTimeoutError, RequestTimeoutError } from '../../src/core/deployment/poll-timeout.js';
 import { CRDInstanceError, DeploymentTimeoutError } from '../../src/core/errors.js';
 import { PrematureCloseError } from '../../src/core/kubernetes/bun-http-library.js';
 import { createK8sError } from '../utils/mock-factories.js';
@@ -717,7 +714,10 @@ describe('waitForKroInstanceReady', () => {
   // ---------------------------------------------------------------------------
 
   describe('RGD fetch error handling', () => {
-    it('treats instance as ready (permissive) when RGD fetch fails and instance is ACTIVE + synced', async () => {
+    it('no longer treats an unclassifiable RGD fetch failure as an empty status schema', async () => {
+      // This used to resolve: ANY lookup failure set `expectedCustomStatusFields = false`, so an
+      // ACTIVE + synced instance was declared ready without its status fields ever being checked.
+      // An unrecognised error classifies as `other` — "we did not learn the answer" — and is strict.
       mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(new Error('RGD not found'));
 
       mockK8sApi.read.mockResolvedValue(
@@ -727,13 +727,16 @@ describe('waitForKroInstanceReady', () => {
         })
       );
 
-      // Should resolve because when RGD can't be fetched, expectedCustomStatusFields = false,
-      // so isReady = ACTIVE && synced && (hasCustom || !false) = ACTIVE && synced && true
       await expect(
         waitForKroInstanceReady(
-          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 200,
+            pollInterval: 10,
+          })
         )
-      ).resolves.toBeUndefined();
+      ).rejects.toBeInstanceOf(DeploymentTimeoutError);
     });
 
     it('does NOT swallow a WEDGED RGD read as readiness — fails fast instead of returning ready late', async () => {
@@ -767,8 +770,9 @@ describe('waitForKroInstanceReady', () => {
     // `callWithTimeout` wrapper and raises a bare `RequestTimeoutError`; a mid-response disconnect
     // raises `PrematureCloseError`. An `instanceof PollTimeoutError` gate recognised neither, so both
     // fell through to the permissive branch and an ACTIVE/synced instance was declared ready without
-    // its expected status fields ever being confirmed. Every timeout class must propagate.
-    const propagatingTimeouts: [string, () => Error][] = [
+    // its expected status fields ever being confirmed. Every timeout class must instead ABANDON the
+    // iteration: not permissive, and not fatal either — the poll loop rides the blip out.
+    const lookupTimeouts: [string, () => Error][] = [
       [
         'a bare RequestTimeoutError from the socket timer',
         () => new RequestTimeoutError('HTTP request timeout: GET /apis/kro.run/v1alpha1', 30_000),
@@ -789,57 +793,141 @@ describe('waitForKroInstanceReady', () => {
       ],
     ];
 
-    for (const [label, makeError] of propagatingTimeouts) {
-      it(`propagates ${label} instead of falling through to the permissive path`, async () => {
-        mockK8sApi.read.mockResolvedValue(
-          kroInstance({
-            state: 'ACTIVE',
-            conditions: [{ type: 'Ready', status: 'True' }],
-          })
-        );
-        const failure = makeError();
-        mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(failure);
+    for (const [label, makeError] of lookupTimeouts) {
+      it(`retries past ${label} without ever taking the permissive path`, async () => {
+        // The instance is ACTIVE + synced but its custom status field is NOT yet populated, so the
+        // permissive path is observable: taking it would resolve on the very first iteration. The
+        // wait may only succeed once the schema has actually been read AND the field has appeared.
+        mockCustomObjectsApi.getClusterCustomObject
+          .mockRejectedValueOnce(makeError())
+          .mockResolvedValue({ spec: { schema: { status: { url: 'string' } } } });
+        mockK8sApi.read
+          .mockResolvedValueOnce(
+            kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+          )
+          .mockResolvedValueOnce(
+            // Schema readable now, but the expected field is still missing — must NOT be ready.
+            kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+          )
+          .mockResolvedValue(
+            kroInstance({
+              state: 'ACTIVE',
+              conditions: [{ type: 'Ready', status: 'True' }],
+              url: 'http://web-app',
+            })
+          );
 
         await expect(
           waitForKroInstanceReady(
             defaultOptions({
               k8sApi: mockK8sApi,
               customObjectsApi: mockCustomObjectsApi,
-              timeout: 500,
+              timeout: 2_000,
+              pollInterval: 10,
             })
           )
-        ).rejects.toThrow(failure);
+        ).resolves.toBeUndefined();
+
+        // Proof the permissive branch was never taken: it would have resolved before the schema was
+        // ever read a second time, and before the expected field existed.
+        expect(mockCustomObjectsApi.getClusterCustomObject.mock.calls.length).toBeGreaterThan(1);
+        expect(mockK8sApi.read.mock.calls.length).toBeGreaterThan(2);
       });
     }
 
-    it('still takes the documented permissive fallback for a non-timeout RGD failure', async () => {
-      // The fail-closed gate must stay narrow: a 403 (or a 404 for an RGD that is not readable) is
-      // the pre-existing "cannot fetch the schema" case and keeps its permissive behaviour.
+    it('ends at the overall deadline, reporting the lookup failure, when the lookup keeps timing out', async () => {
+      // A persistently wedged lookup must not be declared ready and must not throw on the first
+      // blip: the caller's own `timeout` stays the single authority, and the diagnosis survives.
       mockK8sApi.read.mockResolvedValue(
-        kroInstance({
-          state: 'ACTIVE',
-          conditions: [{ type: 'Ready', status: 'True' }],
+        kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+      );
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
+        new PrematureCloseError(
+          'GET',
+          '/apis/kro.run/v1alpha1/resourcegraphdefinitions/web-app',
+          12,
+          'the response body was truncated'
+        )
+      );
+
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 300,
+          pollInterval: 10,
         })
-      );
-      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
-        createK8sError('resourcegraphdefinitions.kro.run is forbidden', 403)
-      );
+      ).catch((error: unknown) => error);
 
-      await expect(
-        waitForKroInstanceReady(
-          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
-        )
-      ).resolves.toBeUndefined();
+      expect(failure).toBeInstanceOf(DeploymentTimeoutError);
+      expect((failure as Error).message).toContain('socket hang up');
+      expect((failure as Error).message).toContain('status-schema lookup never returned');
+    });
 
-      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(
-        createK8sError('resourcegraphdefinitions.kro.run "web-app" not found', 404)
+    // An UNCERTAIN read must never become an EMPTY schema. Every classification below means the
+    // server did not answer the question, so none of them may take the old permissive path.
+    const strictLookupFailures: [string, () => Error][] = [
+      ['timeout (socket timer)', () => new RequestTimeoutError('HTTP request timeout: GET /apis', 30_000)],
+      [
+        'unreachable (premature close)',
+        () => new PrematureCloseError('GET', '/apis/kro.run/v1alpha1', 12, 'the body was truncated'),
+      ],
+      [
+        'unreachable (connection refused)',
+        () => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6443'), { code: 'ECONNREFUSED' }),
+      ],
+      ['notFound (404)', () => createK8sError('resourcegraphdefinitions.kro.run "web-app" not found', 404)],
+      ['other (500)', () => createK8sError('an internal server error occurred', 500)],
+    ];
+
+    for (const [label, makeError] of strictLookupFailures) {
+      it(`never treats a ${label} lookup failure as an empty status schema`, async () => {
+        // ACTIVE + synced, but the expected custom status field is absent. The permissive path is
+        // therefore observable: taking it resolves immediately. Strict handling must instead run
+        // out the (short) deadline.
+        mockK8sApi.read.mockResolvedValue(
+          kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
+        );
+        mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(makeError());
+
+        const failure = await waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 200,
+            pollInterval: 10,
+          })
+        ).catch((error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(DeploymentTimeoutError);
+        expect((failure as Error).message).toContain('status-schema lookup never returned');
+      });
+    }
+
+    it('fails fast on a forbidden (403) lookup — RBAC is the one cause waiting cannot fix', async () => {
+      // Every other 401/403 in the codebase fails fast, including the instance read in this same
+      // loop. Burning the whole readiness budget re-asking a refused question buries the cause.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'ACTIVE', conditions: [{ type: 'Ready', status: 'True' }] })
       );
+      const forbidden = createK8sError('resourcegraphdefinitions.kro.run is forbidden', 403);
+      mockCustomObjectsApi.getClusterCustomObject.mockRejectedValue(forbidden);
 
-      await expect(
-        waitForKroInstanceReady(
-          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
-        )
-      ).resolves.toBeUndefined();
+      const started = Date.now();
+      const failure = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 5_000,
+          pollInterval: 10,
+        })
+      ).catch((error: unknown) => error);
+
+      expect(failure).not.toBeInstanceOf(DeploymentTimeoutError);
+      expect((failure as Error).message).toContain('forbidden');
+      // Fast, not after the 5s budget.
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(mockCustomObjectsApi.getClusterCustomObject.mock.calls.length).toBe(1);
     });
   });
 

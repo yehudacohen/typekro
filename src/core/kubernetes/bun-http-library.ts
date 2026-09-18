@@ -287,15 +287,22 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         }
       };
 
+      // Detaching the abort listener, if one was attached. Assigned when the signal is wired up
+      // below; a no-op until then, so the latch can always call it.
+      let detachAbort = (): void => undefined;
+
       // EVERY terminal path goes through here, and the FIRST one wins. Resolve/reject are latched so
       // a socket teardown that emits several events in a row (`aborted`, then `error`, then `close`)
       // cannot settle twice, and — the bug this guards — so no path can disarm the timer WITHOUT
-      // settling. Clearing the timer is the guard's job alone; nothing else touches it.
+      // settling. Clearing the timer is the guard's job alone; nothing else touches it. Releasing the
+      // abort listener belongs here for the same reason: it is per-request state on a signal that
+      // usually OUTLIVES the request.
       let settled = false;
       const settle = (finish: () => void): void => {
         if (settled) return;
         settled = true;
         clearRequestTimeout();
+        detachAbort();
         finish();
       };
 
@@ -425,19 +432,23 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       }
 
       // Handle abort signal (if available - added in newer versions).
-      // Use { once: true } to automatically remove the listener after firing,
-      // preventing memory growth when the AbortSignal outlives the request.
+      //
+      // `{ once: true }` alone is NOT enough to bound the listener's lifetime: it removes the
+      // listener when the event FIRES, and the overwhelmingly common case is that it never fires
+      // because the request succeeded. A caller's signal typically spans a whole converge — hundreds
+      // of requests — so every completed request left its closure (and the `req` it captures)
+      // attached, growing the signal's listener list for the life of the operation. Detaching is
+      // therefore done by the latch, which every terminal path goes through, with `{ once: true }`
+      // kept as belt and braces for the firing case.
       const getSignal = Reflect.get(request, 'getSignal') as (() => AbortSignal) | undefined;
       const signal = getSignal?.();
       if (signal) {
-        signal.addEventListener(
-          'abort',
-          () => {
-            settle(() => reject(new Error('Request aborted')));
-            req.destroy();
-          },
-          { once: true }
-        );
+        const onAbort = () => {
+          settle(() => reject(new Error('Request aborted')));
+          req.destroy();
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        detachAbort = () => signal.removeEventListener('abort', onAbort);
       }
 
       // The request ended without the promise having settled. On Bun this fires as soon as the
