@@ -919,6 +919,33 @@ describe('DirectDeploymentEngine Simple', () => {
         expect(message).toContain('unknown resource type (HTTP 404)');
       });
 
+      it('fails immediately on a rejected server certificate', async () => {
+        // A TLS trust failure is a configuration fact — the wrong CA bundle, a stale kubeconfig, an
+        // expired cluster certificate — so it reads identically on every attempt. Node's `fetch()`
+        // reports it as an opaque `TypeError: fetch failed` with the real code on `cause`, which the
+        // "a TypeError mentioning fetch is retryable" rule would otherwise poll to the deadline.
+        failServiceReads(new TypeError('fetch failed', { cause: { code: 'CERT_HAS_EXPIRED' } }));
+
+        const startedAt = Date.now();
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+
+        expect(result.status).toBe('failed');
+        expect(Date.now() - startedAt).toBeLessThan(2_000);
+        const message = result.errors[0]?.error.message ?? '';
+        expect(message).toContain('TLS configuration error');
+        expect(message).toContain('CERT_HAS_EXPIRED');
+        expect(message).toContain('check the cluster CA / server certificate');
+        expect(message).not.toMatch(/after waiting \d+ms/);
+        // Exactly one attempt — no polling at all.
+        const serviceReads = mockK8sApi.read.mock.calls.filter(
+          ([target]) => (target as Record<string, unknown> | undefined)?.kind === 'Service'
+        );
+        expect(serviceReads).toHaveLength(1);
+      });
+
       it('fails immediately on a programming error with no Kubernetes shape', async () => {
         failServiceReads(new TypeError('resourceRef.metadata is undefined'));
 

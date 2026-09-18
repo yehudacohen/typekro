@@ -109,6 +109,120 @@ describe('BunCompatibleHttpLibrary request timeout', () => {
   });
 });
 
+describe('BunCompatibleHttpLibrary abort-listener lifetime', () => {
+  /**
+   * A caller's AbortSignal typically spans a WHOLE converge — hundreds of requests — while each
+   * listener is per-request state that captures the request object. `{ once: true }` removes a
+   * listener when the event FIRES, and the overwhelmingly common case is that it never fires,
+   * because the request succeeded. So every completed request used to leave its closure attached
+   * and the signal's listener list grew for the life of the operation. Detaching now happens in the
+   * latch that every terminal path goes through.
+   */
+  it('detaches the abort listener when a request completes, on a shared long-lived signal', async () => {
+    const http = await import('node:http');
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    // Count attach/detach on the ONE signal every request shares.
+    const controller = new AbortController();
+    const signal = controller.signal;
+    let attached = 0;
+    const realAdd = signal.addEventListener.bind(signal);
+    const realRemove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((type: string, listener: never, options: never) => {
+      if (type === 'abort') attached += 1;
+      return realAdd(type, listener, options);
+    }) as typeof signal.addEventListener;
+    signal.removeEventListener = ((type: string, listener: never, options: never) => {
+      if (type === 'abort') attached -= 1;
+      return realRemove(type, listener, options);
+    }) as typeof signal.removeEventListener;
+
+    try {
+      const library = new BunCompatibleHttpLibrary({ default: 5_000 });
+      const request = {
+        getUrl: () => `http://127.0.0.1:${port}/api/v1/namespaces/demo`,
+        getHttpMethod: () => 'GET',
+        getHeaders: () => ({}),
+        getBody: () => undefined,
+        getAgent: () => undefined,
+        getSignal: () => signal,
+      };
+
+      for (let i = 0; i < 5; i += 1) {
+        await library.send(request as never).toPromise();
+      }
+
+      // Net listeners after five SUCCESSFUL requests: zero. Before the fix this was 5 and climbing.
+      expect(attached).toBe(0);
+      expect(signal.aborted).toBe(false);
+    } finally {
+      signal.addEventListener = realAdd as typeof signal.addEventListener;
+      signal.removeEventListener = realRemove as typeof signal.removeEventListener;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  /**
+   * An ALREADY-aborted signal never fires 'abort' again, so `addEventListener` alone silently
+   * misses it and the request goes out anyway — the exact opposite of what the caller asked for.
+   * This is not a corner case: a converge-wide signal routinely trips while an earlier call is in
+   * flight, and the next call in the queue is built against the tripped signal.
+   */
+  it('rejects a pre-aborted request with its reason, without sending anything', async () => {
+    const http = await import('node:http');
+    let requestsSeen = 0;
+    const server = http.createServer((_req, res) => {
+      requestsSeen += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const controller = new AbortController();
+      const reason = new Error('converge cancelled before this request was issued');
+      controller.abort(reason);
+
+      const library = new BunCompatibleHttpLibrary({ default: 5_000 });
+      const request = {
+        getUrl: () => `http://127.0.0.1:${port}/api/v1/namespaces/demo`,
+        getHttpMethod: () => 'GET',
+        getHeaders: () => ({}),
+        getBody: () => undefined,
+        getAgent: () => undefined,
+        getSignal: () => controller.signal,
+      };
+
+      const failure = await library
+        .send(request as never)
+        .toPromise()
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+
+      // The caller's OWN reason — not a generic stand-in, and not a transport error produced by
+      // our own teardown of the half-built request.
+      expect(failure).toBe(reason);
+
+      // Give a request that WAS put on the wire time to arrive, so this asserts "never sent"
+      // rather than "not sent yet".
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(requestsSeen).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 /**
  * PREMATURE CLOSE — the promise must settle on EVERY terminal event.
  *

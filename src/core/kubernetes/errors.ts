@@ -150,15 +150,19 @@ export function isConflictError(error: unknown): boolean {
 /**
  * HTTP status codes that are typically retryable.
  * These indicate temporary issues that may resolve on retry.
+ *
+ * @internal Exported so the read-error classifier in `../deployment/k8s-helpers.ts` can answer
+ * "is this status transient?" from this one list rather than keeping a second copy that could
+ * drift from it.
  */
-const RETRYABLE_STATUS_CODES = [
+export const RETRYABLE_STATUS_CODES: ReadonlySet<number> = new Set([
   408, // Request Timeout
   429, // Too Many Requests
   500, // Internal Server Error
   502, // Bad Gateway
   503, // Service Unavailable
   504, // Gateway Timeout
-];
+]);
 
 /**
  * Check if an error is retryable.
@@ -188,7 +192,7 @@ const RETRYABLE_STATUS_CODES = [
 export function isRetryableError(error: unknown): boolean {
   // Check for retryable HTTP status codes
   const statusCode = getErrorStatusCode(error);
-  if (statusCode !== undefined && RETRYABLE_STATUS_CODES.includes(statusCode)) {
+  if (statusCode !== undefined && RETRYABLE_STATUS_CODES.has(statusCode)) {
     return true;
   }
 

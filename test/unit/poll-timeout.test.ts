@@ -93,37 +93,62 @@ describe('withCallDeadline', () => {
     }
   }
 
-  const budget = { read: 20, write: 60, delete: 100 };
+  const budget = { read: 20, create: 45, update: 60, delete: 100 };
 
   it('derives a per-verb budget and caps every verb by the deployment timeout', () => {
     expect(callDeadlineBudget(undefined)).toEqual({
       read: 30_000,
-      write: 120_000,
+      create: 120_000,
+      update: 120_000,
       delete: 180_000,
     });
     expect(callDeadlineBudget({ default: 5_000, create: 7_000, delete: 9_000 })).toEqual({
       read: 5_000,
-      write: 7_000,
+      create: 7_000,
+      update: 120_000,
       delete: 9_000,
     });
-    // `update` stands in for `create` when only it is configured.
-    expect(callDeadlineBudget({ update: 8_000 }).write).toBe(8_000);
     // The cap applies to every verb, not just reads.
     expect(callDeadlineBudget({ delete: 180_000 }, 1_000)).toEqual({
       read: 1_000,
-      write: 1_000,
+      create: 1_000,
+      update: 1_000,
       delete: 1_000,
     });
+  });
+
+  it('keeps `create` and `update` apart instead of collapsing them into one write budget', () => {
+    // `HttpTimeoutConfig` exposes create and update separately. A single `write` budget derived from
+    // `create ?? update` gave every POST/PUT/PATCH the create value and made a configured `update`
+    // unreachable whenever `create` was also set.
+    expect(callDeadlineBudget({ create: 70_000, update: 20_000 })).toEqual({
+      read: 30_000,
+      create: 70_000,
+      update: 20_000,
+      delete: 180_000,
+    });
+    // Neither verb falls back to the other: an unset verb takes the shared write DEFAULT, never the
+    // sibling's configured value.
+    expect(callDeadlineBudget({ update: 8_000 })).toEqual({
+      read: 30_000,
+      create: 120_000,
+      update: 8_000,
+      delete: 180_000,
+    });
+    expect(callDeadlineBudget({ create: 8_000 }).update).toBe(120_000);
   });
 
   it('treats a zero or negative timeout as unset instead of collapsing the budget', () => {
     // `0` is not nullish: a naive `?? DEFAULT` would leave every call with a ~0ms budget.
     expect(callDeadlineBudget({ default: 0 }, 0)).toEqual({
       read: 30_000,
-      write: 120_000,
+      create: 120_000,
+      update: 120_000,
       delete: 180_000,
     });
     expect(callDeadlineBudget({ default: -1, create: Number.NaN }).read).toBe(30_000);
+    // A non-positive `update` must fall back to the write DEFAULT, not to a configured `create`.
+    expect(callDeadlineBudget({ create: 9_000, update: 0 }).update).toBe(120_000);
   });
 
   it('classifies methods by verb so writes and deletes are not cut short by the read budget', () => {
@@ -131,11 +156,22 @@ describe('withCallDeadline', () => {
     expect(callDeadlineVerb('list')).toBe('read');
     expect(callDeadlineVerb('listClusterCustomObject')).toBe('read');
     expect(callDeadlineVerb('getNamespacedCustomObject')).toBe('read');
-    expect(callDeadlineVerb('create')).toBe('write');
-    expect(callDeadlineVerb('replace')).toBe('write');
-    expect(callDeadlineVerb('patchNamespacedCustomObject')).toBe('write');
     expect(callDeadlineVerb('delete')).toBe('delete');
     expect(callDeadlineVerb('deleteCollectionNamespacedCustomObject')).toBe('delete');
+  });
+
+  it('separates create-shaped from update-shaped method names', () => {
+    expect(callDeadlineVerb('create')).toBe('create');
+    expect(callDeadlineVerb('createNamespacedCustomObject')).toBe('create');
+    expect(callDeadlineVerb('patch')).toBe('update');
+    expect(callDeadlineVerb('patchNamespacedCustomObject')).toBe('update');
+    expect(callDeadlineVerb('replace')).toBe('update');
+    expect(callDeadlineVerb('replaceNamespacedCustomObjectStatus')).toBe('update');
+    expect(callDeadlineVerb('patchServerSideApply')).toBe('update');
+    expect(callDeadlineVerb('serverSideApply')).toBe('update');
+    // Deletes still win over both, and unknown methods still take the short read budget.
+    expect(callDeadlineVerb('deleteCollection')).toBe('delete');
+    expect(callDeadlineVerb('someFutureClientMethod')).toBe('read');
   });
 
   it('bounds a wedged call with its own verb budget', async () => {
@@ -150,6 +186,21 @@ describe('withCallDeadline', () => {
     );
     await expect(settlesWithin(api.replace(), 1_000)).rejects.toThrow(
       /Widget demo replace exceeded its 60ms request timeout/
+    );
+  });
+
+  it('bounds a create with the create budget and an update with the update budget', async () => {
+    const wedged = {
+      create: () => new Promise(() => undefined),
+      patch: () => new Promise(() => undefined),
+    };
+    const api = withCallDeadline(wedged, { budget, label: 'Widget demo' });
+
+    await expect(settlesWithin(api.create(), 1_000)).rejects.toThrow(
+      /Widget demo create exceeded its 45ms request timeout/
+    );
+    await expect(settlesWithin(api.patch(), 1_000)).rejects.toThrow(
+      /Widget demo patch exceeded its 60ms request timeout/
     );
   });
 
@@ -176,13 +227,35 @@ describe('withCallDeadline', () => {
     await expect(api.read()).resolves.toEqual({ ok: true });
   });
 
+  it('does not START a call when the signal is already aborted', async () => {
+    // Racing an already-aborted signal still LAUNCHES the request: the caller's promise rejects, but
+    // the write has already left for the API server. In a replacement sequence (delete → wait for
+    // the 404 → create) an abort landing in that window would cancel the deployment and create the
+    // object anyway. The call must never be made at all.
+    const controller = new AbortController();
+    controller.abort(new Error('converge cancelled'));
+    let creates = 0;
+    const api = withCallDeadline(
+      {
+        create: () => {
+          creates += 1;
+          return Promise.resolve({ ok: true });
+        },
+      },
+      { budget, label: 'Widget demo', abortSignal: controller.signal }
+    );
+
+    expect(() => api.create()).toThrow('converge cancelled');
+    expect(creates).toBe(0);
+  });
+
   it('still honors the abort signal when the budget is unusable', async () => {
     // A misconfigured budget must not silently drop the abort plumbing — that is its own hang.
     const controller = new AbortController();
     const api = withCallDeadline(
       { read: () => new Promise(() => undefined) },
       {
-        budget: { read: 0, write: 0, delete: 0 },
+        budget: { read: 0, create: 0, update: 0, delete: 0 },
         label: 'Widget demo',
         abortSignal: controller.signal,
       }

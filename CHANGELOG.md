@@ -322,6 +322,187 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A KRO instance that had ALREADY failed could be reported as a generic readiness
+  timeout instead of the error it actually hit. The readiness poll checked the
+  ResourceGraphDefinition status schema before it checked the instance's own terminal
+  state, and under the strict schema-lookup policy a retryable lookup failure abandons
+  the iteration and retries — so an instance sitting in `FAILED`/`ERROR` with a precise
+  controller message stayed hidden behind lookup retries until the deadline. The
+  terminal-state check now runs as soon as the state and conditions have been read from
+  the instance, before any schema lookup is attempted, so the instance's own message is
+  what the caller gets, immediately.
+
+  **Behaviour clarification:** that terminal state is treated as authoritative only when
+  it describes the CURRENT `metadata.generation`. Kubernetes keeps the status
+  subresource across spec updates, so the first read after an update can return the new
+  generation alongside the PREVIOUS deployment's verdict — a failed state, a `False`
+  condition whose `observedGeneration` is one behind, and that deployment's message —
+  while the new generation is about to reconcile perfectly well; KRO documents
+  `observedGeneration < metadata.generation` as "not yet processed". A terminal state is
+  therefore reported only when some `False` condition has observed the current
+  generation. Stale failure evidence falls through to ordinary polling, still bounded by
+  the caller's timeout. Instances that report no generation, and conditions from an
+  older KRO that carry no `observedGeneration` at all, cannot be shown to be stale and
+  keep the previous behaviour exactly.
+
+- The readiness timeout message could blame a status-schema lookup failure that had
+  since recovered. The remembered lookup error is now cleared as soon as a later lookup
+  succeeds, so a timeout caused by an instance never projecting its declared status is
+  no longer misattributed to a transport blip on an earlier poll. The wording is also
+  corrected from "never returned" to "could not be read", since a persistent 404 or 5xx
+  does return — with an error. The remembered failure is now the classifier's
+  Kubernetes-aware description rather than a stringified exception, so a client that rejects
+  with a bare `Status` object no longer prints as `[object Object]` in the one line an
+  operator has to work from; the original rejection stays reachable as the timeout error's
+  `cause`.
+
+- KRO instance readiness could overshoot its own declared timeout by up to a full poll
+  interval. Each sleep between polls ran to completion before the loop re-checked the
+  deadline, so a short budget with a long interval returned late — most visibly on the
+  path taken while an instance has no status at all, which sleeps the standard poll
+  interval regardless of the caller's configured one. Every sleep in the wait is now
+  capped to whatever is left of the budget, making the declared timeout the real upper
+  bound.
+
+- The Bun-compatible HTTP library ignored an `AbortSignal` that was ALREADY aborted when
+  the request was built, and sent the request anyway. An aborted signal never fires
+  `abort` again, so registering a listener silently missed it — and a converge-wide
+  signal that trips while an earlier call is in flight leaves exactly that state for the
+  next call in the queue. The signal is now checked before the listener is registered:
+  an already-aborted request rejects with the signal's own reason and is torn down
+  before any bytes reach the wire. The live-abort path was made consistent, rejecting
+  with the signal's reason rather than a generic error.
+
+- **Behaviour change.** The KRO instance readiness check no longer converts an
+  UNCERTAIN ResourceGraphDefinition status-schema read into an EMPTY status schema. It
+  reads that schema to learn which custom status fields an instance is expected to
+  project; previously ANY failure of that read set "expects no custom status fields",
+  so a request that never produced an answer let an ACTIVE, synced instance be declared
+  ready without validating a single one of its status fields — and, for a request that
+  burned its whole budget, after the deadline had already passed.
+
+  The gate that was supposed to prevent this recognised only the readiness poll's own
+  per-call timeout class, and a request can fail at several layers: the HTTP library
+  arms its socket timer synchronously while the request is issued, so with comparable
+  budgets it fires FIRST and raises the base request-timeout type; a connection dropped
+  mid-response raises the premature-close type; a 5xx or an unrecognised transport error
+  raises neither. Failures are now classified with the same shared classifier the rest
+  of the engine uses, and the question it answers is the right one — did the server
+  actually ANSWER? — rather than which error class this happens to be.
+
+  Being uncertain is not, however, a reason to retry forever. Failures are split by the
+  shared retry policy the engine already applies to the same question. A failure that
+  could plausibly resolve on its own — the RGD object is absent (404), or the request hit
+  a transient fault (5xx, rate limiting, a wedged request, a dropped socket, a DNS blip) —
+  ABANDONS that poll iteration: neither ready nor permissive. The loop polls again, so
+  the caller's overall `timeout` stays the single authority on how long to keep trying
+  and one blip is ridden out instead of failing the deploy; the poll interval is honoured
+  before the retry, so a fast-rejecting premature close cannot spin. A read that never
+  succeeds simply never satisfies the status-field check, and the resulting overall
+  timeout error now carries the last lookup failure so the diagnosis is not lost.
+
+  A DETERMINISTIC failure instead fails fast with the original error. A refused request
+  (401/403) is the canonical case, matching every other 401/403 in the codebase and the
+  documented policy that waiting cannot fix RBAC — but a malformed or rejected request
+  (400/405/422), a 404 meaning the ResourceGraphDefinition API resource is not served at
+  all, a rejected TLS handshake, and an error with no Kubernetes shape whatsoever (a
+  `TypeError` from a client signature mismatch or a plain programming bug) are just as
+  fixed. Previously all of them were retried to the deadline and then reported as a
+  readiness timeout, which hid the actual cause behind a message about the KRO
+  controller. The shared classifier also learned the two "the request never got an
+  answer" shapes it did not previously recognise — this project's own request-timeout
+  types, and socket/DNS failures identified only by their system `code` — so they count
+  as transient wherever that classifier is used, rather than reading as unrecognised
+  programming errors.
+
+  **An HTTP status outranks every transport heuristic.** If the error carries a status, the API
+  server ANSWERED — the request reached it and it formed a verdict — so evidence that the
+  transport failed cannot overturn it, because a transport that failed could not have carried a
+  status back. The two do co-occur: a client can leave a system `code` on a status-bearing error,
+  and Node's `fetch()` spells its failures as a `TypeError` whose message the shared retry
+  predicate sniffs for the word `fetch` — which a status-bearing `TypeError` matches just as well.
+  Consulting that evidence first turned a 422 the server had already REJECTED into a transient
+  fault and polled it to the deadline, reporting a readiness timeout instead of the rejection.
+  Both classifiers in this module now decide on the status alone while one exists, and only fall
+  through to the TLS / request-timeout / socket-code / message ladder when the request produced no
+  HTTP response at all. A retryable status stays retryable however the message reads, and a 4xx
+  the classifier has no specific name for is still the server's verdict on the request.
+
+  **TLS trust, identity and protocol failures are NOT retryable.** An expired, not-yet-valid,
+  self-signed or wrongly-named server certificate, an unverifiable chain, or a protocol
+  mismatch (`EPROTO`) is a configuration fact: the wrong CA bundle, a stale kubeconfig, a
+  plain-HTTP endpoint addressed as HTTPS. Each is rejected identically on every attempt, so
+  polling one for a multi-minute budget only buries what to fix under a timeout. They now
+  classify as a TLS configuration error that fails fast, and the reported detail names the
+  system code and points at the setting to look at — the cluster CA / server certificate for a
+  certificate verdict, the server URL and TLS version window for a protocol mismatch, and the
+  client/server TLS configuration for the rest of Node's `ERR_TLS_*` namespace
+  (`ERR_TLS_DH_PARAM_SIZE`, `ERR_TLS_INVALID_CONTEXT`, …), which says nothing about a certificate
+  and whose operator would otherwise be sent to the one thing that is not wrong.
+
+  The recognised codes are the COMPLETE set, not a sample: every certificate-verification code
+  Node documents under "OpenSSL error codes" (`nodejs.org/api/errors.html`) — including
+  `CERT_REVOKED`, the CRL codes, `HOSTNAME_MISMATCH`, `INVALID_CA` and the signature/field
+  formatting errors — plus Node's own `ERR_TLS_CERT_ALTNAME_INVALID`, the fatal certificate
+  alerts a server sends when it rejects a client certificate (a stale kubeconfig arrives as
+  `ERR_SSL_TLSV1_ALERT_UNKNOWN_CA`, not as any `CERT_*` code), and the protocol-mismatch codes
+  `EPROTO`, `ERR_SSL_WRONG_VERSION_NUMBER` and the TLS-version family. Completeness matters
+  because the failure mode is not graceful: an unrecognised code falls through to the generic
+  "a `TypeError` mentioning fetch is retryable" rule, so a single omission means that code
+  alone polls to the deadline. An unknown code beginning `CERT_` is treated the same way for
+  the same reason — every `CERT_*` code OpenSSL defines is a verdict on the certificate.
+  `OUT_OF_MEM`, which shares that doc section, is deliberately excluded: it reports a resource
+  shortage rather than anything about the certificate. This is deliberately
+  narrower than the "was the server reachable?" taxonomy used elsewhere in the same module,
+  which counts a rejected handshake as "unreachable" because the server never answered —
+  correct for that question, wrong for "is it worth asking again?". The codes are also read
+  through one level of `cause`, because Node's `fetch()` reports every transport failure as
+  the same opaque `TypeError: fetch failed`; without that, a rejected certificate matched the
+  classifier's generic fetch-failure rule and was retried. Because this classifier is SHARED,
+  the engine's required external-reference resolver — whose documented policy is that a
+  permanent failure fails immediately — gets the same fail-fast behaviour, instead of spending
+  its read budget on a certificate that will never be accepted.
+  Node's own `ERR_TLS_*` family is treated the same way by prefix (`ERR_TLS_DH_PARAM_SIZE`,
+  `ERR_TLS_INVALID_PROTOCOL_VERSION`, …), with `ERR_TLS_HANDSHAKE_TIMEOUT` carved out as the one
+  transient member, and with its own diagnostic hint rather than the certificate one.
+
+  A 404 for the RGD OBJECT stays strict rather than permissive for the same reason the
+  whole policy is: the RGD name the poll looks up is the name the factory emitted — both
+  read one stored field — so it means the RGD is missing, not that the instance has no
+  status schema. A repo-wide test asserts that property against every shipped
+  composition, so a future refactor that re-derived the lookup name from the instance's
+  kind or apiVersion could not pass unnoticed.
+
+- A cancelled deployment could still issue the write it was cancelled to prevent. The
+  per-request deadline wrapper raced an already-aborted signal against the operation,
+  but the race is set up AFTER the call has been made: the caller's promise rejected
+  while the create or delete had already left for the API server. In a replacement
+  sequence — delete, wait for the 404, create — an abort landing in that window
+  cancelled the deployment and created the object anyway. The wrapper now checks the
+  signal BEFORE invoking the client method, so an aborted converge cannot launch new
+  cluster mutations.
+
+- The Bun-compatible HTTP library leaked an abort listener per successful request. The
+  listener was registered with `{ once: true }`, which removes it only when the event
+  FIRES — and the overwhelmingly common case is that it never fires, because the request
+  succeeded. A caller's `AbortSignal` typically spans a whole converge, so every
+  completed request left its closure (and the request object it captured) attached, and
+  the signal's listener list grew for the life of the operation. Detaching is now part
+  of the same latch that every terminal path already goes through, alongside clearing
+  the request timer.
+
+- `callDeadlineBudget()` collapsed `create` and `update` into a single write budget, so
+  a caller who configured both got the `create` value on every POST, PUT, PATCH and
+  apply, and the configured `update` was honoured only when `create` was absent —
+  contradicting the separate `create` and `update` knobs the HTTP timeout configuration
+  exposes and the split the HTTP layer itself already makes by method. The per-verb
+  budget is now `{ read, create, update, delete }`, method-name classification
+  distinguishes a create (POST, `create*`) from an update (PUT/PATCH, `replace*`,
+  `patch*`, server-side apply), and there is NO cross-fallback between the two: an
+  unconfigured verb takes the shared write default, never its sibling's configured
+  value. Deletes still win over both, and an unrecognised method still takes the short
+  read budget so a misclassified call fails fast rather than hanging.
+
 - `clickHouseKeeperInstallation()` now fails at BUILD time, instead of at the operator,
   when a LITERAL installation name cannot be the CHK's internal cluster name. The Altinity CRD
   constrains `spec.configuration.clusters[].name` to `minLength: 1` / `maxLength: 15` /
