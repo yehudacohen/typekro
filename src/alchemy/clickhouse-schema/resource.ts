@@ -151,10 +151,23 @@ export async function teardownClickHouseSchema(input: {
 }): Promise<void> {
   const { id, olds, output, abortSignal } = input;
   if (!olds || olds.onDelete !== 'run') return;
+  // No persisted state means no successful apply ever completed for this resource (a
+  // create that failed part-way, say, after CREATE DATABASE and before CREATE TABLE). Its
+  // `clusterId` is not "unrecorded" — it was never written — so there is nothing to bind
+  // the DROP statements to, and the only transport available is whatever the ambient
+  // kubeconfig names NOW. Fail closed, before a transport is even built.
+  if (output === undefined) {
+    throw new ClickHouseSchemaError(
+      `Refusing destructive schema teardown of '${id}': no persisted successful apply state ` +
+        'is available to identify the target cluster. Drop the state entry instead, or run ' +
+        'the delete statements by hand against the cluster you intend.',
+      id
+    );
+  }
   const { executor, clusterId } = resolveTransport(olds);
   // Before any list or exec: the transport has been BUILT (kubeconfig loaded, no network),
   // but nothing has been asked of it yet.
-  assertTeardownTargetsRecordedCluster(id, output?.clusterId, clusterId);
+  assertTeardownTargetsRecordedCluster(id, output.clusterId, clusterId);
   await deleteClickHouseSchema({ executor, config: olds, resourceId: id, clusterId, abortSignal });
 }
 

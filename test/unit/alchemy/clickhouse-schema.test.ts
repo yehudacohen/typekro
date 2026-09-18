@@ -1752,9 +1752,27 @@ describe('ClickHouseSchema — destructive teardown is bound to the recorded clu
 
     // State written by a create that itself had no identity (injected executor, no
     // kubeConfig) has nothing to compare against; this configuration behaves as before.
-    await teardownClickHouseSchema({ id: RESOURCE_ID, olds: config, output: stateFor(config) });
+    const recorded = stateFor(config);
+    expect(recorded.clusterId).toBeUndefined();
+    await teardownClickHouseSchema({ id: RESOURCE_ID, olds: config, output: recorded });
 
     expect(execCalls).toHaveLength(2);
+  });
+
+  it('refuses when no successful apply state was ever persisted', async () => {
+    const { executor, execCalls, listCalls } = fakeExecutor();
+    const config = { ...destructive(), executor };
+
+    // A create that failed part-way (CREATE DATABASE ran, CREATE TABLE did not) persists no
+    // output at all. That is not "state that recorded no identity" — it is no state — so
+    // there is nothing to bind the DROP statements to. Fail closed, before the transport
+    // is even built: an injected executor here proves nothing was listed or executed.
+    await expect(
+      teardownClickHouseSchema({ id: RESOURCE_ID, olds: config, output: undefined })
+    ).rejects.toThrow(/no persisted.*state/i);
+
+    expect(listCalls).toHaveLength(0);
+    expect(execCalls).toHaveLength(0);
   });
 
   it("never touches the cluster under 'retain', whatever the state records", async () => {
