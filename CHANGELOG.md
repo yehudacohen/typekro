@@ -322,6 +322,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clickHouseSchema(...)` without a `kubeConfig` — the documented "omit for the ambient
+  kubeconfig" form — failed on its first exec with `KubernetesClientProvider not
+  initialized. Call initialize() first.` (#219). `resolveTransport` handed
+  `createKubernetesClientProvider` an `undefined` config for the ambient case, and that
+  factory only initializes the provider when it is given a config object, so the resource
+  got back a fresh, uninitialized provider and `getKubeConfig()` threw; every `KroResource`
+  in the same process worked because its registration always passes an object. The
+  ambient case now passes `{}`, which runs `initialize` and reaches `loadFromDefault()`
+  (`KUBECONFIG`, then `~/.kube/config`). An injected `executor` with no `kubeConfig` is
+  unchanged: it is still used as-is and still records no `clusterId`. Covered by a unit
+  test that points `KUBECONFIG` at a fixture file and asserts the resolved `clusterId` is
+  that file's `clusterIdentity()`.
+
 - A KRO instance that had ALREADY failed could be reported as a generic readiness
   timeout instead of the error it actually hit. The readiness poll checked the
   ResourceGraphDefinition status schema before it checked the instance's own terminal
