@@ -1101,15 +1101,23 @@ export function getKubernetesClientProvider(): KubernetesClientProvider {
 }
 
 /**
- * Factory function to create and initialize a provider instance
+ * Factory function to create and initialize a provider instance.
+ *
+ * The provider is ALWAYS initialized, whether or not a config is supplied: with no config,
+ * `initialize` falls through to `loadFromDefault()` (`KUBECONFIG`, then `~/.kube/config`),
+ * which is what an omitted config means everywhere in this module. Callers that want a
+ * deliberately uninitialized provider (to call `initialize`/`initializeWithKubeConfig`
+ * themselves later) use {@link KubernetesClientProvider.createInstance} directly.
+ *
+ * Before this was unconditional, `createKubernetesClientProvider(undefined)` returned an
+ * uninitialized provider whose `getKubeConfig()` threw `KubernetesClientProvider not
+ * initialized` (#219) — the optional-config contract the signature advertised did not hold.
  */
 export function createKubernetesClientProvider(
   config?: KubernetesClientConfig
 ): KubernetesClientProvider {
   const provider = KubernetesClientProvider.createInstance();
-  if (config) {
-    provider.initialize(config);
-  }
+  provider.initialize(config);
   return provider;
 }
 
