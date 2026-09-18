@@ -322,6 +322,15 @@ be spelled out. `onDelete: 'run'` without a non-empty `deleteStatements` is reje
 declaration time, and so is `deleteStatements` under the `retain` default: statements that could
 never run are a silent footgun.
 
+`run` is also **bound to the recorded cluster**. Before a single pod is listed or statement sent,
+the delete compares the state's `clusterId` against the identity of the cluster the current
+transport reaches, and refuses with a `ClickHouseSchemaError` (`Refusing destructive schema
+teardown …`) if they differ — including when the current identity is unknown because an
+`executor` was injected without a `kubeConfig`. With the ambient kubeconfig the transport is
+whatever `KUBECONFIG` names *at destroy time*, and `namespace` + `podSelector` match pods on any
+cluster, so without this check a stale context could drop tables on the wrong cluster. State that
+recorded no `clusterId` has nothing to compare against and is torn down as before.
+
 ## Props
 
 | Prop | Type | Notes |
