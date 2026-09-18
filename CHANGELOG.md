@@ -348,8 +348,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ClickHouseSchemaError` (`Refusing destructive schema teardown ... recorded <id>, current
   <id-or-none>`) on a mismatch. A recorded identity against an unknown current one (an
   injected `executor` with no `kubeConfig`) is rejected too; state that recorded no
-  identity has nothing to compare against and behaves as before. `onDelete: 'retain'`
-  still never reaches the cluster.
+  identity has nothing to compare against and behaves as before. Teardown with NO
+  persisted state at all — no successful apply ever completed, as after a create that
+  failed part-way through its `statements` — is refused as well (`... no persisted
+  successful apply state ...`), before any transport is built: nothing identifies the
+  cluster the partial DDL landed on, so the DROP statements must not run against whatever
+  `KUBECONFIG` names now. `onDelete: 'retain'` still never reaches the cluster.
 
 - `clickstackBootstrap` with `storage.persistentQueue.enabled: true` was unusable on block PVCs:
   the freshly provisioned filesystem is `root:root` 0755, the gateway collector image

@@ -331,6 +331,12 @@ whatever `KUBECONFIG` names *at destroy time*, and `namespace` + `podSelector` m
 cluster, so without this check a stale context could drop tables on the wrong cluster. State that
 recorded no `clusterId` has nothing to compare against and is torn down as before.
 
+`run` also refuses when there is **no persisted state at all** — no successful apply ever
+completed for the resource, as after a create that failed part-way through its `statements`.
+Nothing then identifies the cluster the partial DDL landed on, so the delete throws the same
+`ClickHouseSchemaError` (`… no persisted successful apply state …`) before any transport is built.
+Drop the state entry, or run the `deleteStatements` by hand against the cluster you intend.
+
 ## Props
 
 | Prop | Type | Notes |
