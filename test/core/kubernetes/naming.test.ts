@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  CRONJOB_NAME_MAX_LENGTH,
   deriveNameLengthLimit,
   DNS_LABEL_MAX_LENGTH,
   DNS_SUBDOMAIN_MAX_LENGTH,
@@ -90,5 +91,27 @@ describe('deriveNameLengthLimit', () => {
         { describedAs: 'an over-long derived name', generatedChars: 63, limit: DNS_LABEL_MAX_LENGTH },
       ])
     ).toThrow(/leaving no room for a name/);
+  });
+});
+
+describe('CRONJOB_NAME_MAX_LENGTH', () => {
+  it('is the Job label limit minus the 11-character `-<scheduled-time>` suffix the controller appends', () => {
+    // `ValidateCronJobCreate` in kubernetes/kubernetes
+    // pkg/apis/batch/validation/validation.go: "must be no more than 52 characters".
+    expect(CRONJOB_NAME_MAX_LENGTH).toBe(DNS_LABEL_MAX_LENGTH - 11);
+    expect(CRONJOB_NAME_MAX_LENGTH).toBe(52);
+  });
+
+  it('binds below the Helm release-name limit once a suffix is appended', () => {
+    const limit = deriveNameLengthLimit([
+      { describedAs: 'the Helm release name', limit: HELM_RELEASE_NAME_MAX_LENGTH },
+      {
+        describedAs: 'a CronJob `<name>-bootstrap`',
+        suffix: '-bootstrap',
+        limit: CRONJOB_NAME_MAX_LENGTH,
+      },
+    ]);
+    expect(limit.maxLength).toBe(CRONJOB_NAME_MAX_LENGTH - '-bootstrap'.length);
+    expect(limit.binding.describedAs).toBe('a CronJob `<name>-bootstrap`');
   });
 });

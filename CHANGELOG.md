@@ -361,20 +361,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing chowned the mount, so the collector crash-looped forever on
   `open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied` — a line that
   only appears in the OpAMP supervisor's `agent.log`, while the Pod reported a generic
-  `Agent crashed during config application`. The ClickStack chart (3.2.0) renders a Pod security
-  context for the HyperDX Deployment only and has no securityContext or initContainer hook for
-  the `otel-collector` template, so chart `values` cannot fix it. Whenever the queue is enabled the
-  composition now adds a Flux `postRenderers` Kustomize strategic-merge patch to the HelmRelease
-  that sets `spec.template.spec.securityContext.fsGroup` (with
-  `fsGroupChangePolicy: OnRootMismatch`) on the `<release>-otel-collector` Deployment. The
-  target name is graph-aware, so the patch is carried in both direct-mode manifests and the KRO
-  RGD (`${string(schema.spec.name)}-otel-collector`). Two options come with it:
-  `storage.persistentQueue.fsGroup` (default `10001`, the collector image's `otel` group;
-  validated as a positive integer at construction) and a build-time `postRenderers` on
-  `makeClickstackBootstrap`, which `clickstackHelmRelease` now threads through — caller entries
-  are preserved and the queue patch is appended after them. Exported alongside:
-  `DEFAULT_QUEUE_FS_GROUP`, `QUEUE_FS_GROUP_CHANGE_POLICY`, `renderPersistentQueuePostRenderer`
-  and `clickStackGatewayName`. ([#222](https://github.com/yehudacohen/typekro/issues/222))
+  `Agent crashed during config application`. Whenever the queue is enabled the composition now
+  pins `otel-collector.podSecurityContext` to `{ fsGroup, fsGroupChangePolicy: OnRootMismatch }`
+  in the HelmRelease values: ClickStack 3.2.0's gateway is the stock `opentelemetry-collector`
+  0.146.1 subchart under the `otel-collector` alias, and it renders that value verbatim into the
+  Deployment's Pod `securityContext`. The pin is one of the mapper's hard pins (merged last,
+  recursively), so build-time `values` / direct-mode `customValues` can add other
+  `podSecurityContext` fields but not change these two. `storage.persistentQueue.fsGroup`
+  (default `10001`, the collector image's `otel` group) is validated as a non-negative SAFE
+  integer — `Number.isInteger(1e20)` is true but `fsGroup` is an int64 — and `0`, the root group,
+  is allowed because Kubernetes allows it. `makeClickstackBootstrap` also accepts build-time
+  `postRenderers`, threaded through `clickstackHelmRelease` to the HelmRelease verbatim; the
+  composition adds none of its own. Exported alongside: `DEFAULT_QUEUE_FS_GROUP` and
+  `QUEUE_FS_GROUP_CHANGE_POLICY`.
+  ([#222](https://github.com/yehudacohen/typekro/issues/222))
+
+  The first cut of this fix (#223, unreleased) carried the `fsGroup` as a Flux `postRenderers`
+  Kustomize patch on the rendered `<release>-otel-collector` Deployment, on the premise that no
+  chart value could reach the collector's security context. The premise was wrong — only the
+  parent chart's own templates lack a hook — and the patch had a silent failure mode: the subchart
+  names the Deployment `printf "%s-%s" .Release.Name "otel-collector" | trunc 63 | trimSuffix "-"`,
+  so for a release name past 48 characters the patch matched nothing and the collector hit the same
+  `permission denied`. The value-based seam is name-independent and drops the per-reconcile
+  Kustomize pass. `renderPersistentQueuePostRenderer` and `clickStackGatewayName`, exported only
+  by that unreleased cut, are gone.
+
+  The queue also pins `otel-collector.enabled: true`, alongside the `replicaCount: 1` and
+  `rollout.strategy: Recreate` it already owned. A build-time
+  `values: { 'otel-collector': { enabled: false } }` with `persistentQueue.enabled: true` used to
+  render a HelmRelease with the collector disabled but the queue's claim, its `file_storage`
+  extension and `persistentQueue: true` in the status contract still present. Without a queue a
+  caller's `enabled: false` still passes through.
+
+- `clickstackBootstrap`'s runtime `name` is now bounded, and the bound is derived rather than
+  written down: `CLICKSTACK_GENERATED_NAMES` lists every object name the bootstrap, its chart or a
+  downstream controller derives from `name` with the limit each must satisfy, and
+  `CLICKSTACK_NAME_LIMIT` (`deriveNameLengthLimit`, the Traefik bootstrap's mechanism) is the
+  minimum — **37 characters**. Two derived names failed late and quietly before: the
+  `<name>-team-bootstrap` CronJob (and `<name>-otel-retention`) is refused by the API server past
+  Kubernetes' 52-character CronJob limit (the binding constraint, new
+  `CRONJOB_NAME_MAX_LENGTH`), so a longer name never ran the Team bootstrap and `ready` never
+  became true; and the chart truncates the gateway Deployment/Service `<name>-otel-collector` at
+  63 characters while the status contract's `gateway.*Endpoint` fields assume the literal, so past
+  48 characters they named a Service that did not exist. `name` must also be a Kubernetes DNS
+  label (`CLICKSTACK_NAME_PATTERN`, the Traefik bootstrap's pattern), since every derived object
+  is one — `""`, `"Foo"`, `"foo_bar"` and `"foo/bar"` fit the length bound and were refused only
+  by the API server. Both are plain constraints on the schema (`ClickStackReleaseNameSchema`), so
+  the KRO RGD carries `name: string | maxLength=37 pattern="…"`, direct-mode `deploy` rejects
+  through the schema, and direct-mode `toYaml` runs the same schema on a concrete name
+  (`assertClickStackReleaseName`) and refuses it with the same message — for the length, one that
+  names the constraint behind the number. `CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX`,
+  `CLICKSTACK_RETENTION_NAME_SUFFIX` and `CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX` are exported from
+  `types.ts`. ([#222](https://github.com/yehudacohen/typekro/issues/222))
 
 - One stalled idempotent GET no longer fails a whole converge (#213). Since 0.36.0 a
   Kubernetes read that never returns is reported after the 30 s `read` budget instead of

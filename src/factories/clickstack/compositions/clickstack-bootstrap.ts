@@ -121,6 +121,10 @@ import {
   type ClickStackSecretValuesExternalMongoBootstrapConfig,
   ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
   type ClickStackSecretValuesInternalMongoBuildOptions,
+  assertClickStackReleaseName,
+  CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX,
+  CLICKSTACK_RETENTION_NAME_SUFFIX,
+  CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
 } from '../types.js';
 import {
   DEFAULT_CLICKSTACK_NAMESPACE,
@@ -133,7 +137,6 @@ import {
   assertQueueReplicaCompatible,
   clickStackQueueClaimName,
   renderPersistentQueueClaimSpec,
-  renderPersistentQueuePostRenderer,
   renderRetentionScript,
   resolveClickStackStorage,
 } from '../utils/storage.js';
@@ -146,7 +149,11 @@ interface ResolvedBuildConfig {
   /** Internal-Mongo PVC sizing (build-time; shapes the StatefulSet template). */
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
-  /** Caller-supplied Flux post-renderers; the composition appends its own after them. */
+  /**
+   * Caller-supplied Flux post-renderers, passed through to the HelmRelease
+   * unchanged; the composition adds none of its own (the queue's `fsGroup`
+   * rides on the `otel-collector.podSecurityContext` chart value).
+   */
   postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
   /**
    * The EXTERNAL ClickHouse's storage story: retention DDL, the collector's
@@ -250,23 +257,6 @@ const CLICKSTACK_HELM_RELEASE_RESOURCE_ID = 'clickstackHelmRelease';
  */
 const CLICKSTACK_CONTRACT_RESOURCE_ID = 'clickstackContract';
 
-/**
- * Suffix of the contract ConfigMap's name (`<release>-contract`).
- *
- * THIS COMPOSITION IS THE SOLE DECLARER of `<release>-contract`. The ClickHouse
- * cluster composition used to append the same bare `-contract` to its
- * installation name, so a stack that named its ClickHouse cluster and its
- * ClickStack release after the stack put two independently-owned ConfigMaps on
- * one `(kind, namespace, name)` and KRO refused the second instance with
- * `resource belongs to a different ApplySet … cannot reassign`. That one is now
- * `<installation>-clickhouse-contract`; this name and its keys are unchanged.
- *
- * Any new contract ConfigMap in a composition that can share a namespace and a
- * name with these must be component-scoped the same way —
- * `assertNoDuplicateDeclarations` in the test utilities is the guard.
- */
-export const CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX = '-contract';
-
 const inlineSchemaFieldValidations = {
   apiKey: `self != "${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}"`,
 } as const;
@@ -323,6 +313,14 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     const resolvedVersion = isKubernetesRef(spec.version)
       ? Cel.default(spec.version, DEFAULT_CLICKSTACK_VERSION)
       : (spec.version ?? DEFAULT_CLICKSTACK_VERSION);
+
+    // The schema constrains `name` — DNS-label syntax and the derived length
+    // bound — for KRO admission and direct-mode `deploy`; direct-mode `toYaml`
+    // does not run `validateSpec`, so a concrete malformed or over-long name
+    // would otherwise sail through and render a CronJob the API server refuses
+    // plus status endpoints naming a gateway Service the chart truncated away.
+    // The guard runs the SAME schema, so the message cannot drift from it.
+    if (!isKubernetesRef(spec.name)) assertClickStackReleaseName(spec.name);
 
     if (build.credentialSource === 'inline') {
       const inlineApiKey = (
@@ -453,19 +451,14 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // init container gates on Mongo reachability, so no explicit dependency
     // on the internal Mongo is needed.
     //
-    // POST-RENDERERS: the caller's static ones first, then the composition's
-    // own pins APPENDED — Kustomize applies patches in order, so a pin wins
-    // over a caller patch on the same field. Today's only pin is the queue's
-    // `fsGroup` patch: a block PVC mounts `root:root` and the chart offers no
-    // securityContext hook for the collector, so without it the collector
-    // cannot write its queue (#222). The target name is graph-aware — a CEL
-    // expression in KRO mode — like every other `<release>-…` name here.
-    const postRenderers: TypeKroValue<HelmReleasePostRenderer>[] = [
-      ...(build.postRenderers ?? []),
-      ...(build.clickhouseStorage.persistentQueue === undefined
-        ? []
-        : [renderPersistentQueuePostRenderer(build.clickhouseStorage.persistentQueue, spec.name)]),
-    ];
+    // POST-RENDERERS: the caller's static ones, passed through verbatim. The
+    // composition adds none of its own — the queue's `fsGroup` used to ride
+    // here as a Kustomize patch on `<release>-otel-collector` (#223), but the
+    // subchart exposes `podSecurityContext` as a plain chart value, so the
+    // mapper pins it in `values` instead (name-independent, no per-reconcile
+    // Kustomize pass; see renderPersistentQueueValues). The seam stays open
+    // for callers.
+    const postRenderers = build.postRenderers ?? [];
     const _clickstackHelmRelease = clickstackHelmRelease({
       name: spec.name,
       namespace: resolvedNamespace,
@@ -517,7 +510,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     const _teamBootstrap = cronJob({
       id: 'clickstackTeamBootstrap',
       metadata: {
-        name: `${spec.name}-team-bootstrap`,
+        name: `${spec.name}${CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX}`,
         namespace: resolvedNamespace as string,
         labels: {
           'app.kubernetes.io/name': 'clickstack-team-bootstrap',
@@ -593,7 +586,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       const _retention = cronJob({
         id: 'clickstackRetention',
         metadata: {
-          name: `${spec.name}-otel-retention`,
+          name: `${spec.name}${CLICKSTACK_RETENTION_NAME_SUFFIX}`,
           namespace: resolvedNamespace as string,
           labels: {
             'app.kubernetes.io/name': 'clickstack-otel-retention',
@@ -697,8 +690,10 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // (same reachability class as the PR #93 review finding). Naming is
     // deterministic because the mapper pins `fullnameOverride` to the release
     // name: HyperDX Service = `<name>`, gateway Service =
-    // `<name>-otel-collector`. Ports are chart defaults (see resources/helm.ts)
-    // and ride INSIDE the resource-derived URL strings.
+    // `<name>-otel-collector`. The subchart truncates the latter at 63
+    // characters, so the literal is only right because the runtime schema
+    // bounds `name` (CLICKSTACK_NAME_LIMIT). Ports are chart defaults (see
+    // resources/helm.ts) and ride INSIDE the resource-derived URL strings.
     //
     // These use NATURAL proxy access inside JS template literals (typekro
     // >= 0.24.0, with the #97 resource-metadata-proxy fix). In KRO mode the
