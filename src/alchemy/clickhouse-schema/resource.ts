@@ -38,6 +38,7 @@ import {
 import {
   type ClickHouseExecutor,
   ClickHouseSchemaConfigSchema,
+  ClickHouseSchemaError,
   type ClickHouseSchemaProps,
   type ClickHouseSchemaResourceProps,
   type ClickHouseSchemaState,
@@ -78,8 +79,12 @@ interface ClickHouseSchemaTransport {
  * An injected executor is still identified when a kubeConfig accompanies it: the caller
  * supplying its own transport does not make the target cluster unknowable. Only an
  * injected executor with no kubeConfig at all has no identity to record.
+ *
+ * @internal — exported for tests
  */
-function resolveTransport(props: ClickHouseSchemaResourceProps): ClickHouseSchemaTransport {
+export function resolveTransport(props: ClickHouseSchemaResourceProps): ClickHouseSchemaTransport {
+  // No `kubeConfig` means the ambient one: `createKubernetesClientProvider(undefined)`
+  // initializes the provider from `KUBECONFIG`, then `~/.kube/config` (#219).
   const kubeConfig: KubeConfig | undefined =
     props.executor && !props.kubeConfig
       ? undefined
@@ -91,6 +96,79 @@ function resolveTransport(props: ClickHouseSchemaResourceProps): ClickHouseSchem
     executor: props.executor ?? new KubeExecClickHouseExecutor(kubeConfig as KubeConfig),
     clusterId: kubeConfig ? clusterIdentity(kubeConfig) : undefined,
   };
+}
+
+/**
+ * Refuse a destructive teardown unless the transport reaches the cluster the schema was
+ * applied to.
+ *
+ * WHY. `onDelete: 'run'` executes DROP statements, and with the ambient kubeconfig
+ * (`kubeConfig` omitted) the transport is whatever `KUBECONFIG` points at AT DESTROY TIME.
+ * That can be a different cluster from the one the schema was created in — a laptop whose
+ * context moved on, a CI job with a different default — and `namespace` + `podSelector`
+ * name pods there exactly as well as they named the originals. The recorded
+ * {@link ClickHouseSchemaState.clusterId} is the only thing that can tell the two apart,
+ * so it is checked before a single pod is listed or a single statement is sent.
+ *
+ * A recorded identity with NO current identity (an injected executor and no `kubeConfig`)
+ * is rejected too: "unknown" is not "the same". State written with no identity (an
+ * injected executor at create time as well) has nothing to compare against and passes,
+ * which is unchanged behaviour for that configuration.
+ *
+ * @internal — exported for tests
+ */
+export function assertTeardownTargetsRecordedCluster(
+  resourceId: string,
+  recorded: string | undefined,
+  current: string | undefined
+): void {
+  if (recorded !== undefined && recorded !== current) {
+    throw new ClickHouseSchemaError(
+      `Refusing destructive schema teardown of '${resourceId}': the current kubeconfig targets ` +
+        `a different cluster than the one the schema was applied to (recorded ${recorded}, ` +
+        `current ${current ?? 'none'}). Point KUBECONFIG (or the resource's kubeConfig) at the ` +
+        'original cluster, or drop the state entry instead.',
+      resourceId
+    );
+  }
+}
+
+/**
+ * The body of the provider's `delete` hook, minus the Effect wrapper so the guard and the
+ * ordering it enforces can be exercised directly.
+ *
+ * `retain` (the default) must not even reach the cluster, so the missing-spec case is a
+ * no-op rather than a guess: reconstructing an unknown `onDelete` from persisted output
+ * could only ever guess `retain`, which is what happens anyway.
+ *
+ * @internal — exported for tests
+ */
+export async function teardownClickHouseSchema(input: {
+  readonly id: string;
+  readonly olds: ClickHouseSchemaResourceProps | undefined;
+  readonly output: ClickHouseSchemaState | undefined;
+  readonly abortSignal?: AbortSignal | undefined;
+}): Promise<void> {
+  const { id, olds, output, abortSignal } = input;
+  if (!olds || olds.onDelete !== 'run') return;
+  // No persisted state means no successful apply ever completed for this resource (a
+  // create that failed part-way, say, after CREATE DATABASE and before CREATE TABLE). Its
+  // `clusterId` is not "unrecorded" — it was never written — so there is nothing to bind
+  // the DROP statements to, and the only transport available is whatever the ambient
+  // kubeconfig names NOW. Fail closed, before a transport is even built.
+  if (output === undefined) {
+    throw new ClickHouseSchemaError(
+      `Refusing destructive schema teardown of '${id}': no persisted successful apply state ` +
+        'is available to identify the target cluster. Drop the state entry instead, or run ' +
+        'the delete statements by hand against the cluster you intend.',
+      id
+    );
+  }
+  const { executor, clusterId } = resolveTransport(olds);
+  // Before any list or exec: the transport has been BUILT (kubeconfig loaded, no network),
+  // but nothing has been asked of it yet.
+  assertTeardownTargetsRecordedCluster(id, output.clusterId, clusterId);
+  await deleteClickHouseSchema({ executor, config: olds, resourceId: id, clusterId, abortSignal });
 }
 
 /**
@@ -140,22 +218,12 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
         catch: ensureError,
       });
     }),
-    delete: Effect.fn(function* ({ id, olds }) {
-      // `retain` (the default) must not even reach the cluster, so the missing-spec case
-      // below is a no-op rather than a guess: reconstructing an unknown `onDelete` from
-      // persisted output could only ever guess `retain`, which is what happens anyway.
-      if (!olds || olds.onDelete !== 'run') return;
+    // `output` is the persisted state, and its `clusterId` is what stops `onDelete: 'run'`
+    // from dropping tables on whichever cluster the ambient kubeconfig happens to name at
+    // destroy time. See {@link assertTeardownTargetsRecordedCluster}.
+    delete: Effect.fn(function* ({ id, olds, output }) {
       yield* Effect.tryPromise({
-        try: (abortSignal) => {
-          const { executor, clusterId } = resolveTransport(olds);
-          return deleteClickHouseSchema({
-            executor,
-            config: olds,
-            resourceId: id,
-            clusterId,
-            abortSignal,
-          });
-        },
+        try: (abortSignal) => teardownClickHouseSchema({ id, olds, output, abortSignal }),
         catch: ensureError,
       });
     }),
