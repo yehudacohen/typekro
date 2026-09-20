@@ -37,7 +37,6 @@
  * materialization pass is the only thing worth skipping.
  */
 
-import { clickStackGatewayName } from '../resources/helm.js';
 import type { ClickStackPersistentQueueOptions, ClickStackStorageOptions } from '../types.js';
 import { assertSafeCollectorConfigKey, type CollectorConfigFragment } from './collector-config.js';
 
@@ -135,6 +134,11 @@ export const DEFAULT_QUEUE_SIZE = '10Gi';
  * 0755 and nothing in the chart chowns it, so without this group the collector
  * cannot create its bbolt databases and the exporter fails to start with
  * `open …/file_storage/exporter_clickhouse__logs: permission denied`.
+ *
+ * It travels as the `otel-collector.podSecurityContext.fsGroup` chart value
+ * (see {@link renderPersistentQueueValues}), which the aliased
+ * `opentelemetry-collector` subchart renders into the Deployment's Pod
+ * `securityContext`.
  *
  * @see https://github.com/yehudacohen/typekro/issues/222
  */
@@ -349,7 +353,8 @@ export interface ResolvedClickStackStorage {
     readonly storageClassName?: string;
     /**
      * Group the collector Pod's volumes are chowned to — always present
-     * (default {@link DEFAULT_QUEUE_FS_GROUP}); a positive integer.
+     * (default {@link DEFAULT_QUEUE_FS_GROUP}); a non-negative safe integer
+     * (`0` is the root group).
      */
     readonly fsGroup: number;
     /** Always {@link QUEUE_ACCESS_MODES} — see the constant for why. */
@@ -497,12 +502,16 @@ export function resolveClickStackStorage(
     );
   }
   const fsGroup = queue?.fsGroup ?? DEFAULT_QUEUE_FS_GROUP;
-  if (queue?.enabled === true && !(Number.isInteger(fsGroup) && fsGroup > 0)) {
+  // `isSafeInteger`, not `isInteger`: Kubernetes stores `fsGroup` as an int64,
+  // and `Number.isInteger(1e20)` is true although 1e20 is neither a
+  // representable int64 nor a GID any kubelet will apply. `0` is allowed on
+  // purpose — Kubernetes does not forbid it; it is the root group.
+  if (queue?.enabled === true && !(Number.isSafeInteger(fsGroup) && fsGroup >= 0)) {
     throw new Error(
-      `${context}: 'storage.persistentQueue.fsGroup' must be a positive integer — it is the ` +
-        `group id the collector Pod's queue volume is chowned to (Pod securityContext.fsGroup). ` +
-        `Got ${JSON.stringify(fsGroup)}. Omit the option to use ${DEFAULT_QUEUE_FS_GROUP}, the ` +
-        `primary group of the collector image's 'otel' user.`
+      `${context}: 'storage.persistentQueue.fsGroup' must be a non-negative integer (a GID; 0 is ` +
+        `the root group) — it is the group the collector Pod's queue volume is chowned to ` +
+        `(Pod securityContext.fsGroup). Got ${JSON.stringify(fsGroup)}. Omit the option to use ` +
+        `${DEFAULT_QUEUE_FS_GROUP}, the primary group of the collector image's 'otel' user.`
     );
   }
   if (queue?.enabled === true) {
@@ -769,7 +778,8 @@ export function persistentQueueConfigFragment(
 }
 
 /**
- * Chart values that mount the queue's PersistentVolumeClaim on the collector.
+ * Chart values that mount the queue's PersistentVolumeClaim on the collector
+ * and make the mount WRITABLE by it.
  *
  * The claim is a STANDALONE PersistentVolumeClaim owned by the composition
  * (rendered next to the retention CronJob) and referenced here by
@@ -832,10 +842,43 @@ export function persistentQueueConfigFragment(
  * agent's receivers, with the Pod still Ready. See
  * {@link CHART_CUSTOM_CONFIG_VOLUME_NAME} for the live evidence.
  *
+ * **`podSecurityContext` makes the mount writable.** LIVE FINDING (AWS EBS
+ * CSI default StorageClass, chart 3.2.0 / image 2.35.0, Kubernetes 1.36): with
+ * the queue enabled the gateway crash-looped forever on
+ *
+ *   Error: cannot start pipelines: failed to start "clickhouse" exporter:
+ *   open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied
+ *
+ * The line is in the OpAMP supervisor's `agent.log`, not the Pod log — the Pod
+ * only reports `Agent crashed during config application` — so it reads like a
+ * config-merge failure when it is a plain ownership one: a block PVC's fresh
+ * filesystem is `root:root` 0755, the collector runs as uid/gid 10001, and
+ * nothing chowns the mount. A Pod `securityContext.fsGroup` is the Kubernetes
+ * answer (the kubelet applies the group on mount), and the chart DOES expose
+ * it: ClickStack 3.2.0 aliases the stock `opentelemetry-collector` 0.146.1
+ * subchart as `otel-collector`, whose `values.yaml` declares
+ * `podSecurityContext: {}` and whose Deployment template renders it verbatim
+ * (`securityContext: {{- toYaml .Values.podSecurityContext | nindent 2 }}`).
+ * `otel-collector.podSecurityContext` is therefore the seam — NOT a Flux
+ * `postRenderers` patch on the rendered Deployment, which #223 first shipped
+ * on the mistaken premise that no value could carry it. The patch also had to
+ * name its target, and the subchart names the Deployment
+ * `printf "%s-%s" .Release.Name "otel-collector" | trunc 63 | trimSuffix "-"`,
+ * so for a long release name the target silently matched nothing. A value is
+ * name-independent.
+ *
+ * `fsGroupChangePolicy: OnRootMismatch` ({@link QUEUE_FS_GROUP_CHANGE_POLICY})
+ * skips the recursive chown once the volume root carries the group. Both keys
+ * sit in the mapper's HARD PINS (applied last, recursively), so a build-time
+ * `values['otel-collector'].podSecurityContext` or a direct-mode
+ * `customValues` can still add unrelated fields — `runAsNonRoot`, `seccompProfile`
+ * — while TypeKro authoritatively owns these two.
+ *
  * @param queue - Resolved persistent-queue configuration
  * @param claimName - Name of the PVC the composition creates
  *   ({@link clickStackQueueClaimName})
  * @returns Values under the `otel-collector` subchart alias
+ * @see https://github.com/yehudacohen/typekro/issues/222
  */
 export function renderPersistentQueueValues(
   queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>,
@@ -859,6 +902,12 @@ export function renderPersistentQueueValues(
         },
         { name: QUEUE_VOLUME_NAME, mountPath: queue.directory },
       ],
+      // The queue directory is chowned to the collector's group on mount — a
+      // block PVC arrives root-owned and the collector runs as uid/gid 10001.
+      podSecurityContext: {
+        fsGroup: queue.fsGroup,
+        fsGroupChangePolicy: QUEUE_FS_GROUP_CHANGE_POLICY,
+      },
       // Always pinned: the queue's bbolt database admits exactly one writer.
       replicaCount: 1,
       // …and one writer AT A TIME, which the replica count alone does not buy
@@ -887,73 +936,5 @@ export function renderPersistentQueueClaimSpec(
     ...(queue.storageClassName !== undefined && {
       storageClassName: queue.storageClassName,
     }),
-  };
-}
-
-/**
- * Flux post-renderer that makes the queue volume WRITABLE by the collector.
- *
- * LIVE FINDING (AWS EBS CSI default StorageClass, chart 3.2.0 / image 2.35.0,
- * Kubernetes 1.36): with the queue enabled the gateway crash-looped forever on
- *
- *   Error: cannot start pipelines: failed to start "clickhouse" exporter:
- *   open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied
- *
- * The line is in the OpAMP supervisor's `agent.log`, not the Pod log — the Pod
- * only reports `Agent crashed during config application` — so it reads like a
- * config-merge failure when it is a plain ownership one: a block PVC's fresh
- * filesystem is `root:root` 0755, the collector runs as uid/gid 10001, and
- * nothing chowns the mount. A Pod `securityContext.fsGroup` is the Kubernetes
- * answer (the kubelet applies the group on mount), but the chart renders a
- * security context for the HyperDX Deployment ONLY; its `otel-collector`
- * template has no securityContext or initContainer hook, so no `values` can
- * carry it. Hence a Kustomize strategic-merge patch on the rendered
- * Deployment, through the `postRenderers` seam the `helmRelease` factory
- * already exposes.
- *
- * The patch selects the Deployment by `target` (group/version/kind/name), so
- * the `metadata.name` inside the patch body is a placeholder and only the
- * target name has to be graph-aware — `releaseName` may be a schema reference
- * in KRO mode and serializes to CEL there, exactly like the claim name.
- *
- * The return type is left INFERRED on purpose: a named `HelmReleasePostRenderer`
- * cannot satisfy the graph-aware `TypeKroValue<HelmReleasePostRenderer>` the
- * `helmRelease` factory accepts (its object branch carries an index
- * signature), while this literal shape is assignable to both.
- *
- * @param queue - Resolved persistent-queue configuration
- * @param releaseName - Helm release name (`spec.name`)
- * @returns A Flux HelmRelease post-renderer entry
- * @see https://github.com/yehudacohen/typekro/issues/222
- */
-export function renderPersistentQueuePostRenderer(
-  queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>,
-  releaseName: string
-) {
-  return {
-    kustomize: {
-      patches: [
-        {
-          target: {
-            group: 'apps',
-            version: 'v1',
-            kind: 'Deployment',
-            name: clickStackGatewayName(releaseName),
-          },
-          patch: [
-            'apiVersion: apps/v1',
-            'kind: Deployment',
-            'metadata:',
-            '  name: ignored-by-target-selector',
-            'spec:',
-            '  template:',
-            '    spec:',
-            '      securityContext:',
-            `        fsGroup: ${queue.fsGroup}`,
-            `        fsGroupChangePolicy: ${QUEUE_FS_GROUP_CHANGE_POLICY}`,
-          ].join('\n'),
-        },
-      ],
-    },
   };
 }

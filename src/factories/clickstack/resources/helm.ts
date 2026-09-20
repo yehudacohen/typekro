@@ -86,22 +86,19 @@ export const CLICKSTACK_OTLP_HTTP_PORT = 4318;
 /** Gateway collector OTLP/gRPC servicePort (`otel-collector.ports.otlp`). */
 export const CLICKSTACK_OTLP_GRPC_PORT = 4317;
 
-/** Suffix the chart appends to `.Release.Name` for the gateway collector Service. */
-export const CLICKSTACK_GATEWAY_NAME_SUFFIX = '-otel-collector';
-
 /**
- * Name of the gateway collector workload AND Service the chart renders for a
- * release (`<release>-otel-collector` — the subchart names off
- * `.Release.Name`). Accepts a schema reference for `releaseName` the same way
- * every other name in this family does: the template literal serializes to
- * CEL in KRO mode.
+ * Suffix the chart appends to `.Release.Name` for the gateway collector
+ * Deployment and Service.
  *
- * @param releaseName - Helm release name (`spec.name`)
- * @returns The gateway collector name
+ * The aliased `opentelemetry-collector` subchart names them
+ * `printf "%s-%s" .Release.Name "otel-collector" | trunc 63 | trimSuffix "-"`,
+ * so `<release>-otel-collector` is the literal name ONLY while the release
+ * name is at most 63 minus this suffix's length (48) characters; past that the
+ * chart truncates and the literal no longer matches. The bootstrap status
+ * derives its gateway endpoints from the literal, which is why the runtime
+ * schema bounds `name` — see `CLICKSTACK_GENERATED_NAMES` in `types.ts`.
  */
-export function clickStackGatewayName(releaseName: string): string {
-  return `${releaseName}${CLICKSTACK_GATEWAY_NAME_SUFFIX}`;
-}
+export const CLICKSTACK_GATEWAY_NAME_SUFFIX = '-otel-collector';
 
 /**
  * Create a Flux HelmRepository for the official ClickStack chart repository.

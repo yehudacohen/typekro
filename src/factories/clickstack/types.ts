@@ -42,8 +42,18 @@
 
 import { type } from 'arktype';
 import type { ValuesMergeExpression } from '../../core/aspects/values-merge.js';
+import {
+  CRONJOB_NAME_MAX_LENGTH,
+  DNS_LABEL_MAX_LENGTH,
+  DNS_SUBDOMAIN_MAX_LENGTH,
+  deriveNameLengthLimit,
+  HELM_RELEASE_NAME_MAX_LENGTH,
+} from '../../core/kubernetes/naming.js';
 import type { TypeKroChartValues, TypeKroValue } from '../../core/types/common.js';
 import type { HelmReleasePostRenderer, HelmReleaseValuesFromSource } from '../helm/types.js';
+import { CLICKSTACK_GATEWAY_NAME_SUFFIX } from './resources/helm.js';
+import { CLICKSTACK_MONGO_NAME_SUFFIX } from './resources/mongo.js';
+import { QUEUE_CLAIM_NAME_SUFFIX } from './utils/storage.js';
 
 // ============================================================================
 // ClickHouse version-coupling guidance
@@ -278,8 +288,8 @@ export interface ClickStackPersistentQueueOptions {
   /** StorageClass for the queue PVC (cluster default when omitted). */
   storageClassName?: string;
   /**
-   * Group id the queue volume is made writable for (default: `10001`, a
-   * positive integer).
+   * Group id the queue volume is made writable for (default: `10001`; a
+   * non-negative integer — `0` is the root group, which Kubernetes allows).
    *
    * WHY IT EXISTS: a freshly provisioned BLOCK volume (the AWS EBS CSI default
    * StorageClass, and most other block provisioners) is formatted with a
@@ -292,15 +302,16 @@ export interface ClickStackPersistentQueueOptions {
    *   open /var/lib/otelcol/file_storage/exporter_clickhouse__logs: permission denied
    *
    * Kubernetes fixes exactly this with a Pod `securityContext.fsGroup` — the
-   * kubelet chowns the volume to that group on mount — but the ClickStack
-   * chart (3.2.0) renders a Pod security context for the HyperDX Deployment
-   * only; the `otel-collector` template has no securityContext or
-   * initContainer hook, so chart values cannot carry it. TypeKro therefore
-   * adds a Flux `postRenderers` Kustomize patch on the HelmRelease that sets
-   * `spec.template.spec.securityContext.fsGroup` (with
-   * `fsGroupChangePolicy: OnRootMismatch`) on the `<release>-otel-collector`
-   * Deployment whenever the queue is enabled. Override this when running a
-   * collector image whose user has a different primary group.
+   * kubelet chowns the volume to that group on mount — and the chart exposes
+   * it: ClickStack 3.2.0's gateway is the stock `opentelemetry-collector`
+   * 0.146.1 subchart under the alias `otel-collector`, whose
+   * `podSecurityContext` value is rendered verbatim into the Deployment's Pod
+   * `securityContext`. Whenever the queue is enabled TypeKro pins
+   * `otel-collector.podSecurityContext.fsGroup` to this value and
+   * `fsGroupChangePolicy` to `OnRootMismatch` as part of the mapper's hard
+   * pins, so a build-time `values` or direct-mode `customValues` entry can add
+   * other `podSecurityContext` fields but not change these two. Override this
+   * when running a collector image whose user has a different primary group.
    *
    * @see https://github.com/yehudacohen/typekro/issues/222
    */
@@ -379,13 +390,12 @@ interface ClickStackBuildOptionsBase {
   /**
    * Static Flux Kustomize post-renderers applied to the ClickStack HelmRelease
    * after Helm renders the chart. Build-time and concrete for the same reason
-   * `values` is. The composition APPENDS its own post-renderers after these
-   * (today: the persistent queue's `fsGroup` patch — see
-   * {@link ClickStackPersistentQueueOptions.fsGroup}); Kustomize applies
-   * patches in order, so a composition-owned pin wins over a caller patch
-   * touching the same field. Typed graph-aware like `values` so it plugs into
-   * the `helmRelease` factory; a reference in it is still rejected loudly at
-   * construction like every other build-time option.
+   * `values` is, and passed through to the HelmRelease verbatim — the
+   * composition adds none of its own (the persistent queue's `fsGroup` rides
+   * on the `otel-collector.podSecurityContext` chart value instead; see
+   * {@link ClickStackPersistentQueueOptions.fsGroup}). Typed graph-aware like
+   * `values` so it plugs into the `helmRelease` factory; a reference in it is
+   * still rejected loudly at construction like every other build-time option.
    */
   postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
   /** RGD name override (needed when registering both variants in one cluster). */
@@ -458,9 +468,112 @@ const clickhouseConnectionBaseShape = {
   'appUsername?': 'string',
 } as const;
 
+/** Suffix of the CronJob that provisions the HyperDX Team + API key (`<name>-team-bootstrap`). */
+export const CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX = '-team-bootstrap';
+
+/** Suffix of the retention-DDL CronJob (`<name>-otel-retention`), present with `storage.retention`. */
+export const CLICKSTACK_RETENTION_NAME_SUFFIX = '-otel-retention';
+
+/**
+ * Suffix of the contract ConfigMap's name (`<release>-contract`).
+ *
+ * THIS COMPOSITION IS THE SOLE DECLARER of `<release>-contract`. The ClickHouse
+ * cluster composition used to append the same bare `-contract` to its
+ * installation name, so a stack that named its ClickHouse cluster and its
+ * ClickStack release after the stack put two independently-owned ConfigMaps on
+ * one `(kind, namespace, name)` and KRO refused the second instance with
+ * `resource belongs to a different ApplySet … cannot reassign`. That one is now
+ * `<installation>-clickhouse-contract`; this name and its keys are unchanged.
+ *
+ * Any new contract ConfigMap in a composition that can share a namespace and a
+ * name with these must be component-scoped the same way —
+ * `assertNoDuplicateDeclarations` in the test utilities is the guard.
+ */
+export const CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX = '-contract';
+
+/**
+ * Every object name the bootstrap — or the chart it installs, or a controller
+ * downstream — derives from the runtime `name`, with the limit each one has to
+ * satisfy. {@link deriveNameLengthLimit} turns the list into the bound on
+ * `name` so the number in the schema can be traced to the name that produced
+ * it (the Traefik bootstrap keeps its own list the same way).
+ *
+ * The chart itself does not fail on a long release name: the aliased
+ * `opentelemetry-collector` subchart renders the gateway Deployment and
+ * Service as `printf "%s-%s" .Release.Name "otel-collector" | trunc 63 |
+ * trimSuffix "-"`, so past 48 characters it silently TRUNCATES — and the
+ * status contract's `gateway.*Endpoint` fields, which assume the literal
+ * `<name>-otel-collector`, would then point at a Service that does not exist
+ * (#222 follow-up). The CronJobs fail louder and earlier: Kubernetes rejects a
+ * CronJob whose name exceeds 52 characters at create time, so an over-long
+ * `<name>-team-bootstrap` never ran and `ready` never became true. Both are
+ * refused HERE, with the binding constraint in the message, instead of being
+ * discovered as a missing Service or a CronJob admission error.
+ */
+export const CLICKSTACK_GENERATED_NAMES = [
+  {
+    describedAs:
+      'the Team-bootstrap CronJob `<name>-team-bootstrap` (a CronJob name leaves 11 of the 63-character Job label for the `-<scheduled-time>` suffix)',
+    suffix: CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
+    limit: CRONJOB_NAME_MAX_LENGTH,
+  },
+  {
+    describedAs: 'the retention CronJob `<name>-otel-retention`',
+    suffix: CLICKSTACK_RETENTION_NAME_SUFFIX,
+    limit: CRONJOB_NAME_MAX_LENGTH,
+  },
+  {
+    describedAs:
+      "the chart's gateway collector Deployment and Service `<name>-otel-collector` (the chart truncates it at 63, which would orphan the status endpoints)",
+    suffix: CLICKSTACK_GATEWAY_NAME_SUFFIX,
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+  {
+    describedAs: "the HelmRelease's Helm release name",
+    limit: HELM_RELEASE_NAME_MAX_LENGTH,
+  },
+  {
+    describedAs: 'the HyperDX Service `<name>` (`fullnameOverride`)',
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+  {
+    describedAs: 'the internal Mongo StatefulSet and Service `<name>-mongodb`',
+    suffix: CLICKSTACK_MONGO_NAME_SUFFIX,
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+  {
+    describedAs: 'the persistent-queue PersistentVolumeClaim `<name>-otel-queue`',
+    suffix: QUEUE_CLAIM_NAME_SUFFIX,
+    limit: DNS_SUBDOMAIN_MAX_LENGTH,
+  },
+  {
+    describedAs: 'the status-contract ConfigMap `<name>-contract`',
+    suffix: CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX,
+    limit: DNS_SUBDOMAIN_MAX_LENGTH,
+  },
+] as const;
+
+/**
+ * Longest runtime `name` the bootstrap accepts, derived from
+ * {@link CLICKSTACK_GENERATED_NAMES}. Exported so tests assert the derivation
+ * rather than a number copied out of it, and so the composition body can
+ * refuse an over-long concrete name in direct mode with the same message.
+ */
+export const CLICKSTACK_NAME_LIMIT = deriveNameLengthLimit(CLICKSTACK_GENERATED_NAMES);
+
+/**
+ * The runtime `name`: bounded by {@link CLICKSTACK_NAME_LIMIT}. A plain
+ * `maxLength` in the ArkType AST, which KRO SimpleSchema serializes as
+ * `string | maxLength=N`, so the API server refuses an over-long name on the
+ * instance too; `.configure` puts the binding constraint into the message.
+ */
+const clickstackReleaseName = type.string
+  .atMostLength(CLICKSTACK_NAME_LIMIT.maxLength)
+  .configure({ message: CLICKSTACK_NAME_LIMIT.message });
+
 const bootstrapBaseShape = {
-  /** Release name for the Helm installation. */
-  name: 'string',
+  /** Release name for the Helm installation — see {@link CLICKSTACK_NAME_LIMIT} for the length bound. */
+  name: clickstackReleaseName,
   /** Namespace for the stack (default: 'clickstack'). */
   'namespace?': 'string',
   /** Chart version (default: '3.2.0'). */
@@ -600,7 +713,9 @@ export type ClickStackBootstrapRuntimeConfig = (
  * name, so the HyperDX app Service is named exactly `<name>` (the chart's
  * `clickstack.hyperdx.fullname` helper skips its `-app` suffix when
  * `fullnameOverride` is set) and the gateway Service is
- * `<name>-otel-collector` (subchart naming off `.Release.Name`).
+ * `<name>-otel-collector` (subchart naming off `.Release.Name`). The subchart
+ * truncates that name at 63 characters, so the literal holds only because the
+ * runtime schema bounds `name` ({@link CLICKSTACK_NAME_LIMIT}).
  *
  * EVERY DECLARED FIELD IS OBSERVABLE THROUGH KRO. Fields anchored on the owned
  * HelmRelease serialize as KRO status CEL directly: `ready`, `phase`,

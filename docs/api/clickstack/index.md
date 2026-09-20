@@ -111,9 +111,9 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
 credential source, the external ClickHouse's [`storage`](#s3-backed-clickhouse) story,
-static raw chart `values`, static Flux `postRenderers` on the ClickStack HelmRelease (the composition
-appends its own after them — see the [queue `fsGroup` patch](#and-an-fsgroup-because-a-block-pvc-mounts-root-owned)),
-RGD `name`/`kind`. Runtime spec (proxy-safe): release name,
+static raw chart `values`, static Flux `postRenderers` on the ClickStack HelmRelease (passed through
+verbatim — the composition adds none of its own), RGD `name`/`kind`. Runtime spec (proxy-safe):
+release name (at most **37 characters** — see [release-name length](#release-name-length)),
 namespace, chart version, the ClickHouse connection, credential Secret coordinates or inline API key,
 and HyperDX conveniences.
 
@@ -371,26 +371,25 @@ with nowhere to ship all read like a config-merge problem when the merged config
 the symptom only appears once the queue meets a real block PVC.)
 
 Kubernetes fixes exactly this with a Pod `securityContext.fsGroup`: the kubelet applies the group to
-the volume on mount. But the ClickStack chart (3.2.0) renders `podSecurityContext` for the HyperDX
-Deployment **only** — its `otel-collector` template has no securityContext or initContainer hook —
-so no chart `values` can carry it. Whenever `persistentQueue` is enabled, TypeKro therefore adds a
-Flux [`postRenderers`](https://fluxcd.io/flux/components/helm/helmreleases/#post-renderers)
-Kustomize strategic-merge patch to the HelmRelease, targeting the `<release>-otel-collector`
-Deployment:
+the volume on mount. And the chart exposes it: ClickStack 3.2.0's gateway is the stock
+`opentelemetry-collector` 0.146.1 subchart under the alias `otel-collector`, whose `values.yaml`
+declares `podSecurityContext: {}` and whose Deployment template renders it verbatim
+(`securityContext: {{- toYaml .Values.podSecurityContext | nindent 2 }}`). So whenever
+`persistentQueue` is enabled, TypeKro pins two keys on that value as part of the mapper's
+[hard pins](#build-time-options-vs-runtime-spec):
 
 ```yaml
-spec:
-  template:
-    spec:
-      securityContext:
-        fsGroup: 10001
-        fsGroupChangePolicy: OnRootMismatch
+otel-collector:
+  podSecurityContext:
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
 ```
 
 `fsGroupChangePolicy: OnRootMismatch` skips the recursive chown once the volume root already carries
 the group, so restarts after the first do not walk a queue directory that can hold gigabytes of bbolt
-pages. The group is `persistentQueue.fsGroup` (default `10001`, a positive integer) — override it
-when running a collector image whose user has a different primary group:
+pages. The group is `persistentQueue.fsGroup` (default `10001`; any non-negative integer — `0` is the
+root group, which Kubernetes allows) — override it when running a collector image whose user has a
+different primary group:
 
 ```typescript
 makeClickstackBootstrap({
@@ -398,12 +397,49 @@ makeClickstackBootstrap({
 });
 ```
 
-The patch's target name is graph-aware, so in KRO mode it serializes to
-`${string(schema.spec.name)}-otel-collector` like every other `<release>-…` name here. Build-time
-`postRenderers` you pass to `makeClickstackBootstrap` are preserved and the queue patch is
-**appended after them**; Kustomize applies patches in order, so the composition's pin wins over a
-caller patch on the same field. With no `persistentQueue` no post-renderer is added, and the
-collector Pod keeps the chart's own (empty) security context.
+The pins are merged **last** and **recursively**, so a build-time `values['otel-collector'].podSecurityContext`
+(or a direct-mode `customValues` one) can still add unrelated fields — `runAsNonRoot`,
+`seccompProfile` — while `fsGroup` and `fsGroupChangePolicy` stay TypeKro's. With no
+`persistentQueue` the block is not rendered and the collector Pod keeps whatever `podSecurityContext`
+you pass through, or the chart's empty default.
+
+::: details Why a value and not a post-renderer
+An earlier release carried this as a Flux `postRenderers` Kustomize patch on the rendered
+`<release>-otel-collector` Deployment, on the premise that the collector template had no
+security-context hook. That premise was wrong — only the *parent* chart's own templates lack one —
+and the patch had a failure mode of its own: the subchart names the Deployment
+`printf "%s-%s" .Release.Name "otel-collector" | trunc 63 | trimSuffix "-"`, so for a release name
+past 48 characters the chart truncated the name, the patch matched nothing, and the collector hit the
+same `permission denied`. A value under the subchart alias never names the Deployment, so it cannot
+miss. Build-time `postRenderers` you pass to `makeClickstackBootstrap` are still threaded through to
+the HelmRelease unchanged — the composition just no longer appends any of its own.
+:::
+
+#### Release-name length
+
+The runtime `name` is bounded at **37 characters**, and the bound is *derived*, not written down:
+`CLICKSTACK_GENERATED_NAMES` lists every object name the bootstrap (or its chart, or a controller
+downstream) derives from `name` together with the limit each has to satisfy, and
+`CLICKSTACK_NAME_LIMIT` is the minimum — the same `deriveNameLengthLimit` the Traefik bootstrap uses.
+Two of those names would otherwise fail late and quietly:
+
+- `<name>-team-bootstrap` (and `<name>-otel-retention`) are CronJobs, and Kubernetes refuses a
+  CronJob name longer than **52** characters at create time so the `-<scheduled-time>` Jobs it spawns
+  fit a 63-character label. This is the binding constraint: 52 − 15 = 37.
+- `<name>-otel-collector` is the gateway Deployment and Service, which the chart **truncates** at 63
+  characters. The status contract's `gateway.otlpHttpEndpoint`/`otlpGrpcEndpoint` assume the literal
+  name, so past 48 characters they would point at a Service that does not exist. Every name the
+  schema accepts renders the literal untruncated.
+
+The bound is a plain `maxLength` on the ArkType schema, so the KRO RGD carries
+`name: string | maxLength=37` and the API server refuses an over-long instance; direct-mode `deploy`
+rejects it through the same schema, and direct-mode `toYaml` refuses a concrete over-long name with
+the same message, which names the constraint that produced the number:
+
+```
+at most 37 characters, because the Team-bootstrap CronJob `<name>-team-bootstrap` (…) is limited to
+52 characters and reserves 15 of them
+```
 
 ::: info Future path: per-replica queues
 Running several collectors each with their **own** queue is a real design, and a different one: it
@@ -460,7 +496,9 @@ status (GitOps/KRO consumers can read it):
 - `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`, `app.host` — CEL string concat
   over `clickstackHelmRelease.metadata.name` / `.namespace` (the mapper pins `fullnameOverride` to
   the release name, so the HyperDX Service is `<name>` and the gateway Service is
-  `<name>-otel-collector`), with the chart-default ports embedded in the URL strings.
+  `<name>-otel-collector` — a literal that holds because the schema
+  [bounds `name`](#release-name-length) below the chart's 63-character truncation), with the
+  chart-default ports embedded in the URL strings.
 
 The remaining fields — `app.appPort` (3000), `app.apiPort` (8000), the spec-derived `version`, and
 the whole `storage` block (`mode`, `diskType`, `policyName`, `retention`, `persistentQueue` —

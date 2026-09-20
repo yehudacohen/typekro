@@ -10,8 +10,20 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as yaml from 'js-yaml';
+import {
+  CRONJOB_NAME_MAX_LENGTH,
+  DNS_LABEL_MAX_LENGTH,
+  deriveNameLengthLimit,
+} from '../../../src/core/kubernetes/naming.js';
 import { makeClickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
-import type { ClickStackPersistentQueueOptions } from '../../../src/factories/clickstack/types.js';
+import { CLICKSTACK_GATEWAY_NAME_SUFFIX } from '../../../src/factories/clickstack/resources/helm.js';
+import {
+  CLICKSTACK_GENERATED_NAMES,
+  CLICKSTACK_NAME_LIMIT,
+  CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
+  ClickStackBootstrapConfigSchema,
+  type ClickStackPersistentQueueOptions,
+} from '../../../src/factories/clickstack/types.js';
 import {
   type CollectorConfigFragment,
   mergeCollectorConfig,
@@ -20,6 +32,7 @@ import {
 import {
   CLICKSTACK_INGEST_PIPELINES_CONFIG,
   CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+  mapClickStackConfigToHelmValues,
 } from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 import {
   CLICKSTACK_RETENTION_TABLES,
@@ -29,8 +42,8 @@ import {
   normalizeRenderedTtl,
   parseRetentionDuration,
   persistentQueueConfigFragment,
+  QUEUE_FS_GROUP_CHANGE_POLICY,
   renderPersistentQueueClaimSpec,
-  renderPersistentQueuePostRenderer,
   renderPersistentQueueValues,
   renderRetentionScript,
   resolveClickStackStorage,
@@ -907,37 +920,27 @@ describe('the persistent queue outlives the collector Pod', () => {
   // the fresh filesystem is root:root 0755, the collector runs as uid/gid
   // 10001, and nothing chowns the mount — so the exporter fails to start with
   // `open …/file_storage/exporter_clickhouse__logs: permission denied` and the
-  // gateway crash-loops. The chart has no securityContext hook for the
-  // collector, so the fix is a Kustomize patch on the rendered Deployment.
-  it('makes the queue volume writable: an fsGroup post-renderer on the gateway Deployment', () => {
-    const renderer = renderPersistentQueuePostRenderer(resolveQueue({}), 'clickstack');
-    const [patch, ...rest] = renderer.kustomize.patches;
-    expect(rest).toHaveLength(0);
-    if (patch === undefined) throw new Error('expected exactly one patch');
+  // gateway crash-loops. The chart's gateway is the aliased
+  // opentelemetry-collector subchart, which renders its `podSecurityContext`
+  // value into the Deployment verbatim — so that VALUE is the seam. #223 first
+  // shipped a Kustomize post-renderer targeting `<release>-otel-collector`
+  // on the mistaken premise that no value could carry it; the chart also
+  // truncates that name at 63, so the patch silently missed long releases.
+  it('makes the queue volume writable: podSecurityContext.fsGroup on the otel-collector values', () => {
+    const values = renderPersistentQueueValues(resolveQueue({}), 'clickstack-otel-queue');
+    const collector = values['otel-collector'] as Record<string, unknown>;
 
-    // Selected by target, never by the placeholder name inside the patch body.
-    expect(patch.target).toEqual({
-      group: 'apps',
-      version: 'v1',
-      kind: 'Deployment',
-      name: 'clickstack-otel-collector',
-    });
-
-    const body = yaml.load(patch.patch) as {
-      apiVersion: string;
-      kind: string;
-      spec: { template: { spec: { securityContext: Record<string, unknown> } } };
-    };
-    expect(body.apiVersion).toBe('apps/v1');
-    expect(body.kind).toBe('Deployment');
-    expect(body.spec.template.spec.securityContext).toEqual({
+    expect(collector.podSecurityContext).toEqual({
       fsGroup: 10001,
       // Skip the recursive chown once the root already carries the group: the
       // queue directory can hold gigabytes of bbolt pages.
       fsGroupChangePolicy: 'OnRootMismatch',
     });
-    // A strategic-merge patch, not a JSON 6902 one — it must not carry a `$patch` directive.
-    expect(patch.patch).not.toContain('$patch');
+    expect(QUEUE_FS_GROUP_CHANGE_POLICY).toBe('OnRootMismatch');
+    // A value, not a patch: nothing here names the gateway Deployment, so
+    // nothing here can miss it.
+    expect(JSON.stringify(values)).not.toContain('-otel-collector');
+    expect(JSON.stringify(values)).not.toContain('postRenderers');
   });
 
   it("defaults fsGroup to the collector image's otel group (10001) and honours an override", () => {
@@ -945,16 +948,29 @@ describe('the persistent queue outlives the collector Pod', () => {
     expect(resolveQueue({}).fsGroup).toBe(10001);
     expect(resolveQueue({ fsGroup: 2000 }).fsGroup).toBe(2000);
 
-    const custom = renderPersistentQueuePostRenderer(resolveQueue({ fsGroup: 2000 }), 'c');
-    expect(custom.kustomize.patches[0]?.target.name).toBe('c-otel-collector');
-    expect(custom.kustomize.patches[0]?.patch).toContain('fsGroup: 2000');
-    expect(custom.kustomize.patches[0]?.patch).not.toContain('10001');
+    const custom = renderPersistentQueueValues(resolveQueue({ fsGroup: 2000 }), 'c-otel-queue');
+    expect((custom['otel-collector'] as Record<string, unknown>).podSecurityContext).toEqual({
+      fsGroup: 2000,
+      fsGroupChangePolicy: 'OnRootMismatch',
+    });
   });
 
-  it('rejects an fsGroup that is not a positive integer, naming the option', () => {
-    for (const fsGroup of [0, -1, 1.5, Number.NaN]) {
+  it('accepts fsGroup 0 — the root group, which Kubernetes does not forbid', () => {
+    expect(resolveQueue({ fsGroup: 0 }).fsGroup).toBe(0);
+    const root = renderPersistentQueueValues(resolveQueue({ fsGroup: 0 }), 'c-otel-queue');
+    expect(
+      (root['otel-collector'] as { podSecurityContext: { fsGroup: unknown } }).podSecurityContext
+        .fsGroup
+    ).toBe(0);
+  });
+
+  it('rejects an fsGroup that is not a non-negative SAFE integer, naming the option', () => {
+    // `fsGroup` is an int64 on the Pod spec. `Number.isInteger(1e20)` is true,
+    // so the guard has to be `isSafeInteger` — 1e20 is neither a representable
+    // int64 nor a GID any kubelet applies.
+    for (const fsGroup of [-1, 1.5, Number.NaN, 1e20, 2 ** 53, Number.POSITIVE_INFINITY]) {
       expect(() => resolveQueue({ fsGroup })).toThrow(
-        /'storage\.persistentQueue\.fsGroup' must be a positive integer/
+        /'storage\.persistentQueue\.fsGroup' must be a non-negative integer/
       );
     }
     // Validated only when the queue is on — an unused option is not an error,
@@ -968,74 +984,73 @@ describe('the persistent queue outlives the collector Pod', () => {
   });
 });
 
-/**
- * The `postRenderers` of the composition's HelmRelease, from a serialized RGD
- * bundle (`composition.toYaml()`), or `undefined` when it carries none.
- */
-function helmReleasePostRenderers(rgdYaml: string): unknown[] | undefined {
+/** The `clickstackHelmRelease` template `spec` from a serialized RGD bundle (`composition.toYaml()`). */
+function helmReleaseSpec(rgdYaml: string): {
+  values?: Record<string, unknown>;
+  postRenderers?: unknown[];
+} {
   for (const document of yaml.loadAll(rgdYaml) as Array<{
     kind?: string;
     spec?: {
-      resources?: Array<{ id?: string; template?: { spec?: { postRenderers?: unknown[] } } }>;
+      resources?: Array<{
+        id?: string;
+        template?: { spec?: { values?: Record<string, unknown>; postRenderers?: unknown[] } };
+      }>;
     };
   }>) {
     if (document?.kind !== 'ResourceGraphDefinition') continue;
     const release = document.spec?.resources?.find(
       (resource) => resource.id === 'clickstackHelmRelease'
     );
-    if (release !== undefined) return release.template?.spec?.postRenderers;
+    if (release?.template?.spec !== undefined) return release.template.spec;
   }
   throw new Error('expected an RGD carrying the clickstackHelmRelease resource');
 }
 
-/** Parsed `spec.template.spec.securityContext` of a strategic-merge Deployment patch. */
-function patchedSecurityContext(renderer: unknown): Record<string, unknown> | undefined {
-  const patch = (renderer as { kustomize?: { patches?: Array<{ patch?: string }> } }).kustomize
-    ?.patches?.[0]?.patch;
-  if (patch === undefined) return undefined;
-  return (
-    yaml.load(patch) as {
-      spec?: { template?: { spec?: { securityContext?: Record<string, unknown> } } };
-    }
-  ).spec?.template?.spec?.securityContext;
+/** `otel-collector.podSecurityContext` of a HelmRelease's values, or `undefined`. */
+function collectorPodSecurityContext(spec: {
+  values?: Record<string, unknown>;
+}): Record<string, unknown> | undefined {
+  return (spec.values?.['otel-collector'] as { podSecurityContext?: Record<string, unknown> })
+    ?.podSecurityContext;
 }
 
-/** The single patch target of a post-renderer, for assertions on the graph-aware name. */
-function rendererTarget(renderer: unknown): Record<string, unknown> | undefined {
-  return (renderer as { kustomize?: { patches?: Array<{ target?: Record<string, unknown> }> } })
-    .kustomize?.patches?.[0]?.target;
-}
+const CALLER_POST_RENDERER = {
+  kustomize: {
+    patches: [
+      {
+        target: { kind: 'Deployment', name: 'clickstack' },
+        patch: 'metadata:\n  annotations:\n    example.com/owner: platform\n',
+      },
+    ],
+  },
+};
 
 describe('the queue volume is writable by the collector (#222)', () => {
-  it('carries the fsGroup post-renderer in the KRO RGD, targeting the graph-aware gateway name', () => {
+  it('pins otel-collector.podSecurityContext in the KRO RGD values — and emits NO post-renderer', () => {
     const yamlText = makeClickstackBootstrap({
       name: 'clickstack-s3-queue-fsgroup',
       kind: 'ClickStackS3QueueFsGroup',
       storage: { mode: 's3', persistentQueue: { enabled: true } },
     }).toYaml();
 
-    // The target name is `<release>-otel-collector` — in KRO mode a CEL
-    // expression over the instance spec, exactly like the claim name.
-    expect(yamlText).toContain('postRenderers:');
-    expect(yamlText).toContain('name: ${string(schema.spec.name)}-otel-collector');
+    expect(yamlText).toContain('podSecurityContext:');
     expect(yamlText).toContain('fsGroup: 10001');
     expect(yamlText).toContain('fsGroupChangePolicy: OnRootMismatch');
+    expect(yamlText).not.toContain('postRenderers');
 
-    const renderers = helmReleasePostRenderers(yamlText);
-    expect(renderers).toHaveLength(1);
-    expect(rendererTarget(renderers?.[0])).toEqual({
-      group: 'apps',
-      version: 'v1',
-      kind: 'Deployment',
-      name: '${string(schema.spec.name)}-otel-collector',
-    });
-    expect(patchedSecurityContext(renderers?.[0])).toEqual({
+    const spec = helmReleaseSpec(yamlText);
+    expect(collectorPodSecurityContext(spec)).toEqual({
       fsGroup: 10001,
       fsGroupChangePolicy: 'OnRootMismatch',
     });
+    expect(spec.postRenderers).toBeUndefined();
+    // The values never mention the gateway name: the chart truncates
+    // `<release>-otel-collector` at 63 characters, and a value cannot miss.
+    expect(JSON.stringify(spec.values)).not.toContain('-otel-collector');
   });
 
-  it('renders NO post-renderer when the queue is off', () => {
+  it('renders NO podSecurityContext and NO post-renderer when the queue is off', () => {
     const yamlText = makeClickstackBootstrap({
       name: 'clickstack-s3-noqueue-fsgroup',
       kind: 'ClickStackS3NoQueueFsGroup',
@@ -1044,7 +1059,10 @@ describe('the queue volume is writable by the collector (#222)', () => {
 
     expect(yamlText).not.toContain('postRenderers');
     expect(yamlText).not.toContain('fsGroup');
-    expect(helmReleasePostRenderers(yamlText)).toBeUndefined();
+    expect(yamlText).not.toContain('podSecurityContext');
+    const spec = helmReleaseSpec(yamlText);
+    expect(collectorPodSecurityContext(spec)).toBeUndefined();
+    expect(spec.postRenderers).toBeUndefined();
   });
 
   it('honours a custom fsGroup', () => {
@@ -1056,62 +1074,120 @@ describe('the queue volume is writable by the collector (#222)', () => {
 
     expect(yamlText).toContain('fsGroup: 2000');
     expect(yamlText).not.toContain('fsGroup: 10001');
-    expect(patchedSecurityContext(helmReleasePostRenderers(yamlText)?.[0])).toEqual({
+    expect(collectorPodSecurityContext(helmReleaseSpec(yamlText))).toEqual({
       fsGroup: 2000,
       fsGroupChangePolicy: 'OnRootMismatch',
     });
   });
 
-  it('preserves caller-supplied postRenderers and APPENDS the queue patch after them', () => {
-    const callerRenderer = {
-      kustomize: {
-        patches: [
-          {
-            target: { kind: 'Deployment', name: 'clickstack' },
-            patch: 'metadata:\n  annotations:\n    example.com/owner: platform\n',
+  it('lets build-time values ADD podSecurityContext fields but never change the queue-owned two', () => {
+    // The pin sits in the mapper's hard pins, applied LAST with a recursive
+    // merge: the caller's `runAsNonRoot`/`seccompProfile` survive alongside
+    // it, while `fsGroup`/`fsGroupChangePolicy` are TypeKro's.
+    const spec = helmReleaseSpec(
+      makeClickstackBootstrap({
+        name: 'clickstack-s3-queue-fsgroup-values',
+        kind: 'ClickStackS3QueueFsGroupValues',
+        storage: { mode: 's3', persistentQueue: { enabled: true } },
+        values: {
+          'otel-collector': {
+            podSecurityContext: {
+              fsGroup: 5,
+              fsGroupChangePolicy: 'Always',
+              runAsNonRoot: true,
+              seccompProfile: { type: 'RuntimeDefault' },
+            },
           },
-        ],
-      },
-    };
+        },
+      }).toYaml()
+    );
+    expect(collectorPodSecurityContext(spec)).toEqual({
+      fsGroup: 10001,
+      fsGroupChangePolicy: 'OnRootMismatch',
+      runAsNonRoot: true,
+      seccompProfile: { type: 'RuntimeDefault' },
+    });
 
-    const withQueue = helmReleasePostRenderers(
+    // Without a queue there is no pin, and the caller's block is theirs.
+    const unpinned = helmReleaseSpec(
+      makeClickstackBootstrap({
+        name: 'clickstack-s3-noqueue-fsgroup-values',
+        kind: 'ClickStackS3NoQueueFsGroupValues',
+        storage: { mode: 's3' },
+        values: { 'otel-collector': { podSecurityContext: { fsGroup: 5, runAsNonRoot: true } } },
+      }).toYaml()
+    );
+    expect(collectorPodSecurityContext(unpinned)).toEqual({ fsGroup: 5, runAsNonRoot: true });
+  });
+
+  it('lets direct-mode customValues ADD podSecurityContext fields but never change the queue-owned two', () => {
+    // Same precedence through the REAL mapper path: typed mapping <
+    // build-time `values` < concrete `customValues` < hard pins.
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+    const values = mapClickStackConfigToHelmValues(
+      {
+        ...SPEC,
+        customValues: {
+          'otel-collector': {
+            podSecurityContext: { fsGroup: 7, fsGroupChangePolicy: 'Always', runAsUser: 10001 },
+          },
+        },
+      },
+      {
+        storage,
+        values: { 'otel-collector': { podSecurityContext: { fsGroup: 5, runAsNonRoot: true } } },
+      }
+    ) as Record<string, unknown>;
+
+    expect(collectorPodSecurityContext({ values })).toEqual({
+      fsGroup: 10001,
+      fsGroupChangePolicy: 'OnRootMismatch',
+      runAsNonRoot: true,
+      runAsUser: 10001,
+    });
+  });
+
+  it('passes caller-supplied postRenderers through UNCHANGED and adds none of its own', () => {
+    // #223 appended a queue patch after the caller's entries; the fsGroup now
+    // travels as a value, so the caller's list is the whole list.
+    const withQueue = helmReleaseSpec(
       makeClickstackBootstrap({
         name: 'clickstack-s3-queue-fsgroup-caller',
         kind: 'ClickStackS3QueueFsGroupCaller',
         storage: { mode: 's3', persistentQueue: { enabled: true } },
-        postRenderers: [callerRenderer],
+        postRenderers: [CALLER_POST_RENDERER],
       }).toYaml()
     );
-    expect(withQueue).toHaveLength(2);
-    // The caller's entry survives verbatim, first…
-    expect(withQueue?.[0]).toEqual(callerRenderer);
-    // …and the composition's pin comes after it, so it wins on the same field.
-    expect(rendererTarget(withQueue?.[1])?.name).toBe('${string(schema.spec.name)}-otel-collector');
-    expect(patchedSecurityContext(withQueue?.[1])?.fsGroup).toBe(10001);
+    expect(withQueue.postRenderers).toEqual([CALLER_POST_RENDERER]);
+    expect(collectorPodSecurityContext(withQueue)?.fsGroup).toBe(10001);
 
-    // With no queue the caller's post-renderers are the only ones — never dropped.
-    const withoutQueue = helmReleasePostRenderers(
+    const withoutQueue = helmReleaseSpec(
       makeClickstackBootstrap({
         name: 'clickstack-s3-noqueue-fsgroup-caller',
         kind: 'ClickStackS3NoQueueFsGroupCaller',
         storage: { mode: 's3' },
-        postRenderers: [callerRenderer],
+        postRenderers: [CALLER_POST_RENDERER],
       }).toYaml()
     );
-    expect(withoutQueue).toEqual([callerRenderer]);
+    expect(withoutQueue.postRenderers).toEqual([CALLER_POST_RENDERER]);
   });
 
-  it('rejects an invalid fsGroup at CONSTRUCTION time', () => {
+  it('rejects an invalid fsGroup at CONSTRUCTION time, and accepts 0', () => {
+    for (const fsGroup of [-1, 1.5, 1e20]) {
+      expect(() =>
+        makeClickstackBootstrap({
+          storage: { mode: 's3', persistentQueue: { enabled: true, fsGroup } },
+        })
+      ).toThrow(/'storage\.persistentQueue\.fsGroup' must be a non-negative integer/);
+    }
     expect(() =>
       makeClickstackBootstrap({
         storage: { mode: 's3', persistentQueue: { enabled: true, fsGroup: 0 } },
       })
-    ).toThrow(/'storage\.persistentQueue\.fsGroup' must be a positive integer/);
-    expect(() =>
-      makeClickstackBootstrap({
-        storage: { mode: 's3', persistentQueue: { enabled: true, fsGroup: 1.5 } },
-      })
-    ).toThrow(/'storage\.persistentQueue\.fsGroup' must be a positive integer/);
+    ).not.toThrow();
   });
 
   it('rejects a schema reference in build-time postRenderers, like every build-time option', () => {
@@ -1138,6 +1214,117 @@ describe('the queue volume is writable by the collector (#222)', () => {
         ],
       })
     ).toThrow(/build-time options contain a schema\/resource reference/);
+  });
+});
+
+describe('the release name is bounded so every name derived from it fits (#222 follow-up)', () => {
+  // The chart names the gateway Deployment and Service
+  // `printf "%s-%s" .Release.Name "otel-collector" | trunc 63 | trimSuffix "-"`,
+  // while the status contract assumes the LITERAL `<name>-otel-collector` —
+  // so past 48 characters the endpoints would name a Service that does not
+  // exist. Fixing that in CEL is not contained (KRO status CEL would have to
+  // reproduce trunc/trimSuffix), and it is not even the tightest bound: the
+  // `<name>-team-bootstrap` CronJob is refused by the API server past 52
+  // characters. So the runtime `name` is bounded instead, by derivation.
+  const GATEWAY_CONSTRAINT = CLICKSTACK_GENERATED_NAMES.find(
+    (constraint) => 'suffix' in constraint && constraint.suffix === CLICKSTACK_GATEWAY_NAME_SUFFIX
+  );
+  const LONG_NAME = 'a'.repeat(49);
+  /** ArkType returns its errors (not an `Error` subclass) instead of throwing. */
+  const rejects = (result: unknown): boolean =>
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { ' arkKind'?: unknown })[' arkKind'] === 'errors';
+
+  it('binds on the Team-bootstrap CronJob: 52 minus its 15-character suffix', () => {
+    expect(CLICKSTACK_NAME_LIMIT.maxLength).toBe(
+      CRONJOB_NAME_MAX_LENGTH - CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX.length
+    );
+    expect(CLICKSTACK_NAME_LIMIT.maxLength).toBe(37);
+    expect(CLICKSTACK_NAME_LIMIT.binding.suffix).toBe(CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX);
+    expect(CLICKSTACK_NAME_LIMIT.message).toContain('37');
+    expect(CLICKSTACK_NAME_LIMIT.message).toContain('team-bootstrap');
+  });
+
+  it('documents the gateway truncation gap: 63 minus `-otel-collector` is 48, and every accepted name fits', () => {
+    if (GATEWAY_CONSTRAINT === undefined) throw new Error('expected the gateway constraint');
+    expect(deriveNameLengthLimit([GATEWAY_CONSTRAINT]).maxLength).toBe(
+      DNS_LABEL_MAX_LENGTH - CLICKSTACK_GATEWAY_NAME_SUFFIX.length
+    );
+    expect(deriveNameLengthLimit([GATEWAY_CONSTRAINT]).maxLength).toBe(48);
+    // A 49-character release would be truncated by the chart…
+    expect(`${LONG_NAME}${CLICKSTACK_GATEWAY_NAME_SUFFIX}`.length).toBeGreaterThan(
+      DNS_LABEL_MAX_LENGTH
+    );
+    // …and every name the schema accepts renders the literal untruncated, so
+    // `status.gateway.*Endpoint` always names the real Service.
+    expect(
+      CLICKSTACK_NAME_LIMIT.maxLength + CLICKSTACK_GATEWAY_NAME_SUFFIX.length
+    ).toBeLessThanOrEqual(DNS_LABEL_MAX_LENGTH);
+  });
+
+  it('renders the values-based fsGroup identically for a 49-character release name', () => {
+    // The pin is a value under the subchart alias — it never names the
+    // Deployment, so the length of the release name cannot make it miss.
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+    const short = mapClickStackConfigToHelmValues(SPEC, { storage }) as Record<string, unknown>;
+    const long = mapClickStackConfigToHelmValues(
+      { ...SPEC, name: LONG_NAME },
+      { storage }
+    ) as Record<string, unknown>;
+
+    const shortContext = collectorPodSecurityContext({ values: short });
+    if (shortContext === undefined) throw new Error('expected a podSecurityContext pin');
+    expect(collectorPodSecurityContext({ values: long })).toEqual(shortContext);
+    expect(collectorPodSecurityContext({ values: long })).toEqual({
+      fsGroup: 10001,
+      fsGroupChangePolicy: 'OnRootMismatch',
+    });
+    expect(long.fullnameOverride).toBe(LONG_NAME);
+    expect(JSON.stringify(long['otel-collector'])).not.toContain('-otel-collector');
+  });
+
+  it('rejects a 49-character name in the runtime schema and serializes the bound into the RGD', () => {
+    const rejected = ClickStackBootstrapConfigSchema({
+      ...SPEC,
+      name: LONG_NAME,
+    }) as unknown;
+    expect(rejects(rejected)).toBe(true);
+    expect(String(rejected)).toContain('at most 37 characters');
+    expect(String(rejected)).toContain('team-bootstrap');
+
+    const atLimit = ClickStackBootstrapConfigSchema({
+      ...SPEC,
+      name: 'a'.repeat(CLICKSTACK_NAME_LIMIT.maxLength),
+    }) as unknown;
+    expect(rejects(atLimit)).toBe(false);
+
+    const rgd = makeClickstackBootstrap({
+      name: 'clickstack-s3-name-bound',
+      kind: 'ClickStackS3NameBound',
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+    }).toYaml();
+    expect(rgd).toContain(`name: string | maxLength=${CLICKSTACK_NAME_LIMIT.maxLength}`);
+  });
+
+  it('refuses a 49-character concrete name in direct-mode toYaml with the same message', () => {
+    const factory = makeClickstackBootstrap({
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+    }).factory('direct', { namespace: SPEC.namespace });
+
+    expect(() => factory.toYaml({ ...SPEC, name: LONG_NAME } as never)).toThrow(
+      /at most 37 characters, because the Team-bootstrap CronJob/
+    );
+
+    const atLimit = factory.toYaml({
+      ...SPEC,
+      name: 'a'.repeat(CLICKSTACK_NAME_LIMIT.maxLength),
+    } as never);
+    expect(atLimit).toContain('fsGroup: 10001');
+    expect(atLimit).toContain(`${'a'.repeat(CLICKSTACK_NAME_LIMIT.maxLength)}-team-bootstrap`);
   });
 });
 

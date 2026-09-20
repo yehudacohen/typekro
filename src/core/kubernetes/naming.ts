@@ -48,6 +48,19 @@ export const DNS_SUBDOMAIN_MAX_LENGTH = 253;
  */
 export const HELM_RELEASE_NAME_MAX_LENGTH = 53;
 
+/**
+ * Kubernetes' CronJob name limit (`ValidateCronJobCreate`,
+ * `pkg/apis/batch/validation/validation.go`).
+ *
+ * Tighter than the DNS label limit because the CronJob controller names each
+ * Job `<cronjob>-<scheduled-time>` with an 11-character suffix, and a Job name
+ * is a 63-character DNS label — so the API server rejects a CronJob whose name
+ * is longer than 52 characters at CREATE time ("must be no more than 52
+ * characters"). The check is skipped on update, so an existing over-long
+ * CronJob can still be edited or deleted.
+ */
+export const CRONJOB_NAME_MAX_LENGTH = DNS_LABEL_MAX_LENGTH - 11;
+
 /** One name a composition derives from the name its caller supplies. */
 export interface GeneratedNameConstraint {
   /**
