@@ -25,6 +25,7 @@ import {
   DEFAULT_HTTP_READ_TIMEOUT,
   DEFAULT_HTTP_WRITE_TIMEOUT,
 } from '../config/defaults.js';
+import type { TypeKroLogger } from '../logging/types.js';
 
 /**
  * A Kubernetes request that did not return within its budget — whichever layer noticed first.
@@ -57,16 +58,158 @@ export function isRequestTimeoutError(error: unknown): error is RequestTimeoutEr
   );
 }
 
+/**
+ * What the timing layer knows about the request's context, so the timeout's hint can point at the
+ * cause that is actually possible instead of the one that is merely common.
+ */
+export interface RequestTimeoutDiagnostics {
+  /**
+   * Whether the kubeconfig's current user authenticates through an `exec` credential plugin.
+   * `true` names the wedged/expired-credential cause; `false` rules it out and describes a stalled
+   * connection instead; `undefined` (the credential shape is not known at this layer) hedges.
+   * See {@link usesExecCredential}.
+   */
+  readonly usesExecCredential?: boolean | undefined;
+}
+
+/**
+ * The hint appended to a {@link PollTimeoutError}. Only a kubeconfig that actually carries an
+ * `exec` block can suffer a wedged or expired exec credential; a pre-minted token or a client
+ * certificate cannot, and for those the honest reading is a connection that stalled — a connect
+ * or first write that never completed, or a server that accepted the connection and never
+ * answered. Naming the exec cause for such a kubeconfig sent operators chasing credentials that
+ * were fine (#213).
+ */
+function requestTimeoutHint(diagnostics: RequestTimeoutDiagnostics | undefined): string {
+  switch (diagnostics?.usesExecCredential) {
+    case true:
+      return (
+        `The usual cause is a wedged or expired kubeconfig exec credential (e.g. an AWS SSO/EKS token ` +
+        `that expired mid-deploy). Re-run with fresh credentials.`
+      );
+    case false:
+      return (
+        `The kubeconfig does not use an exec credential plugin, so a wedged exec credential cannot be ` +
+        `the cause: the connection stalled before the API server answered (a connect or first write ` +
+        `that never completed, or a server that accepted the connection and never responded).`
+      );
+    default:
+      return (
+        `If the kubeconfig authenticates through an exec credential plugin (e.g. an AWS SSO/EKS token), ` +
+        `a wedged or expired exec credential is the usual cause — re-run with fresh credentials. ` +
+        `Otherwise the connection stalled before the API server answered.`
+      );
+  }
+}
+
 /** Thrown when a readiness-poll API call exceeds its per-call budget (distinguishable so callers can fail fast vs. retry). */
 export class PollTimeoutError extends RequestTimeoutError {
-  constructor(label: string, timeoutMs: number) {
+  constructor(label: string, timeoutMs: number, diagnostics?: RequestTimeoutDiagnostics) {
     super(
       `${label} exceeded its ${timeoutMs}ms request timeout — the Kubernetes API call did not return. ` +
-        `The usual cause is a wedged or expired kubeconfig exec credential (e.g. an AWS SSO/EKS token ` +
-        `that expired mid-deploy). Re-run with fresh credentials.`,
+        requestTimeoutHint(diagnostics),
       timeoutMs
     );
     this.name = 'PollTimeoutError';
+  }
+}
+
+/**
+ * Whether a kubeconfig's CURRENT user authenticates through an `exec` credential plugin. Duck-typed
+ * on `getCurrentUser` so the timing layer does not depend on the Kubernetes client's types, and
+ * `undefined` when there is no kubeconfig to ask or it has no current user — the caller then gets
+ * the hedged hint rather than a claim either way.
+ */
+export function usesExecCredential(
+  kubeConfig: { getCurrentUser?: () => object | null | undefined } | null | undefined
+): boolean | undefined {
+  if (!kubeConfig || typeof kubeConfig.getCurrentUser !== 'function') return undefined;
+  const user = kubeConfig.getCurrentUser();
+  if (!user) return undefined;
+  const exec = (user as { readonly exec?: unknown }).exec;
+  return exec !== undefined && exec !== null;
+}
+
+/**
+ * What a request timeout looked like from the caller's side, for the warn line that precedes the
+ * re-issue. The two shapes {@link isRequestTimeoutError} accepts carry different numbers in
+ * `timeoutMs`: a budget that EXPIRED (the socket timer's or the deadline wrapper's), or, for a
+ * premature close, how long the request RAN before the transport died with budget to spare. Calling
+ * the latter a budget would be false, so the shapes are told apart by name — the transport's error
+ * class is defined downstream of this module and cannot be imported here.
+ */
+function describeRequestTimeout(error: RequestTimeoutError): {
+  readonly summary: string;
+  readonly meta: Record<string, unknown>;
+} {
+  if (error.name === 'PrematureCloseError') {
+    return {
+      summary: `the connection closed after ${error.timeoutMs}ms without a complete response`,
+      meta: { elapsedMs: error.timeoutMs },
+    };
+  }
+  return {
+    summary: `the read did not return within its ${error.timeoutMs}ms budget`,
+    meta: { timeoutMs: error.timeoutMs },
+  };
+}
+
+/**
+ * Run an IDEMPOTENT read, and re-issue it exactly once if the first attempt is a request timeout.
+ *
+ * The failure this rides out is a single request — typically the FIRST one a freshly constructed
+ * client makes — that never completes although the API server is healthy and the same GET succeeds
+ * from another client within a second (#213). Before this, one such 30 s stall of a ~2 KB
+ * drift-check GET failed a 20-minute converge.
+ *
+ * Whether the re-issued request travels on a new connection is the HTTP library's business, not a
+ * promise made here. Under Bun the library issues every request on its own connection (`agent:
+ * false`, `Connection: close`), so the retry never reuses the socket that stalled; the stock Node
+ * client may hand it a pooled socket. Either way it is one more request and nothing else.
+ *
+ * BOUNDS. Only a request timeout is retried — {@link isRequestTimeoutError}, i.e. the socket timer's
+ * `RequestTimeoutError`, the deadline wrapper's `PollTimeoutError` and the transport's
+ * `PrematureCloseError`, all of which mean "the server never answered" — and only once, so the
+ * worst case is two read budgets. An HTTP error the server DID answer with (404, 403, 5xx), a TLS
+ * failure or an abort is thrown immediately: those are answers, or the caller's own decision, not
+ * a stall. The caller's abort signal is checked before the second attempt so a cancelled converge
+ * does not issue one more request. READS ONLY: a create, update or delete that timed out may have
+ * been applied by a server that simply had not answered yet, so re-issuing it is not safe here.
+ *
+ * When the retry times out as well, the error is the retry's own, with a note that the request was
+ * already re-issued once, so nobody reads the message as "try again".
+ */
+export async function retryOnceOnRequestTimeout<T>(
+  read: () => Promise<T>,
+  options: {
+    /** Names the resource being read in the warn line and the final error. */
+    readonly label: string;
+    readonly logger: Pick<TypeKroLogger, 'warn'>;
+    readonly abortSignal?: AbortSignal | undefined;
+  }
+): Promise<T> {
+  const { label, logger, abortSignal } = options;
+  try {
+    return await read();
+  } catch (firstError: unknown) {
+    if (!isRequestTimeoutError(firstError)) throw firstError;
+    // An abort that landed while the first attempt was in flight is the caller's decision, not a
+    // stall to ride out; it must surface as the abort, and no second request may leave.
+    abortSignal?.throwIfAborted();
+    const { summary, meta } = describeRequestTimeout(firstError);
+    logger.warn(`${label}: ${summary} — re-issuing the read once`, {
+      label,
+      ...meta,
+      error: firstError.message,
+    });
+    try {
+      return await read();
+    } catch (retryError: unknown) {
+      if (isRequestTimeoutError(retryError)) {
+        retryError.message += `\n${label} was already re-issued once after a first attempt timed out; the retry did not return either.`;
+      }
+      throw retryError;
+    }
   }
 }
 
@@ -214,7 +357,8 @@ function raceDeadline<T>(
   operation: Promise<T>,
   budgetMs: number,
   label: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  diagnostics?: RequestTimeoutDiagnostics
 ): Promise<T> {
   const bounded = Number.isFinite(budgetMs) && budgetMs > 0;
   if (!bounded && !abortSignal) return operation;
@@ -224,7 +368,10 @@ function raceDeadline<T>(
   if (bounded) {
     races.push(
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new PollTimeoutError(label, budgetMs)), budgetMs);
+        timer = setTimeout(
+          () => reject(new PollTimeoutError(label, budgetMs, diagnostics)),
+          budgetMs
+        );
       })
     );
   }
@@ -271,9 +418,15 @@ export function withCallDeadline<T extends object>(
     readonly budget: CallDeadlineBudget;
     readonly label: string;
     readonly abortSignal?: AbortSignal;
+    /**
+     * Whether the kubeconfig behind `api` uses an exec credential plugin, so a timeout's hint names
+     * a cause that is possible for THIS client. See {@link usesExecCredential}.
+     */
+    readonly usesExecCredential?: boolean | undefined;
   }
 ): T {
   const { budget, label, abortSignal } = options;
+  const diagnostics: RequestTimeoutDiagnostics = { usesExecCredential: options.usesExecCredential };
   const wrapped = new WeakMap<object, unknown>();
   return new Proxy(api, {
     get(target, property) {
@@ -292,7 +445,7 @@ export function withCallDeadline<T extends object>(
         abortSignal?.throwIfAborted();
         const result = method.apply(target, args);
         if (!isThenable(result)) return result;
-        return raceDeadline(result, budgetMs, `${label} ${property}`, abortSignal);
+        return raceDeadline(result, budgetMs, `${label} ${property}`, abortSignal, diagnostics);
       };
       wrapped.set(value, bound);
       return bound;

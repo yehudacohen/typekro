@@ -8,6 +8,7 @@ import {
   waitForPersistedIdentityDeletionForTest,
 } from '../../../src/alchemy/resource-registration.js';
 import type { TypeKroResource, TypeKroResourceProps } from '../../../src/alchemy/types.js';
+import { PollTimeoutError } from '../../../src/core/deployment/poll-timeout.js';
 import type { Enhanced, KubernetesResource } from '../../../src/core/types/kubernetes.js';
 
 type Resource = Enhanced<unknown, unknown>;
@@ -54,6 +55,52 @@ describe('Alchemy persisted TypeKro resource drift', () => {
         }),
       })
     ).resolves.toBeUndefined();
+  });
+
+  it('rides out one request timeout on the drift-check GET by re-issuing it once (#213)', async () => {
+    // The first request of a freshly constructed client intermittently never completes against a
+    // healthy API server. The GET is idempotent: one retry turns a failed converge into a blip.
+    let reads = 0;
+    await expect(
+      detectKroResourceIdentityDriftForTest(props, output, {
+        read: async () => {
+          reads += 1;
+          if (reads === 1) throw new PollTimeoutError('Namespace application-system read', 30_000);
+          return { ...deployed, metadata: { ...deployed.metadata, resourceVersion: '11' } };
+        },
+      })
+    ).resolves.toBeUndefined();
+    expect(reads).toBe(2);
+  });
+
+  it('fails closed with the timeout when the re-issued drift-check GET times out too', async () => {
+    let reads = 0;
+    const error = (await detectKroResourceIdentityDriftForTest(props, output, {
+      read: async () => {
+        reads += 1;
+        throw new PollTimeoutError('Namespace application-system read', 30_000);
+      },
+    }).catch((e: unknown) => e)) as Error;
+    // Exactly two attempts: the retry is bounded, and a non-404 failure is never drift absence.
+    expect(reads).toBe(2);
+    expect(error.message).toMatch(
+      /Alchemy drift check could not read v1\/Namespace application-system/
+    );
+    expect(error.message).toMatch(/exceeded its 30000ms request timeout/);
+    expect(error.message).toMatch(/already re-issued once/);
+  });
+
+  it('does not retry a drift-check read the server answered', async () => {
+    let reads = 0;
+    await expect(
+      detectKroResourceIdentityDriftForTest(props, output, {
+        read: async () => {
+          reads += 1;
+          throw Object.assign(new Error('forbidden'), { statusCode: 403 });
+        },
+      })
+    ).rejects.toThrow(/could not read .*forbidden/);
+    expect(reads).toBe(1);
   });
 
   it('reconciles an object removed behind persisted Alchemy state', async () => {

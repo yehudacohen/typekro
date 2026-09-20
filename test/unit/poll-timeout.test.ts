@@ -5,6 +5,7 @@
  * settles (wedged/expired kubeconfig exec credential) must be bounded so the poll's deadline is honored.
  */
 import { describe, expect, it } from 'bun:test';
+import { PrematureCloseError } from '../../src/core/kubernetes/bun-http-library.js';
 import {
   callDeadlineBudget,
   callDeadlineVerb,
@@ -13,6 +14,8 @@ import {
   PollTimeoutError,
   perCallTimeout,
   RequestTimeoutError,
+  retryOnceOnRequestTimeout,
+  usesExecCredential,
   withCallDeadline,
 } from '../../src/core/deployment/poll-timeout.js';
 
@@ -288,5 +291,208 @@ describe('request-timeout recognition across timing layers', () => {
   it('carries the budget that elapsed', () => {
     expect(new PollTimeoutError('Widget demo read', 1_234).timeoutMs).toBe(1_234);
     expect(new RequestTimeoutError('HTTP request timeout', 5_678).timeoutMs).toBe(5_678);
+  });
+});
+
+describe('retryOnceOnRequestTimeout', () => {
+  /** A logger that records its warn lines and nothing else. */
+  function recordingLogger() {
+    const warnings: Array<{ msg: string; meta: unknown }> = [];
+    return {
+      warnings,
+      logger: {
+        warn: (msg: string, meta?: unknown) => {
+          warnings.push({ msg, meta });
+        },
+      },
+    };
+  }
+
+  it('returns the value of a GET that times out once and then succeeds, logging one warn', async () => {
+    // The failure pattern from #213: the FIRST request a fresh client makes never completes
+    // against a healthy API server; the same GET answers in well under a second when re-issued.
+    const { logger, warnings } = recordingLogger();
+    let attempts = 0;
+    const read = async () => {
+      attempts += 1;
+      if (attempts === 1)
+        throw new PollTimeoutError('Widget demo (alchemy-drift-check) read', 30_000);
+      return { metadata: { uid: 'uid-1' } };
+    };
+
+    await expect(
+      retryOnceOnRequestTimeout(read, { label: 'Widget demo/widgets ns/demo', logger })
+    ).resolves.toEqual({ metadata: { uid: 'uid-1' } });
+    expect(attempts).toBe(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.msg).toMatch(/Widget demo\/widgets ns\/demo/);
+    expect(warnings[0]?.msg).toMatch(/did not return within its 30000ms budget/);
+    expect(warnings[0]?.msg).toMatch(/re-issuing the read once/);
+    expect(warnings[0]?.meta).toMatchObject({ timeoutMs: 30_000 });
+  });
+
+  it('describes a premature close by how long the connection lasted, not as an expired budget', async () => {
+    // `PrematureCloseError.timeoutMs` is the ELAPSED time before the socket died, with budget to
+    // spare; the warn line must not present those milliseconds as a budget the read exceeded.
+    const { logger, warnings } = recordingLogger();
+    let attempts = 0;
+    const read = async () => {
+      attempts += 1;
+      if (attempts === 1)
+        throw new PrematureCloseError('GET', '/api/v1/widgets/demo', 412, 'while reading the body');
+      return 'ok';
+    };
+
+    await expect(
+      retryOnceOnRequestTimeout(read, { label: 'Widget demo/widgets ns/demo', logger })
+    ).resolves.toBe('ok');
+    expect(attempts).toBe(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.msg).toMatch(/connection closed after 412ms without a complete response/);
+    expect(warnings[0]?.msg).toMatch(/re-issuing the read once/);
+    expect(warnings[0]?.msg).not.toMatch(/budget/);
+    expect(warnings[0]?.meta).toMatchObject({ elapsedMs: 412 });
+    expect(warnings[0]?.meta).not.toHaveProperty('timeoutMs');
+  });
+
+  it("also rides out the socket-layer timeout, not only the deadline wrapper's", async () => {
+    // Both timing layers raise `isRequestTimeoutError`; the caller must not care which one won.
+    const { logger } = recordingLogger();
+    let attempts = 0;
+    const read = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new RequestTimeoutError('HTTP request timeout: GET /api', 30_000);
+      return 'ok';
+    };
+    await expect(retryOnceOnRequestTimeout(read, { label: 'read', logger })).resolves.toBe('ok');
+    expect(attempts).toBe(2);
+  });
+
+  it('surfaces the request timeout when the retry times out too, after exactly two attempts', async () => {
+    const { logger, warnings } = recordingLogger();
+    let attempts = 0;
+    const read = async (): Promise<never> => {
+      attempts += 1;
+      throw new PollTimeoutError(`Widget demo read (attempt ${attempts})`, 30_000);
+    };
+
+    const error = await retryOnceOnRequestTimeout(read, { label: 'Widget demo', logger }).catch(
+      (e: unknown) => e
+    );
+    expect(isRequestTimeoutError(error)).toBe(true);
+    expect(error).toBeInstanceOf(PollTimeoutError);
+    // Bounded: two read budgets, never a third attempt.
+    expect(attempts).toBe(2);
+    expect(warnings).toHaveLength(1);
+    // The error is the RETRY's, and it says so, so nobody reads it as "try again".
+    expect((error as Error).message).toMatch(/attempt 2/);
+    expect((error as Error).message).toMatch(/already re-issued once/);
+  });
+
+  it('does not retry an error the server actually answered with', async () => {
+    const { logger, warnings } = recordingLogger();
+    let attempts = 0;
+    const read = async (): Promise<never> => {
+      attempts += 1;
+      throw Object.assign(new Error('not found'), { statusCode: 404 });
+    };
+    await expect(retryOnceOnRequestTimeout(read, { label: 'read', logger })).rejects.toThrow(
+      'not found'
+    );
+    expect(attempts).toBe(1);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('throws the abort instead of issuing a second attempt when the signal tripped meanwhile', async () => {
+    // An abort that lands while the first attempt is in flight is the caller's decision. The retry
+    // must not put one more request on the wire, and the caller must see the abort, not a timeout.
+    const { logger, warnings } = recordingLogger();
+    const controller = new AbortController();
+    const reason = new Error('converge cancelled');
+    let attempts = 0;
+    const read = async (): Promise<never> => {
+      attempts += 1;
+      controller.abort(reason);
+      throw new PollTimeoutError('Widget demo read', 30_000);
+    };
+
+    await expect(
+      retryOnceOnRequestTimeout(read, { label: 'read', logger, abortSignal: controller.signal })
+    ).rejects.toBe(reason);
+    expect(attempts).toBe(1);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('is applied to reads only: a bounded create that times out is attempted exactly once', async () => {
+    // Nothing wraps writes in the retry: a POST that timed out may have been applied by a server
+    // that simply had not answered yet, so the deadline wrapper alone bounds it and it fails once.
+    let creates = 0;
+    const api = withCallDeadline(
+      {
+        create: () => {
+          creates += 1;
+          return new Promise(() => undefined);
+        },
+      },
+      { budget: { read: 20, create: 20, update: 20, delete: 20 }, label: 'Widget demo' }
+    );
+    await expect(api.create()).rejects.toBeInstanceOf(PollTimeoutError);
+    expect(creates).toBe(1);
+  });
+});
+
+describe('request-timeout hint', () => {
+  it('names the exec credential only when the kubeconfig user actually has an exec block', () => {
+    const withExec = new PollTimeoutError('Widget demo read', 30_000, { usesExecCredential: true });
+    expect(withExec.message).toMatch(
+      /usual cause is a wedged or expired kubeconfig exec credential/
+    );
+
+    // A pre-minted token or client certificate cannot suffer a wedged exec plugin: say what
+    // happened (the request did not return) instead of sending the operator after credentials.
+    const withoutExec = new PollTimeoutError('Widget demo read', 30_000, {
+      usesExecCredential: false,
+    });
+    expect(withoutExec.message).toMatch(/the Kubernetes API call did not return/);
+    expect(withoutExec.message).toMatch(/does not use an exec credential plugin/);
+    expect(withoutExec.message).not.toMatch(/usual cause is a wedged/);
+    expect(withoutExec.message).toMatch(/connection stalled/);
+
+    // The credential shape is unknown at this layer: hedge, do not assert either way.
+    const unknown = new PollTimeoutError('Widget demo read', 30_000);
+    expect(unknown.message).toMatch(/If the kubeconfig authenticates through an exec credential/);
+    expect(unknown.message).not.toMatch(/usual cause is a wedged/);
+  });
+
+  it('reads the exec block off the kubeconfig current user', () => {
+    expect(usesExecCredential({ getCurrentUser: () => ({ exec: { command: 'aws' } }) })).toBe(true);
+    expect(usesExecCredential({ getCurrentUser: () => ({ token: 'pre-minted' }) })).toBe(false);
+    expect(usesExecCredential({ getCurrentUser: () => null })).toBeUndefined();
+    expect(usesExecCredential(undefined)).toBeUndefined();
+    expect(usesExecCredential({})).toBeUndefined();
+  });
+
+  it('threads the kubeconfig shape through withCallDeadline into the timeout it raises', async () => {
+    const budget = { read: 20, create: 20, update: 20, delete: 20 };
+    const wedged = { read: () => new Promise(() => undefined) };
+
+    const tokenUser = withCallDeadline(wedged, {
+      budget,
+      label: 'Widget demo',
+      usesExecCredential: false,
+    });
+    const tokenError = (await tokenUser.read().catch((e: unknown) => e)) as Error;
+    expect(tokenError.message).toMatch(/does not use an exec credential plugin/);
+    expect(tokenError.message).not.toMatch(/usual cause is a wedged/);
+
+    const execUser = withCallDeadline(wedged, {
+      budget,
+      label: 'Widget demo',
+      usesExecCredential: true,
+    });
+    const execError = (await execUser.read().catch((e: unknown) => e)) as Error;
+    expect(execError.message).toMatch(
+      /usual cause is a wedged or expired kubeconfig exec credential/
+    );
   });
 });
