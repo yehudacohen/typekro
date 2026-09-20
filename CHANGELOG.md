@@ -384,20 +384,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   20-minute deploys. The alchemy persisted-identity drift check, the singleton drift gate
   and the engine's single (non-polling) external-reference read now re-issue the read
   EXACTLY ONCE on a request timeout, via `retryOnceOnRequestTimeout`, and log a warn naming
-  the resource. The retry is a fresh connection — the Bun HTTP library issues every request
-  with `agent: false` and `Connection: close`, so no socket is ever reused — and the worst
-  case is bounded at two read budgets. Only a request timeout (the socket timer's, the
-  deadline wrapper's, or a premature close) is retried; an HTTP error the server answered
-  with, a TLS failure or an abort is thrown immediately, the caller's abort signal is
-  checked before the second attempt, and creates, updates and deletes are never retried.
-  When the retry times out as well, the error says the read was already re-issued once.
+  the resource. The worst case is bounded at two read budgets. Under Bun the re-issued read
+  is always a new connection (the HTTP library sends every request with `agent: false` and
+  `Connection: close`); with the stock Node client it is a plain re-issue that may reuse a
+  pooled socket. Only a request timeout (the socket timer's, the deadline wrapper's, or a
+  premature close) is retried; an HTTP error the server answered with, a TLS failure or an
+  abort is thrown immediately, the deployment's abort signal is checked before the second
+  attempt — for the engine's external-reference read that is the deployment-wide signal, so
+  a cancelled deployment puts no second read on the wire — and creates, updates and deletes
+  are never retried. When the retry times out as well, the error says the read was already
+  re-issued once.
 
 - The request-timeout hint no longer blames an exec credential a kubeconfig does not have.
   `PollTimeoutError` names "a wedged or expired kubeconfig exec credential" only when the
   current user actually carries an `exec` block (`usesExecCredential`, threaded through
-  `withCallDeadline`); for a pre-minted token or client certificate it says the connection
-  stalled before the API server answered, and where the credential shape is not known it
-  hedges instead of asserting either way.
+  `withCallDeadline`); for a pre-minted token or client certificate it says a wedged exec
+  credential cannot be the cause and the connection stalled before the API server answered,
+  and where the credential shape is not known it hedges instead of asserting either way.
 
 - A KRO instance that had ALREADY failed could be reported as a generic readiness
   timeout instead of the error it actually hit. The readiness poll checked the

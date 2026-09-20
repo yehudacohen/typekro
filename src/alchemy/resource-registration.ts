@@ -844,7 +844,7 @@ async function detectKroResourceIdentityDrift(
   try {
     // A GET is idempotent, so one request timeout — the first request of a freshly constructed
     // client intermittently never completes against a healthy API server (#213) — is re-issued
-    // once on a fresh connection instead of failing the whole converge. Bounded to two read budgets.
+    // once instead of failing the whole converge. Bounded to two read budgets.
     live = await retryOnceOnRequestTimeout(() => liveReader.read(identity), {
       label: `Alchemy drift check of ${_identityLabel(identity)}`,
       logger: getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE }),
@@ -1282,7 +1282,7 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   try {
     const api = _singletonDriftApi(props, deps.api, abortSignal);
     // Same idempotent-read retry as the persisted-identity drift check: one request timeout on
-    // this GET is re-issued once on a fresh connection before the gate fails closed (#213).
+    // this GET is re-issued once before the gate fails closed (#213).
     live = (await retryOnceOnRequestTimeout(() => api.read(props.resource), {
       label: `Singleton drift check of ${resource.metadata?.name ?? '<unknown>'}`,
       logger,

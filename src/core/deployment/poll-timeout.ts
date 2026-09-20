@@ -89,9 +89,9 @@ function requestTimeoutHint(diagnostics: RequestTimeoutDiagnostics | undefined):
       );
     case false:
       return (
-        `The kubeconfig does not use an exec credential plugin, so this is not a credential problem: ` +
-        `the connection stalled before the API server answered (a connect or first write that never ` +
-        `completed, or a server that accepted the connection and never responded).`
+        `The kubeconfig does not use an exec credential plugin, so a wedged exec credential cannot be ` +
+        `the cause: the connection stalled before the API server answered (a connect or first write ` +
+        `that never completed, or a server that accepted the connection and never responded).`
       );
     default:
       return (
@@ -131,14 +131,41 @@ export function usesExecCredential(
 }
 
 /**
+ * What a request timeout looked like from the caller's side, for the warn line that precedes the
+ * re-issue. The two shapes {@link isRequestTimeoutError} accepts carry different numbers in
+ * `timeoutMs`: a budget that EXPIRED (the socket timer's or the deadline wrapper's), or, for a
+ * premature close, how long the request RAN before the transport died with budget to spare. Calling
+ * the latter a budget would be false, so the shapes are told apart by name — the transport's error
+ * class is defined downstream of this module and cannot be imported here.
+ */
+function describeRequestTimeout(error: RequestTimeoutError): {
+  readonly summary: string;
+  readonly meta: Record<string, unknown>;
+} {
+  if (error.name === 'PrematureCloseError') {
+    return {
+      summary: `the connection closed after ${error.timeoutMs}ms without a complete response`,
+      meta: { elapsedMs: error.timeoutMs },
+    };
+  }
+  return {
+    summary: `the read did not return within its ${error.timeoutMs}ms budget`,
+    meta: { timeoutMs: error.timeoutMs },
+  };
+}
+
+/**
  * Run an IDEMPOTENT read, and re-issue it exactly once if the first attempt is a request timeout.
  *
- * Under Bun the HTTP library issues every request on its own connection (`agent: false`, `Connection:
- * close`), so a re-issued request is a fresh TCP/TLS connection, never a reuse of the socket that
- * stalled. The failure this rides out is a single request — typically the FIRST one a freshly
- * constructed client makes — that never completes although the API server is healthy and the same
- * GET succeeds from another client within a second (#213). Before this, one such 30 s stall of a
- * ~2 KB drift-check GET failed a 20-minute converge.
+ * The failure this rides out is a single request — typically the FIRST one a freshly constructed
+ * client makes — that never completes although the API server is healthy and the same GET succeeds
+ * from another client within a second (#213). Before this, one such 30 s stall of a ~2 KB
+ * drift-check GET failed a 20-minute converge.
+ *
+ * Whether the re-issued request travels on a new connection is the HTTP library's business, not a
+ * promise made here. Under Bun the library issues every request on its own connection (`agent:
+ * false`, `Connection: close`), so the retry never reuses the socket that stalled; the stock Node
+ * client may hand it a pooled socket. Either way it is one more request and nothing else.
  *
  * BOUNDS. Only a request timeout is retried — {@link isRequestTimeoutError}, i.e. the socket timer's
  * `RequestTimeoutError`, the deadline wrapper's `PollTimeoutError` and the transport's
@@ -169,10 +196,12 @@ export async function retryOnceOnRequestTimeout<T>(
     // An abort that landed while the first attempt was in flight is the caller's decision, not a
     // stall to ride out; it must surface as the abort, and no second request may leave.
     abortSignal?.throwIfAborted();
-    logger.warn(
-      `${label}: the read did not return within its ${firstError.timeoutMs}ms budget — retrying once on a fresh connection`,
-      { label, timeoutMs: firstError.timeoutMs, error: firstError.message }
-    );
+    const { summary, meta } = describeRequestTimeout(firstError);
+    logger.warn(`${label}: ${summary} — re-issuing the read once`, {
+      label,
+      ...meta,
+      error: firstError.message,
+    });
     try {
       return await read();
     } catch (retryError: unknown) {

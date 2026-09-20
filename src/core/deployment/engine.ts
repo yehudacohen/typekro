@@ -768,6 +768,7 @@ export class DirectDeploymentEngine {
       if (scheduledExternalReferences.pending.has(reference)) continue;
       await this.resolveExternalReference(reference, graph, resourceKeyMapping, options, {
         logger: deploymentLogger,
+        abortSignal,
       });
     }
 
@@ -859,10 +860,8 @@ export class DirectDeploymentEngine {
       abortSignal.throwIfAborted();
       await this.resolveExternalReference(reference, graph, resourceKeyMapping, options, {
         logger: deploymentLogger,
-        retry: {
-          budgetMs: this.externalReferenceBudget(options, startTime),
-          abortSignal,
-        },
+        abortSignal,
+        retry: { budgetMs: this.externalReferenceBudget(options, startTime) },
       });
       scheduled.pending.delete(reference);
     }
@@ -885,7 +884,9 @@ export class DirectDeploymentEngine {
    *
    * Without `retry` this is the historical single read that happens before anything is applied.
    * With `retry` it polls until the observed resource appears or the budget runs out, which is how
-   * a reference that waits on resources this graph creates is resolved.
+   * a reference that waits on resources this graph creates is resolved. `abortSignal` is the
+   * deployment-wide signal in both cases: it stops the polling loop, and it keeps the single read's
+   * one re-issue off the wire once the deployment has been cancelled.
    */
   private async resolveExternalReference(
     reference: ExternalResourceReference,
@@ -894,7 +895,8 @@ export class DirectDeploymentEngine {
     options: DeploymentOptions,
     settings: {
       logger: DeploymentLogger;
-      retry?: { budgetMs: number; abortSignal: AbortSignal };
+      abortSignal: AbortSignal;
+      retry?: { budgetMs: number };
     }
   ): Promise<void> {
     const manifest = reference.manifest as KubernetesResource;
@@ -935,10 +937,11 @@ export class DirectDeploymentEngine {
           retryOnceOnRequestTimeout(readLive, {
             label: `External reference ${manifest.kind}/${name} ('${referenceId}')`,
             logger: settings.logger,
+            abortSignal: settings.abortSignal,
           });
 
     for (;;) {
-      settings.retry?.abortSignal.throwIfAborted();
+      settings.abortSignal.throwIfAborted();
       try {
         const live = await readOnce();
         resourceKeyMapping.set(referenceId, live);
@@ -951,6 +954,11 @@ export class DirectDeploymentEngine {
         });
         return;
       } catch (error: unknown) {
+        // A deployment cancelled while the read was in flight is the caller's decision, not a read
+        // failure to classify and report as "could not be read": surface the cancellation itself,
+        // exactly as the check at the top of the loop does when it lands between attempts.
+        if (settings.abortSignal.aborted) throw settings.abortSignal.reason ?? error;
+
         const assessment = classifyReadError(error);
         lastDetail = assessment.detail;
 
@@ -978,10 +986,7 @@ export class DirectDeploymentEngine {
 
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
-      await this.abortableDelay(
-        Math.min(DEFAULT_POLL_INTERVAL, remaining),
-        settings.retry?.abortSignal
-      );
+      await this.abortableDelay(Math.min(DEFAULT_POLL_INTERVAL, remaining), settings.abortSignal);
     }
 
     if (settings.retry) {

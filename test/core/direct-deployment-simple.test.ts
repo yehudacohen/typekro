@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { DependencyGraph } from '../../src/core/dependencies/index.js';
+import { PollTimeoutError } from '../../src/core/deployment/poll-timeout.js';
 import { DeploymentTimeoutError } from '../../src/core/errors.js';
 import { setMetadataField } from '../../src/core/metadata/index.js';
 import { resourceGraphDefinition } from '../../src/factories/kro/resource-graph-definition.js';
@@ -595,6 +596,39 @@ describe('DirectDeploymentEngine Simple', () => {
       expect(result.errors[0]?.error.message).toContain(
         'Required external resource ConfigMap/missing-config could not be read'
       );
+      expect(mockK8sApi.create).not.toHaveBeenCalled();
+      expect(mockK8sApi.patch).not.toHaveBeenCalled();
+    });
+
+    it('does not re-issue an external reference read once the deployment has been cancelled', async () => {
+      // The single (non-polling) external-reference read is re-issued once on a request timeout.
+      // That re-issue must honour the DEPLOYMENT's abort signal: a deployment cancelled while the
+      // first GET hangs surfaces the cancellation and puts no second GET on the wire.
+      const graph = createSimpleGraph();
+      const external = createMockResource({
+        id: 'platformConfig',
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'platform-config', namespace: 'platform-system' },
+      });
+      graph.externalReferences = [{ id: 'platformConfig', manifest: external }];
+      const caller = new AbortController();
+      const reason = new Error('caller cancelled');
+      let externalReads = 0;
+      mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) => {
+        if (target?.kind !== 'ConfigMap') return Promise.reject({ statusCode: 404 });
+        externalReads += 1;
+        caller.abort(reason);
+        return Promise.reject(
+          new PollTimeoutError('External reference ConfigMap/platform-config read', 30_000)
+        );
+      });
+
+      const result = await engine.deploy(graph, { ...defaultOptions, abortSignal: caller.signal });
+
+      expect(result.status).toBe('failed');
+      expect(result.errors[0]?.error).toBe(reason);
+      expect(externalReads).toBe(1);
       expect(mockK8sApi.create).not.toHaveBeenCalled();
       expect(mockK8sApi.patch).not.toHaveBeenCalled();
     });

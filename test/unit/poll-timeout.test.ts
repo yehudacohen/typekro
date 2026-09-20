@@ -5,6 +5,7 @@
  * settles (wedged/expired kubeconfig exec credential) must be bounded so the poll's deadline is honored.
  */
 import { describe, expect, it } from 'bun:test';
+import { PrematureCloseError } from '../../src/core/kubernetes/bun-http-library.js';
 import {
   callDeadlineBudget,
   callDeadlineVerb,
@@ -325,8 +326,33 @@ describe('retryOnceOnRequestTimeout', () => {
     expect(attempts).toBe(2);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.msg).toMatch(/Widget demo\/widgets ns\/demo/);
-    expect(warnings[0]?.msg).toMatch(/retrying once on a fresh connection/);
+    expect(warnings[0]?.msg).toMatch(/did not return within its 30000ms budget/);
+    expect(warnings[0]?.msg).toMatch(/re-issuing the read once/);
     expect(warnings[0]?.meta).toMatchObject({ timeoutMs: 30_000 });
+  });
+
+  it('describes a premature close by how long the connection lasted, not as an expired budget', async () => {
+    // `PrematureCloseError.timeoutMs` is the ELAPSED time before the socket died, with budget to
+    // spare; the warn line must not present those milliseconds as a budget the read exceeded.
+    const { logger, warnings } = recordingLogger();
+    let attempts = 0;
+    const read = async () => {
+      attempts += 1;
+      if (attempts === 1)
+        throw new PrematureCloseError('GET', '/api/v1/widgets/demo', 412, 'while reading the body');
+      return 'ok';
+    };
+
+    await expect(
+      retryOnceOnRequestTimeout(read, { label: 'Widget demo/widgets ns/demo', logger })
+    ).resolves.toBe('ok');
+    expect(attempts).toBe(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.msg).toMatch(/connection closed after 412ms without a complete response/);
+    expect(warnings[0]?.msg).toMatch(/re-issuing the read once/);
+    expect(warnings[0]?.msg).not.toMatch(/budget/);
+    expect(warnings[0]?.meta).toMatchObject({ elapsedMs: 412 });
+    expect(warnings[0]?.meta).not.toHaveProperty('timeoutMs');
   });
 
   it("also rides out the socket-layer timeout, not only the deadline wrapper's", async () => {
