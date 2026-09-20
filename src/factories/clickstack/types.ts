@@ -562,18 +562,59 @@ export const CLICKSTACK_GENERATED_NAMES = [
 export const CLICKSTACK_NAME_LIMIT = deriveNameLengthLimit(CLICKSTACK_GENERATED_NAMES);
 
 /**
- * The runtime `name`: bounded by {@link CLICKSTACK_NAME_LIMIT}. A plain
- * `maxLength` in the ArkType AST, which KRO SimpleSchema serializes as
- * `string | maxLength=N`, so the API server refuses an over-long name on the
- * instance too; `.configure` puts the binding constraint into the message.
+ * A Kubernetes DNS-1123 label: lowercase alphanumerics and `-`, starting and
+ * ending with an alphanumeric. Every object the bootstrap derives from `name`
+ * ({@link CLICKSTACK_GENERATED_NAMES}) is one, so the release name must be
+ * too — `""`, `"Foo"`, `"foo_bar"` and `"foo/bar"` all fit the length bound
+ * and are all refused by the API server later. Unflagged and RE2-compatible,
+ * which is what KRO SimpleSchema can carry as `pattern="…"`.
  */
-const clickstackReleaseName = type.string
-  .atMostLength(CLICKSTACK_NAME_LIMIT.maxLength)
-  .configure({ message: CLICKSTACK_NAME_LIMIT.message });
+export const CLICKSTACK_NAME_PATTERN = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/;
+
+/**
+ * The runtime `name`: {@link CLICKSTACK_NAME_PATTERN} intersected with the
+ * derived length bound {@link CLICKSTACK_NAME_LIMIT}. Both stay plain
+ * constraints in the ArkType AST (a `pattern` and a `maxLength`), which KRO
+ * SimpleSchema serializes as `string | maxLength=N pattern="…"`, so the API
+ * server refuses a malformed or over-long name on the instance too.
+ * `.configure` sits on the length constraint ALONE (the Traefik bootstrap's
+ * arrangement), so a name that violates the pattern still reports the pattern
+ * while an over-long one reports the binding constraint behind the number.
+ *
+ * Exported so the composition body can run the very same schema on a concrete
+ * direct-mode `name` — see {@link assertClickStackReleaseName}.
+ */
+export const ClickStackReleaseNameSchema = type(CLICKSTACK_NAME_PATTERN).and(
+  type.string
+    .atMostLength(CLICKSTACK_NAME_LIMIT.maxLength)
+    .configure({ message: CLICKSTACK_NAME_LIMIT.message })
+);
+
+/**
+ * Refuse a concrete release name the runtime schema would refuse, with the
+ * schema's own message. Direct-mode `toYaml` does not run `validateSpec`, so
+ * without this a malformed or over-long concrete `name` would sail through the
+ * composition and render a CronJob the API server rejects plus status
+ * endpoints naming a gateway Service the chart truncated away. Running
+ * {@link ClickStackReleaseNameSchema} itself — rather than re-deriving the
+ * checks — is what keeps the two paths from drifting.
+ *
+ * @param name - A concrete (non-reference) release name
+ * @throws Error naming the offending value and the violated constraint
+ */
+export function assertClickStackReleaseName(name: string): void {
+  const result = ClickStackReleaseNameSchema(name);
+  if (result instanceof type.errors) {
+    throw new Error(`ClickStack release name ${JSON.stringify(name)} is invalid: ${result.summary}`);
+  }
+}
 
 const bootstrapBaseShape = {
-  /** Release name for the Helm installation — see {@link CLICKSTACK_NAME_LIMIT} for the length bound. */
-  name: clickstackReleaseName,
+  /**
+   * Release name for the Helm installation: a DNS label
+   * ({@link CLICKSTACK_NAME_PATTERN}) of at most {@link CLICKSTACK_NAME_LIMIT} characters.
+   */
+  name: ClickStackReleaseNameSchema,
   /** Namespace for the stack (default: 'clickstack'). */
   'namespace?': 'string',
   /** Chart version (default: '3.2.0'). */

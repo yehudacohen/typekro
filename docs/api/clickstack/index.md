@@ -329,6 +329,7 @@ Whenever `persistentQueue` is enabled, TypeKro therefore also pins:
 
 ```yaml
 otel-collector:
+  enabled: true
   replicaCount: 1
   rollout:
     strategy: Recreate
@@ -338,6 +339,13 @@ otel-collector:
 lock is released, and only then is the replacement created. Nothing carries a `rollingUpdate` block
 alongside it — the chart's Deployment template emits that only on the `RollingUpdate` branch, and
 the API server rejects a `Recreate` strategy that has one.
+
+`enabled: true` is pinned for the same reason the queue owns the other two keys: the queue *is* the
+gateway collector's sending queue. A build-time `values: { 'otel-collector': { enabled: false } }`
+alongside `persistentQueue.enabled: true` would otherwise render a HelmRelease with no collector
+but with the queue's claim, its `file_storage` extension and `persistentQueue: true` in the status
+contract — a queue nothing writes to. With no `persistentQueue`, a caller's `enabled: false` passes
+through untouched.
 
 **The cost is a brief gateway outage on every rollout**, and the persistent queue is precisely what
 makes that cost acceptable: producers upstream of the gateway retry, and telemetry the gateway has
@@ -373,10 +381,15 @@ the symptom only appears once the queue meets a real block PVC.)
 Kubernetes fixes exactly this with a Pod `securityContext.fsGroup`: the kubelet applies the group to
 the volume on mount. And the chart exposes it: ClickStack 3.2.0's gateway is the stock
 `opentelemetry-collector` 0.146.1 subchart under the alias `otel-collector`, whose `values.yaml`
-declares `podSecurityContext: {}` and whose Deployment template renders it verbatim
-(`securityContext: {{- toYaml .Values.podSecurityContext | nindent 2 }}`). So whenever
-`persistentQueue` is enabled, TypeKro pins two keys on that value as part of the mapper's
-[hard pins](#build-time-options-vs-runtime-spec):
+declares `podSecurityContext: {}` and whose Deployment template renders it verbatim:
+
+```yaml
+# opentelemetry-collector 0.146.1, templates/deployment.yaml
+securityContext: {{- toYaml .Values.podSecurityContext | nindent 2 }}
+```
+
+So whenever `persistentQueue` is enabled, TypeKro pins two keys on that value as part of the
+mapper's [hard pins](#build-time-options-vs-runtime-spec):
 
 ```yaml
 otel-collector:
@@ -417,7 +430,10 @@ the HelmRelease unchanged — the composition just no longer appends any of its 
 
 #### Release-name length
 
-The runtime `name` is bounded at **37 characters**, and the bound is *derived*, not written down:
+The runtime `name` is a Kubernetes DNS label — lowercase alphanumerics and `-`, starting and ending
+with an alphanumeric (`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`, the same pattern the Traefik bootstrap
+uses) — because every object derived from it is one. It is bounded at **37 characters**, and the
+bound is *derived*, not written down:
 `CLICKSTACK_GENERATED_NAMES` lists every object name the bootstrap (or its chart, or a controller
 downstream) derives from `name` together with the limit each has to satisfy, and
 `CLICKSTACK_NAME_LIMIT` is the minimum — the same `deriveNameLengthLimit` the Traefik bootstrap uses.
@@ -431,10 +447,11 @@ Two of those names would otherwise fail late and quietly:
   name, so past 48 characters they would point at a Service that does not exist. Every name the
   schema accepts renders the literal untruncated.
 
-The bound is a plain `maxLength` on the ArkType schema, so the KRO RGD carries
-`name: string | maxLength=37` and the API server refuses an over-long instance; direct-mode `deploy`
-rejects it through the same schema, and direct-mode `toYaml` refuses a concrete over-long name with
-the same message, which names the constraint that produced the number:
+The pattern and the bound are a plain `pattern` and `maxLength` on the ArkType schema, so the KRO
+RGD carries `name: string | maxLength=37 pattern="…"` and the API server refuses a malformed or
+over-long instance; direct-mode `deploy` rejects it through the same schema, and direct-mode
+`toYaml` runs the same schema on a concrete `name` and refuses it with the same message — for the
+length, the message names the constraint that produced the number:
 
 ```
 at most 37 characters, because the Team-bootstrap CronJob `<name>-team-bootstrap` (…) is limited to

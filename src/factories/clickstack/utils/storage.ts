@@ -792,7 +792,11 @@ export function persistentQueueConfigFragment(
  * bbolt database under an exclusive file lock, so a second replica cannot open
  * it at all — see {@link assertQueueReplicaCompatible}, which rejects a
  * build-time `replicaCount` above 1 at construction. The pin makes that
- * guarantee explicit in the rendered values against later drift.
+ * guarantee explicit in the rendered values against later drift. The
+ * collector is likewise pinned ON (`enabled: true`): the queue is ITS sending
+ * queue, so a build-time `enabled: false` cannot leave the claim, the
+ * `file_storage` extension and `persistentQueue: true` in the contract behind
+ * with no collector to write to them.
  *
  * ⚠️ `replicaCount: 1` IS NOT ENOUGH ON ITS OWN, which is why
  * `rollout.strategy: 'Recreate'` travels with it. One replica bounds the
@@ -886,6 +890,14 @@ export function renderPersistentQueueValues(
 ): Record<string, unknown> {
   return {
     'otel-collector': {
+      // The queue IS the gateway collector's sending queue, so the collector
+      // cannot be switched off underneath it. Without this pin a build-time
+      // `values['otel-collector'].enabled: false` rendered a HelmRelease with
+      // no collector but with the claim, the `file_storage` extension and
+      // `persistentQueue: true` in the status contract — a queue nothing
+      // writes to. Owned by the queue like `replicaCount` and `rollout`;
+      // without a queue the caller's `enabled` passes through untouched.
+      enabled: true,
       extraVolumes: [
         // The chart's own entry, re-emitted because Helm replaces the list.
         {

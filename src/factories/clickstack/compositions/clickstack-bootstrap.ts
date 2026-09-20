@@ -121,8 +121,8 @@ import {
   type ClickStackSecretValuesExternalMongoBootstrapConfig,
   ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
   type ClickStackSecretValuesInternalMongoBuildOptions,
+  assertClickStackReleaseName,
   CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX,
-  CLICKSTACK_NAME_LIMIT,
   CLICKSTACK_RETENTION_NAME_SUFFIX,
   CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
 } from '../types.js';
@@ -149,7 +149,11 @@ interface ResolvedBuildConfig {
   /** Internal-Mongo PVC sizing (build-time; shapes the StatefulSet template). */
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
-  /** Caller-supplied Flux post-renderers; the composition appends its own after them. */
+  /**
+   * Caller-supplied Flux post-renderers, passed through to the HelmRelease
+   * unchanged; the composition adds none of its own (the queue's `fsGroup`
+   * rides on the `otel-collector.podSecurityContext` chart value).
+   */
   postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
   /**
    * The EXTERNAL ClickHouse's storage story: retention DDL, the collector's
@@ -310,16 +314,13 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       ? Cel.default(spec.version, DEFAULT_CLICKSTACK_VERSION)
       : (spec.version ?? DEFAULT_CLICKSTACK_VERSION);
 
-    // The schema bounds `name` (KRO admission, direct-mode deploy); a concrete
-    // over-long name in direct-mode `toYaml` would otherwise sail through and
-    // render a CronJob the API server refuses plus status endpoints naming a
-    // gateway Service the chart truncated away. Same message as the schema.
-    if (!isKubernetesRef(spec.name) && spec.name.length > CLICKSTACK_NAME_LIMIT.maxLength) {
-      throw new Error(
-        `ClickStack release name ${JSON.stringify(spec.name)} is ${spec.name.length} characters; ` +
-          `it must be ${CLICKSTACK_NAME_LIMIT.message}.`
-      );
-    }
+    // The schema constrains `name` — DNS-label syntax and the derived length
+    // bound — for KRO admission and direct-mode `deploy`; direct-mode `toYaml`
+    // does not run `validateSpec`, so a concrete malformed or over-long name
+    // would otherwise sail through and render a CronJob the API server refuses
+    // plus status endpoints naming a gateway Service the chart truncated away.
+    // The guard runs the SAME schema, so the message cannot drift from it.
+    if (!isKubernetesRef(spec.name)) assertClickStackReleaseName(spec.name);
 
     if (build.credentialSource === 'inline') {
       const inlineApiKey = (

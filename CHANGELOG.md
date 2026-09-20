@@ -386,6 +386,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kustomize pass. `renderPersistentQueuePostRenderer` and `clickStackGatewayName`, exported only
   by that unreleased cut, are gone.
 
+  The queue also pins `otel-collector.enabled: true`, alongside the `replicaCount: 1` and
+  `rollout.strategy: Recreate` it already owned. A build-time
+  `values: { 'otel-collector': { enabled: false } }` with `persistentQueue.enabled: true` used to
+  render a HelmRelease with the collector disabled but the queue's claim, its `file_storage`
+  extension and `persistentQueue: true` in the status contract still present. Without a queue a
+  caller's `enabled: false` still passes through.
+
 - `clickstackBootstrap`'s runtime `name` is now bounded, and the bound is derived rather than
   written down: `CLICKSTACK_GENERATED_NAMES` lists every object name the bootstrap, its chart or a
   downstream controller derives from `name` with the limit each must satisfy, and
@@ -396,10 +403,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CRONJOB_NAME_MAX_LENGTH`), so a longer name never ran the Team bootstrap and `ready` never
   became true; and the chart truncates the gateway Deployment/Service `<name>-otel-collector` at
   63 characters while the status contract's `gateway.*Endpoint` fields assume the literal, so past
-  48 characters they named a Service that did not exist. The bound is a plain `maxLength`, so the
-  KRO RGD carries `name: string | maxLength=37`, direct-mode `deploy` rejects through the schema
-  and direct-mode `toYaml` refuses a concrete over-long name with the same message, which names
-  the constraint behind the number. `CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX`,
+  48 characters they named a Service that did not exist. `name` must also be a Kubernetes DNS
+  label (`CLICKSTACK_NAME_PATTERN`, the Traefik bootstrap's pattern), since every derived object
+  is one — `""`, `"Foo"`, `"foo_bar"` and `"foo/bar"` fit the length bound and were refused only
+  by the API server. Both are plain constraints on the schema (`ClickStackReleaseNameSchema`), so
+  the KRO RGD carries `name: string | maxLength=37 pattern="…"`, direct-mode `deploy` rejects
+  through the schema, and direct-mode `toYaml` runs the same schema on a concrete name
+  (`assertClickStackReleaseName`) and refuses it with the same message — for the length, one that
+  names the constraint behind the number. `CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX`,
   `CLICKSTACK_RETENTION_NAME_SUFFIX` and `CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX` are exported from
   `types.ts`. ([#222](https://github.com/yehudacohen/typekro/issues/222))
 

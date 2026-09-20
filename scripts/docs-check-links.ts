@@ -10,7 +10,7 @@
  */
 
 import { glob } from 'glob';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import { resolve, dirname, relative, basename } from 'path';
 
 interface LinkResult {
@@ -147,7 +147,10 @@ function validateLink(
   
   let foundPath: string | null = null;
   for (const path of pathsToTry) {
-    if (existsSync(path)) {
+    // A directory link (`/api/foo/#anchor`) resolves to the directory itself
+    // first; only a FILE can be read for headings, so let the loop fall
+    // through to the `index.md` candidates instead of reading the directory.
+    if (existsSync(path) && statSync(path).isFile()) {
       foundPath = path;
       break;
     }

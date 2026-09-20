@@ -9,6 +9,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
 import * as yaml from 'js-yaml';
 import {
   CRONJOB_NAME_MAX_LENGTH,
@@ -20,9 +21,11 @@ import { CLICKSTACK_GATEWAY_NAME_SUFFIX } from '../../../src/factories/clickstac
 import {
   CLICKSTACK_GENERATED_NAMES,
   CLICKSTACK_NAME_LIMIT,
+  CLICKSTACK_NAME_PATTERN,
   CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
   ClickStackBootstrapConfigSchema,
   type ClickStackPersistentQueueOptions,
+  ClickStackReleaseNameSchema,
 } from '../../../src/factories/clickstack/types.js';
 import {
   type CollectorConfigFragment,
@@ -42,6 +45,7 @@ import {
   normalizeRenderedTtl,
   parseRetentionDuration,
   persistentQueueConfigFragment,
+  QUEUE_EXTENSION_NAME,
   QUEUE_FS_GROUP_CHANGE_POLICY,
   renderPersistentQueueClaimSpec,
   renderPersistentQueueValues,
@@ -1325,6 +1329,197 @@ describe('the release name is bounded so every name derived from it fits (#222 f
     } as never);
     expect(atLimit).toContain('fsGroup: 10001');
     expect(atLimit).toContain(`${'a'.repeat(CLICKSTACK_NAME_LIMIT.maxLength)}-team-bootstrap`);
+  });
+
+  describe('the boundary: exactly 37 characters is accepted, 38 is rejected, on every path', () => {
+    const AT_LIMIT = 'a'.repeat(CLICKSTACK_NAME_LIMIT.maxLength);
+    const ONE_OVER = 'a'.repeat(CLICKSTACK_NAME_LIMIT.maxLength + 1);
+    const directFactory = () =>
+      makeClickstackBootstrap({
+        storage: { mode: 's3', persistentQueue: { enabled: true } },
+      }).factory('direct', { namespace: SPEC.namespace });
+
+    it('KRO schema', () => {
+      expect(AT_LIMIT.length).toBe(37);
+      expect(rejects(ClickStackBootstrapConfigSchema({ ...SPEC, name: AT_LIMIT }))).toBe(false);
+      const rejected = ClickStackBootstrapConfigSchema({ ...SPEC, name: ONE_OVER }) as unknown;
+      expect(rejects(rejected)).toBe(true);
+      expect(String(rejected)).toContain('at most 37 characters');
+      expect(String(rejected)).toContain('team-bootstrap');
+    });
+
+    it('direct-mode deploy (validateSpec runs before any cluster access)', async () => {
+      await expect(directFactory().deploy({ ...SPEC, name: ONE_OVER } as never)).rejects.toThrow(
+        /Invalid spec: .*at most 37 characters, because the Team-bootstrap CronJob/
+      );
+    });
+
+    it('direct-mode toYaml', () => {
+      const factory = directFactory();
+      expect(() => factory.toYaml({ ...SPEC, name: ONE_OVER } as never)).toThrow(
+        /at most 37 characters, because the Team-bootstrap CronJob/
+      );
+      expect(factory.toYaml({ ...SPEC, name: AT_LIMIT } as never)).toContain(
+        `${AT_LIMIT}-team-bootstrap`
+      );
+    });
+  });
+
+  describe('the name must be a DNS label, not merely short enough', () => {
+    // Every derived object is a Kubernetes name, so a release name the API
+    // server would refuse must be refused up front — the length bound alone
+    // let these through and they failed downstream at create time.
+    const MALFORMED = ['', 'Foo', 'foo_bar', 'foo/bar', '-leading', 'trailing-', 'dot.ted'] as const;
+    const directFactory = () =>
+      makeClickstackBootstrap({
+        storage: { mode: 's3', persistentQueue: { enabled: true } },
+      }).factory('direct', { namespace: SPEC.namespace });
+
+    it('is the Traefik bootstrap pattern, unflagged, and serialized into the RGD next to the bound', () => {
+      expect(CLICKSTACK_NAME_PATTERN.source).toBe('^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$');
+      expect(CLICKSTACK_NAME_PATTERN.flags).toBe('');
+      const rgd = makeClickstackBootstrap({
+        name: 'clickstack-s3-name-pattern',
+        kind: 'ClickStackS3NamePattern',
+        storage: { mode: 's3', persistentQueue: { enabled: true } },
+      }).toYaml();
+      expect(rgd).toContain(
+        `name: string | maxLength=${CLICKSTACK_NAME_LIMIT.maxLength} pattern="${CLICKSTACK_NAME_PATTERN.source}"`
+      );
+    });
+
+    it('KRO schema: rejects every malformed name and names the pattern; accepts a well-formed one', () => {
+      for (const name of MALFORMED) {
+        expect(name.length).toBeLessThanOrEqual(CLICKSTACK_NAME_LIMIT.maxLength);
+        const rejected = ClickStackBootstrapConfigSchema({ ...SPEC, name }) as unknown;
+        expect(rejects(rejected), JSON.stringify(name)).toBe(true);
+        expect(String(rejected), JSON.stringify(name)).toContain('must be matched by');
+      }
+      expect(rejects(ClickStackBootstrapConfigSchema({ ...SPEC, name: 'click-stack-01' }))).toBe(
+        false
+      );
+    });
+
+    it('direct-mode deploy: rejects every malformed name through the schema', async () => {
+      for (const name of MALFORMED) {
+        await expect(
+          directFactory().deploy({ ...SPEC, name } as never),
+          JSON.stringify(name)
+        ).rejects.toThrow(/Invalid spec: .*must be matched by/);
+      }
+    });
+
+    it('direct-mode toYaml: rejects every malformed name with the SAME message as the schema', () => {
+      const factory = directFactory();
+      for (const name of MALFORMED) {
+        const schemaResult = ClickStackReleaseNameSchema(name);
+        if (!(schemaResult instanceof type.errors)) {
+          throw new Error(`expected the schema to reject ${JSON.stringify(name)}`);
+        }
+        expect(() => factory.toYaml({ ...SPEC, name } as never), JSON.stringify(name)).toThrow(
+          `ClickStack release name ${JSON.stringify(name)} is invalid: ${schemaResult.summary}`
+        );
+      }
+      expect(factory.toYaml({ ...SPEC, name: 'click-stack-01' } as never)).toContain(
+        'click-stack-01-team-bootstrap'
+      );
+    });
+  });
+});
+
+describe('the persistent queue cannot outlive a disabled collector', () => {
+  // `{ 'otel-collector': { enabled: false } }` with the queue on used to render
+  // a HelmRelease with no collector but with the claim, the `file_storage`
+  // extension and `persistentQueue: true` in the contract — a queue nothing
+  // writes to. `enabled: true` is queue-owned like `replicaCount` and `rollout`.
+  const collectorEnabled = (spec: { values?: Record<string, unknown> }): unknown =>
+    (spec.values?.['otel-collector'] as { enabled?: unknown } | undefined)?.enabled;
+
+  it('renderPersistentQueueValues pins otel-collector.enabled: true with the other invariants', () => {
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+    if (storage.persistentQueue === undefined) throw new Error('expected a resolved queue');
+    const values = renderPersistentQueueValues(storage.persistentQueue, 'claim')['otel-collector'] as {
+      enabled?: unknown;
+      replicaCount?: unknown;
+      rollout?: unknown;
+    };
+    expect(values.enabled).toBe(true);
+    expect(values.replicaCount).toBe(1);
+    expect(values.rollout).toEqual({ strategy: 'Recreate' });
+  });
+
+  it('through the real mapper path, build-time values and direct customValues cannot disable the collector', () => {
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+    const fromBuildTimeValues = mapClickStackConfigToHelmValues(SPEC, {
+      storage,
+      values: { 'otel-collector': { enabled: false } },
+    }) as Record<string, unknown>;
+    expect(collectorEnabled({ values: fromBuildTimeValues })).toBe(true);
+
+    const fromCustomValues = mapClickStackConfigToHelmValues(
+      { ...SPEC, customValues: { 'otel-collector': { enabled: false } } },
+      { storage, values: { 'otel-collector': { enabled: false } } }
+    ) as Record<string, unknown>;
+    expect(collectorEnabled({ values: fromCustomValues })).toBe(true);
+    // The pin is surgical: unrelated caller keys under the alias survive.
+    const withOtherKeys = mapClickStackConfigToHelmValues(SPEC, {
+      storage,
+      values: { 'otel-collector': { enabled: false, nodeSelector: { tier: 'ingest' } } },
+    }) as Record<string, unknown>;
+    expect(withOtherKeys['otel-collector']).toMatchObject({
+      enabled: true,
+      nodeSelector: { tier: 'ingest' },
+    });
+  });
+
+  it('the final HelmRelease carries enabled: true in both the KRO RGD and direct-mode manifests', () => {
+    const build = {
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+      values: { 'otel-collector': { enabled: false } },
+    } as const;
+
+    const rgd = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-collector-on',
+      kind: 'ClickStackS3QueueCollectorOn',
+      ...build,
+    }).toYaml();
+    const rgdRelease = helmReleaseSpec(rgd);
+    expect(collectorEnabled(rgdRelease)).toBe(true);
+    expect(JSON.stringify(rgdRelease.values)).toContain(QUEUE_EXTENSION_NAME);
+    // The status contract still reports the queue (the ConfigMap the CEL reads).
+    expect(rgd).toContain("storagePersistentQueue: 'true'");
+
+    const direct = makeClickstackBootstrap(build)
+      .factory('direct', { namespace: SPEC.namespace })
+      .toYaml(SPEC as never);
+    const directRelease = (yaml.loadAll(direct) as Array<{ kind?: string; spec?: unknown }>).find(
+      (document) => document?.kind === 'HelmRelease'
+    );
+    if (directRelease === undefined) throw new Error('expected a HelmRelease document');
+    expect(collectorEnabled(directRelease.spec as { values?: Record<string, unknown> })).toBe(true);
+    expect(direct).toContain(clickStackQueueClaimName(SPEC.name));
+  });
+
+  it('without a queue, a caller’s enabled: false passes through untouched', () => {
+    const values = mapClickStackConfigToHelmValues(SPEC, {
+      storage: resolveClickStackStorage('t', { mode: 's3' }),
+      values: { 'otel-collector': { enabled: false } },
+    }) as Record<string, unknown>;
+    expect(collectorEnabled({ values })).toBe(false);
+
+    const rgd = makeClickstackBootstrap({
+      name: 'clickstack-s3-noqueue-collector-off',
+      kind: 'ClickStackS3NoQueueCollectorOff',
+      storage: { mode: 's3' },
+      values: { 'otel-collector': { enabled: false } },
+    }).toYaml();
+    expect(collectorEnabled(helmReleaseSpec(rgd))).toBe(false);
   });
 });
 
