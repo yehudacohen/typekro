@@ -121,10 +121,19 @@ import {
   type ClickStackSecretValuesExternalMongoBootstrapConfig,
   ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
   type ClickStackSecretValuesInternalMongoBuildOptions,
+  type ResolvedClickStackInitialUser,
   assertClickStackReleaseName,
+  CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION,
   CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX,
+  CLICKSTACK_INITIAL_USER_API_BASE_URL_ENV,
+  CLICKSTACK_INITIAL_USER_MARKER_ID,
+  CLICKSTACK_INITIAL_USER_VALIDATED_APP_VERSION,
+  CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS,
   CLICKSTACK_RETENTION_NAME_SUFFIX,
   CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
+  clickStackInitialUserVersionValidationRule,
+  isClickStackInitialUserValidatedChartVersion,
+  resolveClickStackInitialUser,
 } from '../types.js';
 import {
   DEFAULT_CLICKSTACK_NAMESPACE,
@@ -161,6 +170,11 @@ interface ResolvedBuildConfig {
    * which is Mongo's PVC.
    */
   clickhouseStorage: ResolvedClickStackStorage;
+  /**
+   * The first HyperDX account the Team-bootstrap CronJob seeds, when one is
+   * configured. Build-time: it is rendered into the CronJob's mongosh script.
+   */
+  initialUser?: ResolvedClickStackInitialUser;
 }
 
 const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
@@ -261,6 +275,20 @@ const inlineSchemaFieldValidations = {
   apiKey: `self != "${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}"`,
 } as const;
 
+/**
+ * The DEGRADED script: reconcile the ingestion key by creating the Team
+ * outright. Rendered only when `initialUser` is NOT configured.
+ *
+ * READ THIS BEFORE COPYING IT. Creating the Team here is what makes the stack
+ * unreachable. HyperDX hands out exactly ONE registration per instance —
+ * `POST /register/password` creates the first account AND its Team, then
+ * answers 409 `teamAlreadyExists` forever after — so a Team that exists
+ * without an account has SPENT that registration on nobody. The invite flow
+ * needs an authenticated user to start from, so there is no way back in
+ * (#227). This path exists because it is what shipped, and removing it would
+ * break deployments whose ingestion key is already converged; it is not the
+ * supported way to run the composition. Configure `initialUser`.
+ */
 const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
   "const database = db.getSiblingDB('hyperdx');",
   'const apiKey = process.env.HYPERDX_API_KEY;',
@@ -289,6 +317,223 @@ const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
 ].join('\n');
 
 /**
+ * Render the mongosh script the bootstrap CronJob runs.
+ *
+ * THE UPSTREAM INVARIANT. HyperDX bootstraps on a first-run-claims-the-instance
+ * pattern. The first visitor to `POST /register/password` creates the account,
+ * creates the Team, and has `setupTeamDefaults` provision that Team's
+ * ClickHouse connection and its log/trace/metric/session sources; registration
+ * then closes behind them (409 `teamAlreadyExists`). Exactly one registration
+ * exists, and whoever spends it becomes the administrator. A stack that reaches
+ * a human with that registration unspent is a working stack — the chart alone
+ * ships one.
+ *
+ * WHAT TYPEKRO USED TO DO TO IT. Creating the Team directly, to pre-seed the
+ * ingestion key, spends the registration without producing the account: one
+ * Team, zero users, a login page nobody can satisfy, and no connections or
+ * sources either (#227). {@link CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT} is that
+ * behaviour, kept for compatibility and documented as degraded.
+ *
+ * WHAT IT DOES NOW, WITH `initialUser`. It spends the registration the way
+ * upstream intends — through the app's own endpoint — and then patches only
+ * what it actually needs:
+ *
+ *  1. BOOTSTRAP-ONCE, ON DURABLE STATE OF OUR OWN. The outer guard is a marker
+ *     document in {@link CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION}, not the
+ *     presence of a user or a Team. "Has TypeKro ever bootstrapped?" and "does
+ *     an account exist right now?" are different questions, and answering the
+ *     first with the second means an account an operator DELETED ON PURPOSE is
+ *     recreated by the next minute's run. The marker is written on both exits —
+ *     after registering, and on discovering the instance was already claimed —
+ *     because from either point on the account lifecycle belongs to HyperDX and
+ *     to humans. `$setOnInsert` means an existing marker is never restamped.
+ *  2. REGISTER, DO NOT EMULATE. The POST carries `{email, password,
+ *     confirmPassword}`. The app writes the user document, derives its own
+ *     salt/hash with its own parameters, generates its own `accessKey`, creates
+ *     the Team and runs `setupTeamDefaults`. TypeKro reproduces none of that, so
+ *     none of it can drift. A 409 `teamAlreadyExists` means a human beat the
+ *     CronJob to it, which is a SUCCESS: the instance is claimed, which is the
+ *     whole objective. A 400 is relayed with the endpoint's own body, which
+ *     names the offending field far better than a second copy of its rules
+ *     could — and a rejected registration is not a consumed one, so a bad
+ *     password costs a failed run and nothing else.
+ *  3. PATCH ONLY `teams.apiKey`. The collector holds a pre-shared ingestion key
+ *     from the chart's Secret, so the Team the app just created has to carry
+ *     that key. One `updateOne`, and it runs on EVERY pass — not just the
+ *     bootstrap one — so a rotated Secret still converges. This is the entire
+ *     remaining coupling to HyperDX's private schema, and the reason
+ *     {@link CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS} still exists.
+ *  4. THE PASSWORD IS ONLY REQUIRED WHERE IT IS USED. The env var is wired
+ *     `optional: true` at the Kubernetes level, so an absent Secret key cannot
+ *     stop the container from starting and thereby break ingestion-key
+ *     reconciliation too. Presence is asserted INSIDE the branch that
+ *     registers, so rotating the bootstrap password away afterwards is a no-op
+ *     rather than a permanent reconciliation failure.
+ *  5. AN API THAT IS NOT UP YET IS NOT A FAULT. The CronJob runs every minute
+ *     and the HyperDX API may still be starting, so a connection failure is
+ *     reported as the transient it is, in those words, instead of as a stack
+ *     trace that reads like a broken deployment.
+ *
+ * @param initialUser - The resolved build-time option, or `undefined`
+ * @returns The complete `--eval` script
+ */
+export function renderClickStackTeamBootstrapScript(
+  initialUser?: ResolvedClickStackInitialUser
+): string {
+  if (initialUser === undefined) return CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT;
+
+  const passwordVar = initialUser.passwordEnvVarName;
+
+  // mongosh resolves a promise returned by the LAST expression of `--eval` and
+  // exits non-zero when it rejects, but it does NOT accept top-level `await`.
+  // So the whole script is one async function, invoked as that last expression.
+  return [
+    'const main = async () => {',
+    "  const database = db.getSiblingDB('hyperdx');",
+    '  const apiKey = process.env.HYPERDX_API_KEY;',
+    "  if (typeof apiKey !== 'string' || apiKey.trim().length === 0) throw new Error('HYPERDX_API_KEY is required.');",
+    `  if (apiKey === '${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}') throw new Error('HYPERDX_API_KEY must override the published ClickStack chart placeholder.');`,
+    `  const apiBaseUrl = process.env.${CLICKSTACK_INITIAL_USER_API_BASE_URL_ENV};`,
+    `  if (typeof apiBaseUrl !== 'string' || apiBaseUrl.length === 0) throw new Error('${CLICKSTACK_INITIAL_USER_API_BASE_URL_ENV} is required to register the initial HyperDX user.');`,
+    // JSON.stringify is the escaping here: the address is embedded as a JS
+    // string literal and never concatenated into the script raw.
+    `  const initialUserEmail = ${JSON.stringify(initialUser.email)};`,
+    // TypeKro's OWN state, in TypeKro's OWN collection — not an extra field on
+    // an upstream-owned team or user document.
+    `  const bootstrapMarkers = database.${CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION};`,
+    `  const initialUserMarkerId = ${JSON.stringify(CLICKSTACK_INITIAL_USER_MARKER_ID)};`,
+    // Marker present => the instance was claimed under TypeKro's watch. Short
+    // -circuit BEFORE looking at teams, the password, or the network at all.
+    '  if (bootstrapMarkers.findOne({ _id: initialUserMarkerId }) === null) {',
+    // A Team is what `/register/password` refuses on, so its absence is the
+    // same question as "is the instance still unclaimed?".
+    '    if (database.teams.countDocuments({}) === 0) {',
+    `      const initialUserPassword = process.env.${passwordVar};`,
+    `      if (typeof initialUserPassword !== 'string' || initialUserPassword.length === 0) throw new Error('${passwordVar} is required to register the initial HyperDX user, but the Secret key is absent or empty. Add the key to the Secret the CronJob reads, or drop initialUser from the composition.');`,
+    '      let response;',
+    '      try {',
+    "        response = await fetch(apiBaseUrl + '/register/password', {",
+    "          method: 'POST',",
+    "          headers: { 'content-type': 'application/json' },",
+    '          body: JSON.stringify({ email: initialUserEmail, password: initialUserPassword, confirmPassword: initialUserPassword }),',
+    '        });',
+    '      } catch (error) {',
+    // The CronJob's whole retry strategy is "run again in a minute", so say
+    // that, rather than surfacing a bare `TypeError: fetch failed`.
+    "        throw new Error('WAITING: the HyperDX API at ' + apiBaseUrl + ' is not reachable yet (' + error.message + '). This is expected while the release is still starting; the CronJob retries every minute.');",
+    '      }',
+    '      const responseBody = await response.text();',
+    // 409 is SUCCESS: a human registered first, so the instance is claimed and
+    // an administrator exists — which is the whole objective.
+    "      if (response.status === 409 && responseBody.indexOf('teamAlreadyExists') !== -1) {",
+    "        print('ClickStack initial user: the HyperDX instance was already claimed by an earlier registration; recording bootstrap as complete.');",
+    '      } else if (response.status < 200 || response.status >= 300) {',
+    // HyperDX validates the address and the password itself and answers with a
+    // body naming the field. Relay it; a second copy of its rules here could
+    // only diverge from them.
+    "        throw new Error('HyperDX refused the initial-user registration at ' + apiBaseUrl + '/register/password with HTTP ' + response.status + '. The endpoint is the authority on the address and password it accepts, and its response was: ' + responseBody + ' (no registration was consumed; fix the value and the CronJob will retry).');",
+    '      } else {',
+    "        print('ClickStack initial user: registered ' + initialUserEmail + ' and claimed the HyperDX instance.');",
+    '      }',
+    '    } else {',
+    "      print('ClickStack initial user: a HyperDX Team already exists, so registration is closed; recording bootstrap as complete.');",
+    '    }',
+    // Written on EVERY exit from the bootstrap branch. After this point the
+    // account lifecycle belongs to HyperDX and to humans, and an account
+    // somebody deleted on purpose stays deleted.
+    '    bootstrapMarkers.updateOne({ _id: initialUserMarkerId }, { $setOnInsert: { completed: true, completedAt: new Date() } }, { upsert: true });',
+    '  }',
+    // ── The one surviving write into HyperDX's own schema ────────────────
+    // The collector authenticates with a pre-shared key, so the Team has to
+    // carry it. Reconciled on every pass so a rotated Secret converges.
+    '  const teams = database.teams.find({}).toArray();',
+    "  if (teams.length === 0) throw new Error('WAITING: no HyperDX Team exists yet, so the ingestion key has nothing to reconcile against. If the bootstrap marker is present the Team was deleted after bootstrap — TypeKro deliberately does not recreate it, because that would spend a registration nobody can use.');",
+    "  if (teams.length > 1) throw new Error('Multiple HyperDX Teams exist. HyperDX assumes exactly one, so TypeKro will not guess which one owns the ingestion key.');",
+    '  if (teams[0].apiKey !== apiKey || teams[0].collectorAuthenticationEnforced !== true) {',
+    '    database.teams.updateOne({ _id: teams[0]._id }, {',
+    '      $set: { apiKey, collectorAuthenticationEnforced: true, updatedAt: new Date() },',
+    '    });',
+    '  }',
+    "  return 'clickstack-bootstrap-ok';",
+    '};',
+    'main();',
+  ].join('\n');
+}
+
+/**
+ * Refuse `initialUser` on a chart version nobody has audited — the BUILD-TIME
+ * half of the allowlist.
+ *
+ * WHY A THROW AND NOT A WARNING. The residual coupling is a write to
+ * `teams.apiKey` in an upstream-owned schema. If that field moves, the CronJob
+ * still succeeds and the stack still reports Ready; the only symptom is
+ * telemetry silently refused at the gateway. A warning is the wrong instrument
+ * for a failure nobody will be looking for, and the cost is bounded because
+ * `initialUser` is opt-in and
+ * {@link ClickStackInitialUserOptions.allowUnvalidatedChartVersion} is an
+ * explicit escape hatch.
+ *
+ * WHY IT IS NOT THE WHOLE GUARD. `version` is a RUNTIME spec field, so in KRO
+ * mode it is a schema reference here and a value a consumer supplies to the CR
+ * at apply time — there is no build to fail. That half is covered by narrowing
+ * `spec.version` on the generated CRD; see
+ * {@link clickStackInitialUserVersionValidationRule}. This function therefore
+ * treats a non-string as "not mine to check", which is also what the analysis
+ * pass hands it.
+ *
+ * @param version - Concrete chart version, or a schema ref in KRO mode
+ * @param initialUser - The resolved option; `undefined` skips the guard
+ * @throws Error when a concrete version is not on the allowlist
+ */
+function assertClickStackInitialUserChartVersion(
+  version: unknown,
+  initialUser?: ResolvedClickStackInitialUser
+): void {
+  if (initialUser === undefined || initialUser.allowUnvalidatedChartVersion) return;
+  if (typeof version !== 'string') return;
+
+  if (!isClickStackInitialUserValidatedChartVersion(version)) {
+    throw new Error(
+      'ClickStack initialUser is audited only against chart version(s) ' +
+        `${CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS.join(', ')} (appVersion ` +
+        `${CLICKSTACK_INITIAL_USER_VALIDATED_APP_VERSION}), but version ${JSON.stringify(version)} ` +
+        'was requested. Registration goes through HyperDX\'s own endpoint, but TypeKro still ' +
+        "patches the Team's apiKey directly in HyperDX's schema — if that field moves the Job " +
+        'still succeeds and ingestion is silently unauthenticated. The list is exact on purpose: ' +
+        'a range such as ">=3.2.0" resolves to a chart nobody audited. Verify the registration ' +
+        'contract and the teams.apiKey field on that chart, then set ' +
+        'initialUser.allowUnvalidatedChartVersion: true.'
+    );
+  }
+}
+
+/**
+ * Schema field validations for a composition, with the chart-version narrowing
+ * added when `initialUser` is configured.
+ *
+ * This is the KRO-mode half of the version allowlist. `schemaFieldValidations`
+ * becomes `x-kubernetes-validations` on the generated CRD, so a consumer who
+ * sets an unaudited `spec.version` on the custom resource is refused by
+ * ADMISSION — the path a build-time throw structurally cannot reach. It is
+ * applied to the `secretValues` variants too, which previously carried no
+ * validations at all and so had no KRO-side guard of any kind.
+ *
+ * @param base - The mode's own validations (inline mode pins `apiKey`)
+ * @param initialUser - The resolved option; `undefined` adds nothing
+ * @returns Composition options carrying the merged map, or `{}` when empty
+ */
+function clickStackSchemaFieldValidations(
+  base: Readonly<Record<string, string>>,
+  initialUser?: ResolvedClickStackInitialUser
+): { schemaFieldValidations?: Readonly<Record<string, string>> } {
+  const merged: Record<string, string> = { ...base };
+  if (initialUser !== undefined && !initialUser.allowUnvalidatedChartVersion) {
+    merged.version = clickStackInitialUserVersionValidationRule();
+  }
+  return Object.keys(merged).length > 0 ? { schemaFieldValidations: merged } : {};
+}
+
+/**
  * Shared composition body. `build` is CONCRETE (construction-time), so every
  * plain-JS branch below is on build config — never on the (possibly
  * schema-proxy) runtime spec.
@@ -313,6 +558,13 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     const resolvedVersion = isKubernetesRef(spec.version)
       ? Cel.default(spec.version, DEFAULT_CLICKSTACK_VERSION)
       : (spec.version ?? DEFAULT_CLICKSTACK_VERSION);
+
+    // The seed writes into HyperDX's OWN schema, so it is only valid on the
+    // chart series TypeKro has read that schema from.
+    assertClickStackInitialUserChartVersion(
+      isKubernetesRef(spec.version) ? undefined : (spec.version ?? DEFAULT_CLICKSTACK_VERSION),
+      build.initialUser
+    );
 
     // The schema constrains `name` — DNS-label syntax and the derived length
     // bound — for KRO admission and direct-mode `deploy`; direct-mode `toYaml`
@@ -545,19 +797,63 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                       '--quiet',
                       mongoUri as string,
                       '--eval',
-                      CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT,
+                      renderClickStackTeamBootstrapScript(build.initialUser),
                     ],
                     env: [
                       {
+                        // `optional: false` is right HERE and only here: the
+                        // ingestion key is CONTINUOUSLY required — every run
+                        // reconciles the Team's apiKey against it — so its
+                        // absence genuinely is a reason not to start.
                         name: 'HYPERDX_API_KEY',
                         valueFrom: {
                           secretKeyRef: {
-                            name: 'clickstack-secret',
+                            name: CLICKSTACK_SECRET_NAME,
                             key: 'HYPERDX_API_KEY',
                             optional: false,
                           },
                         },
                       },
+                      // The initial user's password has a DIFFERENT lifecycle:
+                      // it is needed once, by one branch of the script, and is
+                      // meaningless afterwards. `optional: true` is therefore
+                      // deliberate. With `optional: false` a missing key stops
+                      // kubelet from ever starting the container, so the
+                      // ingestion key is never reconciled either. It would also
+                      // mean that rotating the bootstrap password away after a
+                      // successful registration breaks every future
+                      // reconciliation. Presence is asserted inside the
+                      // registering branch instead, where it matters.
+                      ...(build.initialUser === undefined
+                        ? []
+                        : [
+                            {
+                              name: build.initialUser.passwordEnvVarName,
+                              valueFrom: {
+                                secretKeyRef: {
+                                  name: build.initialUser.passwordSecretName,
+                                  key: build.initialUser.passwordSecretKey,
+                                  optional: true,
+                                },
+                              },
+                            },
+                            {
+                              // Where the script POSTs `/register/password`.
+                              // DERIVED, not hardcoded: the HyperDX Service
+                              // takes the release name, and both it and the
+                              // namespace are runtime values, so this is a CEL
+                              // template for the same reason the Mongo URI is.
+                              // The port is the composition's own
+                              // CLICKSTACK_API_PORT, the one the status
+                              // contract already publishes as `app.apiPort`.
+                              name: CLICKSTACK_INITIAL_USER_API_BASE_URL_ENV,
+                              value: Cel.template(
+                                `http://%s.%s.svc.cluster.local:${CLICKSTACK_API_PORT}`,
+                                spec.name,
+                                resolvedNamespace
+                              ) as unknown as string,
+                            },
+                          ]),
                     ],
                   },
                 ],
@@ -812,6 +1108,11 @@ function resolveClickHouseStorageForBuild(
 }
 
 function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): ResolvedBuildConfig {
+  const initialUser = resolveClickStackInitialUser(
+    'makeClickstackBootstrap',
+    CLICKSTACK_SECRET_NAME,
+    options.initialUser
+  );
   return {
     mongoMode: 'internal',
     credentialSource: options.credentials?.source ?? 'inline',
@@ -819,16 +1120,23 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     ...(options.values !== undefined && { values: options.values }),
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
+    ...(initialUser !== undefined && { initialUser }),
   };
 }
 
 function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): ResolvedBuildConfig {
+  const initialUser = resolveClickStackInitialUser(
+    'makeClickstackBootstrap',
+    CLICKSTACK_SECRET_NAME,
+    options.initialUser
+  );
   return {
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
+    ...(initialUser !== undefined && { initialUser }),
   };
 }
 
@@ -842,7 +1150,7 @@ function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build),
-    { schemaFieldValidations: inlineSchemaFieldValidations }
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser)
   );
 }
 
@@ -860,7 +1168,8 @@ function buildInternalSecretValuesComposition(
       spec: ClickStackSecretValuesBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackSecretValuesBootstrapConfig) => bootstrapBody(spec, build)
+    (spec: ClickStackSecretValuesBootstrapConfig) => bootstrapBody(spec, build),
+    clickStackSchemaFieldValidations({}, build.initialUser)
   );
 }
 
@@ -874,7 +1183,7 @@ function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    { schemaFieldValidations: inlineSchemaFieldValidations }
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser)
   );
 }
 
@@ -892,7 +1201,8 @@ function buildExternalSecretValuesComposition(
       spec: ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackSecretValuesExternalMongoBootstrapConfig) => bootstrapBody(spec, build)
+    (spec: ClickStackSecretValuesExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
+    clickStackSchemaFieldValidations({}, build.initialUser)
   );
 }
 

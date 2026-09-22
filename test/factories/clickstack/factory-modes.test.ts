@@ -442,6 +442,72 @@ describe('clickstackBootstrap factory modes', () => {
       expect(yaml).toContain('receivers: [fluentforward, otlp/hyperdx]');
     });
 
+    it('renders the initialUser registration as an OPTIONAL secretKeyRef, unlike the API key (#227)', () => {
+      const bootstrap = makeClickstackBootstrap({
+        initialUser: { email: 'Ops@Example.com' },
+      });
+      const yaml = bootstrap.factory('direct', { namespace: 'clickstack' }).toYaml(BOOTSTRAP_SPEC);
+      const documents = loadAll(yaml) as Record<string, unknown>[];
+      const cron = documents.find((document) => document.kind === 'CronJob') as {
+        spec: {
+          jobTemplate: {
+            spec: {
+              template: {
+                spec: { containers: { env: { name: string; value?: string; valueFrom?: unknown }[] }[] };
+              };
+            };
+          };
+        };
+      };
+      const env = cron.spec.jobTemplate.spec.template.spec.containers[0]?.env ?? [];
+      const password = env.find((entry) => entry.name === 'HYPERDX_INITIAL_USER_PASSWORD');
+
+      // Same Secret and key === env name, but `optional: TRUE`. The two
+      // credentials have different lifecycles: the ingestion key is needed on
+      // every run, the bootstrap password on at most one. With
+      // `optional: false` an absent key stops kubelet starting the container,
+      // so the ingestion key never reconciles either. Presence is asserted
+      // inside the registering branch instead.
+      expect(password?.valueFrom).toEqual({
+        secretKeyRef: {
+          name: 'clickstack-secret',
+          key: 'HYPERDX_INITIAL_USER_PASSWORD',
+          optional: true,
+        },
+      });
+      expect(env.find((entry) => entry.name === 'HYPERDX_API_KEY')?.valueFrom).toEqual({
+        secretKeyRef: { name: 'clickstack-secret', key: 'HYPERDX_API_KEY', optional: false },
+      });
+
+      // The API base URL, RESOLVED: in direct mode the release name and the
+      // namespace are concrete, so the CEL template collapses to the real
+      // Service address the script POSTs to.
+      expect(env.find((entry) => entry.name === 'HYPERDX_API_BASE_URL')).toEqual({
+        name: 'HYPERDX_API_BASE_URL',
+        value: 'http://clickstack.clickstack.svc.cluster.local:8000',
+      });
+
+      // Registration through HyperDX's own endpoint, gated by the durable
+      // bootstrap marker — not by user existence, so an account deleted on
+      // purpose is never resurrected.
+      expect(yaml).toContain("await fetch(apiBaseUrl + '/register/password'");
+      expect(yaml).toContain('typekro_bootstrap');
+      expect(yaml).toContain('$setOnInsert');
+      // The address is passed to the endpoint verbatim; HyperDX normalises it.
+      expect(yaml).toContain('Ops@Example.com');
+      // NONE of the private-schema emulation survives.
+      expect(yaml).not.toContain('database.users.insertOne');
+      expect(yaml).not.toContain('pbkdf2');
+      expect(yaml).not.toContain('accessKey');
+      // …and the default composition still carries none of it.
+      const unconfigured = clickstackBootstrap
+        .factory('direct', { namespace: 'clickstack' })
+        .toYaml(BOOTSTRAP_SPEC as never);
+      expect(unconfigured).not.toContain('register/password');
+      expect(unconfigured).not.toContain('HYPERDX_INITIAL_USER_PASSWORD');
+      expect(unconfigured).not.toContain('HYPERDX_API_BASE_URL');
+    });
+
     it('resolves every schema ref — no unresolved CEL/schema markers anywhere', () => {
       const factory = clickstackBootstrap.factory('direct', { namespace: 'clickstack' });
       const yaml = factory.toYaml(BOOTSTRAP_SPEC as never);

@@ -107,10 +107,170 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 - **`makeClickstackBootstrap({ mongo: { mode: 'external' } })`**: the variant's runtime spec REQUIRES
   `mongoUri` (topology shapes the schema); nothing Mongo-shaped is deployed.
 
+## Initial user (and the one registration HyperDX hands out)
+
+HyperDX bootstraps on a **first-run-claims-the-instance** pattern. The first visitor to
+`POST /register/password` creates the account, creates the Team, and — through `setupTeamDefaults` —
+gets that Team's ClickHouse connection and its log/trace/metric/session sources. Registration then
+closes behind them: every later attempt answers `409 teamAlreadyExists`, and the invite flow needs an
+authenticated user to start from. **Exactly one registration exists per instance, and whoever spends
+it becomes the administrator.**
+
+The chart on its own ships a perfectly reachable UI. The bootstrap CronJob is what broke it: it
+created the Team directly, to pre-seed the ingestion API key, which **spends that single registration
+without producing an account**. Every deployment converged to one Team, zero users, no connections, no
+sources, and a login page nobody could satisfy — verified on ClickStack 3.2.0 / app 2.35.0
+([#227](https://github.com/yehudacohen/typekro/issues/227)).
+
+`initialUser` makes the CronJob spend the registration **the way upstream intends** — through the
+app's own endpoint — so the account, the Team, the connection and the sources all come out of
+HyperDX's own code:
+
+```typescript
+const bootstrap = makeClickstackBootstrap({
+  initialUser: { email: 'ops@example.com' },
+});
+```
+
+Configuring it is the supported way to run this composition. See
+[without `initialUser`](#without-initialuser-the-degraded-mode) for what you get if you do not.
+
+**The password is never a prop.** Only where to find it is. The value reaches the container through a
+`secretKeyRef`, and there are two ways to point at it — pick by credential mode.
+
+### `secretValues` mode: let the chart create the Secret
+
+This is the supported path for the Secret-backed credential mode, and it is the default shape of
+`initialUser`. Your external credentials Secret already carries a `values.yaml` fragment that Flux
+merges through `valuesFrom`; add the password to the `hyperdx.secrets` map in that fragment and the
+**chart** renders it into `clickstack-secret` alongside `HYPERDX_API_KEY`. The credential never enters
+the HelmRelease, the RGD, or any TypeKro build option.
+
+```yaml
+# The externally-managed Secret, in the ClickStack workload namespace.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clickstack-credentials
+stringData:
+  values.yaml: |
+    hyperdx:
+      secrets:
+        HYPERDX_API_KEY: "…"
+        CLICKHOUSE_PASSWORD: "…"
+        CLICKHOUSE_APP_PASSWORD: "…"
+        HYPERDX_INITIAL_USER_PASSWORD: "…"
+```
+
+```typescript
+const bootstrap = makeClickstackBootstrap({
+  credentials: { source: 'secretValues' },
+  initialUser: {
+    email: 'ops@example.com',
+    // Key inside the CHART-rendered `clickstack-secret`, which is to say: the
+    // key you wrote under `hyperdx.secrets` above.
+    // Default: 'HYPERDX_INITIAL_USER_PASSWORD'.
+    passwordSecretKey: 'HYPERDX_INITIAL_USER_PASSWORD',
+  },
+});
+```
+
+Do **not** precreate or hand-maintain `clickstack-secret` itself. It is Helm-owned — ClickStack 3.2.0
+renders it from `.Values.hyperdx.secrets` — so a hand-written copy may be adopted, rejected or
+overwritten by the next reconciliation. Supply the values, let the chart own the object.
+
+### Inline mode: reference a Secret you own
+
+In the inline credential mode there is no clean route into `clickstack-secret`: the only way to add a
+key is build-time `values.hyperdx.secrets`, which lands the password in the HelmRelease `spec.values`
+tree in etcd — undoing the point of keeping it out of a prop. Use `passwordSecretRef` to point the
+CronJob at a Secret you create and rotate yourself, and skip the chart's Secret entirely:
+
+```typescript
+const bootstrap = makeClickstackBootstrap({
+  initialUser: {
+    email: 'ops@example.com',
+    passwordSecretRef: { name: 'hyperdx-bootstrap', key: 'initial-user.password' },
+  },
+});
+```
+
+The Secret must live in the ClickStack workload Namespace, because a `secretKeyRef` is
+namespace-local. `passwordSecretKey` and `passwordSecretRef` are **mutually exclusive** — they name
+Secrets with different owners, so supplying both is a build-time error rather than a silent
+precedence rule. Because a Secret key may contain `-` and `.` (which a POSIX environment variable name
+may not), the container variable is always `HYPERDX_INITIAL_USER_PASSWORD` in this mode.
+
+### What the CronJob actually does
+
+1. **Checks its own marker.** A document in `typekro_bootstrap` / `_id: 'initial-user'`. Present means
+   the instance was claimed under TypeKro's watch, and the run short-circuits before touching the
+   network, the password, or anything else.
+2. **Registers, if no Team exists yet.** `POST /register/password` with the configured address and the
+   password from the Secret. The app writes the account, derives its own hashes, generates its own
+   keys, creates the Team and provisions its connection and sources. TypeKro reproduces none of it, so
+   none of it can drift.
+3. **Records the marker** — on every exit from the bootstrap branch, including a `409
+   teamAlreadyExists` (a human beat the CronJob to it, which is a success: the instance is claimed).
+4. **Patches `teams.apiKey`.** One `updateOne`, on every run, so the Team carries the pre-shared
+   ingestion key the collector authenticates with and a rotated Secret still converges. This is the
+   **entire** remaining coupling to HyperDX's private schema.
+
+### What it guarantees
+
+- **HyperDX validates the address and the password, not TypeKro.** `registrationSchema` is the
+  authority on both, and it answers a bad one with a 400 whose body names the offending field — which
+  the CronJob relays verbatim. A second, divergent copy of those rules here could only reject values
+  the app would have taken. **A refused registration is not a consumed registration**, so a typo or a
+  weak password costs one failed run and nothing else.
+- **Bootstrap-once, on durable state.** The outer guard is the marker, not the presence of an account.
+  "Has TypeKro ever bootstrapped?" is a different question from "does an account exist right now?",
+  and answering the first with the second resurrects an account an operator deleted on purpose. It is
+  a TypeKro-owned collection rather than an extra field on HyperDX's own documents, so framework
+  bookkeeping stays out of an upstream-owned schema.
+- **Never a reason ingestion fails to converge.** The password reference is `optional: true`. With
+  `optional: false` a missing key stops kubelet starting the container at all, so the ingestion key is
+  never reconciled either. Presence is asserted inside the branch that registers, so rotating the
+  bootstrap password away afterwards is a no-op rather than a permanent failure.
+  (`HYPERDX_API_KEY` stays `optional: false`: it is needed on every run.)
+- **An API that has not started yet is reported as transient.** The CronJob runs every minute and
+  depends on the HelmRelease, so the first runs can legitimately find nothing listening. That log line
+  says so, in those words, instead of reading like a broken deployment.
+- **A Team deleted after bootstrap is not recreated.** Recreating it would spend a registration nobody
+  can use — the exact bug this feature exists to fix — so the run fails loudly and leaves the decision
+  to you.
+
+### Without `initialUser`: the DEGRADED mode
+
+Omitting `initialUser` keeps exactly the behaviour that shipped before: the CronJob creates the Team
+itself so the ingestion API key exists. **This spends the instance's one registration on a Team with
+nobody in it.** Telemetry flows, and the UI is unreachable — permanently, with no supported way back
+in short of deleting the Team so registration reopens. It remains the default only so that existing
+deployments whose ingestion key is already converged do not break. It is not a configuration to
+choose.
+
+### Chart versions it is valid for
+
+Registration goes through HyperDX's own endpoint, so the account document, its hashing and
+`setupTeamDefaults` are no longer TypeKro's business. What remains is one write into an upstream-owned
+schema — `teams.apiKey` — plus the registration HTTP contract. The HTTP half fails loudly if it moves
+(a 404 turns the CronJob red); the `teams.apiKey` half does not, and that is what the version
+allowlist guards: a renamed field would leave the Job green and ingestion silently unauthenticated.
+
+The allowlist is **exact**: chart **3.2.0** (appVersion 2.35.0). Not a series and not a prefix —
+`3.2.0 || 4.0.0` and `>=3.2.0` are legal Helm version *ranges* that a prefix check would wave through,
+and a patch bump promises nothing about the app's data contract. It is enforced in **both** modes: a
+concrete version outside the list is refused at render time, and the generated CRD narrows
+`spec.version` with a CEL validation, so a KRO consumer who sets an unaudited version on the custom
+resource at apply time is refused by admission. Set
+`initialUser.allowUnvalidatedChartVersion: true` once you have checked the registration contract and
+the `teams.apiKey` field on a newer chart yourself.
+
 ## Build-Time Options vs Runtime Spec
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
-credential source, the external ClickHouse's [`storage`](#s3-backed-clickhouse) story,
+credential source, the [`initialUser`](#initial-user-and-the-one-registration-hyperdx-hands-out) account,
+the external ClickHouse's [`storage`](#s3-backed-clickhouse) story,
 static raw chart `values`, static Flux `postRenderers` on the ClickStack HelmRelease (passed through
 verbatim — the composition adds none of its own), RGD `name`/`kind`. Runtime spec (proxy-safe):
 release name (at most **37 characters** — see [release-name length](#release-name-length)),
