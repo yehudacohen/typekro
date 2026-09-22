@@ -473,6 +473,8 @@ Applying the fix is not enough on its own, and this is the part that is easy to 
 
 ClickHouse compares the `CREATE` query it would write against the live table. When they differ — and changing the storage policy or TTL makes them differ — it **renames the existing table** to `system.query_log_0` and creates a fresh one. So the new tables are correct from the next restart, but the renamed ones stay exactly where they were, on object storage, and are still loaded at every boot. The boot time does not improve until they are gone.
 
+**This is not only an object-store concern.** Enabling the retention TTL — or later changing `retentionDays` — changes the `CREATE` query just the same, so a **PVC** installation gets the identical one-time `_0` rename on its next restart. There the cost is disk rather than boot time, but the part that surprises people is the same: the renamed `_0` tables keep the *old* definition, so **the new TTL does not apply to them** and they are never trimmed. Whatever the storage mode, expect the rollover once, and drop the leftovers by hand.
+
 Once the server is reachable:
 
 ```sql
