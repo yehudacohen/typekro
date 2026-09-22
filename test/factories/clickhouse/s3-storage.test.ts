@@ -683,15 +683,21 @@ describe('clickHouseInstallation with S3 storage', () => {
     ).toBe('100Gi');
   });
 
-  it('leaves a PVC-mode installation byte-for-byte unchanged', () => {
+  it('leaves a PVC-mode installation free of every S3 artifact', () => {
     const chi = clickHouseInstallation({
       name: 'test-ch',
       version: '25.12.5',
       storage: { size: '10Gi', storageClassName: 'gp3-expandable' },
     });
     expect(chi.spec.configuration?.files).toBeUndefined();
-    expect(chi.spec.configuration?.settings).toBeUndefined();
     expect(chi.spec.templates?.podTemplates?.[0]?.spec?.serviceAccountName).toBeUndefined();
+    // NO server-wide MergeTree policy, and NO per-log storage_policy pin —
+    // there is nothing to pin away from when the server default IS the local
+    // disk. The only settings PVC mode carries are the system-log retention
+    // TTLs, which are about UNBOUNDED GROWTH and so apply on any disk (#232).
+    // Asserted structurally, so a new S3-only setting cannot slip in here.
+    const settings = chi.spec.configuration?.settings ?? {};
+    expect(Object.keys(settings).filter((key) => !key.endsWith('/ttl'))).toEqual([]);
   });
 });
 

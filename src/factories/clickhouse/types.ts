@@ -492,6 +492,95 @@ export const ClickHouseUserSchema = type({
 export type ClickHouseUser = typeof ClickHouseUserSchema.infer;
 
 /**
+ * ArkType schema for the per-log configuration of ClickHouse's OWN
+ * `system.*_log` tables.
+ *
+ * BUILD-TIME, like `storage`: every value compiles into ClickHouse server
+ * configuration TEXT (the operator renders `configuration.settings` keys of
+ * the form `query_log/storage_policy` into `chop-generated-settings.xml`), so a
+ * schema reference here could only serialize as a `__KUBERNETES_REF__` marker
+ * inside a config file.
+ *
+ * See `utils/system-logs.ts` for what the defaults are and why they exist —
+ * in short, a server-wide MergeTree storage policy catches ClickHouse's own
+ * telemetry tables as well as the caller's, and those tables ship with no TTL.
+ *
+ * @see https://github.com/yehudacohen/typekro/issues/232
+ */
+export const ClickHouseSystemLogOptionsSchema = type({
+  /**
+   * Storage policy to pin the system log tables to. Default: `'default'`
+   * (the local disk) whenever the installation sets a server-wide MergeTree
+   * policy; nothing otherwise. `false` leaves them on the server-wide default.
+   */
+  'storagePolicy?': 'string | false',
+  /**
+   * Retention TTL applied to every system log table. Default:
+   * `event_date + INTERVAL 14 DAY DELETE`. `false` emits no TTL.
+   */
+  'ttl?': 'string | false',
+  /** Retention window for the DEFAULT TTL expression, in days (default: 14). */
+  'retentionDays?': 'number.integer',
+});
+
+/** Per-log configuration (see {@link ClickHouseSystemLogOptionsSchema}). */
+export type ClickHouseSystemLogOptions = typeof ClickHouseSystemLogOptionsSchema.infer;
+
+/**
+ * ArkType schema for the tunable fields of one container probe.
+ *
+ * These are Kubernetes probe fields, and `utils/probes.ts` enforces KUBERNETES'
+ * OWN per-field bounds on them at construction — not one blanket rule — so a
+ * value this composition accepts is a value the API server accepts. In
+ * particular `initialDelaySeconds` may be 0, the other four must be >= 1, and
+ * `successThreshold` must be exactly 1 on the `startup` and `liveness` probes.
+ */
+export const ClickHouseProbeSettingsSchema = type({
+  /** Seconds before the first probe. Minimum 0 (0 = probe immediately). */
+  'initialDelaySeconds?': 'number.integer',
+  /** Seconds between probes. Minimum 1. */
+  'periodSeconds?': 'number.integer',
+  /** Seconds before one probe times out. Minimum 1. */
+  'timeoutSeconds?': 'number.integer',
+  /** Consecutive failures before the probe is considered failed. Minimum 1. */
+  'failureThreshold?': 'number.integer',
+  /**
+   * Consecutive successes before the probe is considered successful again.
+   * Minimum 1, and Kubernetes requires EXACTLY 1 for the `startup` and
+   * `liveness` probes — only `readiness` may set it above 1.
+   */
+  'successThreshold?': 'number.integer',
+});
+
+/** Tunable fields of one probe (see {@link ClickHouseProbeSettingsSchema}). */
+export type ClickHouseProbeSettings = typeof ClickHouseProbeSettingsSchema.infer;
+
+/**
+ * ArkType schema for the ClickHouse server container's probes.
+ *
+ * BUILD-TIME, like the rest of the pod template (the zone-pinned layout
+ * enumerates one pod template per zone at construction time).
+ *
+ * Each entry is a PARTIAL override merged over the factory default, or `false`
+ * to emit no probe of that kind — which hands the decision back to the
+ * clickhouse-operator's own defaults, since the operator only fills a probe
+ * the pod template left unset.
+ *
+ * @see https://github.com/yehudacohen/typekro/issues/230
+ */
+export const ClickHouseProbeOptionsSchema = type({
+  /** Startup probe — the boot budget. Default: 10s period x 90 failures. */
+  'startup?': ClickHouseProbeSettingsSchema.or('false'),
+  /** Liveness probe, gated by the startup probe. Default: 10s x 6 failures. */
+  'liveness?': ClickHouseProbeSettingsSchema.or('false'),
+  /** Readiness probe. Default: 10s x 3 failures. */
+  'readiness?': ClickHouseProbeSettingsSchema.or('false'),
+});
+
+/** Container probe configuration (see {@link ClickHouseProbeOptionsSchema}). */
+export type ClickHouseProbeOptions = typeof ClickHouseProbeOptionsSchema.infer;
+
+/**
  * ArkType schema for ClickHouseInstallationConfig.
  *
  * HIGH-LEVEL configuration compiled by `clickHouseInstallation()` into a
@@ -585,6 +674,20 @@ export const ClickHouseInstallationConfigSchema = type({
     'requests?': { 'cpu?': 'string', 'memory?': 'string' },
     'limits?': { 'cpu?': 'string', 'memory?': 'string' },
   },
+  /**
+   * BUILD-TIME. Per-log configuration of ClickHouse's OWN `system.*_log`
+   * tables — where they live and how long they are kept. Defaults pin them to
+   * the local `default` disk whenever the installation sets a server-wide
+   * MergeTree storage policy, and give them a 14-day retention TTL.
+   * See {@link ClickHouseSystemLogOptionsSchema}.
+   */
+  'systemLogs?': ClickHouseSystemLogOptionsSchema,
+  /**
+   * BUILD-TIME. ClickHouse server container probes. Defaults give the server a
+   * generous startup budget and a short liveness leash once started; see
+   * {@link ClickHouseProbeOptionsSchema}.
+   */
+  'probes?': ClickHouseProbeOptionsSchema,
 });
 
 /**
@@ -779,6 +882,37 @@ export interface ClickHouseClusterTopology {
    * read-through cache.
    */
   readonly storage?: ClickHouseStorageTopology;
+  /**
+   * Per-log configuration of ClickHouse's OWN `system.*_log` tables.
+   *
+   * WHY build-time: exactly like `storage`, these values compile into
+   * ClickHouse server configuration TEXT (the `<query_log>`, `<trace_log>`, …
+   * sections of `chop-generated-settings.xml`).
+   *
+   * Defaults pin the system log tables to the local `default` disk whenever
+   * the topology sets a server-wide MergeTree storage policy — which S3
+   * storage does — and give every one of them a 14-day retention TTL. Both
+   * exist because an unread, unbounded, object-store-backed telemetry table is
+   * what makes a healthy ClickHouse unbootable after enough uptime.
+   *
+   * @see https://github.com/yehudacohen/typekro/issues/232
+   */
+  readonly systemLogs?: ClickHouseSystemLogOptions;
+  /**
+   * ClickHouse server container probes.
+   *
+   * WHY build-time: the zone-pinned layout enumerates one pod template per
+   * zone at CONSTRUCTION time, so the container these land on is a build-time
+   * product like the rest of the pod spec.
+   *
+   * Defaults add the `startupProbe` the clickhouse-operator never sets, so a
+   * server whose load time has grown past the operator's ~90s liveness
+   * deadline can still boot, while still being killed promptly if it wedges
+   * AFTER startup.
+   *
+   * @see https://github.com/yehudacohen/typekro/issues/230
+   */
+  readonly probes?: ClickHouseProbeOptions;
 }
 
 /** Runtime keeper connection spec (present iff the topology enables keeper). */

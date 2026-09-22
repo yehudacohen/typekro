@@ -320,7 +320,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field-by-field against the CRDs as the API server stores them, and every
   factory function accepts `Composable<T>`.
 
+- `systemLogs` and `probes` on `makeClickHouseCluster()` and `clickHouseInstallation()`, the
+  seams the two ClickHouse fixes below are configured through. Both are BUILD-TIME topology
+  for the same reason `storage` is — `systemLogs` compiles into ClickHouse server
+  configuration TEXT and `probes` into the enumerated pod templates — so a schema reference in
+  either is rejected at construction rather than serialized as a `__KUBERNETES_REF__` marker
+  into server configuration. `systemLogs` takes
+  `{ storagePolicy?: string | false, ttl?: string | false, retentionDays?: number }`; `probes`
+  takes a partial override (merged over the default) or `false` per probe, where `false` emits
+  no probe and so hands that decision back to the clickhouse-operator's own default. Exported
+  alongside them: `CLICKHOUSE_SYSTEM_LOG_TABLES`, `CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS`,
+  `DEFAULT_SYSTEM_LOG_RETENTION_DAYS`, `DEFAULT_CLICKHOUSE_STARTUP_PROBE`,
+  `DEFAULT_CLICKHOUSE_LIVENESS_PROBE` and `DEFAULT_CLICKHOUSE_READINESS_PROBE`.
+
+  `probes` validation mirrors KUBERNETES' own per-field bounds rather than applying one rule
+  to every field, so a value the composition accepts is a value the API server accepts:
+  `initialDelaySeconds` may be `0`; `periodSeconds`, `timeoutSeconds`, `failureThreshold` and
+  `successThreshold` must be `>= 1`; and `successThreshold` must be exactly `1` on the
+  `startup` and `liveness` probes, which only `readiness` may raise. The build-time
+  ref-rejection is checked RECURSIVELY at both public entry points, so a reference nested
+  inside `systemLogs` or `probes` (`systemLogs: { ttl: schema.spec.ttl }`) is rejected by name
+  instead of reaching generated configuration.
+
 ### Fixed
+
+- `clickhouseCluster` put ClickHouse's OWN `system.*_log` tables on object storage, and the
+  resulting startup cost grew with uptime until the server could no longer boot at all
+  (#232). In S3 mode the composition sets the S3 policy as the SERVER-WIDE MergeTree default
+  (`merge_tree/storage_policy`), deliberately, so that tables created by tooling outside
+  TypeKro — the ClickStack/HyperDX gateway collector's goose migrations, SigNoz's migrator —
+  land on object storage with no per-table DDL. A server-wide default is server-WIDE: it also
+  caught `query_log`, `trace_log`, `metric_log`, `part_log`, `blob_storage_log` and the rest,
+  which write continuously, are never read, and on `plain_rewritable` object storage
+  accumulate parts, `tmp_merge_*` directories and `__meta` entries. Startup walks and tidies
+  that metadata one S3 round trip at a time, so boot time becomes a function of UPTIME.
+  Observed on a cluster that ran healthily for days and then stopped being able to start:
+  startup 2m48s against an operator liveness probe that kills at ~90s, 108 consecutive
+  SIGKILLs, no self-recovery. Active part counts were unremarkable throughout (max 57) — the
+  cost is object-store METADATA, not part count, which is what made it hard to see.
+
+  Fixed by the SURGICAL route: the server-wide default is unchanged, and every system log
+  ClickHouse enables by default is pinned back to the local `default` disk through its own
+  `<storage_policy>` element (`query_log/storage_policy: default`, and so on for the rest).
+  Where USER data lands does not move. The table list is ClickHouse 25.7's own
+  default-enabled set, read out of `programs/server/config.xml` rather than guessed, with two
+  deliberate omissions: `session_log`, whose section ships COMMENTED OUT (a system log exists
+  if and only if its config section exists, so emitting one would ENABLE a log the server
+  does not run), and `opentelemetry_span_log`, which declares its own `<engine>` — ClickHouse
+  throws at STARTUP when a log carries both `<engine>` and `<storage_policy>`/`<ttl>`.
+
+  Paired with retention, because these tables carry no TTL and so grow without bound on any
+  disk: every one of them now gets `event_date + INTERVAL 14 DAY DELETE`, in PVC mode as well
+  as S3. Fourteen days covers a full on-call rotation, and sits inside the range ClickHouse's
+  own configuration already uses for the three tables it bothers to bound (3, 30 and 30 days).
+  `systemLogs: { retentionDays }` changes the window; `systemLogs: { ttl: false }` restores
+  the unbounded default.
+
+  NOTE FOR EXISTING INSTALLATIONS: ClickHouse compares the CREATE query it would write against
+  the live table and, on a difference, RENAMES the old one to `system.<table>_0` before
+  creating the replacement. The new tables are correct from the next restart, but the renamed
+  ones stay on object storage and are still loaded at every boot — drop them to recover the
+  boot time. See `docs/api/clickhouse/index.md`.
+
+- `clickhouseCluster` set no probes at all on the CHI pod template, so a ClickHouse whose
+  startup time had grown past ~90 seconds crash-looped forever and could not recover (#230).
+  With the template silent the container inherits the clickhouse-operator's defaults: a
+  liveness probe with `initialDelaySeconds: 60`, `periodSeconds: 3`, `failureThreshold: 10`
+  and Kubernetes' 1s timeout — SIGKILL at roughly 90 seconds — and NO startup probe, because
+  the operator's own `reconcile.host.wait.probes.startup` ships as `no` (and its CHI "startup"
+  probe is literally its liveness probe again). ClickHouse's boot time is a function of how
+  much data it has, so this failure is triggered by TIME rather than by load, a release or a
+  configuration change, and it is silent until it is total. The symptom is far from the cause:
+  the server never opens 8123 or 9000, only the interserver port 9009, and everything
+  downstream crash-loops with connection-refused.
+
+  The pod template now carries all three probes against the same `/ping`: a `startupProbe`
+  with `periodSeconds: 10` and `failureThreshold: 90` (a ~15-minute boot budget, against the
+  2m48s that triggered the incident), a `livenessProbe` with `failureThreshold: 6` and NO
+  `initialDelaySeconds` — Kubernetes suspends liveness until the startup probe first
+  succeeds, so the server may take as long as it needs to load and is still restarted ~60s
+  after wedging once started — and a `readinessProbe` at `failureThreshold: 3`. All three
+  raise `timeoutSeconds` to 5, off Kubernetes' 1s default, which is optimistic against the
+  HTTP handler of a mid-load server. The operator only fills in a probe the pod template left
+  unset, so these survive reconcile, and `probes.<name>: false` hands any one of them back.
 
 - `clickstackBootstrap` produced a stack whose UI nobody could ever log in to, by breaking an
   upstream invariant. HyperDX bootstraps on a first-run-claims-the-instance pattern: the first

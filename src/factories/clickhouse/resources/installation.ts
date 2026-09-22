@@ -19,7 +19,11 @@
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
-import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import {
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../../utils/type-guards.js';
 import { createResource } from '../../shared.js';
 import type {
   ChiPodTemplate,
@@ -27,6 +31,7 @@ import type {
   ClickHouseInstallationSpec,
   ClickHouseInstallationStatus,
 } from '../types.js';
+import { resolveClickHouseProbes } from '../utils/probes.js';
 import {
   clickHouseS3ConfigurationFiles,
   clickHouseS3ConfigurationSettings,
@@ -34,6 +39,10 @@ import {
   clickHouseS3ServiceAccountName,
   resolveClickHouseStorage,
 } from '../utils/s3-storage.js';
+import {
+  clickHouseSystemLogSettings,
+  resolveClickHouseSystemLogs,
+} from '../utils/system-logs.js';
 import {
   assertClickHouseClusterName,
   assertPositiveIntegerCount,
@@ -141,6 +150,42 @@ function isGraphRef(value: unknown): boolean {
   return isKubernetesRef(value) || isCelExpression(value);
 }
 
+/** Depth cap for the nested walk below; also the cycle guard. */
+const MAX_BUILD_TIME_SCAN_DEPTH = 8;
+
+/**
+ * Walk a build-time option and return the DOTTED PATH of the first graph
+ * reference nested anywhere inside it, or `undefined` if it is fully concrete.
+ *
+ * A whole-object test (`isGraphRef(config.systemLogs)`) only catches
+ * `systemLogs: schema.spec.logs`. The realistic mistake is one field deep —
+ * `systemLogs: { ttl: schema.spec.ttl }` or
+ * `probes: { startup: { failureThreshold: schema.spec.x } }` — and those slip
+ * straight past it. Returning the path rather than a boolean is what lets the
+ * error name `systemLogs.ttl` instead of `systemLogs`.
+ */
+function findGraphRefPath(value: unknown, path: string, depth = 0): string | undefined {
+  if (isGraphRef(value)) return path;
+  if (depth >= MAX_BUILD_TIME_SCAN_DEPTH) return undefined;
+
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const hit = findGraphRefPath(item, `${path}[${index}]`, depth + 1);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+
+  if (value !== null && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      const hit = findGraphRefPath(item, `${path}.${key}`, depth + 1);
+      if (hit !== undefined) return hit;
+    }
+  }
+
+  return undefined;
+}
+
 /**
  * LOUD build-time validation: the CHI compiler BRANCHES on these fields
  * (zone round-robin, template enumeration, path-keyed user settings), so a
@@ -160,12 +205,54 @@ function assertConcreteTopology(config: Composable<ClickHouseInstallationConfig>
     );
   };
 
+  // Same loudness as `reject`, but says WHY these two in particular can never
+  // take a reference, and quotes the exact nested path that carried it.
+  const rejectBuildTimeOption = (path: string, field: 'systemLogs' | 'probes'): never => {
+    throw new Error(
+      `clickHouseInstallation: '${path}' is a BUILD-TIME topology field and received a ` +
+        `schema reference or CEL expression. \`${field}\` compiles into ClickHouse server ` +
+        `configuration TEXT and the enumerated pod templates, so it is fixed at construction ` +
+        `time — a reference here would serialize as a \`__KUBERNETES_REF__\` marker inside a ` +
+        `generated config file, or fail later with a misleading error. ` +
+        `For schema-driven compositions, set it at construction time with ` +
+        `makeClickHouseCluster({ ${field} }) and pass only runtime fields (name, version, ` +
+        `storage, credentials, keeper host) through the spec.`
+    );
+  };
+
   if (isGraphRef(config.shards)) reject('shards');
   if (isGraphRef(config.replicas)) reject('replicas');
   if (isGraphRef(config.zones)) reject('zones');
   if (Array.isArray(config.zones)) {
     for (const zone of config.zones) {
       if (isGraphRef(zone)) reject('zones[]');
+    }
+  }
+  // BUILD-TIME for the same reason `storage` is: both compile into ClickHouse
+  // server configuration TEXT / an enumerated pod template, where a reference
+  // could only ever serialize as a `__KUBERNETES_REF__` marker.
+  //
+  // CHECKED RECURSIVELY, and deliberately with the SAME `containsKubernetesRefs()`
+  // that `makeClickHouseCluster` uses on these two options — this is the
+  // low-level entry point, and a contract the docs state ("a schema reference
+  // in either is rejected at construction") has to hold at both public doors,
+  // not only the one that happens to be used more often. A whole-object test
+  // missed the realistic mistake entirely: `systemLogs: { storagePolicy: ref }`
+  // sailed through and landed the raw marker object in the rendered
+  // `query_log/storage_policy` setting, and a nested probe ref only tripped the
+  // integer check afterwards, reported as "must be an integer >= 1 (got
+  // [object Object])" — true, and useless for finding the cause.
+  //
+  // `findGraphRefPath` additionally names the exact nested field and catches a
+  // nested CEL expression, which `containsKubernetesRefs` alone does not.
+  for (const [field, value] of [
+    ['systemLogs', config.systemLogs],
+    ['probes', config.probes],
+  ] as const) {
+    if (value === undefined) continue;
+    const refPath = findGraphRefPath(value, field);
+    if (refPath !== undefined || containsKubernetesRefs(value)) {
+      rejectBuildTimeOption(refPath ?? field, field);
     }
   }
   if (isGraphRef(config.users)) reject('users');
@@ -257,6 +344,13 @@ function compileInstallationSpec(
   const s3ServiceAccountName =
     storage.mode === 's3' ? clickHouseS3ServiceAccountName(storage, config.name) : undefined;
 
+  // Container probes. WHY THE FACTORY SETS THEM AT ALL: with the pod template
+  // silent, the operator installs a liveness probe that SIGKILLs at ~90s and
+  // NO startup probe, so a server whose load time has grown past that deadline
+  // is killed mid-boot forever. The operator only fills a probe the template
+  // left unset, so these survive reconcile. See utils/probes.ts and #230.
+  const probes = resolveClickHouseProbes('clickHouseInstallation', config.probes);
+
   // Shared ClickHouse server pod spec (per-zone templates add affinity).
   const podSpec: Record<string, unknown> = {
     ...(s3ServiceAccountName !== undefined && { serviceAccountName: s3ServiceAccountName }),
@@ -266,6 +360,7 @@ function compileInstallationSpec(
         image,
         ...(config.podResources && { resources: config.podResources }),
         ...(s3Env.length > 0 && { env: s3Env }),
+        ...probes,
       },
     ],
   };
@@ -286,6 +381,26 @@ function compileInstallationSpec(
       },
     },
   ];
+
+  // `configuration.settings` is assembled from two INDEPENDENT contributions,
+  // and the split is the whole point of the #232 fix:
+  //   - the S3 entry (`merge_tree/storage_policy`) is the SERVER-WIDE MergeTree
+  //     default, and stays exactly as it was — it is what lets tooling outside
+  //     TypeKro create its tables on object storage with no per-table DDL;
+  //   - the per-log entries (`query_log/storage_policy`, `query_log/ttl`, …)
+  //     pin ClickHouse's OWN telemetry tables back to the local disk and trim
+  //     them, without changing where USER data lands.
+  // The system-log TTL applies in PVC mode too: these tables have no TTL of
+  // their own and grow without bound on any disk.
+  const systemLogs = resolveClickHouseSystemLogs(
+    'clickHouseInstallation',
+    config.systemLogs,
+    storage.mode === 's3' ? storage.policyName : undefined
+  );
+  const configurationSettings: Record<string, unknown> = {
+    ...(storage.mode === 's3' ? clickHouseS3ConfigurationSettings(storage) : {}),
+    ...clickHouseSystemLogSettings(systemLogs),
+  };
 
   let layout: ClickHouseInstallationSpec['configuration'];
   let podTemplates: ChiPodTemplate[];
@@ -353,8 +468,16 @@ function compileInstallationSpec(
       // the MergeTree DEFAULT via `configuration.settings`, so tables created
       // by tooling outside TypeKro (HyperDX/OTel goose migrations, SigNoz's
       // migrator) go to object storage with no per-table DDL.
+      //
+      // That server-wide default is deliberate AND it is server-WIDE, so it
+      // also catches ClickHouse's OWN `system.*_log` tables — which nothing
+      // reads, which never stop writing, and whose object-store metadata is
+      // walked at every boot until the server can no longer start. The
+      // per-log settings below pin them back to the local `default` disk and
+      // give them a retention TTL, WITHOUT touching where user data lands.
+      // See utils/system-logs.ts and #232.
+      ...(Object.keys(configurationSettings).length > 0 && { settings: configurationSettings }),
       ...(storage.mode === 's3' && {
-        settings: clickHouseS3ConfigurationSettings(storage),
         files: clickHouseS3ConfigurationFiles(storage),
       }),
     },

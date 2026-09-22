@@ -94,6 +94,7 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
 - `keeper` — whether the cluster coordinates through Keeper (defaults to `true` when `replicas > 1`)
 - `users[].name` and `users[].networksIp` — user names become CHI configuration **path fragments**
 - `storage` — the storage *mode*. PVC (the default) or the full S3 disk configuration; see [Storage](#storage)
+- `systemLogs`, `probes` — where ClickHouse's own `system.*_log` tables live, how long they are kept, and the server container's probes; see [System log tables and startup time](#system-log-tables-and-startup-time)
 
 **Runtime (spec fields — schema refs / proxies serialize to clean CEL):**
 
@@ -270,6 +271,8 @@ These are construction-time values, so — like `clickhouse.port`, `clickhouse.d
 
 Alongside it, `configuration.settings` carries `merge_tree/storage_policy: s3_main`. **That setting is the point**: it makes the S3 policy the MergeTree *default*, so tables created by tooling outside TypeKro — the ClickStack/HyperDX gateway collector's goose migrations, SigNoz's migrator — land on object storage with no `SETTINGS storage_policy` clause and no per-table DDL.
 
+A server-wide default is server-*wide*, so the same settings block also pins ClickHouse's own `system.*_log` tables back to the local disk. That is not a detail — left alone it eventually stops the server from booting. See [System log tables and startup time](#system-log-tables-and-startup-time).
+
 The cache lives under `/var/lib/clickhouse/`, which is the operator's data-volume mount, so `cache.size` must fit inside `storage.size` (the factory rejects a cache larger than its volume). Override the location with `cache.path` if you mount something else.
 
 ### Credentials
@@ -385,6 +388,102 @@ RESTORE DATABASE default ON CLUSTER 'cluster'
 The cluster name is `spec.clusterName` (default `cluster`), and it is also published on the status contract as `status.clickhouse.clusterName`.
 
 Restore into a fresh database first (`RESTORE DATABASE default AS default_restored FROM …`) when the live one still exists, then swap with `EXCHANGE TABLES` or `RENAME DATABASE`. The restore reads its credentials from the same `<s3>` config section the backup wrote through, so it needs no keys in the statement either.
+
+## System Log Tables and Startup Time
+
+ClickHouse writes its own telemetry into `system.*_log` MergeTree tables — `query_log`, `trace_log`, `metric_log`, `part_log`, `blob_storage_log` and a dozen more. The server writes them continuously, in small batches; in normal operation nothing ever reads them.
+
+Two ClickHouse defaults combine badly with an object-store-backed cluster, and the composition changes both.
+
+### The failure mode
+
+This one was misdiagnosed twice before it was understood, because **the symptom is nowhere near the cause**. It is worth reading even if you never change these settings.
+
+A cluster runs healthily for days or weeks. Nothing is deployed, no configuration changes, load is flat. Then the server stops being able to start, and stays that way.
+
+What you see:
+
+```text
+Application: Listening for replica communication (interserver): http://[::]:9009
+AsyncLoader: Processed: 92.9%
+AsyncLoader: Stop worker in ForegroundLoad
+```
+
+…and then nothing. `Ready for connections` is never logged, **8123 and 9000 never open, and only the interserver port 9009 does**. Every client, collector and dashboard behind the server crash-loops with connection-refused, which is what gets investigated first, and it is not the problem. The container exits 137 (SIGKILL), restarts, and does the same thing again — 100+ times.
+
+Two things make it hard to see:
+
+1. **Part counts look fine.** In the incident that produced this section, the maximum active part count on any table was 57. The cost is not part count — it is **object-store metadata**: each `system.*_log` table accumulates parts, `tmp_merge_*` directories and `__meta` entries in the bucket, and startup walks and tidies all of them one S3 round trip at a time. A `SELECT count() FROM system.parts` tells you nothing; a bucket holding ~91k objects does.
+2. **Nothing changed.** The trigger is *time*, not load, not a release, not a config edit. Startup time grows with uptime, silently, until it crosses the probe deadline. Then it is total.
+
+The kill is the second half. The clickhouse-operator's default liveness probe is `GET /ping` with `initialDelaySeconds: 60`, `periodSeconds: 3`, `failureThreshold: 10` — so it SIGKILLs at roughly 90 seconds — and it sets **no startup probe** (`reconcile.host.wait.probes.startup: no` in the operator's own config). Startup in the incident had reached 2m48s. The server was being killed mid-load, every time, and could not recover on its own.
+
+**How to recognise it.** On a server you can still reach, the one query that names the cause:
+
+```sql
+SELECT DISTINCT database, disk_name FROM system.parts WHERE active AND database = 'system';
+-- system    s3        ← the bug
+-- system    default   ← what you want
+```
+
+On one that will not start, the signature is: exit 137 with a high restart count; `AsyncLoader` stopping partway with no `Ready for connections`; only 9009 listening; and log lines about `deleteFileFromS3`, `RemoveRecursiveObjectStorageOperation` and `tmp_merge_*` under `store/` for `system.*` tables while it dies.
+
+### What the composition does about it
+
+**Pins the system logs to the local disk.** ClickHouse supports a per-log `<storage_policy>`, so `configuration.settings` carries `query_log/storage_policy: default` and the same for every other default-enabled log. The server-wide `merge_tree/storage_policy` is untouched, so **where your data lands does not change** — only ClickHouse's own telemetry moves back to the local disk, which is where it was always supposed to be.
+
+**Gives them a retention TTL.** ClickHouse ships no TTL on most of these tables, so they grow without bound on *any* disk. Every one gets `event_date + INTERVAL 14 DAY DELETE` by default.
+
+**Adds a startup probe.** The pod template now carries all three probes, so the operator's defaults no longer apply (it only fills in a probe the template left unset):
+
+| Probe | Path | Period | Timeout | Failures | Effect |
+| --- | --- | --- | --- | --- | --- |
+| `startupProbe` | `/ping` | 10s | 5s | 90 | ~15 minutes to finish loading, killed after that |
+| `livenessProbe` | `/ping` | 10s | 5s | 6 | restarted after ~60s wedged, *once started* |
+| `readinessProbe` | `/ping` | 10s | 5s | 3 | removed from the Service, not restarted |
+
+Liveness answers "is this process wedged"; startup answers "is this process still coming up". Kubernetes suspends liveness and readiness until the startup probe first succeeds, so the server may take as long as it needs to boot and is still killed promptly if it wedges *after* startup. The liveness probe deliberately carries **no** `initialDelaySeconds` — the startup probe already gates it.
+
+The tables pinned and trimmed are the ones ClickHouse 25.7 enables in its own shipped `programs/server/config.xml`: `query_log`, `trace_log`, `query_thread_log`, `query_views_log`, `part_log`, `text_log`, `metric_log`, `latency_log`, `error_log`, `query_metric_log`, `asynchronous_metric_log`, `crash_log`, `processors_profile_log`, `asynchronous_insert_log`, `backup_log`, `s3queue_log` and `blob_storage_log`.
+
+Two deliberate omissions. `session_log` ships **commented out**, and a system log exists if and only if its config section exists — emitting a section for it would *enable* a log the server does not run. `opentelemetry_span_log` declares its own `<engine>`, and ClickHouse refuses to start when a log has both `<engine>` and `<storage_policy>`/`<ttl>`; it has no `event_date` either, and is only written when span propagation is switched on.
+
+### Configuring it
+
+```typescript
+const clickhouse = makeClickHouseCluster({
+  storage: { mode: 's3', /* … */ },
+  systemLogs: {
+    retentionDays: 30,        // default: 14
+    // storagePolicy: false,  // leave them on the server-wide default (the old behaviour)
+    // ttl: false,            // no retention at all (ClickHouse's unbounded default)
+  },
+  probes: {
+    startup: { failureThreshold: 180 },  // partial overrides merge over the defaults
+    // readiness: false,                 // omit it and take the operator's default
+  },
+});
+```
+
+Both are **build-time** topology, for the same reason `storage` is: `systemLogs` compiles into server configuration text and `probes` into the enumerated pod templates, so a schema reference in either is rejected at construction rather than serialized as a `__KUBERNETES_REF__` marker.
+
+### Remediating a cluster that is already affected
+
+Applying the fix is not enough on its own, and this is the part that is easy to miss.
+
+ClickHouse compares the `CREATE` query it would write against the live table. When they differ — and changing the storage policy or TTL makes them differ — it **renames the existing table** to `system.query_log_0` and creates a fresh one. So the new tables are correct from the next restart, but the renamed ones stay exactly where they were, on object storage, and are still loaded at every boot. The boot time does not improve until they are gone.
+
+**This is not only an object-store concern.** Enabling the retention TTL — or later changing `retentionDays` — changes the `CREATE` query just the same, so a **PVC** installation gets the identical one-time `_0` rename on its next restart. There the cost is disk rather than boot time, but the part that surprises people is the same: the renamed `_0` tables keep the *old* definition, so **the new TTL does not apply to them** and they are never trimmed. Whatever the storage mode, expect the rollover once, and drop the leftovers by hand.
+
+Once the server is reachable:
+
+```sql
+-- The renamed originals, still on the old disk.
+SELECT database, name FROM system.tables WHERE database = 'system' AND name LIKE '%\_log\_%';
+DROP TABLE IF EXISTS system.query_log_0 SYNC;  -- and so on, per table listed
+```
+
+If the server will not start at all, the startup probe is what buys the time to get in: raise `probes.startup.failureThreshold` until it boots, drop the renamed tables, then put it back. These tables are safe to drop — ClickHouse writes "It is safe to truncate or drop this table at any time" into their own `COMMENT`.
 
 ## Users Shape
 

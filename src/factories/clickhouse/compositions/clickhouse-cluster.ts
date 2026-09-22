@@ -34,8 +34,10 @@ import {
   type ClickHouseClusterStatus,
   type ClickHouseClusterTopology,
   type ClickHouseInstallationConfig,
+  type ClickHouseProbeOptions,
   type ClickHouseS3StorageOptions,
   type ClickHouseStorageTopology,
+  type ClickHouseSystemLogOptions,
   type ClickHouseUser,
 } from '../types.js';
 import { clickHouseInstallation, DEFAULT_CHI_CLUSTER_NAME } from '../resources/installation.js';
@@ -146,6 +148,10 @@ interface ResolvedTopology {
   }[];
   /** Build-time storage topology, resolved and validated once. */
   storage: ClickHouseStorageTopology;
+  /** Per-log configuration of ClickHouse's own `system.*_log` tables. */
+  systemLogs?: ClickHouseSystemLogOptions;
+  /** ClickHouse server container probes. */
+  probes?: ClickHouseProbeOptions;
   /** The raw S3 options, narrowed — present iff the topology selects S3. */
   s3Options?: ClickHouseS3StorageOptions;
   /** The S3 resolution, present iff the topology selects object storage. */
@@ -214,11 +220,31 @@ function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology 
     }
   }
 
+  // BUILD-TIME for the same reason `storage` is: `systemLogs` compiles into
+  // ClickHouse server configuration text and `probes` into the enumerated pod
+  // templates, so a schema reference in either could only serialize as a
+  // `__KUBERNETES_REF__` marker. Reject one here, at CONSTRUCTION, with the
+  // same loudness `storage` gets.
+  for (const [field, value] of [
+    ['systemLogs', topology.systemLogs],
+    ['probes', topology.probes],
+  ] as const) {
+    if (value !== undefined && containsKubernetesRefs(value)) {
+      throw new Error(
+        `makeClickHouseCluster: build-time option \`${field}\` contains a schema/resource ` +
+          `reference. It compiles into ClickHouse server configuration text and the generated ` +
+          `pod templates, so it is fixed at construction time.`
+      );
+    }
+  }
+
   return {
     zones: topology.zones ?? [],
     replicas,
     shards,
     storage,
+    ...(topology.systemLogs !== undefined ? { systemLogs: topology.systemLogs } : {}),
+    ...(topology.probes !== undefined ? { probes: topology.probes } : {}),
     ...(isS3Storage(storage) ? { s3Options: storage } : {}),
     ...(resolvedStorage.mode === 's3' ? { s3: resolvedStorage } : {}),
     keeper,
@@ -447,6 +473,13 @@ export function makeClickHouseCluster(
             }
           : {}),
         podResources: spec.podResources,
+        // BUILD-TIME pass-through. Absent options let the installation apply
+        // its own defaults: system logs pinned to the local `default` disk
+        // (whenever a server-wide MergeTree policy is set) with a 14-day TTL
+        // (#232), and a startup probe so a slow-loading server is not killed
+        // mid-boot (#230).
+        ...(resolved.systemLogs !== undefined ? { systemLogs: resolved.systemLogs } : {}),
+        ...(resolved.probes !== undefined ? { probes: resolved.probes } : {}),
         id: CHI_RESOURCE_ID,
       });
 
