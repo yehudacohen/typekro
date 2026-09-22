@@ -158,3 +158,83 @@ export function deriveNameLengthLimit(
     message: `at most ${maxLength} characters, because ${reason}`,
   };
 }
+
+// ============================================================================
+// Secret reference syntax
+// ============================================================================
+
+/**
+ * The character rule the API server applies to a Secret/ConfigMap **data key**
+ * (`IsConfigMapKey`, `staging/src/k8s.io/apimachinery/pkg/util/validation`).
+ *
+ * The full rule is three separate checks, not one pattern — the reserved path
+ * names are excluded by name rather than by character class, which no single
+ * anchored regex expresses readably. {@link validateSecretDataKey} applies all
+ * three; this constant exists so an error message can quote the character rule.
+ */
+export const SECRET_DATA_KEY_PATTERN = /^[-._a-zA-Z0-9]+$/;
+
+/**
+ * The character rule for an RFC 1123 DNS subdomain — the syntax a Secret's
+ * `metadata.name` must satisfy (`IsDNS1123Subdomain`).
+ */
+export const DNS_SUBDOMAIN_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+
+/**
+ * Path names a Secret data key may not take, because a key becomes a FILE NAME
+ * when the Secret is projected into a volume. `.` and `..` are the directory
+ * entries themselves, and a leading `..` is reserved for the atomic-writer's
+ * own `..data` symlink, so the API server rejects all three outright.
+ */
+const RESERVED_SECRET_DATA_KEYS = new Set(['.', '..']);
+
+/**
+ * Validate a Kubernetes Secret (or ConfigMap) **data key** against the API
+ * server's real rules, rather than against an approximation of them.
+ *
+ * WHY A SHARED VALIDATOR. Every caller that takes a `secretKeyRef` from a user
+ * needs the same four checks, and a local approximation of them is wrong in a
+ * direction nobody notices: a key that passes a hand-rolled character class but
+ * exceeds 253 characters, or is literally `..`, is accepted at build time and
+ * rejected by the API server at apply time — the failure lands on a cluster
+ * instead of in a stack trace next to the call that caused it.
+ *
+ * @param key - The candidate data key
+ * @returns A reason the key is unusable, or `undefined` when it is valid
+ */
+export function validateSecretDataKey(key: unknown): string | undefined {
+  if (typeof key !== 'string' || key.length === 0) {
+    return 'must be a non-empty string';
+  }
+  if (key.length > DNS_SUBDOMAIN_MAX_LENGTH) {
+    return `must be at most ${DNS_SUBDOMAIN_MAX_LENGTH} characters, but is ${key.length}`;
+  }
+  if (!SECRET_DATA_KEY_PATTERN.test(key)) {
+    return `must match ${SECRET_DATA_KEY_PATTERN.source}`;
+  }
+  if (RESERVED_SECRET_DATA_KEYS.has(key) || key.startsWith('..')) {
+    // A key is a file name once the Secret is projected into a volume.
+    return "must not be '.' or '..', and must not start with '..'";
+  }
+  return undefined;
+}
+
+/**
+ * Validate an object name against RFC 1123 DNS subdomain rules — the syntax
+ * `metadata.name` takes for a Secret, a ConfigMap and most namespaced objects.
+ *
+ * @param name - The candidate object name
+ * @returns A reason the name is unusable, or `undefined` when it is valid
+ */
+export function validateDnsSubdomainName(name: unknown): string | undefined {
+  if (typeof name !== 'string' || name.length === 0) {
+    return 'must be a non-empty string';
+  }
+  if (name.length > DNS_SUBDOMAIN_MAX_LENGTH) {
+    return `must be at most ${DNS_SUBDOMAIN_MAX_LENGTH} characters, but is ${name.length}`;
+  }
+  if (!DNS_SUBDOMAIN_PATTERN.test(name)) {
+    return `must be an RFC 1123 DNS subdomain — ${DNS_SUBDOMAIN_PATTERN.source}`;
+  }
+  return undefined;
+}
