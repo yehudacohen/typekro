@@ -333,6 +333,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DEFAULT_SYSTEM_LOG_RETENTION_DAYS`, `DEFAULT_CLICKHOUSE_STARTUP_PROBE`,
   `DEFAULT_CLICKHOUSE_LIVENESS_PROBE` and `DEFAULT_CLICKHOUSE_READINESS_PROBE`.
 
+  `probes` validation mirrors KUBERNETES' own per-field bounds rather than applying one rule
+  to every field, so a value the composition accepts is a value the API server accepts:
+  `initialDelaySeconds` may be `0`; `periodSeconds`, `timeoutSeconds`, `failureThreshold` and
+  `successThreshold` must be `>= 1`; and `successThreshold` must be exactly `1` on the
+  `startup` and `liveness` probes, which only `readiness` may raise. The build-time
+  ref-rejection is checked RECURSIVELY at both public entry points, so a reference nested
+  inside `systemLogs` or `probes` (`systemLogs: { ttl: schema.spec.ttl }`) is rejected by name
+  instead of reaching generated configuration.
+
 ### Fixed
 
 - `clickhouseCluster` put ClickHouse's OWN `system.*_log` tables on object storage, and the

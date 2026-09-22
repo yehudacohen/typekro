@@ -43,6 +43,15 @@ interface ContainerShape {
   readinessProbe?: ProbeShape;
 }
 
+/** A KubernetesRef the way a `schema.spec.*` proxy hands one over. */
+function schemaRef(fieldPath: string): number {
+  return {
+    [KUBERNETES_REF_BRAND]: true,
+    resourceId: '__schema__',
+    fieldPath,
+  } as unknown as number;
+}
+
 function chiWith(overrides: Partial<InstallationConfig> = {}) {
   return clickHouseInstallation({
     name: 'test-ch',
@@ -161,8 +170,154 @@ describe('ClickHouse container probes (#230)', () => {
 
     it('rejects a nonsensical probe value loudly', () => {
       expect(() => chiWith({ probes: { liveness: { periodSeconds: 0 } } })).toThrow(
-        /probes\.liveness\.periodSeconds must be a positive integer/
+        /probes\.liveness\.periodSeconds must be an integer >= 1/
       );
+    });
+  });
+
+  /**
+   * `probes` is advertised as a KUBERNETES probe seam, so the validator has to
+   * agree with Kubernetes field-by-field: it must not reject what the API
+   * server accepts, and must not accept what the API server rejects.
+   *
+   * Bounds verified against kubernetes/kubernetes v1.34.0 —
+   * `staging/src/k8s.io/api/core/v1/types.go` (`type Probe struct`, the
+   * documented "Minimum value is 1" / "Must be 1 for liveness and startup"),
+   * `pkg/apis/core/validation/validation.go` (`validateProbe`,
+   * `validateLivenessProbe`, `validateStartupProbe`) and
+   * `pkg/apis/core/v1/defaults.go` (`SetDefaults_Probe`, which overwrites a
+   * literal 0 in the four threshold/second fields with their defaults, so a 0
+   * there can never mean zero).
+   */
+  describe('validation mirrors the Kubernetes probe API', () => {
+    describe('successThreshold must be 1 for liveness and startup', () => {
+      for (const probeName of ['startup', 'liveness'] as const) {
+        it(`rejects ${probeName}.successThreshold: 2`, () => {
+          expect(() =>
+            chiWith({
+              probes: { [probeName]: { successThreshold: 2 } },
+            } as Partial<InstallationConfig>)
+          ).toThrow(
+            new RegExp(`probes\\.${probeName}\\.successThreshold must be exactly 1 \\(got 2\\)`)
+          );
+        });
+
+        it(`names the Kubernetes rule in the ${probeName} error`, () => {
+          expect(() =>
+            chiWith({
+              probes: { [probeName]: { successThreshold: 3 } },
+            } as Partial<InstallationConfig>)
+          ).toThrow(/Kubernetes requires successThreshold to be 1 for liveness and startup probes/);
+        });
+
+        it(`still accepts ${probeName}.successThreshold: 1`, () => {
+          expect(() =>
+            chiWith({
+              probes: { [probeName]: { successThreshold: 1 } },
+            } as Partial<InstallationConfig>)
+          ).not.toThrow();
+        });
+      }
+
+      // The whole point of the field: only readiness may ask for several
+      // consecutive successes, and Kubernetes' own validateReadinessProbe
+      // carries no `!= 1` check.
+      it('accepts readiness.successThreshold: 2 and renders it', () => {
+        const container = containersOf(
+          chiWith({ probes: { readiness: { successThreshold: 2 } } })
+        )[0];
+        expect(container?.readinessProbe?.successThreshold).toBe(2);
+      });
+    });
+
+    describe('initialDelaySeconds may be 0', () => {
+      for (const probeName of ['startup', 'liveness', 'readiness'] as const) {
+        it(`accepts ${probeName}.initialDelaySeconds: 0`, () => {
+          expect(() =>
+            chiWith({
+              probes: { [probeName]: { initialDelaySeconds: 0 } },
+            } as Partial<InstallationConfig>)
+          ).not.toThrow();
+        });
+      }
+
+      it('renders the explicit 0 rather than dropping it', () => {
+        const container = containersOf(
+          chiWith({ probes: { startup: { initialDelaySeconds: 0 } } })
+        )[0];
+        expect(container?.startupProbe?.initialDelaySeconds).toBe(0);
+      });
+
+      it('still rejects a negative initialDelaySeconds', () => {
+        expect(() => chiWith({ probes: { startup: { initialDelaySeconds: -1 } } })).toThrow(
+          /probes\.startup\.initialDelaySeconds must be an integer >= 0/
+        );
+      });
+    });
+
+    describe('the other four fields still reject 0', () => {
+      for (const field of [
+        'periodSeconds',
+        'timeoutSeconds',
+        'failureThreshold',
+        'successThreshold',
+      ] as const) {
+        it(`rejects readiness.${field}: 0`, () => {
+          expect(() =>
+            chiWith({ probes: { readiness: { [field]: 0 } } } as Partial<InstallationConfig>)
+          ).toThrow(
+            new RegExp(`probes\\.readiness\\.${field} must be an integer >= 1 \\(got 0\\)`)
+          );
+        });
+      }
+
+      it('rejects a non-integer', () => {
+        expect(() => chiWith({ probes: { startup: { periodSeconds: 2.5 } } })).toThrow(
+          /probes\.startup\.periodSeconds must be an integer >= 1 \(got 2\.5\)/
+        );
+      });
+    });
+  });
+
+  /**
+   * The build-time contract has TWO public doors. `makeClickHouseCluster`
+   * already walked these options recursively; `clickHouseInstallation` only
+   * tested whether the WHOLE object was a reference, so a nested one — the
+   * realistic mistake — went straight through. The docs state the contract
+   * without qualifying which entry point, so it has to hold at both.
+   */
+  describe('nested schema references through clickHouseInstallation', () => {
+    it('rejects a reference nested inside a probe, naming the exact field', () => {
+      expect(() =>
+        chiWith({
+          probes: { startup: { failureThreshold: schemaRef('spec.failureThreshold') } },
+        } as unknown as Partial<InstallationConfig>)
+      ).toThrow(
+        /'probes\.startup\.failureThreshold' is a BUILD-TIME topology field and received a schema reference or CEL expression/
+      );
+    });
+
+    it('explains why, and points at the construction-time fix', () => {
+      let message = '';
+      try {
+        chiWith({
+          probes: { liveness: { periodSeconds: schemaRef('spec.period') } },
+        } as unknown as Partial<InstallationConfig>);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('probes.liveness.periodSeconds');
+      expect(message).toContain('__KUBERNETES_REF__');
+      expect(message).toContain('makeClickHouseCluster({ probes })');
+      // The OLD failure mode: the nested ref fell through to the integer check
+      // and was reported as a bad number, which named neither cause nor fix.
+      expect(message).not.toMatch(/must be an integer/);
+    });
+
+    it('still rejects a reference as the whole probes object', () => {
+      expect(() =>
+        chiWith({ probes: schemaRef('spec.probes') } as unknown as Partial<InstallationConfig>)
+      ).toThrow(/'probes' is a BUILD-TIME topology field/);
     });
   });
 

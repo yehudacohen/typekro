@@ -526,12 +526,29 @@ export const ClickHouseSystemLogOptionsSchema = type({
 /** Per-log configuration (see {@link ClickHouseSystemLogOptionsSchema}). */
 export type ClickHouseSystemLogOptions = typeof ClickHouseSystemLogOptionsSchema.infer;
 
-/** ArkType schema for the tunable fields of one container probe. */
+/**
+ * ArkType schema for the tunable fields of one container probe.
+ *
+ * These are Kubernetes probe fields, and `utils/probes.ts` enforces KUBERNETES'
+ * OWN per-field bounds on them at construction — not one blanket rule — so a
+ * value this composition accepts is a value the API server accepts. In
+ * particular `initialDelaySeconds` may be 0, the other four must be >= 1, and
+ * `successThreshold` must be exactly 1 on the `startup` and `liveness` probes.
+ */
 export const ClickHouseProbeSettingsSchema = type({
+  /** Seconds before the first probe. Minimum 0 (0 = probe immediately). */
   'initialDelaySeconds?': 'number.integer',
+  /** Seconds between probes. Minimum 1. */
   'periodSeconds?': 'number.integer',
+  /** Seconds before one probe times out. Minimum 1. */
   'timeoutSeconds?': 'number.integer',
+  /** Consecutive failures before the probe is considered failed. Minimum 1. */
   'failureThreshold?': 'number.integer',
+  /**
+   * Consecutive successes before the probe is considered successful again.
+   * Minimum 1, and Kubernetes requires EXACTLY 1 for the `startup` and
+   * `liveness` probes — only `readiness` may set it above 1.
+   */
   'successThreshold?': 'number.integer',
 });
 

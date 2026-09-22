@@ -141,19 +141,91 @@ const PROBE_NUMERIC_FIELDS = [
   'successThreshold',
 ] as const;
 
+type ProbeNumericField = (typeof PROBE_NUMERIC_FIELDS)[number];
+
+/**
+ * PER-FIELD lower bounds, mirroring the Kubernetes Pod API rather than
+ * applying one blanket rule to every field.
+ *
+ * `probes` is advertised as a Kubernetes probe configuration seam, so a value
+ * Kubernetes accepts must not be rejected here, and a value Kubernetes rejects
+ * must not reach the API server inside a generated manifest.
+ *
+ * Verified against kubernetes/kubernetes v1.34.0:
+ *
+ * - `staging/src/k8s.io/api/core/v1/types.go`, `type Probe struct`:
+ *   `timeoutSeconds`, `periodSeconds`, `successThreshold` and
+ *   `failureThreshold` each document "Minimum value is 1".
+ *   `initialDelaySeconds` documents NO minimum — 0 is its default and an
+ *   ordinary value meaning "start probing immediately".
+ * - `pkg/apis/core/validation/validation.go`, `validateProbe()`: all five are
+ *   checked only with `ValidateNonnegativeField`, so the API server itself
+ *   rejects only negatives.
+ * - `pkg/apis/core/v1/defaults.go`, `SetDefaults_Probe()`: a literal 0 in
+ *   `timeoutSeconds`/`periodSeconds`/`successThreshold`/`failureThreshold` is
+ *   overwritten by that field's default (1/10/1/3). A 0 there therefore never
+ *   MEANS zero — it silently means "unset", which is the opposite of what a
+ *   caller who typed it intends. Rejecting it is both the documented minimum
+ *   and the honest reading.
+ */
+const PROBE_FIELD_MINIMUMS: Readonly<Record<ProbeNumericField, number>> = {
+  initialDelaySeconds: 0,
+  periodSeconds: 1,
+  timeoutSeconds: 1,
+  failureThreshold: 1,
+  successThreshold: 1,
+};
+
+/**
+ * The probes for which Kubernetes requires `successThreshold` to be EXACTLY 1.
+ *
+ * `validateLivenessProbe()` and `validateStartupProbe()` in
+ * `pkg/apis/core/validation/validation.go` (v1.34.0) both end with
+ * `if probe.SuccessThreshold != 1 { ... "must be 1" }`.
+ * `validateReadinessProbe()` does not, which is why a readiness probe may ask
+ * for several consecutive successes. The API reference says the same in one
+ * line: "Must be 1 for liveness and startup."
+ *
+ * Without this check `probes: { startup: { successThreshold: 2 } }` passes
+ * TypeKro validation and then produces a Pod the API server refuses — a typed
+ * API emitting an invalid manifest, which is the thing it exists to prevent.
+ */
+const EXACT_SUCCESS_THRESHOLD_PROBES: ReadonlySet<string> = new Set(['startup', 'liveness']);
+
 function assertProbeSettings(
   factoryName: string,
   probeName: string,
   settings: ClickHouseProbeSettingsInput
 ): void {
+  const omitHint =
+    `Set \`probes.${probeName}: false\` to omit the probe and fall back to the ` +
+    `clickhouse-operator's default.`;
+
   for (const field of PROBE_NUMERIC_FIELDS) {
     const value = settings[field];
     if (value === undefined) continue;
-    if (!Number.isInteger(value) || value <= 0) {
+
+    const minimum = PROBE_FIELD_MINIMUMS[field];
+    if (!Number.isInteger(value) || value < minimum) {
       throw new Error(
-        `${factoryName}: probes.${probeName}.${field} must be a positive integer (got ` +
-          `${String(value)}). Set \`probes.${probeName}: false\` to omit the probe and fall ` +
-          `back to the clickhouse-operator's default.`
+        `${factoryName}: probes.${probeName}.${field} must be an integer >= ${minimum} (got ` +
+          `${String(value)}). Kubernetes documents a minimum of ${minimum} for this field` +
+          `${minimum === 0 ? ' (0 means "start probing immediately")' : ''}. ${omitHint}`
+      );
+    }
+
+    // Kubernetes requires successThreshold === 1 for liveness and startup; only
+    // a readiness probe may ask for more than one consecutive success.
+    if (
+      field === 'successThreshold' &&
+      EXACT_SUCCESS_THRESHOLD_PROBES.has(probeName) &&
+      value !== 1
+    ) {
+      throw new Error(
+        `${factoryName}: probes.${probeName}.successThreshold must be exactly 1 (got ` +
+          `${String(value)}). Kubernetes requires successThreshold to be 1 for liveness and ` +
+          `startup probes — only a readiness probe may require several consecutive successes — ` +
+          `and the API server rejects the Pod otherwise. ${omitHint}`
       );
     }
   }

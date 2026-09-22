@@ -244,6 +244,71 @@ describe('ClickHouse system log tables (#232)', () => {
     });
   });
 
+  /**
+   * The build-time contract has TWO public doors, and the docs state it without
+   * naming one: "a schema reference in either is rejected at construction".
+   * `makeClickHouseCluster` walked `systemLogs` recursively; the low-level
+   * `clickHouseInstallation` only tested whether the WHOLE object was a
+   * reference. A nested one — the realistic mistake — went through, and
+   * `storagePolicy` was the bad case: the raw marker object landed in the
+   * rendered `query_log/storage_policy` setting with no error at all.
+   */
+  describe('nested schema references through clickHouseInstallation', () => {
+    const schemaRef = (fieldPath: string) =>
+      ({
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath,
+      }) as unknown as string;
+
+    it('rejects a reference in systemLogs.storagePolicy rather than rendering it', () => {
+      expect(() =>
+        s3Chi({
+          systemLogs: { storagePolicy: schemaRef('spec.storagePolicy') },
+        } as unknown as Partial<InstallationConfig>)
+      ).toThrow(
+        /'systemLogs\.storagePolicy' is a BUILD-TIME topology field and received a schema reference or CEL expression/
+      );
+    });
+
+    it('rejects a reference in systemLogs.ttl with an explanatory message', () => {
+      let message = '';
+      try {
+        s3Chi({
+          systemLogs: { ttl: schemaRef('spec.ttl') },
+        } as unknown as Partial<InstallationConfig>);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('systemLogs.ttl');
+      expect(message).toContain('ClickHouse server configuration TEXT');
+      expect(message).toContain('makeClickHouseCluster({ systemLogs })');
+      // The OLD failure mode: the ref reached the TTL string handling and blew
+      // up as `ttl.trim is not a function`, which named neither cause nor fix.
+      expect(message).not.toMatch(/is not a function/);
+    });
+
+    it('rejects a reference in systemLogs.retentionDays', () => {
+      expect(() =>
+        s3Chi({
+          systemLogs: { retentionDays: schemaRef('spec.retentionDays') },
+        } as unknown as Partial<InstallationConfig>)
+      ).toThrow(/'systemLogs\.retentionDays' is a BUILD-TIME topology field/);
+    });
+
+    it('still rejects a reference as the whole systemLogs object', () => {
+      expect(() =>
+        s3Chi({
+          systemLogs: schemaRef('spec.systemLogs'),
+        } as unknown as Partial<InstallationConfig>)
+      ).toThrow(/'systemLogs' is a BUILD-TIME topology field/);
+    });
+
+    it('leaves a concrete systemLogs untouched', () => {
+      expect(() => s3Chi({ systemLogs: { retentionDays: 30 } })).not.toThrow();
+    });
+  });
+
   describe('makeClickHouseCluster', () => {
     it('carries the per-log settings into the rendered RGD', () => {
       const yaml = makeClickHouseCluster({ storage: IRSA_S3 }).toYaml();
