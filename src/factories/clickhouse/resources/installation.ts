@@ -31,6 +31,10 @@ import type {
   ClickHouseInstallationSpec,
   ClickHouseInstallationStatus,
 } from '../types.js';
+import {
+  CLICKHOUSE_POD_TEMPLATE_HASH_ENV,
+  clickHousePodTemplateHash,
+} from '../utils/pod-template-fingerprint.js';
 import { resolveClickHouseProbes } from '../utils/probes.js';
 import {
   clickHouseS3ConfigurationFiles,
@@ -353,15 +357,29 @@ function compileInstallationSpec(
   const probes = resolveClickHouseProbes('clickHouseInstallation', config.probes);
 
   // Shared ClickHouse server pod spec (per-zone templates add affinity).
-  const podSpec: Record<string, unknown> = {
+  const container: Record<string, unknown> = {
+    name: 'clickhouse',
+    image,
+    ...(config.podResources && { resources: config.podResources }),
+    ...(s3Env.length > 0 && { env: s3Env }),
+    ...probes,
+  };
+  const basePodSpec: Record<string, unknown> = {
     ...(s3ServiceAccountName !== undefined && { serviceAccountName: s3ServiceAccountName }),
+    containers: [container],
+  };
+  // Stamp the template's digest into the container env, so that a template
+  // change (a probe change above all) makes the operator roll the StatefulSet
+  // instead of first restarting the server in place under the OLD template.
+  // The zone list is part of the input because it shapes the per-zone
+  // templates. See utils/pod-template-fingerprint.ts and #238.
+  const podTemplateHash = clickHousePodTemplateHash({ podSpec: basePodSpec, zones });
+  const podSpec: Record<string, unknown> = {
+    ...basePodSpec,
     containers: [
       {
-        name: 'clickhouse',
-        image,
-        ...(config.podResources && { resources: config.podResources }),
-        ...(s3Env.length > 0 && { env: s3Env }),
-        ...probes,
+        ...container,
+        env: [...s3Env, { name: CLICKHOUSE_POD_TEMPLATE_HASH_ENV, value: podTemplateHash }],
       },
     ],
   };

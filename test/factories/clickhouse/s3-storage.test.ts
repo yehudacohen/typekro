@@ -6,6 +6,7 @@
  * the discriminated `diskType`, the fact that the rendered configuration never
  * carries key material, and the refusal to mix PVC and S3 options.
  */
+import { CLICKHOUSE_POD_TEMPLATE_HASH_ENV } from '../../../src/factories/clickhouse/utils/pod-template-fingerprint.js';
 import { type } from 'arktype';
 import { describe, expect, it } from 'bun:test';
 import { clickHouseInstallation } from '../../../src/factories/clickhouse/resources/installation.js';
@@ -664,6 +665,8 @@ describe('clickHouseInstallation with S3 storage', () => {
     expect(env.map((entry) => entry.name)).toEqual([
       S3_ACCESS_KEY_ID_ENV,
       S3_SECRET_ACCESS_KEY_ENV,
+      // The pod template digest (#238), never a credential.
+      CLICKHOUSE_POD_TEMPLATE_HASH_ENV,
     ]);
     expect(env[0]?.valueFrom?.secretKeyRef).toEqual({
       name: 'minio-credentials',
