@@ -68,11 +68,12 @@ export type ClickHouseSystemLogInput = Loosen<ClickHouseSystemLogOptions>;
  *   list too, for a different reason — see
  *   {@link CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS}.
  *
- * - `query_log`, `part_log` and `trace_log` are enabled by default but are
- *   configured by a different mechanism — see
- *   {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS} — and `query_thread_log`
- *   is absent because the operator switches it off — see
- *   {@link CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS}.
+ * HOW each one is configured is a separate question, answered by three
+ * disjoint subsets that together make up this list:
+ * {@link CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES} (path-keyed
+ * `configuration.settings`), {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS}
+ * (a replacing `config.d` file) and {@link CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS}
+ * (left alone, because the operator switches it off).
  *
  * A server older or newer than 25.7 is safe either way: ClickHouse ignores a
  * config section for a log it does not implement, and a log ADDED in a later
@@ -80,6 +81,34 @@ export type ClickHouseSystemLogInput = Loosen<ClickHouseSystemLogOptions>;
  * the pre-fix behaviour for that one table).
  */
 export const CLICKHOUSE_SYSTEM_LOG_TABLES = [
+  'query_log',
+  'trace_log',
+  'query_thread_log',
+  'query_views_log',
+  'part_log',
+  'text_log',
+  'metric_log',
+  'latency_log',
+  'error_log',
+  'query_metric_log',
+  'asynchronous_metric_log',
+  'crash_log',
+  'processors_profile_log',
+  'asynchronous_insert_log',
+  'backup_log',
+  's3queue_log',
+  'blob_storage_log',
+] as const;
+
+/**
+ * The default-enabled system logs pinned and trimmed through path-keyed
+ * `configuration.settings` (`<log>/storage_policy`, `<log>/ttl`): every one
+ * of {@link CLICKHOUSE_SYSTEM_LOG_TABLES} except the logs the
+ * clickhouse-operator defines itself (#235) — the ones in
+ * {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS} and
+ * {@link CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS}.
+ */
+export const CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES = [
   'query_views_log',
   'text_log',
   'metric_log',
@@ -303,7 +332,7 @@ export function resolveClickHouseSystemLogs(
 
 /**
  * CHI `configuration.settings` entries that pin and trim ClickHouse's own
- * system log tables — the ones in {@link CLICKHOUSE_SYSTEM_LOG_TABLES}. The
+ * system log tables — the ones in {@link CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES}. The
  * operator-replaced logs are handled by
  * {@link clickHouseSystemLogConfigurationFiles} instead.
  *
@@ -326,7 +355,7 @@ export function clickHouseSystemLogSettings(
   const settings: Record<string, string> = {};
   if (resolved.storagePolicy === undefined && resolved.ttl === undefined) return settings;
 
-  for (const table of CLICKHOUSE_SYSTEM_LOG_TABLES) {
+  for (const table of CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES) {
     if (resolved.storagePolicy !== undefined) {
       settings[`${table}/storage_policy`] = resolved.storagePolicy;
     }

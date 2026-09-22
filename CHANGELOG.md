@@ -374,9 +374,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operator writes setting values into the server's XML config unescaped, so 0.37.0 already
   failed to start with them, only later and with a parse error.
 
-- `CLICKHOUSE_SYSTEM_LOG_TABLES` no longer lists `query_log`, `trace_log`, `part_log` or
-  `query_thread_log`; it now means "the logs pinned through `configuration.settings`". New
-  exports: `CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS`, `CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS`,
+- `CLICKHOUSE_SYSTEM_LOG_TABLES` is unchanged from 0.37.0: it still lists all 17
+  default-enabled system logs. How each is configured is now given by three disjoint
+  subsets: `CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES` (through `configuration.settings`),
+  `CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS` (through the replacing file) and
+  `CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS` (left alone). Other new exports:
   `CHI_SYSTEM_LOGS_CONFIG_FILE`, `OPERATOR_SYSTEM_LOG_TTL`, `operatorReplacedSystemLogEngine`
   and `clickHouseSystemLogConfigurationFiles`.
 

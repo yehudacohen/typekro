@@ -42,7 +42,7 @@ import {
   CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS,
   CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS,
   CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
-  CLICKHOUSE_SYSTEM_LOG_TABLES,
+  CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES,
 } from '../../../src/factories/clickhouse/utils/system-logs.js';
 
 setDefaultTimeout(240_000);
@@ -259,7 +259,7 @@ describeOrSkip('ClickHouse system logs on a real server under the operator defau
     // lists rather than every `*_log`, so a server newer than 25.7 (see
     // CLICKHOUSE_BOOT_TEST_VERSION) is not failed for logs it added later.
     const configured = [
-      ...CLICKHOUSE_SYSTEM_LOG_TABLES,
+      ...CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES,
       ...CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
     ];
     const unpinned = rows.filter(
