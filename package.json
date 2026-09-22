@@ -190,6 +190,7 @@
     "example:basic": "bun run build:lib && bun run examples-dist/basic-webapp.js",
     "test:integration:all": "./scripts/run-integration-tests.sh",
     "test:integration:yaml": "bun test --timeout 10000 test/core/yaml-generation.test.ts",
+    "test:integration:clickhouse-boot": "REQUIRE_DOCKER_TESTS=true bun test --timeout 300000 test/integration/clickhouse/system-logs-server-boot.test.ts",
     "test:integration:e2e": "bun test --timeout 60000 test/integration/e2e-cluster.test.ts",
     "test:integration:e2e-only": "bun test --timeout 60000 test/integration/e2e-test-only.test.ts",
     "test:integration:e2e-comprehensive": "bun test --timeout 60000 test/integration/e2e-factory-comprehensive.test.ts",

@@ -689,7 +689,11 @@ describe('clickHouseInstallation with S3 storage', () => {
       version: '25.12.5',
       storage: { size: '10Gi', storageClassName: 'gp3-expandable' },
     });
-    expect(chi.spec.configuration?.files).toBeUndefined();
+    // No storage.xml. The only file is the system-log one, which carries the
+    // retention TTL and no storage policy in PVC mode (#235).
+    const files = chi.spec.configuration?.files ?? {};
+    expect(Object.keys(files)).toEqual(['config.d/system-logs.xml']);
+    expect(files['config.d/system-logs.xml']).not.toContain('storage_policy');
     expect(chi.spec.templates?.podTemplates?.[0]?.spec?.serviceAccountName).toBeUndefined();
     // NO server-wide MergeTree policy, and NO per-log storage_policy pin —
     // there is nothing to pin away from when the server default IS the local

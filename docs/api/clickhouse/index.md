@@ -430,7 +430,9 @@ On one that will not start, the signature is: exit 137 with a high restart count
 
 ### What the composition does about it
 
-**Pins the system logs to the local disk.** ClickHouse supports a per-log `<storage_policy>`, so `configuration.settings` carries `query_log/storage_policy: default` and the same for every other default-enabled log. The server-wide `merge_tree/storage_policy` is untouched, so **where your data lands does not change** — only ClickHouse's own telemetry moves back to the local disk, which is where it was always supposed to be.
+**Pins the system logs to the local disk.** ClickHouse supports a per-log `<storage_policy>`, so `configuration.settings` carries `metric_log/storage_policy: default` and the same for most other default-enabled logs. The exceptions are `query_log`, `part_log` and `trace_log`: the clickhouse-operator replaces their sections with one that declares a full `<engine>`, and ClickHouse **refuses to start** if a log has both `<engine>` and `<storage_policy>`/`<ttl>` (#235). For these three the composition writes its own `config.d/system-logs.xml`, which replaces each section outright (`replace="1"`) and puts the policy and TTL inside the engine definition: `ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time TTL event_date + INTERVAL 14 DAY DELETE SETTINGS storage_policy = 'default'`. Because it replaces the whole section, it also overrides anything a caller sets for those three logs through their own `configuration.settings` or custom operator `configdFiles`. Their retention moves from the operator's 30 days to the composition's 14, and the changed definition is what makes ClickHouse rename the old table to `<name>_0` at the next restart (see below). This is verified against the default system-log configuration of the operator version TypeKro installs (0.27.1). If you override the operator's `configs.configdFiles`, check that what you set for these three logs is what you want replaced.
+
+`systemLogs.ttl: false` means TypeKro does not manage retention. Every log keeps its upstream TTL, in every storage mode: none for most logs, ClickHouse's own TTLs on `processors_profile_log`, `asynchronous_insert_log` and `blob_storage_log`, and the operator's 30 days on `query_log`, `part_log` and `trace_log`. When the composition still has to replace those three sections (for the storage pin), it writes the operator's 30-day TTL back into the engine. The server-wide `merge_tree/storage_policy` is untouched, so **where your data lands does not change** — only ClickHouse's own telemetry moves back to the local disk, which is where it was always supposed to be.
 
 **Gives them a retention TTL.** ClickHouse ships no TTL on most of these tables, so they grow without bound on *any* disk. Every one gets `event_date + INTERVAL 14 DAY DELETE` by default.
 
@@ -444,9 +446,9 @@ On one that will not start, the signature is: exit 137 with a high restart count
 
 Liveness answers "is this process wedged"; startup answers "is this process still coming up". Kubernetes suspends liveness and readiness until the startup probe first succeeds, so the server may take as long as it needs to boot and is still killed promptly if it wedges *after* startup. The liveness probe deliberately carries **no** `initialDelaySeconds` — the startup probe already gates it.
 
-The tables pinned and trimmed are the ones ClickHouse 25.7 enables in its own shipped `programs/server/config.xml`: `query_log`, `trace_log`, `query_thread_log`, `query_views_log`, `part_log`, `text_log`, `metric_log`, `latency_log`, `error_log`, `query_metric_log`, `asynchronous_metric_log`, `crash_log`, `processors_profile_log`, `asynchronous_insert_log`, `backup_log`, `s3queue_log` and `blob_storage_log`.
+The tables pinned and trimmed are the ones ClickHouse 25.7 enables in its own shipped `programs/server/config.xml`, minus the one the operator switches off: `query_log`, `trace_log`, `query_views_log`, `part_log`, `text_log`, `metric_log`, `latency_log`, `error_log`, `query_metric_log`, `asynchronous_metric_log`, `crash_log`, `processors_profile_log`, `asynchronous_insert_log`, `backup_log`, `s3queue_log` and `blob_storage_log`.
 
-Two deliberate omissions. `session_log` ships **commented out**, and a system log exists if and only if its config section exists — emitting a section for it would *enable* a log the server does not run. `opentelemetry_span_log` declares its own `<engine>`, and ClickHouse refuses to start when a log has both `<engine>` and `<storage_policy>`/`<ttl>`; it has no `event_date` either, and is only written when span propagation is switched on.
+Three deliberate omissions. `query_thread_log` is removed by the operator (`<query_thread_log remove="1"/>`), and emitting any setting for it would switch it back on. `session_log` ships **commented out**, and a system log exists if and only if its config section exists — emitting a section for it would *enable* a log the server does not run. `opentelemetry_span_log` declares its own `<engine>`, and ClickHouse refuses to start when a log has both `<engine>` and `<storage_policy>`/`<ttl>`; it has no `event_date` either, and is only written when span propagation is switched on.
 
 ### Configuring it
 
@@ -456,7 +458,7 @@ const clickhouse = makeClickHouseCluster({
   systemLogs: {
     retentionDays: 30,        // default: 14
     // storagePolicy: false,  // leave them on the server-wide default (the old behaviour)
-    // ttl: false,            // no retention at all (ClickHouse's unbounded default)
+    // ttl: false,            // leave retention to the upstream defaults (ClickHouse's and the operator's)
   },
   probes: {
     startup: { failureThreshold: 180 },  // partial overrides merge over the defaults
