@@ -67,6 +67,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:integration:yaml
 
+      - name: ClickHouse server boot test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bun run test:integration:clickhouse-boot
+
       - name: Upload coverage to Codecov
         if: success()
         uses: codecov/codecov-action@v5

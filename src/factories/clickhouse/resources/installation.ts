@@ -40,6 +40,7 @@ import {
   resolveClickHouseStorage,
 } from '../utils/s3-storage.js';
 import {
+  clickHouseSystemLogConfigurationFiles,
   clickHouseSystemLogSettings,
   resolveClickHouseSystemLogs,
 } from '../utils/system-logs.js';
@@ -387,9 +388,12 @@ function compileInstallationSpec(
   //   - the S3 entry (`merge_tree/storage_policy`) is the SERVER-WIDE MergeTree
   //     default, and stays exactly as it was — it is what lets tooling outside
   //     TypeKro create its tables on object storage with no per-table DDL;
-  //   - the per-log entries (`query_log/storage_policy`, `query_log/ttl`, …)
+  //   - the per-log entries (`metric_log/storage_policy`, `metric_log/ttl`, …)
   //     pin ClickHouse's OWN telemetry tables back to the local disk and trim
   //     them, without changing where USER data lands.
+  // The three logs the operator gives a full `<engine>` (query_log, part_log,
+  // trace_log) cannot take those keys — the server refuses to start (#235) —
+  // so they are pinned by a replacing `configuration.files` entry instead.
   // The system-log TTL applies in PVC mode too: these tables have no TTL of
   // their own and grow without bound on any disk.
   const systemLogs = resolveClickHouseSystemLogs(
@@ -400,6 +404,10 @@ function compileInstallationSpec(
   const configurationSettings: Record<string, unknown> = {
     ...(storage.mode === 's3' ? clickHouseS3ConfigurationSettings(storage) : {}),
     ...clickHouseSystemLogSettings(systemLogs),
+  };
+  const configurationFiles: Record<string, string> = {
+    ...(storage.mode === 's3' ? clickHouseS3ConfigurationFiles(storage) : {}),
+    ...clickHouseSystemLogConfigurationFiles(systemLogs),
   };
 
   let layout: ClickHouseInstallationSpec['configuration'];
@@ -477,9 +485,7 @@ function compileInstallationSpec(
       // give them a retention TTL, WITHOUT touching where user data lands.
       // See utils/system-logs.ts and #232.
       ...(Object.keys(configurationSettings).length > 0 && { settings: configurationSettings }),
-      ...(storage.mode === 's3' && {
-        files: clickHouseS3ConfigurationFiles(storage),
-      }),
+      ...(Object.keys(configurationFiles).length > 0 && { files: configurationFiles }),
     },
     templates: {
       podTemplates,

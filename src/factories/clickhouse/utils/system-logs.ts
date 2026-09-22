@@ -68,17 +68,19 @@ export type ClickHouseSystemLogInput = Loosen<ClickHouseSystemLogOptions>;
  *   list too, for a different reason — see
  *   {@link CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS}.
  *
+ * - `query_log`, `part_log` and `trace_log` are enabled by default but are
+ *   configured by a different mechanism — see
+ *   {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS} — and `query_thread_log`
+ *   is absent because the operator switches it off — see
+ *   {@link CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS}.
+ *
  * A server older or newer than 25.7 is safe either way: ClickHouse ignores a
  * config section for a log it does not implement, and a log ADDED in a later
  * version simply is not pinned (it inherits the server-wide default, which is
  * the pre-fix behaviour for that one table).
  */
 export const CLICKHOUSE_SYSTEM_LOG_TABLES = [
-  'query_log',
-  'trace_log',
-  'query_thread_log',
   'query_views_log',
-  'part_log',
   'text_log',
   'metric_log',
   'latency_log',
@@ -105,7 +107,9 @@ export const CLICKHOUSE_SYSTEM_LOG_TABLES = [
  * should be specified directly inside 'engine'". Emitting one of those keys
  * for such a log would turn a storage fix into a server that refuses to boot.
  *
- * Only `opentelemetry_span_log` is in this position in 25.7: it needs a custom
+ * Only `opentelemetry_span_log` is in this position in ClickHouse 25.7's own
+ * shipped configuration (the clickhouse-operator puts three more there — see
+ * {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS}): it needs a custom
  * engine because it has no `event_date`/`event_time` (it is ordered by
  * `finish_date, finish_time_us`) — which independently disqualifies it from
  * the `event_date`-based retention TTL below. It is only written when
@@ -113,6 +117,60 @@ export const CLICKHOUSE_SYSTEM_LOG_TABLES = [
  * not do.
  */
 export const CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS = ['opentelemetry_span_log'] as const;
+
+/**
+ * Default-enabled system logs whose config section the clickhouse-operator
+ * REPLACES with one that declares a full `<engine>`.
+ *
+ * The Altinity clickhouse-operator (0.27.x) ships
+ * `01-clickhouse-03-query_log.xml`, `01-clickhouse-04-part_log.xml` and
+ * `01-clickhouse-05-trace_log.xml` in every server's `config.d`, each of the
+ * form `<query_log replace="1">...<engine>Engine = MergeTree PARTITION BY
+ * event_date ORDER BY event_time TTL event_date + interval 30 day</engine>...`.
+ * So on an operator-managed server these three are ENGINE-BOUND exactly like
+ * {@link CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS}: emitting `query_log/ttl` or
+ * `query_log/storage_policy` through `configuration.settings` makes
+ * `createSystemLog()` throw BAD_ARGUMENTS and the server exit at startup
+ * (#235).
+ *
+ * They are configured instead by {@link clickHouseSystemLogConfigurationFiles}:
+ * a config file of our own that replaces each section WHOLESALE
+ * (`replace="1"`), with the policy and TTL written inside the engine
+ * definition. Replacing rather than merging means the result does not depend
+ * on what the operator, or ClickHouse's own `config.xml`, put there first.
+ */
+export const CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS = [
+  'query_log',
+  'part_log',
+  'trace_log',
+] as const;
+
+/**
+ * Default-enabled system logs the clickhouse-operator SWITCHES OFF
+ * (`<query_thread_log remove="1"/>` in `01-clickhouse-03-query_log.xml`).
+ *
+ * Emitting any `query_thread_log/...` setting would re-create the section and
+ * so switch the log back ON — the same trap as `session_log` in
+ * {@link CLICKHOUSE_SYSTEM_LOG_TABLES}. They are listed so the omission is
+ * deliberate and tested, not an accident.
+ */
+export const CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS = ['query_thread_log'] as const;
+
+/**
+ * CHI `configuration.files` key for {@link clickHouseSystemLogConfigurationFiles}.
+ *
+ * ClickHouse merges `config.d` files in lexicographic filename order, and a
+ * `replace="1"` section only wins over sections merged BEFORE it. This name
+ * sorts after the operator's `01-clickhouse-*.xml` files and after
+ * `chop-generated-*.xml`, so our sections are the ones that stand.
+ */
+export const CHI_SYSTEM_LOGS_CONFIG_FILE = 'config.d/system-logs.xml';
+
+/**
+ * Flush interval the operator sets on the sections it replaces; carried over
+ * unchanged so replacing a section changes only its engine.
+ */
+const OPERATOR_SYSTEM_LOG_FLUSH_INTERVAL_MS = 7500;
 
 /**
  * ClickHouse's built-in storage policy over the local `default` disk
@@ -155,6 +213,14 @@ export function defaultSystemLogTtl(retentionDays: number): string {
   return `event_date + INTERVAL ${retentionDays} DAY DELETE`;
 }
 
+/**
+ * A storage policy name. Policies are declared as XML element names under
+ * `<storage_configuration><policies>`, and the name is also quoted into an
+ * engine definition (`SETTINGS storage_policy = '...'`), so quotes,
+ * backslashes and whitespace are rejected rather than escaped.
+ */
+const STORAGE_POLICY_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
 /** System log configuration with every default applied. */
 export interface ResolvedClickHouseSystemLogs {
   /** Policy the system logs are pinned to, or `undefined` for no pinning. */
@@ -192,10 +258,11 @@ export function resolveClickHouseSystemLogs(
       ? undefined
       : (options?.storagePolicy ??
         (serverWideStoragePolicy === undefined ? undefined : CLICKHOUSE_DEFAULT_STORAGE_POLICY));
-  if (storagePolicy !== undefined && storagePolicy.length === 0) {
+  if (storagePolicy !== undefined && !STORAGE_POLICY_NAME.test(storagePolicy)) {
     throw new Error(
-      `${factoryName}: systemLogs.storagePolicy must be a non-empty policy name, or \`false\` ` +
-        `to leave the system log tables on the server-wide MergeTree default.`
+      `${factoryName}: systemLogs.storagePolicy must be a storage policy name (letters, digits, ` +
+        `'_', '.', '-'; got ${JSON.stringify(storagePolicy)}), or \`false\` to leave the system ` +
+        `log tables on the server-wide MergeTree default.`
     );
   }
 
@@ -216,7 +283,9 @@ export function resolveClickHouseSystemLogs(
 
 /**
  * CHI `configuration.settings` entries that pin and trim ClickHouse's own
- * system log tables.
+ * system log tables — the ones in {@link CLICKHOUSE_SYSTEM_LOG_TABLES}. The
+ * operator-replaced logs are handled by
+ * {@link clickHouseSystemLogConfigurationFiles} instead.
  *
  * Keys are the operator's path-keyed settings form (`<log>/storage_policy`,
  * `<log>/ttl`), which it renders into `chop-generated-settings.xml` as the
@@ -246,4 +315,55 @@ export function clickHouseSystemLogSettings(
     }
   }
   return settings;
+}
+
+/** Escape text for an XML element body. */
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * The engine definition for one of {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS}:
+ * the operator's own `MergeTree PARTITION BY event_date ORDER BY event_time`,
+ * with the resolved TTL and storage policy written INSIDE it — the only place
+ * ClickHouse accepts them once a section declares `<engine>`.
+ */
+export function operatorReplacedSystemLogEngine(resolved: ResolvedClickHouseSystemLogs): string {
+  return [
+    'ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time',
+    ...(resolved.ttl !== undefined ? [`TTL ${resolved.ttl}`] : []),
+    ...(resolved.storagePolicy !== undefined
+      ? [`SETTINGS storage_policy = '${resolved.storagePolicy}'`]
+      : []),
+  ].join(' ');
+}
+
+/**
+ * CHI `configuration.files` entry that pins and trims the system logs the
+ * operator gives a full `<engine>` ({@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS}).
+ *
+ * Each section is replaced wholesale (`replace="1"`) with the operator's own
+ * shape — `database`, `table`, `engine`, `flush_interval_milliseconds` — and
+ * only the engine changed. Empty when nothing is resolved, so the operator's
+ * sections stand untouched.
+ */
+export function clickHouseSystemLogConfigurationFiles(
+  resolved: ResolvedClickHouseSystemLogs
+): Record<string, string> {
+  if (resolved.storagePolicy === undefined && resolved.ttl === undefined) return {};
+
+  const engine = escapeXmlText(operatorReplacedSystemLogEngine(resolved));
+  const sections = CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS.map((table) =>
+    [
+      `  <${table} replace="1">`,
+      '    <database>system</database>',
+      `    <table>${table}</table>`,
+      `    <engine>${engine}</engine>`,
+      `    <flush_interval_milliseconds>${OPERATOR_SYSTEM_LOG_FLUSH_INTERVAL_MS}</flush_interval_milliseconds>`,
+      `  </${table}>`,
+    ].join('\n')
+  );
+  return {
+    [CHI_SYSTEM_LOGS_CONFIG_FILE]: ['<clickhouse>', ...sections, '</clickhouse>', ''].join('\n'),
+  };
 }

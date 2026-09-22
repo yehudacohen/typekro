@@ -497,7 +497,8 @@ export type ClickHouseUser = typeof ClickHouseUserSchema.infer;
  *
  * BUILD-TIME, like `storage`: every value compiles into ClickHouse server
  * configuration TEXT (the operator renders `configuration.settings` keys of
- * the form `query_log/storage_policy` into `chop-generated-settings.xml`), so a
+ * the form `metric_log/storage_policy` into `chop-generated-settings.xml`, and
+ * the operator-replaced logs get a `config.d/system-logs.xml` file), so a
  * schema reference here could only serialize as a `__KUBERNETES_REF__` marker
  * inside a config file.
  *

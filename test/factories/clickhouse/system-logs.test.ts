@@ -20,10 +20,14 @@ import { clickHouseInstallation } from '../../../src/factories/clickhouse/resour
 import { makeClickHouseCluster } from '../../../src/factories/clickhouse/compositions/clickhouse-cluster.js';
 import type { ClickHouseS3StorageOptions } from '../../../src/factories/clickhouse/types.js';
 import {
+  CHI_SYSTEM_LOGS_CONFIG_FILE,
   CLICKHOUSE_DEFAULT_STORAGE_POLICY,
   CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS,
+  CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS,
+  CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
   CLICKHOUSE_SYSTEM_LOG_TABLES,
   DEFAULT_SYSTEM_LOG_RETENTION_DAYS,
+  clickHouseSystemLogConfigurationFiles,
   clickHouseSystemLogSettings,
   defaultSystemLogTtl,
   resolveClickHouseSystemLogs,
@@ -56,19 +60,25 @@ function settingsOf(chi: ReturnType<typeof clickHouseInstallation>): Record<stri
   return (chi.spec.configuration?.settings ?? {}) as Record<string, unknown>;
 }
 
+function systemLogsFileOf(chi: ReturnType<typeof clickHouseInstallation>): string | undefined {
+  return chi.spec.configuration?.files?.[CHI_SYSTEM_LOGS_CONFIG_FILE];
+}
+
+/** The `<engine>` of one section of the rendered system-logs file. */
+function engineOf(file: string | undefined, table: string): string | undefined {
+  const section = file?.match(new RegExp(`<${table} replace="1">([\\s\\S]*?)</${table}>`))?.[1];
+  return section?.match(/<engine>(.*)<\/engine>/)?.[1];
+}
+
 describe('ClickHouse system log tables (#232)', () => {
   describe('the table list', () => {
-    it('is the DEFAULT-ENABLED set from ClickHouse 25.7 config.xml', () => {
+    it('is the DEFAULT-ENABLED set from ClickHouse 25.7 config.xml, minus the operator-bound logs', () => {
       // Source: the `<*_log>` sections of ClickHouse's own shipped
       // programs/server/config.xml at v25.7.1.3997-stable. Pinned literally,
       // because the whole point of the list is that it was READ rather than
       // guessed — a change to it should be a deliberate edit with a source.
       expect([...CLICKHOUSE_SYSTEM_LOG_TABLES]).toEqual([
-        'query_log',
-        'trace_log',
-        'query_thread_log',
         'query_views_log',
-        'part_log',
         'text_log',
         'metric_log',
         'latency_log',
@@ -101,6 +111,109 @@ describe('ClickHouse system log tables (#232)', () => {
       for (const table of CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS) {
         expect(CLICKHOUSE_SYSTEM_LOG_TABLES).not.toContain(table as never);
       }
+    });
+
+    it('REGRESSION #235: omits the logs the operator replaces with a full <engine>', () => {
+      // The clickhouse-operator's 01-clickhouse-0{3,4,5}-*.xml replace these
+      // sections with one that declares <engine>; a path-keyed
+      // `query_log/ttl` setting merged into it made the server exit 36.
+      expect([...CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS]).toEqual([
+        'query_log',
+        'part_log',
+        'trace_log',
+      ]);
+      for (const table of CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS) {
+        expect(CLICKHOUSE_SYSTEM_LOG_TABLES).not.toContain(table as never);
+      }
+    });
+
+    it('omits query_thread_log, which the operator switches off', () => {
+      // `<query_thread_log remove="1"/>` — any setting for it would re-create
+      // the section and switch the log back on.
+      expect([...CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS]).toEqual(['query_thread_log']);
+      expect(CLICKHOUSE_SYSTEM_LOG_TABLES).not.toContain('query_thread_log' as never);
+      expect(CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS).not.toContain('query_thread_log' as never);
+    });
+  });
+
+  describe('operator-replaced logs (#235)', () => {
+    it('emits no configuration.settings key for them, in either storage mode', () => {
+      const pvc = clickHouseInstallation({
+        name: 'p',
+        version: '25.7.8.71',
+        storage: { size: '1Gi' },
+      });
+      for (const chi of [s3Chi(), pvc]) {
+        const offending = Object.keys(settingsOf(chi)).filter((key) =>
+          [
+            ...CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
+            ...CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS,
+          ].some((table) => key.startsWith(`${table}/`))
+        );
+        expect(offending).toEqual([]);
+      }
+    });
+
+    it('replaces each section wholesale with the policy and TTL inside the engine', () => {
+      const file = systemLogsFileOf(s3Chi());
+      for (const table of CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS) {
+        expect(file).toContain(`<${table} replace="1">`);
+        expect(file).toContain(`<table>${table}</table>`);
+        expect(engineOf(file, table)).toBe(
+          'ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time ' +
+            "TTL event_date + INTERVAL 14 DAY DELETE SETTINGS storage_policy = 'default'"
+        );
+      }
+      // No separate <ttl>/<storage_policy> elements — that is the crash.
+      expect(file).not.toMatch(/<ttl>|<storage_policy>/);
+      expect(file).not.toContain('query_thread_log');
+    });
+
+    it('sorts after the operator and chop-generated files, so its replace wins', () => {
+      const name = CHI_SYSTEM_LOGS_CONFIG_FILE.replace(/^config\.d\//, '');
+      expect(
+        [name, '01-clickhouse-05-trace_log.xml', 'chop-generated-settings.xml'].sort().at(-1)
+      ).toBe(name);
+    });
+
+    it('carries only the TTL in PVC mode, where there is no policy to pin away from', () => {
+      const pvc = clickHouseInstallation({
+        name: 'p',
+        version: '25.7.8.71',
+        storage: { size: '1Gi' },
+      });
+      expect(engineOf(systemLogsFileOf(pvc), 'query_log')).toBe(
+        'ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time TTL event_date + INTERVAL 14 DAY DELETE'
+      );
+    });
+
+    it('carries only the policy for `ttl: false`', () => {
+      expect(engineOf(systemLogsFileOf(s3Chi({ systemLogs: { ttl: false } })), 'part_log')).toBe(
+        "ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time SETTINGS storage_policy = 'default'"
+      );
+    });
+
+    it('emits no file when both halves are disabled, leaving the operator sections alone', () => {
+      const chi = s3Chi({ systemLogs: { storagePolicy: false, ttl: false } });
+      expect(systemLogsFileOf(chi)).toBeUndefined();
+      // The storage file is still there.
+      expect(chi.spec.configuration?.files?.['config.d/storage.xml']).toBeDefined();
+    });
+
+    it('XML-escapes a verbatim TTL expression', () => {
+      const file = systemLogsFileOf(
+        s3Chi({ systemLogs: { ttl: "event_date + INTERVAL 1 DAY DELETE WHERE level < 'Warning'" } })
+      );
+      expect(file).toContain("WHERE level &lt; 'Warning'");
+    });
+
+    it('rejects a storage policy name that cannot be quoted into an engine', () => {
+      expect(() => s3Chi({ systemLogs: { storagePolicy: "x' SETTINGS y = '1" } })).toThrow(
+        /systemLogs\.storagePolicy must be a storage policy name/
+      );
+      expect(() => s3Chi({ systemLogs: { storagePolicy: '' } })).toThrow(
+        /systemLogs\.storagePolicy must be a storage policy name/
+      );
     });
   });
 
@@ -141,7 +254,7 @@ describe('ClickHouse system log tables (#232)', () => {
       const chi = s3Chi({ storage: { ...IRSA_S3, policyName: 'telemetry_s3', size: '100Gi' } });
       const settings = settingsOf(chi);
       expect(settings[MERGE_TREE_STORAGE_POLICY_SETTING]).toBe('telemetry_s3');
-      expect(settings['query_log/storage_policy']).toBe(CLICKHOUSE_DEFAULT_STORAGE_POLICY);
+      expect(settings['metric_log/storage_policy']).toBe(CLICKHOUSE_DEFAULT_STORAGE_POLICY);
       // The rendered storage_configuration still declares that policy.
       expect(chi.spec.configuration?.files?.['config.d/storage.xml']).toContain('telemetry_s3');
     });
@@ -183,7 +296,10 @@ describe('ClickHouse system log tables (#232)', () => {
   describe('configurability', () => {
     it('honours a custom retention window', () => {
       const settings = settingsOf(s3Chi({ systemLogs: { retentionDays: 3 } }));
-      expect(settings['query_log/ttl']).toBe('event_date + INTERVAL 3 DAY DELETE');
+      expect(settings['metric_log/ttl']).toBe('event_date + INTERVAL 3 DAY DELETE');
+      expect(
+        engineOf(systemLogsFileOf(s3Chi({ systemLogs: { retentionDays: 3 } })), 'query_log')
+      ).toContain('TTL event_date + INTERVAL 3 DAY DELETE');
     });
 
     it('honours a verbatim TTL expression over retentionDays', () => {
@@ -197,12 +313,18 @@ describe('ClickHouse system log tables (#232)', () => {
       const settings = settingsOf(s3Chi({ systemLogs: { ttl: false } }));
       expect(Object.keys(settings).filter((key) => key.endsWith('/ttl'))).toEqual([]);
       // ...and the storage pin is untouched by that choice.
-      expect(settings['query_log/storage_policy']).toBe(CLICKHOUSE_DEFAULT_STORAGE_POLICY);
+      expect(settings['metric_log/storage_policy']).toBe(CLICKHOUSE_DEFAULT_STORAGE_POLICY);
     });
 
     it('pins to a named policy when one is given', () => {
       const settings = settingsOf(s3Chi({ systemLogs: { storagePolicy: 'local_ssd' } }));
-      expect(settings['trace_log/storage_policy']).toBe('local_ssd');
+      expect(settings['text_log/storage_policy']).toBe('local_ssd');
+      expect(
+        engineOf(
+          systemLogsFileOf(s3Chi({ systemLogs: { storagePolicy: 'local_ssd' } })),
+          'trace_log'
+        )
+      ).toContain("SETTINGS storage_policy = 'local_ssd'");
     });
 
     it('emits no pin at all for `storagePolicy: false`', () => {
@@ -212,6 +334,9 @@ describe('ClickHouse system log tables (#232)', () => {
           (table) => settings[`${table}/storage_policy`] !== undefined
         )
       ).toEqual([]);
+      expect(systemLogsFileOf(s3Chi({ systemLogs: { storagePolicy: false } }))).not.toContain(
+        'storage_policy'
+      );
       // Opting out restores exactly the pre-fix arrangement — the server-wide
       // default, reaching everything — which is what `false` promises.
       expect(settings[MERGE_TREE_STORAGE_POLICY_SETTING]).toBe('s3_main');
@@ -237,6 +362,7 @@ describe('ClickHouse system log tables (#232)', () => {
         's3_main'
       );
       expect(clickHouseSystemLogSettings(resolved)).toEqual({});
+      expect(clickHouseSystemLogConfigurationFiles(resolved)).toEqual({});
     });
 
     it('builds the default TTL expression from the retention window', () => {
@@ -251,7 +377,8 @@ describe('ClickHouse system log tables (#232)', () => {
    * `clickHouseInstallation` only tested whether the WHOLE object was a
    * reference. A nested one — the realistic mistake — went through, and
    * `storagePolicy` was the bad case: the raw marker object landed in the
-   * rendered `query_log/storage_policy` setting with no error at all.
+   * rendered `query_log/storage_policy` setting with no error at all (that
+   * key is no longer emitted — see #235 — but the contract is unchanged).
    */
   describe('nested schema references through clickHouseInstallation', () => {
     const schemaRef = (fieldPath: string) =>
@@ -336,7 +463,8 @@ describe('ClickHouse system log tables (#232)', () => {
         storage: IRSA_S3,
         systemLogs: { retentionDays: 7 },
       }).toYaml();
-      expect(yaml).toContain('query_log/ttl: event_date + INTERVAL 7 DAY DELETE');
+      expect(yaml).toContain('metric_log/ttl: event_date + INTERVAL 7 DAY DELETE');
+      expect(yaml).toContain('TTL event_date + INTERVAL 7 DAY DELETE');
     });
 
     it('rejects a schema reference in the build-time option', () => {

@@ -344,6 +344,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 0.37.0's system-log configuration stopped ClickHouse from starting under the Altinity
+  clickhouse-operator: the server exited 36 (`BAD_ARGUMENTS`) during config load (#235).
+  The operator's own `01-clickhouse-0{3,4,5}-*.xml` files give `query_log`, `part_log` and
+  `trace_log` a full `<engine>`, and ClickHouse rejects a log that has `<engine>` plus the
+  `<storage_policy>`/`<ttl>` that 0.37.0 merged in through `configuration.settings`. Those
+  three logs now get no `configuration.settings` keys. Instead, a `config.d/system-logs.xml`
+  file replaces each section wholesale (`replace="1"`), with the TTL and
+  `SETTINGS storage_policy` written inside the engine definition. `query_thread_log`, which
+  the operator switches off, is no longer given settings that switched it back on. A new
+  Docker-gated suite (`test/integration/clickhouse/system-logs-server-boot.test.ts`, run in
+  CI) boots a real server with the operator's default files and reproduces the 0.37.0
+  crash as its control. `systemLogs.storagePolicy` must now be a plain policy name, since it
+  is quoted into an engine definition.
+
 - `clickhouseCluster` put ClickHouse's OWN `system.*_log` tables on object storage, and the
   resulting startup cost grew with uptime until the server could no longer boot at all
   (#232). In S3 mode the composition sets the S3 policy as the SERVER-WIDE MergeTree default
