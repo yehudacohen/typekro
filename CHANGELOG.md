@@ -355,8 +355,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the operator switches off, is no longer given settings that switched it back on. A new
   Docker-gated suite (`test/integration/clickhouse/system-logs-server-boot.test.ts`, run in
   CI) boots a real server with the operator's default files and reproduces the 0.37.0
-  crash as its control. `systemLogs.storagePolicy` must now be a plain policy name, since it
-  is quoted into an engine definition.
+  crash as its control.
+
+  The retention of `query_log`, `part_log` and `trace_log` moves from the operator's 30 days
+  to 14, and ClickHouse renames each old table to `<name>_0` at the first restart. The
+  replacing file also overrides anything set for those three logs through a caller's own
+  settings or the operator's `configs.configdFiles`. It is verified against the operator
+  0.27.1 defaults.
+
+- `systemLogs.ttl: false` now has one meaning: TypeKro does not manage retention, and every
+  log keeps its upstream TTL (none for most, ClickHouse's own on the three it bounds, the
+  operator's 30 days on `query_log`/`part_log`/`trace_log`) in every storage mode. With the
+  per-log fix alone it would have made those three unbounded in S3 mode and left them at 30
+  days in PVC mode. The real-server suite covers S3, PVC and `{ storagePolicy: false }`.
+
+- `systemLogs.storagePolicy` must now be a plain policy name (`^[A-Za-z_][A-Za-z0-9_.-]*$`),
+  since it is quoted into an engine definition. `systemLogs.ttl` rejects `<`, `>` and `&`: the
+  operator writes setting values into the server's XML config unescaped, so 0.37.0 already
+  failed to start with them, only later and with a parse error.
+
+- `CLICKHOUSE_SYSTEM_LOG_TABLES` no longer lists `query_log`, `trace_log`, `part_log` or
+  `query_thread_log`; it now means "the logs pinned through `configuration.settings`". New
+  exports: `CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS`, `CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS`,
+  `CHI_SYSTEM_LOGS_CONFIG_FILE`, `OPERATOR_SYSTEM_LOG_TTL`, `operatorReplacedSystemLogEngine`
+  and `clickHouseSystemLogConfigurationFiles`.
 
 - `clickhouseCluster` put ClickHouse's OWN `system.*_log` tables on object storage, and the
   resulting startup cost grew with uptime until the server could no longer boot at all
@@ -387,8 +409,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disk: every one of them now gets `event_date + INTERVAL 14 DAY DELETE`, in PVC mode as well
   as S3. Fourteen days covers a full on-call rotation, and sits inside the range ClickHouse's
   own configuration already uses for the three tables it bothers to bound (3, 30 and 30 days).
-  `systemLogs: { retentionDays }` changes the window; `systemLogs: { ttl: false }` restores
-  the unbounded default.
+  `systemLogs: { retentionDays }` changes the window; `systemLogs: { ttl: false }` leaves
+  retention to the upstream defaults.
 
   NOTE FOR EXISTING INSTALLATIONS: ClickHouse compares the CREATE query it would write against
   the live table and, on a difference, RENAMES the old one to `system.<table>_0` before

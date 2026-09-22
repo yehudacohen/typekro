@@ -41,11 +41,16 @@ import {
   CHI_SYSTEM_LOGS_CONFIG_FILE,
   CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS,
   CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS,
+  CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
+  CLICKHOUSE_SYSTEM_LOG_TABLES,
 } from '../../../src/factories/clickhouse/utils/system-logs.js';
 
 setDefaultTimeout(240_000);
 
-const IMAGE = `clickhouse/clickhouse-server:${process.env.CLICKHOUSE_BOOT_TEST_VERSION ?? '25.7'}`;
+// Pinned to an exact build so the regression lane is reproducible; the
+// override exists to try the suite against newer servers.
+const DEFAULT_VERSION = '25.7.8.71';
+const IMAGE = `clickhouse/clickhouse-server:${process.env.CLICKHOUSE_BOOT_TEST_VERSION ?? DEFAULT_VERSION}`;
 const OPERATOR_CONFIG_D = join(import.meta.dir, 'fixtures', 'operator-0.27.1-config.d');
 
 function docker(args: string[]): { ok: boolean; stdout: string; stderr: string } {
@@ -250,13 +255,30 @@ describeOrSkip('ClickHouse system logs on a real server under the operator defau
     for (const table of ['query_log', 'part_log', 'trace_log', 'metric_log', 'text_log']) {
       expect(byName.get(table)).toEqual({ policy: 'default', hasTtl: '1' });
     }
-    // Everything except the logs deliberately left alone is pinned and trimmed.
+    // Every log TypeKro configures is pinned and trimmed. Scoped to the known
+    // lists rather than every `*_log`, so a server newer than 25.7 (see
+    // CLICKHOUSE_BOOT_TEST_VERSION) is not failed for logs it added later.
+    const configured = [
+      ...CLICKHOUSE_SYSTEM_LOG_TABLES,
+      ...CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
+    ];
     const unpinned = rows.filter(
       ([name, policy, hasTtl]) =>
-        !(CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS as readonly string[]).includes(name as string) &&
+        (configured as readonly string[]).includes(name as string) &&
         (policy !== 'default' || hasTtl !== '1')
     );
     expect(unpinned).toEqual([]);
+    // ...and on 25.7 that is every default-enabled log bar the engine-bound one.
+    if (IMAGE.endsWith(`:${DEFAULT_VERSION}`)) {
+      const leftover = rows
+        .map(([name]) => name as string)
+        .filter(
+          (name) =>
+            !(configured as readonly string[]).includes(name) &&
+            !(CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS as readonly string[]).includes(name)
+        );
+      expect(leftover).toEqual([]);
+    }
     // The operator switched query_thread_log off, and it stays off.
     for (const table of CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS) {
       expect(byName.has(table)).toBe(false);
@@ -293,4 +315,70 @@ describeOrSkip('ClickHouse system logs on a real server under the operator defau
       )
     ).toContain('TTL event_date + toIntervalDay(14)');
   });
+
+  /**
+   * `ttl: false` means "TypeKro does not manage retention": every log keeps
+   * whatever TTL ClickHouse or the operator already gives it. The three
+   * configurations below reach that through different code paths — the
+   * replacing file is written in the first (for the storage pin) and not in
+   * the other two — and must all land in the same place.
+   */
+  const ttlFalseCases: { label: string; config: Partial<InstallationConfig>; policy: string }[] = [
+    {
+      label: 's3-ttl-false',
+      config: { storage: { ...S3, size: '10Gi' }, systemLogs: { ttl: false } },
+      policy: 'default',
+    },
+    {
+      label: 'pvc-ttl-false',
+      config: { storage: { size: '10Gi' }, systemLogs: { ttl: false } },
+      policy: 'default',
+    },
+    {
+      label: 's3-both-false',
+      config: {
+        storage: { ...S3, size: '10Gi' },
+        systemLogs: { storagePolicy: false, ttl: false },
+      },
+      policy: 's3_main',
+    },
+  ];
+  for (const { label, config, policy } of ttlFalseCases) {
+    it(`ttl: false delegates retention to the upstream defaults (${label})`, async () => {
+      const chi = clickHouseInstallation({
+        name: 'boot',
+        namespace: 'test',
+        version: '25.7.8.71',
+        ...config,
+      } as InstallationConfig);
+      const dir = renderConfigD(chi);
+      dirs.push(dir);
+      const server = await boot(dir, label);
+      expect(server.logs).toBe('');
+      expect(server.started).toBe(true);
+
+      query(server, 'SYSTEM FLUSH LOGS');
+      const engines = new Map(
+        query(
+          server,
+          "SELECT name, storage_policy, engine_full FROM system.tables WHERE database = 'system' " +
+            "AND name IN ('query_log', 'part_log', 'trace_log', 'metric_log', 'processors_profile_log') FORMAT TSV"
+        )
+          .split('\n')
+          .map((line) => line.split('\t'))
+          .map(([name, storagePolicy, engine]) => [name, { storagePolicy, engine: engine ?? '' }])
+      );
+      // The operator's 30-day TTL on the three logs it defines...
+      for (const table of CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS) {
+        expect(engines.get(table)?.engine).toContain('TTL event_date + toIntervalDay(30)');
+        expect(engines.get(table)?.storagePolicy).toBe(policy);
+      }
+      // ...ClickHouse's own TTL where it ships one...
+      expect(engines.get('processors_profile_log')?.engine).toContain(
+        'TTL event_date + toIntervalDay(30)'
+      );
+      // ...and no TTL where ClickHouse ships none.
+      expect(engines.get('metric_log')?.engine).not.toContain('TTL');
+    });
+  }
 });

@@ -27,6 +27,7 @@ import {
   CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
   CLICKHOUSE_SYSTEM_LOG_TABLES,
   DEFAULT_SYSTEM_LOG_RETENTION_DAYS,
+  OPERATOR_SYSTEM_LOG_TTL,
   clickHouseSystemLogConfigurationFiles,
   clickHouseSystemLogSettings,
   defaultSystemLogTtl,
@@ -187,24 +188,37 @@ describe('ClickHouse system log tables (#232)', () => {
       );
     });
 
-    it('carries only the policy for `ttl: false`', () => {
+    it("keeps the operator's own TTL for `ttl: false`, as PVC mode does", () => {
+      // `ttl: false` means "no TTL of TypeKro's own", not "unbounded". In S3
+      // mode the file is still written for the policy, so without this the
+      // same option would mean 30 days in PVC mode and forever in S3 mode.
       expect(engineOf(systemLogsFileOf(s3Chi({ systemLogs: { ttl: false } })), 'part_log')).toBe(
-        "ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time SETTINGS storage_policy = 'default'"
+        'ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time ' +
+          `TTL ${OPERATOR_SYSTEM_LOG_TTL} SETTINGS storage_policy = 'default'`
       );
     });
 
-    it('emits no file when both halves are disabled, leaving the operator sections alone', () => {
+    it('emits no file when both halves are disabled: the operator sections, and their 30-day TTL, stand', () => {
+      // Same retention outcome as `ttl: false` alone, reached without the
+      // file — see the real-server suite, which checks all three paths.
       const chi = s3Chi({ systemLogs: { storagePolicy: false, ttl: false } });
       expect(systemLogsFileOf(chi)).toBeUndefined();
       // The storage file is still there.
       expect(chi.spec.configuration?.files?.['config.d/storage.xml']).toBeDefined();
     });
 
-    it('XML-escapes a verbatim TTL expression', () => {
-      const file = systemLogsFileOf(
-        s3Chi({ systemLogs: { ttl: "event_date + INTERVAL 1 DAY DELETE WHERE level < 'Warning'" } })
-      );
-      expect(file).toContain("WHERE level &lt; 'Warning'");
+    it('rejects XML-special characters in a verbatim TTL', () => {
+      // The operator writes setting values into chop-generated-settings.xml
+      // unescaped, so `<` there is a config parse failure at startup.
+      for (const ttl of [
+        "event_date + INTERVAL 1 DAY DELETE WHERE level < 'Warning'",
+        'event_date + INTERVAL 1 DAY DELETE WHERE a > 1',
+        'event_date + INTERVAL 1 DAY DELETE WHERE a = 1 && b = 2',
+      ]) {
+        expect(() => s3Chi({ systemLogs: { ttl } })).toThrow(
+          /systemLogs\.ttl must not contain '<', '>' or '&'/
+        );
+      }
     });
 
     it('rejects a storage policy name that cannot be quoted into an engine', () => {
@@ -309,7 +323,7 @@ describe('ClickHouse system log tables (#232)', () => {
       expect(settings['metric_log/ttl']).toBe('event_date + INTERVAL 2 WEEK DELETE');
     });
 
-    it('emits no TTL at all for `ttl: false`', () => {
+    it('emits no TTL settings for `ttl: false`', () => {
       const settings = settingsOf(s3Chi({ systemLogs: { ttl: false } }));
       expect(Object.keys(settings).filter((key) => key.endsWith('/ttl'))).toEqual([]);
       // ...and the storage pin is untouched by that choice.

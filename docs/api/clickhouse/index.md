@@ -430,7 +430,9 @@ On one that will not start, the signature is: exit 137 with a high restart count
 
 ### What the composition does about it
 
-**Pins the system logs to the local disk.** ClickHouse supports a per-log `<storage_policy>`, so `configuration.settings` carries `metric_log/storage_policy: default` and the same for most other default-enabled logs. The exceptions are `query_log`, `part_log` and `trace_log`: the clickhouse-operator replaces their sections with one that declares a full `<engine>`, and ClickHouse **refuses to start** if a log has both `<engine>` and `<storage_policy>`/`<ttl>` (#235). For these three the composition writes its own `config.d/system-logs.xml`, which replaces each section outright (`replace="1"`) and puts the policy and TTL inside the engine definition: `ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time TTL event_date + INTERVAL 14 DAY DELETE SETTINGS storage_policy = 'default'`. The server-wide `merge_tree/storage_policy` is untouched, so **where your data lands does not change** — only ClickHouse's own telemetry moves back to the local disk, which is where it was always supposed to be.
+**Pins the system logs to the local disk.** ClickHouse supports a per-log `<storage_policy>`, so `configuration.settings` carries `metric_log/storage_policy: default` and the same for most other default-enabled logs. The exceptions are `query_log`, `part_log` and `trace_log`: the clickhouse-operator replaces their sections with one that declares a full `<engine>`, and ClickHouse **refuses to start** if a log has both `<engine>` and `<storage_policy>`/`<ttl>` (#235). For these three the composition writes its own `config.d/system-logs.xml`, which replaces each section outright (`replace="1"`) and puts the policy and TTL inside the engine definition: `ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time TTL event_date + INTERVAL 14 DAY DELETE SETTINGS storage_policy = 'default'`. Because it replaces the whole section, it also overrides anything a caller sets for those three logs through their own `configuration.settings` or custom operator `configdFiles`. Their retention moves from the operator's 30 days to the composition's 14, and the changed definition is what makes ClickHouse rename the old table to `<name>_0` at the next restart (see below). This is verified against the default system-log configuration of the operator version TypeKro installs (0.27.1). If you override the operator's `configs.configdFiles`, check that what you set for these three logs is what you want replaced.
+
+`systemLogs.ttl: false` means TypeKro does not manage retention. Every log keeps its upstream TTL, in every storage mode: none for most logs, ClickHouse's own TTLs on `processors_profile_log`, `asynchronous_insert_log` and `blob_storage_log`, and the operator's 30 days on `query_log`, `part_log` and `trace_log`. When the composition still has to replace those three sections (for the storage pin), it writes the operator's 30-day TTL back into the engine. The server-wide `merge_tree/storage_policy` is untouched, so **where your data lands does not change** — only ClickHouse's own telemetry moves back to the local disk, which is where it was always supposed to be.
 
 **Gives them a retention TTL.** ClickHouse ships no TTL on most of these tables, so they grow without bound on *any* disk. Every one gets `event_date + INTERVAL 14 DAY DELETE` by default.
 
@@ -456,7 +458,7 @@ const clickhouse = makeClickHouseCluster({
   systemLogs: {
     retentionDays: 30,        // default: 14
     // storagePolicy: false,  // leave them on the server-wide default (the old behaviour)
-    // ttl: false,            // no retention at all (ClickHouse's unbounded default)
+    // ttl: false,            // leave retention to the upstream defaults (ClickHouse's and the operator's)
   },
   probes: {
     startup: { failureThreshold: 180 },  // partial overrides merge over the defaults

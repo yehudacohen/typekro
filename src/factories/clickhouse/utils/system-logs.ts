@@ -173,6 +173,14 @@ export const CHI_SYSTEM_LOGS_CONFIG_FILE = 'config.d/system-logs.xml';
 const OPERATOR_SYSTEM_LOG_FLUSH_INTERVAL_MS = 7500;
 
 /**
+ * The TTL the operator's own sections carry. Kept when the caller opts out of
+ * TypeKro's TTL (`ttl: false`), so that opting out means "leave the platform
+ * default" for these three logs as it does for every other one — rather than
+ * silently making them unbounded whenever the file is written for the policy.
+ */
+export const OPERATOR_SYSTEM_LOG_TTL = 'event_date + interval 30 day';
+
+/**
  * ClickHouse's built-in storage policy over the local `default` disk
  * (`/var/lib/clickhouse`). It is created by the server in code, not from XML,
  * so it always exists alongside any policy the rendered
@@ -203,8 +211,10 @@ export const CLICKHOUSE_DEFAULT_STORAGE_POLICY = 'default';
  *
  * Any composition that wants a different number says so
  * (`systemLogs: { retentionDays: 30 }`), and any composition that wants
- * ClickHouse's unbounded behaviour back says THAT
- * (`systemLogs: { ttl: false }`).
+ * retention left to the upstream defaults says THAT
+ * (`systemLogs: { ttl: false }`): no TTL for most logs, ClickHouse's own
+ * TTLs on the three it bounds, and the operator's 30 days on
+ * {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS}.
  */
 export const DEFAULT_SYSTEM_LOG_RETENTION_DAYS = 14;
 
@@ -248,7 +258,7 @@ export function resolveClickHouseSystemLogs(
   if (!Number.isInteger(retentionDays) || retentionDays <= 0) {
     throw new Error(
       `${factoryName}: systemLogs.retentionDays must be a positive integer number of days ` +
-        `(got ${String(retentionDays)}). Use \`systemLogs: { ttl: false }\` to emit no ` +
+        `(got ${String(retentionDays)}). Use \`systemLogs: { ttl: false }\` to leave retention to the upstream defaults and emit no ` +
         `retention TTL at all.`
     );
   }
@@ -272,6 +282,16 @@ export function resolveClickHouseSystemLogs(
     throw new Error(
       `${factoryName}: systemLogs.ttl must be a non-empty TTL expression, or \`false\` to ` +
         `emit no retention TTL.`
+    );
+  }
+  // The operator writes `configuration.settings` values into
+  // chop-generated-settings.xml VERBATIM, so an XML-special character in the
+  // TTL makes the server fail to parse its config at startup.
+  if (ttl !== undefined && /[<>&]/.test(ttl)) {
+    throw new Error(
+      `${factoryName}: systemLogs.ttl must not contain '<', '>' or '&' (got ` +
+        `${JSON.stringify(ttl)}): the clickhouse-operator writes it into the server's XML ` +
+        `config unescaped. Use the function forms instead: \`less(a, b)\`, \`greater(a, b)\`, \`and(a, b)\`.`
     );
   }
 
@@ -325,13 +345,15 @@ function escapeXmlText(value: string): string {
 /**
  * The engine definition for one of {@link CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS}:
  * the operator's own `MergeTree PARTITION BY event_date ORDER BY event_time`,
- * with the resolved TTL and storage policy written INSIDE it — the only place
- * ClickHouse accepts them once a section declares `<engine>`.
+ * with the TTL and storage policy written INSIDE it — the only place
+ * ClickHouse accepts them once a section declares `<engine>`. With
+ * `ttl: false` the operator's own 30-day TTL is kept
+ * ({@link OPERATOR_SYSTEM_LOG_TTL}).
  */
 export function operatorReplacedSystemLogEngine(resolved: ResolvedClickHouseSystemLogs): string {
   return [
     'ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time',
-    ...(resolved.ttl !== undefined ? [`TTL ${resolved.ttl}`] : []),
+    `TTL ${resolved.ttl ?? OPERATOR_SYSTEM_LOG_TTL}`,
     ...(resolved.storagePolicy !== undefined
       ? [`SETTINGS storage_policy = '${resolved.storagePolicy}'`]
       : []),

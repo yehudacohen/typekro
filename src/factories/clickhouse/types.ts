@@ -517,7 +517,12 @@ export const ClickHouseSystemLogOptionsSchema = type({
   'storagePolicy?': 'string | false',
   /**
    * Retention TTL applied to every system log table. Default:
-   * `event_date + INTERVAL 14 DAY DELETE`. `false` emits no TTL.
+   * `event_date + INTERVAL 14 DAY DELETE`. `false` means TypeKro does not
+   * manage retention: every log keeps its upstream TTL — none for most, the
+   * TTLs ClickHouse ships on `processors_profile_log`, `asynchronous_insert_log`
+   * and `blob_storage_log`, and the operator's 30 days on `query_log`,
+   * `part_log` and `trace_log` — in every storage mode. The characters `<`, `>` and `&` are rejected,
+   * because the operator writes setting values into XML unescaped.
    */
   'ttl?': 'string | false',
   /** Retention window for the DEFAULT TTL expression, in days (default: 14). */
