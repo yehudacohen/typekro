@@ -52,21 +52,9 @@ import type {
   ClickHouseS3StorageOptions,
   ClickHouseStorageTopology,
 } from '../types.js';
+import type { Loosen } from './loosen.js';
 import { assertClickHouseIdentifier } from './validation.js';
 import { xmlAttr, xmlText } from './xml.js';
-
-/**
- * Deeply loosen optional properties so a `Composable<T>` value — where TypeKro's
- * proxy mapping turns `x?: T` into `x: T | undefined` — assigns under
- * `exactOptionalPropertyTypes`.
- */
-type Loosen<T> = T extends (...args: never[]) => unknown
-  ? T
-  : T extends readonly unknown[]
-    ? T
-    : T extends object
-      ? { readonly [K in keyof T]?: Loosen<T[K]> | undefined }
-      : T;
 
 /**
  * Storage input accepted by {@link resolveClickHouseStorage}: either the full

@@ -27,6 +27,7 @@ import type {
   ClickHouseInstallationSpec,
   ClickHouseInstallationStatus,
 } from '../types.js';
+import { resolveClickHouseProbes } from '../utils/probes.js';
 import {
   clickHouseS3ConfigurationFiles,
   clickHouseS3ConfigurationSettings,
@@ -34,6 +35,10 @@ import {
   clickHouseS3ServiceAccountName,
   resolveClickHouseStorage,
 } from '../utils/s3-storage.js';
+import {
+  clickHouseSystemLogSettings,
+  resolveClickHouseSystemLogs,
+} from '../utils/system-logs.js';
 import {
   assertClickHouseClusterName,
   assertPositiveIntegerCount,
@@ -168,6 +173,11 @@ function assertConcreteTopology(config: Composable<ClickHouseInstallationConfig>
       if (isGraphRef(zone)) reject('zones[]');
     }
   }
+  // BUILD-TIME for the same reason `storage` is: both compile into ClickHouse
+  // server configuration TEXT / an enumerated pod template, where a reference
+  // could only ever serialize as a `__KUBERNETES_REF__` marker.
+  if (isGraphRef(config.systemLogs)) reject('systemLogs');
+  if (isGraphRef(config.probes)) reject('probes');
   if (isGraphRef(config.users)) reject('users');
   if (Array.isArray(config.users)) {
     config.users.forEach((user, index) => {
@@ -257,6 +267,13 @@ function compileInstallationSpec(
   const s3ServiceAccountName =
     storage.mode === 's3' ? clickHouseS3ServiceAccountName(storage, config.name) : undefined;
 
+  // Container probes. WHY THE FACTORY SETS THEM AT ALL: with the pod template
+  // silent, the operator installs a liveness probe that SIGKILLs at ~90s and
+  // NO startup probe, so a server whose load time has grown past that deadline
+  // is killed mid-boot forever. The operator only fills a probe the template
+  // left unset, so these survive reconcile. See utils/probes.ts and #230.
+  const probes = resolveClickHouseProbes('clickHouseInstallation', config.probes);
+
   // Shared ClickHouse server pod spec (per-zone templates add affinity).
   const podSpec: Record<string, unknown> = {
     ...(s3ServiceAccountName !== undefined && { serviceAccountName: s3ServiceAccountName }),
@@ -266,6 +283,7 @@ function compileInstallationSpec(
         image,
         ...(config.podResources && { resources: config.podResources }),
         ...(s3Env.length > 0 && { env: s3Env }),
+        ...probes,
       },
     ],
   };
@@ -286,6 +304,26 @@ function compileInstallationSpec(
       },
     },
   ];
+
+  // `configuration.settings` is assembled from two INDEPENDENT contributions,
+  // and the split is the whole point of the #232 fix:
+  //   - the S3 entry (`merge_tree/storage_policy`) is the SERVER-WIDE MergeTree
+  //     default, and stays exactly as it was — it is what lets tooling outside
+  //     TypeKro create its tables on object storage with no per-table DDL;
+  //   - the per-log entries (`query_log/storage_policy`, `query_log/ttl`, …)
+  //     pin ClickHouse's OWN telemetry tables back to the local disk and trim
+  //     them, without changing where USER data lands.
+  // The system-log TTL applies in PVC mode too: these tables have no TTL of
+  // their own and grow without bound on any disk.
+  const systemLogs = resolveClickHouseSystemLogs(
+    'clickHouseInstallation',
+    config.systemLogs,
+    storage.mode === 's3' ? storage.policyName : undefined
+  );
+  const configurationSettings: Record<string, unknown> = {
+    ...(storage.mode === 's3' ? clickHouseS3ConfigurationSettings(storage) : {}),
+    ...clickHouseSystemLogSettings(systemLogs),
+  };
 
   let layout: ClickHouseInstallationSpec['configuration'];
   let podTemplates: ChiPodTemplate[];
@@ -353,8 +391,16 @@ function compileInstallationSpec(
       // the MergeTree DEFAULT via `configuration.settings`, so tables created
       // by tooling outside TypeKro (HyperDX/OTel goose migrations, SigNoz's
       // migrator) go to object storage with no per-table DDL.
+      //
+      // That server-wide default is deliberate AND it is server-WIDE, so it
+      // also catches ClickHouse's OWN `system.*_log` tables — which nothing
+      // reads, which never stop writing, and whose object-store metadata is
+      // walked at every boot until the server can no longer start. The
+      // per-log settings below pin them back to the local `default` disk and
+      // give them a retention TTL, WITHOUT touching where user data lands.
+      // See utils/system-logs.ts and #232.
+      ...(Object.keys(configurationSettings).length > 0 && { settings: configurationSettings }),
       ...(storage.mode === 's3' && {
-        settings: clickHouseS3ConfigurationSettings(storage),
         files: clickHouseS3ConfigurationFiles(storage),
       }),
     },
