@@ -43,6 +43,7 @@ import {
   deleteTestResourceAndWait,
   isClusterAvailable,
   requireTestStorageClass,
+  runTestPodAndReadLogs,
   runWithExpectedTestNamespaces,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -144,6 +145,18 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   const chiUser = 'clickstack';
   const chiUserPassword = 'clickstack-e2e-password';
   const chiUserPasswordSha256 = 'd5df529a9fe8b29d50f71e3b049ef4ba83f1f9f7b469b9ea5c4dbbabaffc9472';
+
+  // The initial user (#227) and its externally-owned password Secret. The
+  // password has to satisfy HyperDX's OWN policy, because the CronJob posts it
+  // to `POST /register/password` and `registrationSchema` is what judges it:
+  // 12-72 characters with a lowercase letter, an uppercase letter, a digit and
+  // one of `!@#$%^&*(),.?":{}|<>;-+=`.
+  const initialUserEmail = 'clickstack-e2e@example.com';
+  const initialUserPassword = 'Clickstack1!e2e';
+  const initialUserSecretName = 'clickstack-e2e-initial-user';
+  const initialUserSecretKey = 'initial-user.password';
+  // The ingestion key the CronJob patches onto the Team registration created.
+  const stackApiKey = 'clickstack-e2e-api-key';
 
   beforeAll(async () => {
     try {
@@ -434,9 +447,36 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   it('deploys clickstack wired at the external ClickHouse and hydrates the status contract', async () => {
     expect(clickhouseHost).toBeDefined();
 
+    // The initial user's password Secret is externally owned, created HERE
+    // rather than by the composition — which is the whole point of
+    // `passwordSecretRef` in the inline credential mode, where the only route
+    // into the chart's own `clickstack-secret` would be build-time
+    // `values.hyperdx.secrets`, landing the password in the HelmRelease.
+    const { createBunCompatibleCoreV1Api } = await import('../../../src/core/kubernetes/index.js');
+    const coreApi = createBunCompatibleCoreV1Api(kubeConfig);
+    await coreApi.createNamespacedSecret({
+      namespace: stackNs,
+      body: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: initialUserSecretName, namespace: stackNs },
+        type: 'Opaque',
+        stringData: { [initialUserSecretKey]: initialUserPassword },
+      },
+    });
+
     const { makeClickstackBootstrap } = await import('../../../src/factories/clickstack/index.js');
     const clickstackBootstrap = makeClickstackBootstrap({
       mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
+      // #227: without this the CronJob creates the Team itself, which SPENDS
+      // HyperDX's single registration on nobody — `/register/password` answers
+      // 409 forever and the UI is unreachable. With it, the CronJob spends the
+      // registration through the app's own endpoint; the login test below is
+      // the live proof that a usable administrator came out of it.
+      initialUser: {
+        email: initialUserEmail,
+        passwordSecretRef: { name: initialUserSecretName, key: initialUserSecretKey },
+      },
     });
 
     clickstackFactory = clickstackBootstrap.factory('direct', {
@@ -454,7 +494,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       name: stackName,
       namespace: stackNs,
       clickhouse: { host: clickhouseHost!, username: chiUser, password: chiUserPassword },
-      apiKey: 'clickstack-e2e-api-key',
+      apiKey: stackApiKey,
     });
     clickstackDeployed = true;
 
@@ -489,6 +529,206 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     expect(instance.status.app.appPort).toBe(3000);
     expect(instance.status.app.apiPort).toBe(8000);
   }, 1200000);
+
+  /**
+   * THE END-TO-END PROOF OF #227 — logs in as the registered account.
+   *
+   * Everything else about this feature is TypeKro asserting its own constants,
+   * so an upstream change would not fail CI: the unit tests would keep agreeing
+   * with themselves while the real app rejected the request. This test is the
+   * one that cannot lie, because HyperDX's own `passport.authenticate('local')`
+   * is the thing being asked.
+   *
+   * `POST /login/password` answers 303 in BOTH directions (see
+   * `packages/api/src/middleware/auth.ts` at `@hyperdx/otel-collector@2.35.0`),
+   * so the discriminator is the `Location` header:
+   *   - success           -> `<base>/`
+   *   - user without team -> `<base>/login?err=unknown`  (redirectToDashboard)
+   *   - bad credentials   -> `<base>/login?err=authFail` (handleAuthError)
+   * A wrong password is checked too, so a blanket "everything redirects to /"
+   * regression cannot pass.
+   *
+   * The bootstrap CronJob runs every minute, so the account appears shortly
+   * after the stack is Ready — hence the retry loop rather than a single shot.
+   */
+  it('logs in at /login/password as the registered initial user (#227)', async () => {
+    expect(clickstackDeployed).toBe(true);
+
+    const apiBase = `http://${stackName}.${stackNs}.svc.cluster.local:8000`;
+    const loginBody = (password: string) =>
+      JSON.stringify({ email: initialUserEmail, password });
+
+    const logs = await runTestPodAndReadLogs(
+      {
+        namespace: stackNs,
+        name: `initial-user-login-probe-${crypto.randomUUID().slice(0, 6)}`,
+        image: 'curlimages/curl:8.11.1',
+        command: [
+          'sh',
+          '-c',
+          [
+            'set -eu',
+            // Poll: registration lands on the first CronJob run after the
+            // stack is Ready, and the API may still be warming up before that.
+            'i=0',
+            'while [ "$i" -lt 60 ]; do',
+            `  LOCATION="$(curl -sS -o /dev/null -w '%{redirect_url}' -X POST "${apiBase}/login/password" ` +
+              `-H 'Content-Type: application/json' --data '${loginBody(initialUserPassword)}' || true)"`,
+            // A successful login redirects to the app root. A user with no team
+            // would redirect to `/login?err=unknown` instead, so this also
+            // proves the account carries the Team registration created for it.
+            '  case "$LOCATION" in',
+            '    *"err="*) : ;;',
+            '    */) echo "REGISTERED_LOGIN_OK $LOCATION"; break ;;',
+            '    *) : ;;',
+            '  esac',
+            '  i=$((i + 1)); sleep 5',
+            'done',
+            'if [ "$i" -ge 60 ]; then echo "REGISTERED_LOGIN_TIMEOUT $LOCATION"; exit 1; fi',
+            // …and the negative control: the wrong password must NOT get in.
+            `WRONG="$(curl -sS -o /dev/null -w '%{redirect_url}' -X POST "${apiBase}/login/password" ` +
+              `-H 'Content-Type: application/json' --data '${loginBody('Wrong1!password')}' || true)"`,
+            'echo "WRONG_PASSWORD_LOCATION $WRONG"',
+          ].join('\n'),
+        ],
+      },
+      kubeConfig
+    );
+
+    expect(logs).toContain('REGISTERED_LOGIN_OK');
+    expect(logs).not.toContain('REGISTERED_LOGIN_TIMEOUT');
+    // `handleAuthError` sends `?err=authFail` for a rejected credential.
+    expect(logs).toMatch(/WRONG_PASSWORD_LOCATION .*err=authFail/);
+  }, 900000);
+
+  /**
+   * THE REASON TO REGISTER RATHER THAN WRITE THE DOCUMENT: the app provisions
+   * the Team's connection and sources, and a login with neither is a login into
+   * an empty product.
+   *
+   * `/register/password` runs `setupTeamDefaults`, which turns the chart's
+   * `DEFAULT_CONNECTIONS` / `DEFAULT_SOURCES` into real `connections` and
+   * `sources` documents and links each source to the connection by ObjectId,
+   * matched from the connection NAME in the source's `connection` field. That
+   * is exactly what a hand-written user document did NOT get.
+   *
+   * WHY THIS ASSERTION IS NOT OPTIONAL. `setupTeamDefaults` SILENTLY SKIPS a
+   * malformed source config — it logs `Skipping invalid source config` at warn
+   * level and registration still answers 200. So a values-mapper regression in
+   * `defaultSources` produces a green CronJob, a successful login, and a UI
+   * with nothing in it. Only counting the documents catches that.
+   */
+  it('provisions the team connection and sources through setupTeamDefaults (#227)', async () => {
+    expect(clickstackDeployed).toBe(true);
+
+    const mongoUri = `mongodb://${stackName}-mongodb.${stackNs}.svc.cluster.local:27017/hyperdx`;
+    const logs = await runTestPodAndReadLogs(
+      {
+        namespace: stackNs,
+        name: `initial-user-defaults-probe-${crypto.randomUUID().slice(0, 6)}`,
+        image: 'mongo:7',
+        command: [
+          'mongosh',
+          '--quiet',
+          mongoUri,
+          '--eval',
+          [
+            'const database = db.getSiblingDB("hyperdx");',
+            'print("TEAMS " + database.teams.countDocuments({}));',
+            'print("USERS " + database.users.countDocuments({}));',
+            'print("CONNECTIONS " + database.connections.countDocuments({}));',
+            'print("SOURCES " + database.sources.countDocuments({}));',
+            // Every source must point at a connection that actually exists —
+            // the ObjectId linkage setupTeamDefaults resolves from the
+            // connection NAME in the chart's defaultSources fragment.
+            'const connectionIds = database.connections.find({}, { _id: 1 }).toArray().map((c) => String(c._id));',
+            'const sources = database.sources.find({}, { name: 1, connection: 1 }).toArray();',
+            'print("SOURCES_LINKED " + sources.every((s) => connectionIds.indexOf(String(s.connection)) !== -1));',
+            'print("SOURCE_NAMES " + sources.map((s) => s.name).join(","));',
+          ].join('\n'),
+        ],
+      },
+      kubeConfig
+    );
+
+    expect(logs).toContain('TEAMS 1');
+    expect(logs).toContain('USERS 1');
+    // At least one connection, and at least the log and trace sources.
+    expect(logs).toMatch(/CONNECTIONS ([1-9]\d*)/);
+    expect(logs).toMatch(/SOURCES ([1-9]\d*)/);
+    expect(logs).toContain('SOURCES_LINKED true');
+    expect(logs).toMatch(/SOURCE_NAMES .*Logs/);
+    expect(logs).toMatch(/SOURCE_NAMES .*Traces/);
+  }, 900000);
+
+  /**
+   * Bootstrap-once, LIVE: the marker document is what makes the claim true.
+   *
+   * `countDocuments({}) === 0` would answer "does an account exist right now?",
+   * so deleting one on purpose meant the next minute's run recreated it. The
+   * marker in `typekro_bootstrap` is independent of account existence, so the
+   * deletion sticks — and the ingestion key keeps reconciling meanwhile.
+   */
+  it('records the bootstrap marker and does not resurrect a deleted account (#227)', async () => {
+    expect(clickstackDeployed).toBe(true);
+
+    // `<release>-mongodb`, the internal-Mongo Service this variant deploys.
+    const mongoUri = `mongodb://${stackName}-mongodb.${stackNs}.svc.cluster.local:27017/hyperdx`;
+    const evaluate = (script: string) =>
+      runTestPodAndReadLogs(
+        {
+          namespace: stackNs,
+          name: `initial-user-marker-probe-${crypto.randomUUID().slice(0, 6)}`,
+          image: 'mongo:7',
+          command: ['mongosh', '--quiet', mongoUri, '--eval', script],
+        },
+        kubeConfig
+      );
+
+    const bootstrapped = await evaluate(
+      [
+        'const database = db.getSiblingDB("hyperdx");',
+        'const marker = database.typekro_bootstrap.findOne({ _id: "initial-user" });',
+        'print("MARKER_COMPLETED " + (marker !== null && marker.completed === true));',
+        'print("MARKER_HAS_TIMESTAMP " + (marker !== null && marker.completedAt instanceof Date));',
+        'print("USERS " + database.users.countDocuments({}));',
+      ].join('\n')
+    );
+    expect(bootstrapped).toContain('MARKER_COMPLETED true');
+    expect(bootstrapped).toContain('MARKER_HAS_TIMESTAMP true');
+    expect(bootstrapped).toContain('USERS 1');
+
+    // Delete the account ON PURPOSE. Under a user-existence guard this came
+    // straight back on the next run; the durable marker is what makes the
+    // deletion stick.
+    await evaluate(
+      [
+        'const database = db.getSiblingDB("hyperdx");',
+        'database.users.deleteMany({});',
+        'print("DELETED " + database.users.countDocuments({}));',
+      ].join('\n')
+    );
+
+    // The CronJob's schedule is `* * * * *`, so wait out more than one run.
+    await new Promise((resolve) => setTimeout(resolve, 150_000));
+
+    const afterDeletion = await evaluate(
+      [
+        'const database = db.getSiblingDB("hyperdx");',
+        'print("USERS " + database.users.countDocuments({}));',
+        // The Team is the one REGISTRATION created, so it carries no TypeKro
+        // hookId — what proves the CronJob is still converging is that the
+        // ingestion key TypeKro patched onto it is still there.
+        'print("TEAMS " + database.teams.countDocuments({}));',
+        `print("TEAM_API_KEY_PATCHED " + (database.teams.findOne({}).apiKey === ${JSON.stringify(stackApiKey)}));`,
+      ].join('\n')
+    );
+    expect(afterDeletion).toContain('USERS 0');
+    expect(afterDeletion).toContain('TEAMS 1');
+    // The one write TypeKro still makes into HyperDX's schema is still there,
+    // so "the account stays deleted" is not "the CronJob stopped working".
+    expect(afterDeletion).toContain('TEAM_API_KEY_PATCHED true');
+  }, 900000);
 
   it('deploys clickstack via factory("kro") — RGD Active, HelmRelease reconciles, LIVE CR status carries the endpoint contract', async () => {
     // KRO-mode counterpart of the direct-mode test above, against the SAME

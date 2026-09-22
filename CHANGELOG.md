@@ -322,6 +322,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clickstackBootstrap` produced a stack whose UI nobody could ever log in to, by breaking an
+  upstream invariant. HyperDX bootstraps on a first-run-claims-the-instance pattern: the first
+  visitor to `POST /register/password` creates the account AND its Team AND (through
+  `setupTeamDefaults`) that Team's ClickHouse connection and its log/trace/metric/session sources,
+  after which registration closes forever with `409 teamAlreadyExists` and the invite flow needs an
+  authenticated user to start from. Exactly one registration exists per instance, and whoever spends
+  it becomes the administrator. The chart alone therefore ships a reachable UI — but TypeKro's
+  Team-bootstrap CronJob created the Team directly, to pre-seed the ingestion API key, which SPENDS
+  that single registration without producing an account. Every deployment converged to one Team, zero
+  users, no connections, no sources, and a login page nobody could satisfy (#227). Fixed with an
+  optional build-time `initialUser` on `makeClickstackBootstrap` —
+  `{ email, passwordSecretKey? | passwordSecretRef?, allowUnvalidatedChartVersion? }` — that makes
+  the same CronJob spend the registration the way upstream intends: it POSTs the configured address
+  and the password from the Secret to `/register/password`, so the account, the Team, the connection
+  and the sources all come out of HyperDX's own code, and then patches only `teams.apiKey` so the
+  Team carries the pre-shared ingestion key the collector authenticates with. A `409
+  teamAlreadyExists` is treated as success — a human claimed the instance first, which is the
+  objective — and an unreachable API is reported as the transient it is, since the CronJob retries
+  every minute. HyperDX's `registrationSchema` is the authority on the address and the password:
+  TypeKro checks only that they are present and relays the endpoint's own 400 body, which names the
+  offending field, and a refused registration is not a consumed one. The password is never a prop:
+  only where to find it is. In the `secretValues` credential mode, put it under
+  `hyperdx.secrets.HYPERDX_INITIAL_USER_PASSWORD` in the `values.yaml` fragment of the external
+  credentials Secret Flux already consumes through `valuesFrom`, and the CHART renders it into
+  `clickstack-secret` — the credential never enters the HelmRelease or the RGD, and nothing
+  hand-maintains that Helm-owned Secret. In the inline mode, where the only route into it would put
+  the password in `spec.values`, `passwordSecretRef: { name, key }` points the CronJob at a Secret
+  the operator owns instead; the two routes are mutually exclusive with a build-time error. The
+  reference is `optional: true` deliberately: with `optional: false` an absent key stops kubelet
+  starting the container, so the ingestion key is never reconciled either, and rotating the bootstrap
+  password away after a successful registration would break every future run — presence is asserted
+  inside the branch that registers instead (`HYPERDX_API_KEY` stays `optional: false`; it is required
+  on every run). Bootstrap-once is carried by a durable marker of TypeKro's own —
+  `typekro_bootstrap` / `_id: 'initial-user'`, written on every exit from the bootstrap branch —
+  rather than by a `countDocuments({}) === 0` check, which answers "does something exist right now?"
+  and so recreated an account an operator had deliberately deleted; a TypeKro-owned collection keeps
+  framework state out of HyperDX's upstream-owned schema. WITHOUT `initialUser` the previous
+  behaviour is unchanged and remains the default so existing deployments do not break, but it is
+  DEGRADED and now documented as such: it spends the instance's one registration on a Team with
+  nobody in it, leaving the UI permanently unreachable. Finally, because the one surviving write into
+  an upstream-owned schema (`teams.apiKey`) would fail silently if the field moved — a green CronJob
+  and silently unauthenticated ingestion — `initialUser` is held to an EXACT chart-version allowlist
+  (3.2.0, appVersion 2.35.0) rather than a series or a prefix, since `3.2.0 || 4.0.0` and `>=3.2.0`
+  are legal Helm ranges a prefix check would admit. It is enforced in both modes: a concrete version
+  outside the list is refused at render time, and the generated CRD narrows `spec.version` with a CEL
+  validation so a KRO consumer setting an unaudited version on the custom resource at apply time is
+  refused by admission. `allowUnvalidatedChartVersion` is the opt-out.
+
 - `createKubernetesClientProvider(config?)` initialized the provider only when a config
   object was passed, although its signature and documentation promised "create and
   initialize" for an omitted config too. Any caller that omitted it got back a fresh,

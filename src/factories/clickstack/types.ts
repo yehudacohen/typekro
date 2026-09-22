@@ -48,6 +48,8 @@ import {
   DNS_SUBDOMAIN_MAX_LENGTH,
   deriveNameLengthLimit,
   HELM_RELEASE_NAME_MAX_LENGTH,
+  validateDnsSubdomainName,
+  validateSecretDataKey,
 } from '../../core/kubernetes/naming.js';
 import type { TypeKroChartValues, TypeKroValue } from '../../core/types/common.js';
 import type { HelmReleasePostRenderer, HelmReleaseValuesFromSource } from '../helm/types.js';
@@ -372,6 +374,335 @@ export interface ClickStackStorageOptions {
   persistentQueue?: ClickStackPersistentQueueOptions;
 }
 
+/**
+ * Default Secret key the initial user's password is read from.
+ *
+ * It lives in the SAME Secret the Team-bootstrap CronJob already reads
+ * `HYPERDX_API_KEY` from (`clickstack-secret`, the chart-owned Secret), so a
+ * password never travels through a build option, a runtime spec field, a
+ * HelmRelease `spec.values` tree or the CronJob manifest.
+ */
+export const DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY = 'HYPERDX_INITIAL_USER_PASSWORD';
+
+/**
+ * Collection TypeKro records its OWN bootstrap state in.
+ *
+ * WHY A TYPEKRO-OWNED COLLECTION. The one-shot state has to be durable and
+ * INDEPENDENT of whether the seeded account still exists — "have I ever
+ * seeded?" is not the same question as "does a user exist right now?", and
+ * answering the first with the second resurrects an account an operator
+ * deliberately deleted on the very next minute's run. It deliberately does NOT
+ * live as an extra field on HyperDX's own `teams` or `users` document: that
+ * schema is upstream-owned, and framework bookkeeping written into it would be
+ * invisible to the app's migrations and liable to be dropped or to collide
+ * with a future upstream field.
+ */
+export const CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION = 'typekro_bootstrap';
+
+/** `_id` of the marker document recording that initial-user bootstrap is done. */
+export const CLICKSTACK_INITIAL_USER_MARKER_ID = 'initial-user';
+
+/**
+ * Environment variable the CronJob carries the HyperDX API's base URL in.
+ *
+ * The bootstrap script is BUILD-TIME text, but the release name and namespace
+ * it would need to address the API are RUNTIME values (schema refs in KRO
+ * mode), so the URL cannot be baked into the script. It is computed in the
+ * composition from the release naming and the HyperDX API port, and
+ * handed to the container as an environment value — the same shape the Mongo
+ * URI already uses for the same reason.
+ */
+export const CLICKSTACK_INITIAL_USER_API_BASE_URL_ENV = 'HYPERDX_API_BASE_URL';
+
+/**
+ * A POSIX environment variable name — what the CronJob container can carry as
+ * an `env[].name` and the bootstrap script can read back from `process.env`.
+ *
+ * Strictly NARROWER than a Kubernetes Secret data key in character set, so a
+ * key that satisfies this satisfies the API server's character rule too. The
+ * LENGTH bound is the part this pattern does not carry, which is why
+ * `passwordSecretKey` is checked against {@link validateSecretDataKey} as well.
+ */
+const CLICKSTACK_ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * BUILD-TIME description of the first HyperDX account, registered by the same
+ * CronJob that reconciles the ingestion key.
+ *
+ * WHY THIS EXISTS. HyperDX bootstraps on a FIRST-RUN-CLAIMS-THE-INSTANCE
+ * pattern: the first visitor to `POST /register/password` creates the account
+ * AND the Team, `setupTeamDefaults` provisions that Team's connections and
+ * sources, and registration then closes behind them forever (409
+ * `teamAlreadyExists`). Exactly one registration exists per instance, and
+ * whoever spends it becomes the administrator.
+ *
+ * TypeKro's Team-bootstrap CronJob creates the Team directly, to pre-seed the
+ * ingestion API key. That SPENDS the instance's one registration without
+ * producing an account — the stack converges to one Team, zero users, and a
+ * login page nobody can satisfy (#227). Configuring `initialUser` makes the
+ * CronJob spend the registration the way upstream intends: through the app's
+ * own endpoint, which produces the account, the Team, the connection and the
+ * sources in one call. TypeKro then patches only `teams.apiKey`.
+ *
+ * WHY build-time: the address is rendered INTO the mongosh script the CronJob
+ * runs, which decides what static text the CronJob carries — the same class as
+ * the retention DDL. Only the PASSWORD is runtime, and it is not carried here
+ * at all — see {@link ClickStackInitialUserOptions.passwordSecretKey}.
+ *
+ * @see https://github.com/yehudacohen/typekro/issues/227
+ */
+export interface ClickStackInitialUserOptions {
+  /**
+   * Address of the first account, posted verbatim to `/register/password`.
+   *
+   * TypeKro checks only that it is a non-empty string. HyperDX's
+   * `registrationSchema` is the AUTHORITY on what an address may be, and it
+   * rejects a bad one with a 400 whose body names the field — a second,
+   * divergent rule here could only reject addresses the app would have taken.
+   * A rejected registration is not a consumed registration, so a typo costs a
+   * failed CronJob run and nothing else.
+   */
+  email: string;
+  /**
+   * Key inside the CHART-OWNED `clickstack-secret` Secret holding the initial
+   * password (default: {@link DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY}).
+   * The key also names the container environment variable the script reads the
+   * value back from.
+   *
+   * USE THIS with the `secretValues` credential mode, where the chart renders
+   * `clickstack-secret` from a `hyperdx.secrets` fragment supplied by an
+   * external Secret through Flux `valuesFrom` — the credential then never
+   * enters the HelmRelease or the RGD. Mutually exclusive with
+   * {@link ClickStackInitialUserOptions.passwordSecretRef}.
+   *
+   * THE PASSWORD ITSELF IS NEVER A PROP. Only the key name is, so nothing
+   * about the credential is representable in a build option, a CR spec or the
+   * rendered CronJob.
+   */
+  passwordSecretKey?: string;
+  /**
+   * An EXTERNALLY-OWNED Secret to read the password from instead of the
+   * chart's `clickstack-secret`.
+   *
+   * USE THIS with the inline credential mode. There, the only route into
+   * `clickstack-secret` is build-time `values.hyperdx.secrets`, which lands
+   * the password in the HelmRelease `spec.values` tree in etcd — undoing the
+   * entire point of keeping it out of a prop. Referencing a Secret you create
+   * and rotate yourself sidesteps how the chart materialises its own Secret
+   * altogether. The Secret must live in the ClickStack workload Namespace,
+   * because a `secretKeyRef` is namespace-local.
+   *
+   * Mutually exclusive with
+   * {@link ClickStackInitialUserOptions.passwordSecretKey}. The container
+   * environment variable is always
+   * {@link DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY}, since a Secret key
+   * (`[-._a-zA-Z0-9]+`) need not be a legal environment variable name.
+   */
+  passwordSecretRef?: {
+    /** Secret name, an RFC 1123 DNS subdomain. */
+    name: string;
+    /** Key inside that Secret, `[-._a-zA-Z0-9]+`. */
+    key: string;
+  };
+  /**
+   * Opt out of the chart-version allowlist.
+   *
+   * See {@link CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS} for what the
+   * allowlist actually guards and why it is exact. Set this when you have
+   * audited a chart version TypeKro has not.
+   */
+  allowUnvalidatedChartVersion?: boolean;
+}
+
+/** {@link ClickStackInitialUserOptions} with its defaults applied. */
+export interface ResolvedClickStackInitialUser {
+  /**
+   * Address, trimmed and otherwise verbatim. NOT lowercased: the HyperDX user
+   * model registers passport-local-mongoose with `usernameLowerCase`, so the
+   * app normalises it on the way in and TypeKro second-guessing that would be
+   * one more private-behaviour assumption for no gain.
+   */
+  email: string;
+  /** Secret the password is read from — the chart's, or an external one. */
+  passwordSecretName: string;
+  /** Key inside {@link ResolvedClickStackInitialUser.passwordSecretName}. */
+  passwordSecretKey: string;
+  /** POSIX env-var name the bootstrap script reads the password back from. */
+  passwordEnvVarName: string;
+  /** Whether the caller opted out of the chart-version allowlist. */
+  allowUnvalidatedChartVersion: boolean;
+}
+
+/**
+ * Validate and normalize {@link ClickStackInitialUserOptions}.
+ *
+ * @param context - Caller name, for the error message
+ * @param chartSecretName - Name of the chart-owned Secret (`clickstack-secret`)
+ * @param options - The build-time option, or `undefined` when unconfigured
+ * @returns The resolved option, or `undefined` when unconfigured
+ * @throws Error when the address or the Secret reference is unusable
+ */
+export function resolveClickStackInitialUser(
+  context: string,
+  chartSecretName: string,
+  options?: ClickStackInitialUserOptions
+): ResolvedClickStackInitialUser | undefined {
+  if (options === undefined) return undefined;
+
+  // Presence only. `/register/password` owns address validity — see
+  // ClickStackInitialUserOptions.email.
+  const email = typeof options.email === 'string' ? options.email.trim() : '';
+  if (email.length === 0) {
+    throw new Error(
+      `${context}: initialUser.email is required and must be a non-empty address — it is what ` +
+        'the bootstrap CronJob posts to HyperDX `/register/password` to claim the instance.'
+    );
+  }
+
+  // The two password routes name DIFFERENT Secrets with different owners, so
+  // accepting both would leave which one wins to declaration order.
+  if (options.passwordSecretKey !== undefined && options.passwordSecretRef !== undefined) {
+    throw new Error(
+      `${context}: initialUser.passwordSecretKey and initialUser.passwordSecretRef are mutually ` +
+        `exclusive. Use passwordSecretKey to read a key from the chart-owned ${chartSecretName} ` +
+        'Secret (the default — populate it through the secretValues credential mode, whose ' +
+        '`hyperdx.secrets` fragment the chart renders into that Secret), or passwordSecretRef to ' +
+        'read from a Secret you create and own yourself.'
+    );
+  }
+
+  const allowUnvalidatedChartVersion = options.allowUnvalidatedChartVersion === true;
+
+  if (options.passwordSecretRef !== undefined) {
+    const { name, key } = options.passwordSecretRef;
+    // The API server's real rules, from the one shared validator, rather than
+    // a local approximation that would accept a 300-character key or `..`.
+    const nameProblem = validateDnsSubdomainName(name);
+    if (nameProblem !== undefined) {
+      throw new Error(
+        `${context}: initialUser.passwordSecretRef.name ${JSON.stringify(name)} is not a usable ` +
+          `Secret name — it ${nameProblem}.`
+      );
+    }
+    const keyProblem = validateSecretDataKey(key);
+    if (keyProblem !== undefined) {
+      throw new Error(
+        `${context}: initialUser.passwordSecretRef.key ${JSON.stringify(key)} is not a usable ` +
+          `Secret data key — it ${keyProblem}.`
+      );
+    }
+    return {
+      email,
+      passwordSecretName: name,
+      passwordSecretKey: key,
+      // A Secret key may legally contain `-` and `.`, which a POSIX env-var
+      // name may not, so the env var is fixed rather than derived from it.
+      passwordEnvVarName: DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY,
+      allowUnvalidatedChartVersion,
+    };
+  }
+
+  const passwordSecretKey =
+    options.passwordSecretKey ?? DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY;
+  // This key has to satisfy BOTH rules, because it names the Secret entry and
+  // the container environment variable. The env-var pattern is the stricter of
+  // the two on characters, so the Secret rule contributes only its length
+  // bound here — which is exactly the part a POSIX pattern cannot express.
+  if (!CLICKSTACK_ENV_VAR_NAME_PATTERN.test(passwordSecretKey)) {
+    throw new Error(
+      `${context}: initialUser.passwordSecretKey ${JSON.stringify(passwordSecretKey)} is not a ` +
+        `POSIX environment variable name — expected ${CLICKSTACK_ENV_VAR_NAME_PATTERN.source}. ` +
+        'The key names both the Secret entry and the CronJob container environment variable ' +
+        'the bootstrap script reads it back from. Use initialUser.passwordSecretRef when the key ' +
+        'in your own Secret cannot be one.'
+    );
+  }
+  const passwordKeyProblem = validateSecretDataKey(passwordSecretKey);
+  if (passwordKeyProblem !== undefined) {
+    throw new Error(
+      `${context}: initialUser.passwordSecretKey ${JSON.stringify(passwordSecretKey)} is not a ` +
+        `usable Secret data key — it ${passwordKeyProblem}.`
+    );
+  }
+
+  return {
+    email,
+    passwordSecretName: chartSecretName,
+    passwordSecretKey,
+    passwordEnvVarName: passwordSecretKey,
+    allowUnvalidatedChartVersion,
+  };
+}
+
+/**
+ * The EXACT chart versions `initialUser` is allowed on.
+ *
+ * WHAT IS ACTUALLY COUPLED, AND WHY THE GUARD SURVIVED THE REWRITE. Registering
+ * through `POST /register/password` moved almost all of this off TypeKro: the
+ * account document, its hashing parameters and `setupTeamDefaults`' connections
+ * and sources are all produced by the app's own code. What remains is a single
+ * write into an upstream-owned schema — `teams.apiKey`, patched so the
+ * collector's pre-shared ingestion key matches the Team the app just created —
+ * plus the registration contract itself (the route, the `{email, password,
+ * confirmPassword}` body, and 409 `teamAlreadyExists` meaning "already
+ * claimed"). The HTTP half fails LOUDLY if it drifts: a moved route 404s and
+ * the CronJob goes red. The `teams.apiKey` half does not — a renamed field
+ * would leave the Job green and ingestion silently unauthenticated — and it is
+ * the reason a version guard is still worth its cost.
+ *
+ * WHY AN EXACT LIST RATHER THAN A SERIES. A prefix or `startsWith` test over a
+ * version STRING is not a version test: `'3.2.0 || 4.0.0'` and `'>=3.2.0'` are
+ * both legal Helm version RANGES that a prefix check waves through, and either
+ * resolves to a chart nobody audited. Set membership cannot be fooled that way,
+ * because a range expression is never equal to a version. Patch releases are
+ * NOT auto-accepted either: nothing about a `z`-bump promises the app's data
+ * contract is unchanged, the audit is minutes of work, and adding a string to
+ * this array is the cheapest possible way to record that somebody did it.
+ *
+ * WHERE IT IS ENFORCED. Both modes, because the maintainer's point stands that
+ * a build-time throw alone is not a guard when `version` is a RUNTIME spec
+ * field. Direct mode and any concrete build-time version are refused by
+ * {@link isClickStackInitialUserValidatedChartVersion} at render time; KRO mode
+ * additionally narrows the generated CRD's `spec.version` with the CEL rule
+ * from {@link clickStackInitialUserVersionValidationRule}, so a consumer who
+ * sets an unaudited version on the custom resource at apply time is rejected by
+ * ADMISSION, where there is no build to fail.
+ */
+export const CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS = ['3.2.0'] as const;
+
+/** HyperDX appVersion the registration contract above was verified against. */
+export const CLICKSTACK_INITIAL_USER_VALIDATED_APP_VERSION = '2.35.0';
+
+/**
+ * Whether a chart version is on the exact allowlist.
+ *
+ * @param version - Chart version string
+ * @returns `true` when the version is one TypeKro has audited
+ */
+export function isClickStackInitialUserValidatedChartVersion(version: string): boolean {
+  return (CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS as readonly string[]).includes(
+    version.trim()
+  );
+}
+
+/**
+ * The CEL rule that narrows `spec.version` on the generated CRD when
+ * `initialUser` is configured.
+ *
+ * This is the KRO-mode half of the allowlist: the rule becomes an
+ * `x-kubernetes-validations` entry on the field, so the API server refuses a CR
+ * carrying an unaudited version instead of admitting it and leaving the
+ * CronJob to patch `teams.apiKey` on a schema nobody has read.
+ *
+ * @returns A CEL expression over `self`, the submitted `spec.version`
+ */
+export function clickStackInitialUserVersionValidationRule(): string {
+  const allowed = CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS.map((version) =>
+    JSON.stringify(version)
+  ).join(', ');
+  return `self in [${allowed}]`;
+}
+
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
@@ -408,6 +739,14 @@ interface ClickStackBuildOptionsBase {
    * Omit for the PVC default — existing behaviour is unchanged.
    */
   storage?: ClickStackStorageOptions;
+  /**
+   * The first HyperDX account, seeded by the Team-bootstrap CronJob.
+   *
+   * Omit for the previous behaviour, which leaves the UI unreachable once the
+   * CronJob has created the Team (`/register/password` answers 409
+   * `teamAlreadyExists` from then on) — see {@link ClickStackInitialUserOptions}.
+   */
+  initialUser?: ClickStackInitialUserOptions;
 }
 
 /** Build-time options for inline credentials with internal Mongo. */
