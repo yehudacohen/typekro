@@ -352,8 +352,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system-log config changed, the startup probe was added, and a server that already needed more
   than ~90s to boot was killed by the old liveness probe on every attempt. ClickHouse stayed down
   until the operator's 5-minute host wait ran out. The `clickhouse` container now carries
-  `TYPEKRO_POD_TEMPLATE_HASH`, a digest of the pod template as TypeKro builds it, so any template
-  change changes the env and the operator restarts the pod once, through the rollout, with the
+  `TYPEKRO_POD_TEMPLATE_HASH`, a digest of each pod template as TypeKro renders it (a zone
+  template includes its affinity, so adding a zone leaves the other zones' digests alone), so any
+  template change changes the env and the operator restarts the pod once, through the rollout, with the
   new template and config together. A config-only change keeps the operator's in-place restart.
   Schema references are hashed by what they point at, so a runtime-only value change (e.g. KRO-mode
   `podResources`) does not move the digest. New exports: `CLICKHOUSE_POD_TEMPLATE_HASH_ENV` and

@@ -307,6 +307,38 @@ function compileUsers(
   return compiled;
 }
 
+/**
+ * Stamp a pod template's own digest into its `clickhouse` container env, so
+ * that a template change (a probe change above all) makes the operator roll
+ * the StatefulSet instead of first restarting the server in place under the
+ * OLD template. Each template is hashed as rendered — a zone template
+ * includes its affinity — so adding a zone does not move the digest of a zone
+ * whose template is unchanged. See utils/pod-template-fingerprint.ts and #238.
+ */
+function withPodTemplateHash(template: ChiPodTemplate): ChiPodTemplate {
+  const spec = template.spec as Record<string, unknown> & {
+    containers: Record<string, unknown>[];
+  };
+  const hash = clickHousePodTemplateHash(spec);
+  return {
+    ...template,
+    spec: {
+      ...spec,
+      containers: spec.containers.map((container) =>
+        container.name === 'clickhouse'
+          ? {
+              ...container,
+              env: [
+                ...((container.env as unknown[] | undefined) ?? []),
+                { name: CLICKHOUSE_POD_TEMPLATE_HASH_ENV, value: hash },
+              ],
+            }
+          : container
+      ),
+    },
+  };
+}
+
 /** Compile the high-level config into a full CHI spec. */
 function compileInstallationSpec(
   config: Composable<ClickHouseInstallationConfig>
@@ -357,29 +389,15 @@ function compileInstallationSpec(
   const probes = resolveClickHouseProbes('clickHouseInstallation', config.probes);
 
   // Shared ClickHouse server pod spec (per-zone templates add affinity).
-  const container: Record<string, unknown> = {
-    name: 'clickhouse',
-    image,
-    ...(config.podResources && { resources: config.podResources }),
-    ...(s3Env.length > 0 && { env: s3Env }),
-    ...probes,
-  };
-  const basePodSpec: Record<string, unknown> = {
-    ...(s3ServiceAccountName !== undefined && { serviceAccountName: s3ServiceAccountName }),
-    containers: [container],
-  };
-  // Stamp the template's digest into the container env, so that a template
-  // change (a probe change above all) makes the operator roll the StatefulSet
-  // instead of first restarting the server in place under the OLD template.
-  // The zone list is part of the input because it shapes the per-zone
-  // templates. See utils/pod-template-fingerprint.ts and #238.
-  const podTemplateHash = clickHousePodTemplateHash({ podSpec: basePodSpec, zones });
   const podSpec: Record<string, unknown> = {
-    ...basePodSpec,
+    ...(s3ServiceAccountName !== undefined && { serviceAccountName: s3ServiceAccountName }),
     containers: [
       {
-        ...container,
-        env: [...s3Env, { name: CLICKHOUSE_POD_TEMPLATE_HASH_ENV, value: podTemplateHash }],
+        name: 'clickhouse',
+        image,
+        ...(config.podResources && { resources: config.podResources }),
+        ...(s3Env.length > 0 && { env: s3Env }),
+        ...probes,
       },
     ],
   };
@@ -443,7 +461,7 @@ function compileInstallationSpec(
       podTemplateBaseName: POD_TEMPLATE_BASE,
       podSpec,
     });
-    podTemplates = zonePinned.podTemplates;
+    podTemplates = zonePinned.podTemplates.map(withPodTemplateHash);
     layout = {
       clusters: [
         {
@@ -458,7 +476,7 @@ function compileInstallationSpec(
   } else {
     // Plain homogeneous layout: shardsCount x replicasCount with one shared
     // pod template applied via defaults.
-    podTemplates = [{ name: POD_TEMPLATE_BASE, spec: podSpec }];
+    podTemplates = [withPodTemplateHash({ name: POD_TEMPLATE_BASE, spec: podSpec })];
     defaultPodTemplate = POD_TEMPLATE_BASE;
     layout = {
       clusters: [

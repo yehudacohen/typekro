@@ -98,21 +98,33 @@ describe('ClickHouse pod template digest (#238)', () => {
     expect(hashOf(chi({ systemLogs: { ttl: false } }))).toBe(before);
   });
 
-  it('is the same on every per-zone template, and depends on the zone list', () => {
-    const zoned = chi({
-      replicas: 2,
-      zones: ['us-east-2a', 'us-east-2b'],
-    } as Partial<InstallationConfig>);
-    const hashes = envsOf(zoned).map(
-      (env) => env.find((entry) => entry.name === CLICKHOUSE_POD_TEMPLATE_HASH_ENV)?.value
+  it('hashes each zone template on its own, so adding a zone leaves the others alone', () => {
+    const hashesOf = (installation: ReturnType<typeof clickHouseInstallation>) =>
+      Object.fromEntries(
+        (installation.spec.templates?.podTemplates ?? []).map((template) => [
+          template.name,
+          (template.spec as { containers: { env?: Env }[] }).containers[0]?.env?.find(
+            (entry) => entry.name === CLICKHOUSE_POD_TEMPLATE_HASH_ENV
+          )?.value ?? 'missing',
+        ])
+      ) as Record<string, string>;
+    const two = hashesOf(
+      chi({ replicas: 2, zones: ['us-east-2a', 'us-east-2b'] } as Partial<InstallationConfig>)
     );
-    expect(hashes).toHaveLength(2);
-    expect(new Set(hashes).size).toBe(1);
-    const other = chi({
-      replicas: 2,
-      zones: ['us-east-2a', 'us-east-2c'],
-    } as Partial<InstallationConfig>);
-    expect(hashOf(other)).not.toBe(hashes[0]);
+    const three = hashesOf(
+      chi({
+        replicas: 3,
+        zones: ['us-east-2a', 'us-east-2b', 'us-east-2c'],
+      } as Partial<InstallationConfig>)
+    );
+    const names = Object.keys(two);
+    expect(names).toHaveLength(2);
+    // Different affinity, different template, different digest.
+    expect(two[names[0] as string]).not.toBe(two[names[1] as string]);
+    // The existing zones' templates are unchanged, so their digests are too:
+    // adding a zone must not restart the replicas already running.
+    for (const name of names) expect(three[name]).toBe(two[name] as string);
+    expect(Object.keys(three)).toHaveLength(3);
   });
 
   it('hashes a schema reference by what it points at, without resolving it', () => {
@@ -125,6 +137,8 @@ describe('ClickHouse pod template digest (#238)', () => {
 
   it('renders into the RGD of a KRO-mode cluster', () => {
     const yaml = makeClickHouseCluster({ storage: IRSA_S3 }).toYaml();
-    expect(yaml).toContain(`name: ${CLICKHOUSE_POD_TEMPLATE_HASH_ENV}`);
+    expect(yaml).toMatch(
+      new RegExp(`name: ${CLICKHOUSE_POD_TEMPLATE_HASH_ENV}\\s+value: '?[0-9a-f]{16}'?`)
+    );
   });
 });

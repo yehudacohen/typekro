@@ -35,13 +35,19 @@
  * the new configuration. A configuration-only change leaves the digest alone
  * and keeps the operator's cheaper in-place restart.
  *
- * WHAT IT COVERS. The digest is over the pod template as TypeKro builds it at
- * construction time. Schema references (e.g. KRO-mode `podResources` or
- * `version`) are hashed as their reference, not their runtime value, so a
+ * WHAT IT COVERS. The digest is over each pod template as TypeKro renders it
+ * at construction time, so a zone template's digest moves only when that
+ * template does (adding a zone leaves the existing zones' digests alone).
+ * Schema references (e.g. KRO-mode `podResources` or `version`) are hashed as
+ * their reference, not their runtime value, so a
  * change that only alters a runtime value does not change the digest. Image
  * changes are handled by the operator itself (`isImageChangeRequested` defers
  * the restart to the rollout); the remaining runtime-valued fields are
  * resources, which are harmless to run for one extra restart.
+ *
+ * OPERATOR VERSIONS. `hostRequiresStatefulSetRollout()` is identical across
+ * 0.27.0–0.27.3. Before 0.27 the operator had no such check and always
+ * restarted in place first, so there the digest has no effect (and no harm).
  *
  * @module
  */
@@ -61,25 +67,33 @@ export const CLICKHOUSE_POD_TEMPLATE_HASH_ENV = 'TYPEKRO_POD_TEMPLATE_HASH';
  * the template can be canonically hashed. A reference is identified by what it
  * points at, not by the value it will resolve to.
  */
-function withStableReferences(value: unknown): unknown {
+function withStableReferences(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (isKubernetesRef(value)) return `$ref:${value.resourceId}:${value.fieldPath}`;
   if (isCelExpression(value)) return `$cel:${value.expression}`;
-  if (Array.isArray(value)) return value.map(withStableReferences);
-  if (value !== null && typeof value === 'object') {
-    const result: Record<string, unknown> = {};
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) {
+    throw new Error('clickHousePodTemplateHash: the pod template contains a circular reference');
+  }
+  seen.add(value);
+  let result: unknown;
+  if (Array.isArray(value)) {
+    result = value.map((item) => (item === undefined ? null : withStableReferences(item, seen)));
+  } else {
+    const record: Record<string, unknown> = {};
     for (const key of Object.keys(value)) {
       const child = Reflect.get(value, key);
-      if (child !== undefined) result[key] = withStableReferences(child);
+      if (child !== undefined) record[key] = withStableReferences(child, seen);
     }
-    return result;
+    result = record;
   }
-  return value;
+  seen.delete(value);
+  return result;
 }
 
 /**
- * Digest of a ClickHouse pod template (the shared pod spec plus anything a
- * layout derives per template from build-time input, e.g. the zone list).
- * Short on purpose: it only has to change when the input does.
+ * Digest of one rendered ClickHouse pod template spec (a zone template
+ * includes its affinity). Short on purpose: it only has to change when the
+ * template does.
  */
 export function clickHousePodTemplateHash(input: Record<string, unknown>): string {
   return canonicalDigest(withStableReferences(input)).slice(0, 16);

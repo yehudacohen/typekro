@@ -6,7 +6,6 @@
  * the discriminated `diskType`, the fact that the rendered configuration never
  * carries key material, and the refusal to mix PVC and S3 options.
  */
-import { CLICKHOUSE_POD_TEMPLATE_HASH_ENV } from '../../../src/factories/clickhouse/utils/pod-template-fingerprint.js';
 import { type } from 'arktype';
 import { describe, expect, it } from 'bun:test';
 import { clickHouseInstallation } from '../../../src/factories/clickhouse/resources/installation.js';
@@ -16,6 +15,7 @@ import {
   ClickHouseS3BackupCronJobConfigSchema,
   RESOLVED_S3_STORAGE_REQUIREMENT,
 } from '../../../src/factories/clickhouse/resources/s3-backup.js';
+import { CLICKHOUSE_POD_TEMPLATE_HASH_ENV } from '../../../src/factories/clickhouse/utils/pod-template-fingerprint.js';
 import {
   assertAwsRegion,
   assertS3BucketName,
