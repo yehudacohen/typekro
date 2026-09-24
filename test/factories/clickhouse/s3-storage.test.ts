@@ -15,6 +15,7 @@ import {
   ClickHouseS3BackupCronJobConfigSchema,
   RESOLVED_S3_STORAGE_REQUIREMENT,
 } from '../../../src/factories/clickhouse/resources/s3-backup.js';
+import { CLICKHOUSE_POD_TEMPLATE_HASH_ENV } from '../../../src/factories/clickhouse/utils/pod-template-fingerprint.js';
 import {
   assertAwsRegion,
   assertS3BucketName,
@@ -664,6 +665,8 @@ describe('clickHouseInstallation with S3 storage', () => {
     expect(env.map((entry) => entry.name)).toEqual([
       S3_ACCESS_KEY_ID_ENV,
       S3_SECRET_ACCESS_KEY_ENV,
+      // The pod template digest (#238), never a credential.
+      CLICKHOUSE_POD_TEMPLATE_HASH_ENV,
     ]);
     expect(env[0]?.valueFrom?.secretKeyRef).toEqual({
       name: 'minio-credentials',

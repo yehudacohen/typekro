@@ -344,6 +344,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `clickHouseInstallation` change that alters the pod template (probes above all) together with
+  restart-requiring configuration no longer restarts ClickHouse under the OLD pod template first
+  (#238). clickhouse-operator 0.27.x restarts the server in place (`SYSTEM SHUTDOWN`) before
+  rolling the StatefulSet, and skips that only when a container's `env` changed; probe, resource,
+  volume and affinity changes don't count. The 0.36 → 0.37 upgrade hit exactly this: the
+  system-log config changed, the startup probe was added, and a server that already needed more
+  than ~90s to boot was killed by the old liveness probe on every attempt. ClickHouse stayed down
+  until the operator's 5-minute host wait ran out. The `clickhouse` container now carries
+  `TYPEKRO_POD_TEMPLATE_HASH`, a digest of each pod template as TypeKro renders it (a zone
+  template includes its affinity, so adding a zone leaves the other zones' digests alone), so any
+  template change changes the env and the operator restarts the pod once, through the rollout, with the
+  new template and config together. A config-only change keeps the operator's in-place restart.
+  Runtime-only template values such as composition `podResources` are represented by their schema
+  reference, so changing only the instance value does not move the digest. Those changes still roll
+  normally through the StatefulSet; combined with restart-requiring ClickHouse configuration, the
+  operator may still perform its pre-rollout software restart first, under the old resource limits.
+  New exports: `CLICKHOUSE_POD_TEMPLATE_HASH_ENV` and
+  `clickHousePodTemplateHash`.
+
+  NOTE FOR EXISTING INSTALLATIONS: the first reconcile after upgrading adds the env var, which is
+  itself a template change, so ClickHouse restarts once through a StatefulSet rollout.
+
 - 0.37.0's system-log configuration stopped ClickHouse from starting under the Altinity
   clickhouse-operator: the server exited 36 (`BAD_ARGUMENTS`) during config load (#235).
   The operator's own `01-clickhouse-0{3,4,5}-*.xml` files give `query_log`, `part_log` and
