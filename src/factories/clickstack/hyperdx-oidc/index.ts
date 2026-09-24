@@ -24,7 +24,10 @@
  *   the pod (a running process never re-reads its code);
  * - with `initialUser`, the initial user's email and password (the same Secret
  *   key its CronJob reads) reach the plugin, which lets exactly that first-run
- *   registration through `passwordLogin: false` and no other.
+ *   registration through `passwordLogin: false` and no other. The password is
+ *   projected as a file (again a whole directory, optional), not an env var,
+ *   so a key added or rotated before the bootstrap registers reaches the
+ *   running plugin as it reaches each CronJob run.
  *
  * The configuration document's format is defined by
  * `plugins/hyperdx-oidc/src/config.ts` and documented in
@@ -84,12 +87,19 @@ export const HYPERDX_OIDC_CONFIG_DIR = '/etc/typekro/hyperdx-oidc';
 export const HYPERDX_OIDC_PLUGIN_FILE = 'plugin.js';
 /** File name of the configuration inside its mount. */
 export const HYPERDX_OIDC_CONFIG_FILE = 'config.json';
+/** Directory the `initialUser` password Secret key is mounted at. */
+export const HYPERDX_OIDC_BOOTSTRAP_DIR = '/etc/typekro/hyperdx-bootstrap';
+/** File name of the `initialUser` password inside its mount. */
+export const HYPERDX_OIDC_BOOTSTRAP_PASSWORD_FILE = 'password';
 
 /** Pod annotation carrying the plugin's SHA-256, so a new plugin rolls the pod. */
 export const HYPERDX_OIDC_PLUGIN_HASH_ANNOTATION = 'typekro.io/hyperdx-oidc-plugin-sha256';
 
 const PLUGIN_VOLUME = 'typekro-hyperdx-oidc-plugin';
 const CONFIG_VOLUME = 'typekro-hyperdx-oidc-config';
+const BOOTSTRAP_VOLUME = 'typekro-hyperdx-oidc-bootstrap';
+/** Volume (and mount) names the plugin wiring owns; a caller using any of them is refused. */
+const OWNED_VOLUMES = [PLUGIN_VOLUME, CONFIG_VOLUME, BOOTSTRAP_VOLUME] as const;
 /** Env names the plugin wiring owns; a caller setting any of them is refused. */
 const OWNED_ENV = [
   'NODE_OPTIONS',
@@ -97,7 +107,7 @@ const OWNED_ENV = [
   'TYPEKRO_HDX_OIDC_RELOAD_SECONDS',
   'TYPEKRO_HDX_OIDC_CREATE_TEAM',
   'TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL',
-  'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD',
+  'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE',
 ] as const;
 
 /** RFC 1123 subdomain: a Secret's name. */
@@ -209,7 +219,7 @@ function namesOf(list: unknown[]): string[] {
  * @param initialUser - The resolved `initialUser`, when it claims the
  *   instance. Then a first OIDC login may not create HyperDX's team (it would
  *   take the initial account's place), and the plugin gets the initial user's
- *   email and a reference to its password Secret key, so that only that
+ *   email and its password Secret key projected as a file, so that only that
  *   account's own first-run registration passes `passwordLogin: false`.
  * @returns New values with the wiring folded in
  */
@@ -243,26 +253,16 @@ export function applyHyperdxOidcValues(
         : [
             { name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL', value: initialUser.email },
             {
-              name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD',
-              valueFrom: {
-                secretKeyRef: {
-                  name: initialUser.passwordSecretName,
-                  key: initialUser.passwordSecretKey,
-                  // Optional, as for the CronJob: the password is needed only
-                  // until the bootstrap has registered, and a missing key must
-                  // not stop HyperDX from starting. Without it the plugin
-                  // refuses the registration (fail closed).
-                  optional: true,
-                },
-              },
+              name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE',
+              value: `${HYPERDX_OIDC_BOOTSTRAP_DIR}/${HYPERDX_OIDC_BOOTSTRAP_PASSWORD_FILE}`,
             },
           ]),
     ];
 
     const volumes = listAt(deployment, 'volumes', 'hyperdx.deployment.volumes');
     const mounts = listAt(deployment, 'volumeMounts', 'hyperdx.deployment.volumeMounts');
-    const clashingVolumes = [...namesOf(volumes), ...namesOf(mounts)].filter(
-      (name) => name === PLUGIN_VOLUME || name === CONFIG_VOLUME
+    const clashingVolumes = [...namesOf(volumes), ...namesOf(mounts)].filter((name) =>
+      (OWNED_VOLUMES as readonly string[]).includes(name)
     );
     if (clashingVolumes.length > 0) {
       throw new Error(`values.hyperdx.deployment already uses volume name(s) ${clashingVolumes.join(', ')}`);
@@ -277,6 +277,24 @@ export function applyHyperdxOidcValues(
           items: [{ key: oidc.configSecretKey, path: HYPERDX_OIDC_CONFIG_FILE }],
         },
       },
+      ...(initialUser === undefined
+        ? []
+        : [
+            {
+              name: BOOTSTRAP_VOLUME,
+              secret: {
+                // The same Secret and key the initialUser CronJob reads.
+                secretName: initialUser.passwordSecretName,
+                // Optional, as for the CronJob: the password is needed only
+                // until the bootstrap has registered, and a missing key must
+                // not stop HyperDX from starting. Without it the plugin
+                // refuses the registration (fail closed) until the kubelet
+                // projects the key.
+                optional: true,
+                items: [{ key: initialUser.passwordSecretKey, path: HYPERDX_OIDC_BOOTSTRAP_PASSWORD_FILE }],
+              },
+            },
+          ]),
     ];
     deployment.volumeMounts = [
       ...mounts,
@@ -284,6 +302,12 @@ export function applyHyperdxOidcValues(
       // No subPath: a subPath mount never sees Secret updates, and the plugin
       // hot-reloads its configuration.
       { name: CONFIG_VOLUME, mountPath: HYPERDX_OIDC_CONFIG_DIR, readOnly: true },
+      // No subPath either: a password key added or rotated before the
+      // bootstrap registers must reach the running plugin, which re-reads the
+      // file on every registration attempt.
+      ...(initialUser === undefined
+        ? []
+        : [{ name: BOOTSTRAP_VOLUME, mountPath: HYPERDX_OIDC_BOOTSTRAP_DIR, readOnly: true }]),
     ];
 
     const annotations = recordAt(deployment, 'podAnnotations', 'hyperdx.deployment.podAnnotations');

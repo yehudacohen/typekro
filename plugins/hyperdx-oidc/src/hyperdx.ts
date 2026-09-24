@@ -355,9 +355,10 @@ export interface PluginOptions {
    */
   readonly createTeam: boolean;
   /**
-   * The initial user's credentials. With `createTeam` off, HyperDX's first-run
-   * registration is exempt from `passwordLogin: false` only for a request
-   * carrying exactly these; absent, the exemption is off.
+   * The initial user's email and password file. With `createTeam` off,
+   * HyperDX's first-run registration is exempt from `passwordLogin: false`
+   * only for a request carrying that email and the file's current password;
+   * absent, the exemption is off.
    */
   readonly bootstrap?: BootstrapCredentials;
 }
@@ -585,7 +586,8 @@ export function installPlugin(
   // HyperDX's first-run registration is how TypeKro's bootstrap claims it, and
   // HyperDX's handler authenticates through this strategy after registering.
   // The exemption is authenticated: only a registration carrying the initial
-  // user's own email and password passes (see bootstrap.ts). HyperDX answers
+  // user's own email and password passes, the password read afresh from its
+  // file on each attempt (see bootstrap.ts). HyperDX answers
   // 409 teamAlreadyExists to every registration once a team exists, so even
   // that one claims nothing after the bootstrap.
   const bootstrapRegistration = (req: Request) => isBootstrapRegistration(req, options);

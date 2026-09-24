@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,6 +72,10 @@ let hdxUrl = '';
 let openUrl = '';
 let mockExternal = '';
 let workDir = '';
+/** Stands in for the projected initialUser password Secret: bind-mounted at the plugin's bootstrap directory. */
+let bootstrapDir = '';
+/** When the initialUser HyperDX container started; unchanged means it was never restarted. */
+let hdxStartedAt = '';
 
 const PROVIDER = {
   id: 'mock',
@@ -84,6 +88,24 @@ const PROVIDER = {
 
 function writeConfig(config: Record<string, unknown>) {
   writeFileSync(join(workDir, 'config.json'), JSON.stringify({ allowInsecureHttp: true, ...config }), { mode: 0o644 });
+}
+
+/**
+ * Set (or remove) the bootstrap password file the way the kubelet updates a
+ * Secret volume: the new content appears atomically, never half-written.
+ * World-readable, as a Secret volume's default mode is: HyperDX runs as
+ * another user inside the container.
+ */
+function setBootstrapPassword(password: string | undefined) {
+  const file = join(bootstrapDir, 'password');
+  if (password === undefined) {
+    rmSync(file, { force: true });
+    return;
+  }
+  const next = join(bootstrapDir, '.password.next');
+  writeFileSync(next, password);
+  chmodSync(next, 0o644);
+  renameSync(next, file);
 }
 
 /** How many HyperDX log lines match (stdout and stderr interleave, so count rather than slice). */
@@ -186,6 +208,11 @@ beforeAll(async () => {
   writeFileSync(join(workDir, 'plugin.js'), Buffer.from(HYPERDX_OIDC_PLUGIN_BASE64, 'base64'), { mode: 0o644 });
   // OIDC-only from the very first start: initialUser must still bootstrap.
   writeConfig({ providers: [PROVIDER], passwordLogin: false });
+  // The initialUser password key is NOT in the Secret yet when HyperDX starts:
+  // an empty directory, as a Secret volume with an optional, absent key is.
+  bootstrapDir = join(workDir, 'bootstrap');
+  mkdirSync(bootstrapDir);
+  chmodSync(bootstrapDir, 0o755);
 
   const hdxPort = await freePort();
   const mockPort = await freePort();
@@ -216,11 +243,14 @@ beforeAll(async () => {
     // As with initialUser: the team is claimed by a password registration,
     // never by a first OIDC login.
     '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=false',
-    // ...and only the initialUser's own registration passes passwordLogin: false.
+    // ...and only the initialUser's own registration passes passwordLogin: false,
+    // its password read from the projected Secret file on every attempt.
     '-e', `TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL=${ADMIN.email}`,
-    '-e', `TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD=${ADMIN.password}`,
+    '-e', 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE=/etc/typekro/hyperdx-bootstrap/password',
     '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
     '-v', `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
+    // A whole directory, like the Secret volume (no subPath), so changes show through.
+    '-v', `${bootstrapDir}:/etc/typekro/hyperdx-bootstrap:ro`,
     HYPERDX_IMAGE,
   ]);
   if (!started.ok) throw new Error(`docker run hyperdx failed: ${started.stderr}`);
@@ -255,6 +285,7 @@ beforeAll(async () => {
   await waitForLog(/"plugin":"typekro-oidc","message":"installed"/);
   // Installed is not enough: the configuration must have been read and applied.
   await waitForLog(/"message":"OIDC configuration applied","providers":\["mock"\]/);
+  hdxStartedAt = docker(['inspect', '-f', '{{.State.StartedAt}}', HYPERDX]).stdout;
   for (let attempt = 0; attempt < 120; attempt++) {
     try {
       if ((await fetch(`${openUrl}/api/installation`)).status === 200) break;
@@ -334,15 +365,62 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     expect(hyperdxDb('db.users.countDocuments()')).toBe('0');
   });
 
+  /**
+   * A registration that the plugin's exemption admits but HyperDX itself
+   * rejects without consuming anything: `confirmPassword` differs, so
+   * HyperDX's own schema validation answers 400 before its handler runs.
+   * 400 means the plugin let it through; 303 means the plugin refused it.
+   */
+  const probe = (account: { email: string; password: string }) =>
+    fetch(`${hdxUrl}/api/register/password`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...account, confirmPassword: `${account.password}-mismatch` }),
+    });
+  /** The initialUser password before it was rotated. */
+  const OLD_PASSWORD = 'Before-Rotation-Passw0rd!';
+
+  it("refuses even the initialUser's registration while its password file is absent", async () => {
+    // HyperDX started before the key was in the Secret: the exemption is armed
+    // but refuses, and says so at startup (without any password).
+    expect(countLogMatches(/bootstrap password file is absent or empty/)).toBeGreaterThanOrEqual(1);
+    const response = await register(ADMIN);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
+    expect((await probe(ADMIN)).status).toBe(303);
+    expect(hyperdxDb('db.teams.countDocuments()')).toBe('0');
+    expect(hyperdxDb('db.users.countDocuments()')).toBe('0');
+  });
+
+  it('picks up the password file when it appears, and follows a rotation, without a restart', async () => {
+    // The key is added to the Secret: the next attempt reads it.
+    setBootstrapPassword(OLD_PASSWORD);
+    expect((await probe({ email: ADMIN.email, password: OLD_PASSWORD })).status).toBe(400);
+    expect((await probe(ADMIN)).status).toBe(303);
+    // Rotated before the bootstrap registered: the old password is refused
+    // and the new one admitted.
+    setBootstrapPassword(ADMIN.password);
+    const old = await register({ email: ADMIN.email, password: OLD_PASSWORD });
+    expect(old.status).toBe(303);
+    expect(old.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
+    expect((await probe(ADMIN)).status).toBe(400);
+    expect(hyperdxDb('db.teams.countDocuments()')).toBe('0');
+    expect(hyperdxDb('db.users.countDocuments()')).toBe('0');
+  });
+
   it('lets the initialUser registration claim the instance even with passwordLogin: false', async () => {
     // What TypeKro's initialUser CronJob does, with the configuration
-    // OIDC-only from the start. HyperDX closes the route itself afterwards.
+    // OIDC-only from the start and the password key added after HyperDX
+    // started. HyperDX closes the route itself afterwards.
     expect((await register(ADMIN)).status).toBe(200);
     expect(hyperdxDb('db.teams.countDocuments()')).toBe('1');
     // Upstream's own answer once a team exists, even to the right credentials.
     expect((await register(ADMIN)).status).toBe(409);
-    // The plugin holds the password; it must never reach the logs.
-    expect(countLogMatches(/Break-Glass-Passw0rd/)).toBe(0);
+    // Never restarted: every change above reached the running process.
+    expect(docker(['inspect', '-f', '{{.State.StartedAt}}', HYPERDX]).stdout).toBe(hdxStartedAt);
+    // The plugin reads the passwords; they must never reach the logs.
+    expect(countLogMatches(/Break-Glass-Passw0rd|Before-Rotation-Passw0rd/)).toBe(0);
 
     // The account exists, but password sign-in is still refused.
     const login = await fetch(`${hdxUrl}/api/login/password`, {

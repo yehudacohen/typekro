@@ -368,12 +368,16 @@ Until a team exists, OIDC sign-in answers "still being set up". What else can cl
 `passwordLogin`:
 
 - With `passwordLogin: false`, only the `initialUser` credentials can use first-run registration. The wiring
-  gives the plugin the `initialUser` email and a `secretKeyRef` to the same password Secret key the
-  bootstrap CronJob reads (`TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL` and `TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD`).
-  The plugin lets a registration through only when its email matches (case-insensitively) and its password
-  matches (compared in constant time). Any other registration is refused before HyperDX sees it. If the
-  password key is missing, the exemption is off and every registration is refused, the bootstrap's
-  included, until the key is back.
+  gives the plugin the `initialUser` email (`TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL`) and projects the same
+  password Secret key the bootstrap CronJob reads into the HyperDX pod as a file: an optional Secret volume
+  mounted as a whole directory at `/etc/typekro/hyperdx-bootstrap` (the file is `password`, named by
+  `TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE`). The plugin reads the file on every registration attempt and
+  lets a registration through only when its email matches (case-insensitively) and its password matches the
+  file's exact bytes, as the CronJob sends them (compared in constant time; nothing is trimmed). Any other
+  registration is refused before HyperDX sees it. While the key is missing, every registration is refused,
+  the bootstrap's included. Adding the key to the Secret, or rotating it before the bootstrap has
+  registered, takes effect without restarting HyperDX once the kubelet syncs the Secret volume (typically
+  within a minute or two), and the CronJob's next run then succeeds.
 - With `passwordLogin: true`, registration is HyperDX's own and open to anyone until a team exists, exactly
   as without the plugin. Whoever registers first owns the instance, and the CronJob treats the resulting
   `teamAlreadyExists` as done. Keep the API unreachable until the bootstrap has run if that matters.
@@ -407,9 +411,9 @@ if OIDC ever breaks, since the change applies without a restart.
   one.
 - Per-instance runtime `values` that replace `hyperdx.deployment.env` would drop `NODE_OPTIONS` and switch
   the plugin off. Pass extra env through the build-time `values` instead, which the wiring appends to.
-- With `initialUser` and `hyperdxOidc`, the HyperDX container's env references the initial password's Secret
-  key, as the bootstrap CronJob's does. The plugin never logs it. Rotating the key away after the bootstrap
-  has registered is safe; the reference is optional, and HyperDX starts without it.
+- With `initialUser` and `hyperdxOidc`, the HyperDX pod mounts the initial password's Secret key as a file,
+  the key the bootstrap CronJob reads. The plugin never logs it. Rotating the key away after the bootstrap
+  has registered is safe; the volume is optional, and HyperDX starts without it.
 - Known cleanup debt: if one subject's first two sign-ins run at once and present two different verified
   emails, one of the two HyperDX users they create can be left with no link. Delete it by hand if it turns
   up.

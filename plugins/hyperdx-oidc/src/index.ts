@@ -17,7 +17,7 @@
 import { realpathSync } from 'node:fs';
 import Module from 'node:module';
 import { dirname, join } from 'node:path';
-import { bootstrapCredentialsFromEnv } from './bootstrap.js';
+import { bootstrapCredentialsFromEnv, readBootstrapPassword } from './bootstrap.js';
 import { installPlugin, type Logger, resolveHyperdx } from './hyperdx.js';
 
 const CONFIG_ENV = 'TYPEKRO_HDX_OIDC_CONFIG';
@@ -64,6 +64,13 @@ function activate(configPath: string, entry: string) {
         if (!createTeam && bootstrap === undefined) {
           log.warn(
             'no initial-user bootstrap credentials; with passwordLogin: false, first-run registration is refused'
+          );
+        } else if (bootstrap !== undefined && readBootstrapPassword(bootstrap.passwordFile) === undefined) {
+          // Armed anyway: the file is re-read on every registration attempt, so
+          // a key added to the Secret later takes effect without a restart.
+          log.warn(
+            'initial-user bootstrap password file is absent or empty; with passwordLogin: false, first-run registration is refused until it appears',
+            { passwordFile: bootstrap.passwordFile }
           );
         }
         const plugin = installPlugin(resolveHyperdx(apiBuildDir), configPath, log, {
