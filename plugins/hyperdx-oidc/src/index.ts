@@ -17,6 +17,7 @@
 import { realpathSync } from 'node:fs';
 import Module from 'node:module';
 import { dirname, join } from 'node:path';
+import { bootstrapCredentialsFromEnv } from './bootstrap.js';
 import { installPlugin, type Logger, resolveHyperdx } from './hyperdx.js';
 
 const CONFIG_ENV = 'TYPEKRO_HDX_OIDC_CONFIG';
@@ -57,8 +58,17 @@ function activate(configPath: string, entry: string) {
       // Unhook only if nothing wrapped Module._load after us.
       if (moduleInternals._load === hook) moduleInternals._load = originalLoad;
       try {
+        const createTeam = process.env[CREATE_TEAM_ENV] !== 'false';
+        // Only meaningful when something else claims the instance. Never log the password.
+        const bootstrap = createTeam ? undefined : bootstrapCredentialsFromEnv(process.env);
+        if (!createTeam && bootstrap === undefined) {
+          log.warn(
+            'no initial-user bootstrap credentials; with passwordLogin: false, first-run registration is refused'
+          );
+        }
         const plugin = installPlugin(resolveHyperdx(apiBuildDir), configPath, log, {
-          createTeam: process.env[CREATE_TEAM_ENV] !== 'false',
+          createTeam,
+          ...(bootstrap !== undefined && { bootstrap }),
         });
         const seconds = Number(process.env[RELOAD_ENV] ?? '15');
         setInterval(() => plugin.reload(), Math.max(1, Number.isFinite(seconds) ? seconds : 15) * 1000).unref();

@@ -334,7 +334,7 @@ rejected, and the last good configuration keeps serving. A new plugin build chan
 | `createUsers` | `true` | Create a HyperDX user on first sign-in, in HyperDX's team (the open-source build has one). |
 | `tokenEndpointAuthMethod` | `client_secret_basic` | Or `client_secret_post`. |
 | `scopes` | `openid email profile` | Must include `openid`. |
-| `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. |
+| `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. With `initialUser`, the one exception is that account's own registration (see below). |
 | `maxSessionAge` | `12h` | OIDC sessions older than this, or from a provider that was removed, are logged out. `0` never expires them. |
 | `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs. |
 
@@ -363,11 +363,23 @@ one creates the team, and the others wait for it. HyperDX's own first-run regist
 (its check-then-create isn't atomic upstream), so don't register a password account by hand while the first
 OIDC sign-ins happen. With `initialUser` or `passwordLogin: false` this can't arise.
 
-**With `initialUser`.** The first OIDC sign-in does not create HyperDX's team when `initialUser` is set, so
-the bootstrap's account always claims the instance. Until it has, OIDC sign-in answers "still being set up".
-The bootstrap's registration is allowed even when the configuration has `passwordLogin: false` from the
-start. Once a team exists, HyperDX answers every registration with `teamAlreadyExists`, so the route closes
-itself. The first OIDC sign-in with that account's email links to it.
+**With `initialUser`.** The first OIDC sign-in does not create HyperDX's team when `initialUser` is set.
+Until a team exists, OIDC sign-in answers "still being set up". What else can claim the instance depends on
+`passwordLogin`:
+
+- With `passwordLogin: false`, only the `initialUser` credentials can use first-run registration. The wiring
+  gives the plugin the `initialUser` email and a `secretKeyRef` to the same password Secret key the
+  bootstrap CronJob reads (`TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL` and `TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD`).
+  The plugin lets a registration through only when its email matches (case-insensitively) and its password
+  matches (compared in constant time). Any other registration is refused before HyperDX sees it. If the
+  password key is missing, the exemption is off and every registration is refused, the bootstrap's
+  included, until the key is back.
+- With `passwordLogin: true`, registration is HyperDX's own and open to anyone until a team exists, exactly
+  as without the plugin. Whoever registers first owns the instance, and the CronJob treats the resulting
+  `teamAlreadyExists` as done. Keep the API unreachable until the bootstrap has run if that matters.
+
+Once a team exists, HyperDX answers every registration with `teamAlreadyExists`, so the route closes itself,
+even for the `initialUser` credentials. The first OIDC sign-in with that account's email links to it.
 
 What that account is depends on `passwordLogin`. With `true` it's a **break-glass** login for when OIDC is
 broken. With `false` it's only the **initial account**: it exists and owns the team, but can't sign in with
@@ -395,6 +407,12 @@ if OIDC ever breaks, since the change applies without a restart.
   one.
 - Per-instance runtime `values` that replace `hyperdx.deployment.env` would drop `NODE_OPTIONS` and switch
   the plugin off. Pass extra env through the build-time `values` instead, which the wiring appends to.
+- With `initialUser` and `hyperdxOidc`, the HyperDX container's env references the initial password's Secret
+  key, as the bootstrap CronJob's does. The plugin never logs it. Rotating the key away after the bootstrap
+  has registered is safe; the reference is optional, and HyperDX starts without it.
+- Known cleanup debt: if one subject's first two sign-ins run at once and present two different verified
+  emails, one of the two HyperDX users they create can be left with no link. Delete it by hand if it turns
+  up.
 - `team.allowedAuthMethods` is left untouched. HyperDX's own response schemas type it as `'password'` only,
   so the plugin enforces `passwordLogin` itself.
 - If the caller's static `values` already set `NODE_OPTIONS` or the plugin's volume names, the build fails

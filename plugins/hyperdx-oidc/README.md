@@ -10,6 +10,7 @@ TypeKro bundles it into the library (`src/factories/clickstack/hyperdx-oidc/plug
 | `src/hyperdx.ts` | Wiring: resolves and self-checks HyperDX internals, Mongo-backed account store, per-provider Passport strategies, routes, session guard, password policy, hot reload. |
 | `src/oidc.ts` | One provider at runtime: discovery, and the authorization-code flow with PKCE, `state` and `nonce` (`oauth4webapi`). |
 | `src/identity.ts` | Claims to account: allow rules, then find-or-link-or-create by (provider, `sub`). |
+| `src/bootstrap.ts` | The one registration `passwordLogin: false` lets through: the `initialUser`'s own, matched against its email and password from the env. |
 | `src/config.ts` | Configuration parsing and validation. |
 | `src/pages.ts` | The provider chooser and access-denied pages. |
 

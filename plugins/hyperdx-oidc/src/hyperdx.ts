@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { type BootstrapCredentials, isBootstrapRegistration, normalizeRoutePath } from './bootstrap.js';
 import { type OidcPluginConfig, parseOidcPluginConfig } from './config.js';
 import { evaluateClaims, type IdentityStore, LinkConflictError, resolveAccount, type VerifiedIdentity } from './identity.js';
 import { OidcFlowError, type PendingLogin, ProviderRuntime, safeReturnTo } from './oidc.js';
@@ -37,6 +38,8 @@ interface Request {
   originalUrl: string;
   params: Record<string, string>;
   query: Record<string, unknown>;
+  /** Parsed by HyperDX's app-level express.json/urlencoded, before the root router. */
+  body?: unknown;
   session?: Session;
   user?: unknown;
   logIn(user: unknown, done: (error?: unknown) => void): void;
@@ -128,7 +131,7 @@ function isDuplicateKeyError(error: unknown): boolean {
 
 /** A request path as Express matches it: case-insensitive, trailing slashes ignored. */
 function normalizedPath(req: Request): string {
-  return req.path.toLowerCase().replace(/\/+$/, '');
+  return normalizeRoutePath(req.path);
 }
 const PASSWORD_NOT_ALLOWED = 'Authentication method password is not allowed by your team admin.';
 
@@ -351,6 +354,12 @@ export interface PluginOptions {
    * turns this off when its `initialUser` bootstrap claims the instance.
    */
   readonly createTeam: boolean;
+  /**
+   * The initial user's credentials. With `createTeam` off, HyperDX's first-run
+   * registration is exempt from `passwordLogin: false` only for a request
+   * carrying exactly these; absent, the exemption is off.
+   */
+  readonly bootstrap?: BootstrapCredentials;
 }
 
 export interface InstalledPlugin {
@@ -575,12 +584,13 @@ export function installPlugin(
   // The one exception: with initialUser owning the instance (createTeam off),
   // HyperDX's first-run registration is how TypeKro's bootstrap claims it, and
   // HyperDX's handler authenticates through this strategy after registering.
-  // HyperDX answers 409 teamAlreadyExists to every registration once a team
-  // exists, so the route closes itself right after the bootstrap.
-  const isBootstrapRegistration = (req: Request) =>
-    !options.createTeam && req.method === 'POST' && normalizedPath(req) === '/register/password';
+  // The exemption is authenticated: only a registration carrying the initial
+  // user's own email and password passes (see bootstrap.ts). HyperDX answers
+  // 409 teamAlreadyExists to every registration once a team exists, so even
+  // that one claims nothing after the bootstrap.
+  const bootstrapRegistration = (req: Request) => isBootstrapRegistration(req, options);
   localStrategy.authenticate = function authenticate(this: StrategyContext, req, strategyOptions) {
-    if (config !== undefined && !config.passwordLogin && !isBootstrapRegistration(req)) {
+    if (config !== undefined && !config.passwordLogin && !bootstrapRegistration(req)) {
       this.fail({ message: PASSWORD_NOT_ALLOWED });
       return;
     }
@@ -592,7 +602,7 @@ export function installPlugin(
   //    matches them.
   const PASSWORD_ACCOUNT_ROUTES = [/^\/login\/password$/, /^\/register\/password$/, /^\/team\/setup\/[^/]+$/];
   prepend((req, res, next) => {
-    if (req.method !== 'POST' || config === undefined || config.passwordLogin || isBootstrapRegistration(req)) {
+    if (req.method !== 'POST' || config === undefined || config.passwordLogin || bootstrapRegistration(req)) {
       next();
       return;
     }

@@ -21,7 +21,10 @@
  *   whole directory (not `subPath`), so the kubelet refreshes the file when the
  *   Secret changes and the plugin applies it without a restart;
  * - a pod annotation carries the plugin's SHA-256, so a new plugin build rolls
- *   the pod (a running process never re-reads its code).
+ *   the pod (a running process never re-reads its code);
+ * - with `initialUser`, the initial user's email and password (the same Secret
+ *   key its CronJob reads) reach the plugin, which lets exactly that first-run
+ *   registration through `passwordLogin: false` and no other.
  *
  * The configuration document's format is defined by
  * `plugins/hyperdx-oidc/src/config.ts` and documented in
@@ -30,6 +33,7 @@
  * @module
  */
 
+import type { ResolvedClickStackInitialUser } from '../types.js';
 import {
   HYPERDX_OIDC_PLUGIN_BASE64,
   HYPERDX_OIDC_PLUGIN_BYTES,
@@ -92,6 +96,8 @@ const OWNED_ENV = [
   'TYPEKRO_HDX_OIDC_CONFIG',
   'TYPEKRO_HDX_OIDC_RELOAD_SECONDS',
   'TYPEKRO_HDX_OIDC_CREATE_TEAM',
+  'TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL',
+  'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD',
 ] as const;
 
 /** RFC 1123 subdomain: a Secret's name. */
@@ -200,10 +206,11 @@ function namesOf(list: unknown[]): string[] {
  * @param values - The caller's static chart values, if any (not mutated)
  * @param oidc - The resolved option
  * @param releaseName - The release name; the plugin ConfigMap is named from it
- * @param createTeam - Whether a first OIDC login may create HyperDX's team.
- *   False when `initialUser` claims the instance: otherwise the first OIDC
- *   login could create the team and the break-glass account would never be
- *   registered.
+ * @param initialUser - The resolved `initialUser`, when it claims the
+ *   instance. Then a first OIDC login may not create HyperDX's team (it would
+ *   take the initial account's place), and the plugin gets the initial user's
+ *   email and a reference to its password Secret key, so that only that
+ *   account's own first-run registration passes `passwordLogin: false`.
  * @returns New values with the wiring folded in
  */
 export function applyHyperdxOidcValues(
@@ -211,7 +218,7 @@ export function applyHyperdxOidcValues(
   values: Values | undefined,
   oidc: ResolvedClickStackHyperdxOidc,
   releaseName: string,
-  createTeam = true
+  initialUser?: Pick<ResolvedClickStackInitialUser, 'email' | 'passwordSecretName' | 'passwordSecretKey'>
 ): Values {
   const merged: Values = structuredClone(values ?? {});
   try {
@@ -230,7 +237,26 @@ export function applyHyperdxOidcValues(
       { name: 'NODE_OPTIONS', value: `--require=${HYPERDX_OIDC_PLUGIN_DIR}/${HYPERDX_OIDC_PLUGIN_FILE}` },
       { name: 'TYPEKRO_HDX_OIDC_CONFIG', value: `${HYPERDX_OIDC_CONFIG_DIR}/${HYPERDX_OIDC_CONFIG_FILE}` },
       { name: 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS', value: String(oidc.reloadSeconds) },
-      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: String(createTeam) },
+      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: String(initialUser === undefined) },
+      ...(initialUser === undefined
+        ? []
+        : [
+            { name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL', value: initialUser.email },
+            {
+              name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD',
+              valueFrom: {
+                secretKeyRef: {
+                  name: initialUser.passwordSecretName,
+                  key: initialUser.passwordSecretKey,
+                  // Optional, as for the CronJob: the password is needed only
+                  // until the bootstrap has registered, and a missing key must
+                  // not stop HyperDX from starting. Without it the plugin
+                  // refuses the registration (fail closed).
+                  optional: true,
+                },
+              },
+            },
+          ]),
     ];
 
     const volumes = listAt(deployment, 'volumes', 'hyperdx.deployment.volumes');

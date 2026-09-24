@@ -165,6 +165,9 @@ class Browser {
   }
 }
 
+/** The initialUser account: what TypeKro's CronJob registers, and what the plugin is told to admit. */
+const ADMIN = { email: 'admin@example.com', password: 'Break-Glass-Passw0rd!' };
+
 const allowedClaims = (sub: string, email: string) => ({
   sub,
   email,
@@ -213,6 +216,9 @@ beforeAll(async () => {
     // As with initialUser: the team is claimed by a password registration,
     // never by a first OIDC login.
     '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=false',
+    // ...and only the initialUser's own registration passes passwordLogin: false.
+    '-e', `TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL=${ADMIN.email}`,
+    '-e', `TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD=${ADMIN.password}`,
     '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
     '-v', `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
     HYPERDX_IMAGE,
@@ -269,8 +275,6 @@ afterAll(() => {
   if (workDir) rmSync(workDir, { recursive: true, force: true });
 });
 
-const ADMIN = { email: 'admin@example.com', password: 'Break-Glass-Passw0rd!' };
-
 describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
   it('creates exactly one team when several first logins race on a fresh instance', async () => {
     // Without initialUser, the first OIDC login claims the instance. HyperDX's
@@ -303,17 +307,42 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({ isTeamExisting: false });
   });
 
+  const register = (account: { email: string; password: string }) =>
+    fetch(`${hdxUrl}/api/register/password`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...account, confirmPassword: account.password }),
+    });
+  const hyperdxDb = (query: string) =>
+    docker(['exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx', '--eval', query]).stdout.trim();
+
+  it('refuses a first-run registration that is not the initialUser under passwordLogin: false', async () => {
+    // Until a team exists, anyone who reaches the API could otherwise claim
+    // the instance, and the initialUser CronJob would read its 409 as done.
+    for (const intruder of [
+      { email: 'intruder@example.com', password: 'Intruder-Passw0rd!' },
+      { email: 'intruder@example.com', password: ADMIN.password },
+      { email: ADMIN.email, password: 'Wrong-Passw0rd!1' },
+    ]) {
+      const response = await register(intruder);
+      expect([intruder, response.status]).toEqual([intruder, 303]);
+      expect(response.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
+    }
+    expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({ isTeamExisting: false });
+    expect(hyperdxDb('db.teams.countDocuments()')).toBe('0');
+    expect(hyperdxDb('db.users.countDocuments()')).toBe('0');
+  });
+
   it('lets the initialUser registration claim the instance even with passwordLogin: false', async () => {
     // What TypeKro's initialUser CronJob does, with the configuration
     // OIDC-only from the start. HyperDX closes the route itself afterwards.
-    const register = () =>
-      fetch(`${hdxUrl}/api/register/password`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...ADMIN, confirmPassword: ADMIN.password }),
-      });
-    expect((await register()).status).toBe(200);
-    expect((await register()).status).toBe(409);
+    expect((await register(ADMIN)).status).toBe(200);
+    expect(hyperdxDb('db.teams.countDocuments()')).toBe('1');
+    // Upstream's own answer once a team exists, even to the right credentials.
+    expect((await register(ADMIN)).status).toBe(409);
+    // The plugin holds the password; it must never reach the logs.
+    expect(countLogMatches(/Break-Glass-Passw0rd/)).toBe(0);
 
     // The account exists, but password sign-in is still refused.
     const login = await fetch(`${hdxUrl}/api/login/password`, {
