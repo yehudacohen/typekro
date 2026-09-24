@@ -357,7 +357,9 @@ provider, delete their link document (`db.typekro_oidc_identities.deleteOne({ pr
 
 **Concurrent first sign-ins.** Without `initialUser`, the first OIDC sign-in creates HyperDX's team.
 Simultaneous first sign-ins, across replicas too, race for a claim document in `typekro_oidc_state`. Exactly
-one creates the team, and the others wait for it.
+one creates the team, and the others wait for it. HyperDX's own first-run registration is outside that lock
+(its check-then-create isn't atomic upstream), so don't register a password account by hand while the first
+OIDC sign-ins happen. With `initialUser` or `passwordLogin: false` this can't arise.
 
 **With `initialUser`.** The first OIDC sign-in does not create HyperDX's team when `initialUser` is set, so
 the bootstrap's break-glass account always claims the instance. Until it has, OIDC sign-in answers "still
