@@ -212,6 +212,8 @@ may not), the container variable is always `HYPERDX_INITIAL_USER_PASSWORD` in th
    none of it can drift.
 3. **Records the marker** — on every exit from the bootstrap branch, including a `409
    teamAlreadyExists` (a human beat the CronJob to it, which is a success: the instance is claimed).
+   A redirect is a refusal, not a registration: the POST never follows one, so the run fails without a
+   marker and retries.
 4. **Patches `teams.apiKey`.** One `updateOne`, on every run, so the Team carries the pre-shared
    ingestion key the collector authenticates with and a rotated Secret still converges. This is the
    **entire** remaining coupling to HyperDX's private schema.
@@ -334,7 +336,7 @@ rejected, and the last good configuration keeps serving. A new plugin build chan
 | `createUsers` | `true` | Create a HyperDX user on first sign-in, in HyperDX's team (the open-source build has one). |
 | `tokenEndpointAuthMethod` | `client_secret_basic` | Or `client_secret_post`. |
 | `scopes` | `openid email profile` | Must include `openid`. |
-| `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. With `initialUser`, the one exception is that account's own registration (see below). |
+| `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. With `initialUser`, the one exception is that account's own registration while no team exists (see below). |
 | `maxSessionAge` | `12h` | OIDC sessions older than this, or from a provider that was removed, are logged out. `0` never expires them. |
 | `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs. |
 
@@ -367,14 +369,15 @@ OIDC sign-ins happen. With `initialUser` or `passwordLogin: false` this can't ar
 Until a team exists, OIDC sign-in answers "still being set up". What else can claim the instance depends on
 `passwordLogin`:
 
-- With `passwordLogin: false`, only the `initialUser` credentials can use first-run registration. The wiring
+- With `passwordLogin: false`, only the `initialUser` credentials can use first-run registration, and only
+  while no team exists. The wiring
   gives the plugin the `initialUser` email (`TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL`) and projects the same
   password Secret key the bootstrap CronJob reads into the HyperDX pod as a file: an optional Secret volume
   mounted as a whole directory at `/etc/typekro/hyperdx-bootstrap` (the file is `password`, named by
   `TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE`). The plugin reads the file on every registration attempt and
-  lets a registration through only when its email matches (case-insensitively) and its password matches the
-  file's exact bytes, as the CronJob sends them (compared in constant time; nothing is trimmed). Any other
-  registration is refused before HyperDX sees it. While the key is missing, every registration is refused,
+  lets a registration through only when no team exists yet, its email matches (case-insensitively) and its
+  password matches the file's exact bytes, as the CronJob sends them (compared in constant time; nothing is
+  trimmed). The team check comes first. Any other registration is refused before HyperDX sees it. While the key is missing, every registration is refused,
   the bootstrap's included. Adding the key to the Secret, or rotating it before the bootstrap has
   registered, takes effect without restarting HyperDX once the kubelet syncs the Secret volume (typically
   within a minute or two), and the CronJob's next run then succeeds.
@@ -382,8 +385,13 @@ Until a team exists, OIDC sign-in answers "still being set up". What else can cl
   as without the plugin. Whoever registers first owns the instance, and the CronJob treats the resulting
   `teamAlreadyExists` as done. Keep the API unreachable until the bootstrap has run if that matters.
 
-Once a team exists, HyperDX answers every registration with `teamAlreadyExists`, so the route closes itself,
-even for the `initialUser` credentials. The first OIDC sign-in with that account's email links to it.
+Once a team exists, registration is closed. With `passwordLogin: true`, HyperDX answers every registration
+with `teamAlreadyExists`. With `passwordLogin: false`, the plugin refuses every registration identically,
+the `initialUser` credentials included (the same `303` to `/login?err=passwordAuthNotAllowed`), without
+reading the password file or comparing anything, so the endpoint can't be used to test guesses at the
+initial password. The bootstrap CronJob doesn't need the `409`: it checks for a team before registering and
+records the bootstrap as complete when one exists. The first OIDC sign-in with that account's email links
+to it.
 
 What that account is depends on `passwordLogin`. With `true` it's a **break-glass** login for when OIDC is
 broken. With `false` it's only the **initial account**: it exists and owns the team, but can't sign in with

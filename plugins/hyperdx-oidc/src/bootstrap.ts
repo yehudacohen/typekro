@@ -11,7 +11,8 @@
  * So the exemption is authenticated. The wiring hands the plugin the initial
  * user's email and the path of a file holding its password (the same Secret
  * key the CronJob reads, projected into the pod as a file), and a
- * registration is exempt only when its body carries exactly those.
+ * registration is exempt only while no team exists and only when its body
+ * carries exactly those. Once a team exists, nothing is compared at all.
  *
  * The password is read from the file on every registration attempt, never
  * cached. The initialUser contract is one-shot and recoverable: the key may be
@@ -92,34 +93,58 @@ export interface RegistrationRequest {
   readonly body?: unknown;
 }
 
+/** What the decision needs from outside: HyperDX's team collection, and the password file. */
+export interface BootstrapDependencies {
+  /** Whether any HyperDX team exists. */
+  teamExists(): Promise<boolean>;
+  /** Reads the password file; {@link readBootstrapPassword} unless a test substitutes it. */
+  readPassword?(passwordFile: string): string | undefined;
+}
+
+/**
+ * Whether a registration body carries exactly the initial user's credentials:
+ * `email` case-insensitively, `password` in constant time against the file's
+ * current content. A missing, unreadable or empty file matches nothing.
+ */
+export function bootstrapCredentialsMatch(
+  body: unknown,
+  credentials: BootstrapCredentials,
+  readPassword: (passwordFile: string) => string | undefined = readBootstrapPassword
+): boolean {
+  if (typeof body !== 'object' || body === null) return false;
+  const { email, password } = body as Record<string, unknown>;
+  if (typeof email !== 'string' || typeof password !== 'string') return false;
+  const expected = readPassword(credentials.passwordFile);
+  if (expected === undefined) return false;
+  // Both comparisons always run; the password's never short-circuits.
+  const passwordMatches = secretsEqual(password, expected);
+  const emailMatches = email.toLowerCase() === credentials.email.toLowerCase();
+  return emailMatches && passwordMatches;
+}
+
 /**
  * Whether a request is the initial user's own first-run registration, and so
  * exempt from `passwordLogin: false`.
  *
  * True only when the plugin may not create the team itself (`createTeam`
  * off), bootstrap credentials are configured, the request is
- * `POST /register/password`, the password file currently holds a password,
- * and the body's `email` (case-insensitive) and `password` (constant time)
- * match. The file is read only for a request that got that far, so ordinary
- * traffic never touches it. HyperDX answers every registration with 409
- * `teamAlreadyExists` once a team exists, so even a matching request can
- * claim nothing after the bootstrap.
+ * `POST /register/password`, NO team exists yet, and the body's credentials
+ * match ({@link bootstrapCredentialsMatch}).
+ *
+ * The team check comes before anything about the body. Once a team exists the
+ * exemption is over: the password file is not read and nothing is compared,
+ * so every registration gets the same refusal and the endpoint cannot be used
+ * to test guesses at the initial password. (HyperDX would answer 409 to a
+ * matching request by then, but a distinguishable answer is itself the leak.)
  */
-export function isBootstrapRegistration(
+export async function authorizeBootstrapRegistration(
   req: RegistrationRequest,
-  options: { readonly createTeam: boolean; readonly bootstrap?: BootstrapCredentials }
-): boolean {
+  options: { readonly createTeam: boolean; readonly bootstrap?: BootstrapCredentials },
+  dependencies: BootstrapDependencies
+): Promise<boolean> {
   const credentials = options.bootstrap;
   if (options.createTeam || credentials === undefined) return false;
   if (req.method !== 'POST' || normalizeRoutePath(req.path) !== '/register/password') return false;
-  const body = req.body;
-  if (typeof body !== 'object' || body === null) return false;
-  const { email, password } = body as Record<string, unknown>;
-  if (typeof email !== 'string' || typeof password !== 'string') return false;
-  const expected = readBootstrapPassword(credentials.passwordFile);
-  if (expected === undefined) return false;
-  // Both comparisons always run; the password's never short-circuits.
-  const passwordMatches = secretsEqual(password, expected);
-  const emailMatches = email.toLowerCase() === credentials.email.toLowerCase();
-  return emailMatches && passwordMatches;
+  if (await dependencies.teamExists()) return false;
+  return bootstrapCredentialsMatch(req.body, credentials, dependencies.readPassword);
 }

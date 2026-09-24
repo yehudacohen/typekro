@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { type BootstrapCredentials, isBootstrapRegistration, normalizeRoutePath } from './bootstrap.js';
+import { authorizeBootstrapRegistration, type BootstrapCredentials, normalizeRoutePath } from './bootstrap.js';
 import { type OidcPluginConfig, parseOidcPluginConfig } from './config.js';
 import { evaluateClaims, type IdentityStore, LinkConflictError, resolveAccount, type VerifiedIdentity } from './identity.js';
 import { OidcFlowError, type PendingLogin, ProviderRuntime, safeReturnTo } from './oidc.js';
@@ -585,14 +585,14 @@ export function installPlugin(
   // The one exception: with initialUser owning the instance (createTeam off),
   // HyperDX's first-run registration is how TypeKro's bootstrap claims it, and
   // HyperDX's handler authenticates through this strategy after registering.
-  // The exemption is authenticated: only a registration carrying the initial
-  // user's own email and password passes, the password read afresh from its
-  // file on each attempt (see bootstrap.ts). HyperDX answers
-  // 409 teamAlreadyExists to every registration once a team exists, so even
-  // that one claims nothing after the bootstrap.
-  const bootstrapRegistration = (req: Request) => isBootstrapRegistration(req, options);
+  // By then HyperDX has created the team, so the strategy cannot decide
+  // whether the exemption applies. The route gate below decides, before
+  // HyperDX's handler runs, and marks the request it admits; the strategy
+  // only honours that mark and never compares a password itself. The mark is
+  // this WeakSet of request objects, which no client input can set.
+  const authorizedBootstrapRegistrations = new WeakSet<object>();
   localStrategy.authenticate = function authenticate(this: StrategyContext, req, strategyOptions) {
-    if (config !== undefined && !config.passwordLogin && !bootstrapRegistration(req)) {
+    if (config !== undefined && !config.passwordLogin && !authorizedBootstrapRegistrations.has(req)) {
       this.fail({ message: PASSWORD_NOT_ALLOWED });
       return;
     }
@@ -602,9 +602,18 @@ export function installPlugin(
   //    first-run registration and team-invite acceptance (which registers
   //    and calls req.login directly). Paths are normalized the way Express
   //    matches them.
+  //
+  //    First-run registration is the one exception, for the initial user's
+  //    own registration while no team exists (see bootstrap.ts): the team
+  //    check comes first, so once a team exists every registration gets this
+  //    same refusal and no password is read or compared. Two concurrent
+  //    bootstrap registrations can both see no team; both carry the correct
+  //    credentials, and HyperDX's own registration and team creation decide
+  //    between them, as they would without the plugin.
   const PASSWORD_ACCOUNT_ROUTES = [/^\/login\/password$/, /^\/register\/password$/, /^\/team\/setup\/[^/]+$/];
+  const teamExists = async () => ((await hyperdx.Team.find({}).select('_id').limit(1).lean()) as unknown[]).length > 0;
   prepend((req, res, next) => {
-    if (req.method !== 'POST' || config === undefined || config.passwordLogin || bootstrapRegistration(req)) {
+    if (req.method !== 'POST' || config === undefined || config.passwordLogin) {
       next();
       return;
     }
@@ -613,8 +622,29 @@ export function installPlugin(
       next();
       return;
     }
-    if (req.session !== undefined) req.session.messages = [PASSWORD_NOT_ALLOWED];
-    res.redirect(303, frontend('/login?err=passwordAuthNotAllowed'));
+    const refuse = () => {
+      if (req.session !== undefined) req.session.messages = [PASSWORD_NOT_ALLOWED];
+      res.redirect(303, frontend('/login?err=passwordAuthNotAllowed'));
+    };
+    if (path !== '/register/password') {
+      refuse();
+      return;
+    }
+    authorizeBootstrapRegistration(req, options, { teamExists }).then(
+      (authorized) => {
+        if (!authorized) {
+          refuse();
+          return;
+        }
+        authorizedBootstrapRegistrations.add(req);
+        next();
+      },
+      (error: unknown) => {
+        // Fail closed: without knowing whether a team exists, refuse.
+        log.warn('could not check for an existing team; refusing the registration', { error: String(error) });
+        refuse();
+      }
+    );
   });
 
   router.get('/login/oidc', (req, res) => {

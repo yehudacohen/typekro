@@ -24,9 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - With `initialUser`, a first OIDC login never creates HyperDX's team. With `passwordLogin: false`, the
     only first-run registration let through is the `initialUser`'s own: the plugin gets its email, and the
     same password Secret key the bootstrap CronJob reads is projected into the HyperDX pod as a file. The
-    plugin re-reads that file on every attempt and compares the password in constant time. Anything else is
-    refused, and while the password key is missing every registration is refused. A key added or rotated
-    before the bootstrap registers takes effect without restarting HyperDX.
+    plugin re-reads that file on every attempt and compares the password in constant time, and only while no
+    team exists. Anything else is refused, and while the password key is missing every registration is
+    refused. A key added or rotated before the bootstrap registers takes effect without restarting HyperDX.
+    Once any team exists, every registration is refused identically without reading or comparing the
+    password, so the endpoint can't be used to test guesses at it. The plugin refuses with a `303` to the
+    login page, so the `initialUser` CronJob no longer follows redirects: following one would read the
+    login page's `200` as a registration. A redirect fails the run without a marker, and it retries.
   - The link invariants (one link per subject, one per HyperDX user) are enforced by unique indexes, so
     concurrent sign-ins can't both claim an account. Sign-in fails closed until the indexes exist.
   - Configuration comes from a caller-owned Secret that is re-read at runtime, so providers can be added or

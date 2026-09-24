@@ -412,11 +412,10 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
   it('lets the initialUser registration claim the instance even with passwordLogin: false', async () => {
     // What TypeKro's initialUser CronJob does, with the configuration
     // OIDC-only from the start and the password key added after HyperDX
-    // started. HyperDX closes the route itself afterwards.
+    // started.
     expect((await register(ADMIN)).status).toBe(200);
     expect(hyperdxDb('db.teams.countDocuments()')).toBe('1');
-    // Upstream's own answer once a team exists, even to the right credentials.
-    expect((await register(ADMIN)).status).toBe(409);
+    expect(hyperdxDb('db.users.countDocuments()')).toBe('1');
     // Never restarted: every change above reached the running process.
     expect(docker(['inspect', '-f', '{{.State.StartedAt}}', HYPERDX]).stdout).toBe(hdxStartedAt);
     // The plugin reads the passwords; they must never reach the logs.
@@ -431,6 +430,23 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     });
     expect(login.status).toBe(303);
     expect(login.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
+  });
+
+  it('refuses every registration identically once a team exists, so none can test a password', async () => {
+    // The correct initial password must not be told apart from a wrong one
+    // (upstream would answer 409 to the first and the plugin 303 to the
+    // second): once a team exists, the plugin compares nothing.
+    const answers: [number, string | null][] = [];
+    for (const account of [ADMIN, { email: ADMIN.email, password: 'Wrong-Passw0rd!1' }, { email: 'other@example.com', password: ADMIN.password }]) {
+      const response = await register(account);
+      answers.push([response.status, response.headers.get('location')]);
+    }
+    const refusal: [number, string] = [303, `${hdxUrl}/login?err=passwordAuthNotAllowed`];
+    expect(answers).toEqual([refusal, refusal, refusal]);
+    // Nor does a correct-credentials request reach HyperDX's own validation.
+    expect((await probe(ADMIN)).status).toBe(303);
+    expect(hyperdxDb('db.teams.countDocuments()')).toBe('1');
+    expect(hyperdxDb('db.users.countDocuments()')).toBe('1');
   });
 
   it('links the initial account by email on its first OIDC sign-in', async () => {

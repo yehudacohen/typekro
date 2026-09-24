@@ -368,7 +368,10 @@ const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
  *     whole objective. A 400 is relayed with the endpoint's own body, which
  *     names the offending field far better than a second copy of its rules
  *     could — and a rejected registration is not a consumed one, so a bad
- *     password costs a failed run and nothing else.
+ *     password costs a failed run and nothing else. A redirect is a refusal
+ *     too (the POST never follows one): it is how HyperDX, and the
+ *     `hyperdxOidc` plugin under `passwordLogin: false`, turn a registration
+ *     away, and following it would read the login page's 200 as success.
  *  3. PATCH ONLY `teams.apiKey`. The collector holds a pre-shared ingestion key
  *     from the chart's Secret, so the Team the app just created has to carry
  *     that key. One `updateOne`, and it runs on EVERY pass — not just the
@@ -426,6 +429,10 @@ export function renderClickStackTeamBootstrapScript(
     '      try {',
     "        response = await fetch(apiBaseUrl + '/register/password', {",
     "          method: 'POST',",
+    // Never follow a redirect: HyperDX (and the hyperdxOidc plugin under
+    // passwordLogin: false) refuse with a 303 to the login page, and
+    // following it would turn the refusal into the login page's 200.
+    "          redirect: 'manual',",
     "          headers: { 'content-type': 'application/json' },",
     '          body: JSON.stringify({ email: initialUserEmail, password: initialUserPassword, confirmPassword: initialUserPassword }),',
     '        });',
@@ -439,6 +446,14 @@ export function renderClickStackTeamBootstrapScript(
     // an administrator exists — which is the whole objective.
     "      if (response.status === 409 && responseBody.indexOf('teamAlreadyExists') !== -1) {",
     "        print('ClickStack initial user: the HyperDX instance was already claimed by an earlier registration; recording bootstrap as complete.');",
+    // A redirect is a refusal, not a registration. With hyperdxOidc and
+    // passwordLogin: false it means the plugin did not admit this request:
+    // a Team appeared since the check above (the next run records the
+    // bootstrap as complete), or the password HyperDX's pod sees differs,
+    // typically because the kubelet has not synced a just-added or rotated
+    // Secret key yet. Nothing was consumed either way; retry next run.
+    '      } else if (response.status >= 300 && response.status < 400) {',
+    "        throw new Error('HyperDX redirected the initial-user registration at ' + apiBaseUrl + '/register/password (HTTP ' + response.status + ' to ' + response.headers.get('location') + ') instead of registering it. With hyperdxOidc and passwordLogin: false this is the plugin refusing it: either a Team now exists, or the HyperDX pod does not see this password yet (the kubelet syncs a changed Secret within a minute or two). No registration was consumed; the CronJob retries every minute.');",
     '      } else if (response.status < 200 || response.status >= 300) {',
     // HyperDX validates the address and the password itself and answers with a
     // body naming the field. Relay it; a second copy of its rules here could
