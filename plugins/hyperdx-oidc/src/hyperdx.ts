@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { type OidcPluginConfig, parseOidcPluginConfig } from './config.js';
-import { evaluateClaims, type IdentityStore, resolveAccount, type VerifiedIdentity } from './identity.js';
+import { evaluateClaims, type IdentityStore, LinkConflictError, resolveAccount, type VerifiedIdentity } from './identity.js';
 import { OidcFlowError, type PendingLogin, ProviderRuntime, safeReturnTo } from './oidc.js';
 import { renderChooser, renderDenied } from './pages.js';
 
@@ -125,6 +125,11 @@ const TEAM_CLAIM_STALE_MS = 60_000;
 function isDuplicateKeyError(error: unknown): boolean {
   return (error as { code?: unknown })?.code === 11000;
 }
+
+/** A request path as Express matches it: case-insensitive, trailing slashes ignored. */
+function normalizedPath(req: Request): string {
+  return req.path.toLowerCase().replace(/\/+$/, '');
+}
 const PASSWORD_NOT_ALLOWED = 'Authentication method password is not allowed by your team admin.';
 
 // ── Resolution and self-check ─────────────────────────────────────────────
@@ -191,12 +196,32 @@ function mongoIdentityStore(
 ): IdentityStore {
   const links = hyperdx.User.db.collection(IDENTITY_COLLECTION);
   const state = hyperdx.User.db.collection(STATE_COLLECTION);
-  links
-    .createIndex({ provider: 1, subject: 1 }, { unique: true, name: 'provider_subject' })
-    .catch((error: unknown) => log.error('could not create the identity-link index', { error: String(error) }));
-  links
-    .createIndex({ userId: 1 }, { name: 'user' })
-    .catch((error: unknown) => log.error('could not create the identity-link user index', { error: String(error) }));
+
+  // Both link invariants are enforced by UNIQUE indexes, not by the
+  // check-then-write in resolveAccount: one link per (provider, subject), and
+  // one link per HyperDX user — so two subjects racing to link the same
+  // account by email cannot both win. Linking waits for the indexes and fails
+  // CLOSED if they cannot be created; a failed attempt is retried next login.
+  let indexes: Promise<void> | undefined;
+  const ensureIndexes = (): Promise<void> => {
+    if (indexes === undefined) {
+      indexes = Promise.all([
+        links.createIndex({ provider: 1, subject: 1 }, { unique: true, name: 'provider_subject' }),
+        links.createIndex({ userId: 1 }, { unique: true, name: 'user' }),
+      ]).then(
+        () => undefined,
+        (error: unknown) => {
+          indexes = undefined;
+          log.error('could not create the identity-link indexes; OIDC sign-in is refused until they exist', {
+            error: String(error),
+          });
+          throw new OidcFlowError('storeUnavailable', 'identity-link indexes are not in place');
+        }
+      );
+    }
+    return indexes;
+  };
+  ensureIndexes().catch(() => {});
 
   async function newUserTeamId(email: string): Promise<string> {
     const configured = config().teamId;
@@ -262,6 +287,7 @@ function mongoIdentityStore(
 
   return {
     async findLinkedUserId(provider, subject) {
+      await ensureIndexes();
       const link = await links.findOne({ provider, subject });
       return link === null ? null : String(link.userId);
     },
@@ -277,16 +303,32 @@ function mongoIdentityStore(
     },
     async createUser(email, name) {
       const team = await newUserTeamId(email);
-      const user = await hyperdx.User.create({ email, name, team });
-      return user._id.toString();
+      try {
+        const user = await hyperdx.User.create({ email, name, team });
+        return user._id.toString();
+      } catch (error) {
+        // Another first login created a user with this email meanwhile.
+        if (isDuplicateKeyError(error)) throw new LinkConflictError();
+        throw error;
+      }
     },
     async link(identity: VerifiedIdentity, userId) {
+      await ensureIndexes();
       const now = new Date();
-      await links.updateOne(
-        { provider: identity.provider, subject: identity.subject },
-        { $set: { userId, email: identity.email, lastLoginAt: now }, $setOnInsert: { createdAt: now } },
-        { upsert: true }
-      );
+      try {
+        await links.updateOne(
+          { provider: identity.provider, subject: identity.subject },
+          { $set: { userId, email: identity.email, lastLoginAt: now }, $setOnInsert: { createdAt: now } },
+          { upsert: true }
+        );
+      } catch (error) {
+        if (!isDuplicateKeyError(error)) throw error;
+        // Either this subject's own concurrent login linked it first (fine if
+        // to the same user), or another subject holds this user (conflict).
+        const winner = await links.findOne({ provider: identity.provider, subject: identity.subject });
+        if (winner !== null && String(winner.userId) === userId) return;
+        throw new LinkConflictError();
+      }
     },
     async unlink(provider, subject) {
       await links.deleteOne({ provider, subject });
@@ -403,7 +445,7 @@ export function installPlugin(
         run().catch((error: unknown) => {
           if (error instanceof OidcFlowError) {
             log.warn('OIDC login failed', { provider: id, reason: error.reason, detail: error.message });
-            const unavailable = error.reason === 'providerUnavailable' || error.reason === 'instanceNotReady';
+            const unavailable = ['providerUnavailable', 'instanceNotReady', 'storeUnavailable'].includes(error.reason);
             this.fail({ reason: error.reason }, unavailable ? 503 : 400);
             return;
           }
@@ -527,8 +569,15 @@ export function installPlugin(
   //    HyperDX's own error handler maps to `passwordAuthNotAllowed`.
   const localStrategy = hyperdx.passport._strategy('local') as Strategy;
   const originalLocalAuthenticate = localStrategy.authenticate;
+  // The one exception: with initialUser owning the instance (createTeam off),
+  // HyperDX's first-run registration is how TypeKro's bootstrap claims it, and
+  // HyperDX's handler authenticates through this strategy after registering.
+  // HyperDX answers 409 teamAlreadyExists to every registration once a team
+  // exists, so the route closes itself right after the bootstrap.
+  const isBootstrapRegistration = (req: Request) =>
+    !options.createTeam && req.method === 'POST' && normalizedPath(req) === '/register/password';
   localStrategy.authenticate = function authenticate(this: StrategyContext, req, strategyOptions) {
-    if (config !== undefined && !config.passwordLogin) {
+    if (config !== undefined && !config.passwordLogin && !isBootstrapRegistration(req)) {
       this.fail({ message: PASSWORD_NOT_ALLOWED });
       return;
     }
@@ -540,11 +589,11 @@ export function installPlugin(
   //    matches them.
   const PASSWORD_ACCOUNT_ROUTES = [/^\/login\/password$/, /^\/register\/password$/, /^\/team\/setup\/[^/]+$/];
   prepend((req, res, next) => {
-    if (req.method !== 'POST' || config === undefined || config.passwordLogin) {
+    if (req.method !== 'POST' || config === undefined || config.passwordLogin || isBootstrapRegistration(req)) {
       next();
       return;
     }
-    const path = req.path.toLowerCase().replace(/\/+$/, '');
+    const path = normalizedPath(req);
     if (!PASSWORD_ACCOUNT_ROUTES.some((route) => route.test(path))) {
       next();
       return;
@@ -589,7 +638,7 @@ export function installPlugin(
         const status =
           details.reason === 'unknownProvider'
             ? 404
-            : details.reason === 'providerUnavailable' || details.reason === 'instanceNotReady'
+            : ['providerUnavailable', 'instanceNotReady', 'storeUnavailable'].includes(details.reason ?? '')
               ? 503
               : 403;
         res.status(status).type('html').send(renderDenied(details.reason ?? 'unknown', loginPath()));

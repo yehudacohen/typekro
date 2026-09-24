@@ -181,7 +181,8 @@ beforeAll(async () => {
   // Desktop hides this; Linux CI does not).
   chmodSync(workDir, 0o755);
   writeFileSync(join(workDir, 'plugin.js'), Buffer.from(HYPERDX_OIDC_PLUGIN_BASE64, 'base64'), { mode: 0o644 });
-  writeConfig({ providers: [PROVIDER] });
+  // OIDC-only from the very first start: initialUser must still bootstrap.
+  writeConfig({ providers: [PROVIDER], passwordLogin: false });
 
   const hdxPort = await freePort();
   const mockPort = await freePort();
@@ -302,14 +303,30 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({ isTeamExisting: false });
   });
 
-  it('lets the break-glass registration claim the instance, then links it by email', async () => {
-    // What TypeKro's initialUser CronJob does.
-    const registered = await fetch(`${hdxUrl}/api/register/password`, {
+  it('lets the initialUser registration claim the instance even with passwordLogin: false', async () => {
+    // What TypeKro's initialUser CronJob does, with the configuration
+    // OIDC-only from the start. HyperDX closes the route itself afterwards.
+    const register = () =>
+      fetch(`${hdxUrl}/api/register/password`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...ADMIN, confirmPassword: ADMIN.password }),
+      });
+    expect((await register()).status).toBe(200);
+    expect((await register()).status).toBe(409);
+
+    // The account exists, but password sign-in is still refused.
+    const login = await fetch(`${hdxUrl}/api/login/password`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...ADMIN, confirmPassword: ADMIN.password }),
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ email: ADMIN.email, password: ADMIN.password }).toString(),
     });
-    expect(registered.status).toBe(200);
+    expect(login.status).toBe(303);
+    expect(login.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
+  });
+
+  it('links the initial account by email on its first OIDC sign-in', async () => {
     // The password-only account is unclaimed, so the first OIDC login with its email links to it.
     const browser = new Browser();
     await browser.signIn(allowedClaims('admin-sub', ADMIN.email));
@@ -347,6 +364,28 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     const landed = await browser.signIn({ ...allowedClaims('carol', 'carol@example.com'), email_verified: false });
     expect(landed.response.status).toBe(403);
     expect((await browser.me()).status).toBe(401);
+  });
+
+  it('gives an email to exactly one subject when several race to claim it', async () => {
+    // The unique userId index, not the read-then-write, is what guarantees this.
+    const racer = async (n: number) => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const landed = await new Browser().signIn(allowedClaims(`shared-${n}`, 'shared@example.com'));
+        const body = await landed.response.text();
+        // Retry only the mock provider's occasional dropped nonce.
+        if (landed.response.status !== 403 || body.includes('already belongs to another sign-in')) {
+          return landed.response.status;
+        }
+      }
+      return 0;
+    };
+    const statuses = await Promise.all([1, 2, 3, 4].map(racer));
+    expect(statuses.filter((status) => status === 200), `statuses: ${statuses.join(',')}`).toHaveLength(1);
+    expect(statuses.filter((status) => status === 403)).toHaveLength(3);
+    const mongo = (query: string) =>
+      docker(['exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx', '--eval', query]).stdout.trim();
+    expect(mongo("db.users.countDocuments({ email: 'shared@example.com' })")).toBe('1');
+    expect(mongo("db.typekro_oidc_identities.countDocuments({ email: 'shared@example.com' })")).toBe('1');
   });
 
   it('refuses a Unicode look-alike of an existing email (Kelvin sign)', async () => {

@@ -83,6 +83,11 @@ describe('parseOidcPluginConfig', () => {
     expect(config.providers[0]?.issuer).toBe('https://idp.example');
   });
 
+  it('requires teamId to be a HyperDX team id', () => {
+    expect(() => parse({ providers: [], teamId: 'team-1' })).toThrow(/24 hexadecimal/);
+    expect(parse({ providers: [], teamId: '5f6c6f63616c5f7465616d5f' }).teamId).toBe('5f6c6f63616c5f7465616d5f');
+  });
+
   it('reports invalid JSON without echoing the source (it holds client secrets)', () => {
     let message = '';
     try {

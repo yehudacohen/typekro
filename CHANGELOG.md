@@ -21,8 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Accounts are linked by (provider, `sub`). An existing user is linked by email only if no provider has
     claimed it yet (e.g. the break-glass `initialUser`), and emails must be ASCII. Otherwise new users are
     created just-in-time. A linked user whom the provider stops admitting has their API access key rotated.
-  - With `initialUser`, a first OIDC login never creates HyperDX's team, so the break-glass account always
-    claims the instance.
+  - With `initialUser`, a first OIDC login never creates HyperDX's team, so the bootstrap account always
+    claims the instance. Its registration is allowed even with `passwordLogin: false` from the start.
+  - The link invariants (one link per subject, one per HyperDX user) are enforced by unique indexes, so
+    concurrent sign-ins can't both claim an account. Sign-in fails closed until the indexes exist.
   - Configuration comes from a caller-owned Secret that is re-read at runtime, so providers can be added or
     removed without a restart. An invalid config keeps the last good one.
   - `passwordLogin: false` is enforced on HyperDX's password strategy itself, which covers every spelling of

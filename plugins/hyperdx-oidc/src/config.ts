@@ -310,6 +310,9 @@ export function parseOidcPluginConfig(text: string): OidcPluginConfig {
   if (!apiPathPrefix.startsWith('/')) throw new OidcConfigError('configuration.apiPathPrefix must start with "/"');
 
   const teamId = raw.teamId === undefined ? undefined : requireString(raw, 'teamId', 'configuration');
+  if (teamId !== undefined && !/^[0-9a-f]{24}$/.test(teamId)) {
+    throw new OidcConfigError('configuration.teamId must be a HyperDX team id (24 hexadecimal characters)');
+  }
   const redirectBaseUrl =
     raw.redirectBaseUrl === undefined
       ? undefined

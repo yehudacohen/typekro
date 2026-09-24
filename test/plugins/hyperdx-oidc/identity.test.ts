@@ -7,6 +7,7 @@ import { type OidcProviderConfig, parseOidcPluginConfig } from '../../../plugins
 import {
   evaluateClaims,
   type IdentityStore,
+  LinkConflictError,
   normalizeGroups,
   resolveAccount,
   type VerifiedIdentity,
@@ -137,13 +138,18 @@ function memoryStore(initial: { users?: Record<string, string>; links?: Record<s
       return [...links.values()].includes(userId);
     },
     async createUser(email) {
+      // Mirrors HyperDX's unique email index.
+      if ([...users.values()].includes(email)) throw new LinkConflictError();
       const id = `new-${next++}`;
       users.set(id, email);
       events.push(`create:${email}`);
       return id;
     },
     async link(identity: VerifiedIdentity, userId) {
-      links.set(`${identity.provider}:${identity.subject}`, userId);
+      // Mirrors the unique userId index: one link per HyperDX user.
+      const key = `${identity.provider}:${identity.subject}`;
+      if ([...links].some(([other, id]) => id === userId && other !== key)) throw new LinkConflictError();
+      links.set(key, userId);
       events.push(`link:${identity.subject}->${userId}`);
     },
     async unlink(provider, subject) {
@@ -190,6 +196,30 @@ describe('resolveAccount', () => {
     const { store, events } = memoryStore({ users: { u1: 'alice@example.com' }, links: { 'other:s9': 'u1' } });
     expect(await resolveAccount(store, providerWith(), identity)).toEqual({ denied: 'emailInUse' });
     expect(events).toEqual([]);
+  });
+
+  it('refuses the loser of two subjects racing to link the same account by email', async () => {
+    // Both read "no link" before either writes; the unique userId index makes
+    // the second write fail, and the retry then sees the winner's link.
+    const { store, links } = memoryStore({ users: { u1: 'alice@example.com' } });
+    const racer = (subject: string) => resolveAccount(store, providerWith(), { ...identity, subject });
+    const results = await Promise.all([racer('s1'), racer('s2')]);
+    expect(results).toContainEqual({ userId: 'u1', outcome: 'linkedByEmail' });
+    expect(results).toContainEqual({ denied: 'emailInUse' });
+    expect([...links.values()].filter((id) => id === 'u1')).toHaveLength(1);
+  });
+
+  it('lets a subject whose own concurrent login won find its link on retry', async () => {
+    const { store } = memoryStore();
+    const results = await Promise.all([
+      resolveAccount(store, providerWith(), identity),
+      resolveAccount(store, providerWith(), identity),
+    ]);
+    // One created the user; the other either linked to it or, having lost the
+    // create race, resolved to the same account on retry.
+    const ids = results.map((result) => ('userId' in result ? result.userId : 'denied'));
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toBe('new-1');
   });
 
   it('honours linkExistingUsersByEmail: false and createUsers: false', async () => {

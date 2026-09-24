@@ -339,7 +339,9 @@ rejected, and the last good configuration keeps serving. A new plugin build chan
 | `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs. |
 
 Accounts are linked by the provider's stable subject (`sub`), recorded in the `typekro_oidc_identities`
-collection in HyperDX's MongoDB, not by email:
+collection in HyperDX's MongoDB, not by email. Two unique indexes enforce the invariants below: one link per
+(provider, subject), and one link per HyperDX user. They hold even when sign-ins race, and sign-in is refused
+until the indexes exist.
 - An account that is already linked to one subject is never handed to another subject through its email.
   That covers a recycled email and the same email asserted by a second provider; the sign-in is refused.
 - Emails must be ASCII. Unicode look-alikes (such as the Kelvin sign case-folding to `k`) are refused before
@@ -362,8 +364,15 @@ one creates the team, and the others wait for it. HyperDX's own first-run regist
 OIDC sign-ins happen. With `initialUser` or `passwordLogin: false` this can't arise.
 
 **With `initialUser`.** The first OIDC sign-in does not create HyperDX's team when `initialUser` is set, so
-the bootstrap's break-glass account always claims the instance. Until it has, OIDC sign-in answers "still
-being set up". The first OIDC sign-in with the break-glass account's email links to it.
+the bootstrap's account always claims the instance. Until it has, OIDC sign-in answers "still being set up".
+The bootstrap's registration is allowed even when the configuration has `passwordLogin: false` from the
+start. Once a team exists, HyperDX answers every registration with `teamAlreadyExists`, so the route closes
+itself. The first OIDC sign-in with that account's email links to it.
+
+What that account is depends on `passwordLogin`. With `true` it's a **break-glass** login for when OIDC is
+broken. With `false` it's only the **initial account**: it exists and owns the team, but can't sign in with
+its password. Keep it as a break-glass login by leaving `passwordLogin: true`, or plan to flip the Secret back
+if OIDC ever breaks, since the change applies without a restart.
 
 ### Guard rails
 
@@ -372,6 +381,10 @@ being set up". The first OIDC sign-in with the break-glass account's email links
 - It is enabled only on audited chart versions (`3.2.0`, HyperDX `2.35.0`), like `initialUser`: at build time
   in direct mode, and by narrowing `spec.version` on the CRD in KRO mode. After verifying a newer chart, set
   `hyperdxOidc.allowUnvalidatedChartVersion: true`.
+- Turning `passwordLogin` off doesn't end password sessions that already exist; they expire on HyperDX's own
+  30-day rolling cookie. To end them now, rotate the session secret or delete the sessions in MongoDB.
+- When the first OIDC sign-in creates the team, its default connections and sources are provisioned
+  best-effort, as HyperDX's own registration does. A failure is logged, and the team stays.
 - `passwordLogin: false` is enforced on HyperDX's password strategy itself, so it holds for every route
   that uses it, however the path is spelled (Express matches routes case-insensitively). First-run
   registration and team-invite acceptance, which create password accounts without the strategy, are refused

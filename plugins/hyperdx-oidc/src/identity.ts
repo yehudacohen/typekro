@@ -101,6 +101,19 @@ export function evaluateClaims(
   };
 }
 
+/**
+ * Thrown by an {@link IdentityStore} when a write would break a link
+ * invariant — the user already has a link from another subject, or another
+ * login created the user with this email first. The stores enforce this with
+ * unique indexes, so it is race-proof where the reads in resolveAccount are not.
+ */
+export class LinkConflictError extends Error {
+  constructor() {
+    super('the account is already linked to another sign-in');
+    this.name = 'LinkConflictError';
+  }
+}
+
 /** The account operations {@link resolveAccount} needs. */
 export interface IdentityStore {
   /** The HyperDX user id linked to (provider, subject), if any. */
@@ -111,9 +124,15 @@ export interface IdentityStore {
   findUserIdByEmail(email: string): Promise<string | null>;
   /** Whether any provider has already linked a subject to this user. */
   userHasAnyLink(userId: string): Promise<boolean>;
-  /** Create a HyperDX user in the team new users join; returns its id. */
+  /**
+   * Create a HyperDX user in the team new users join; returns its id.
+   * @throws LinkConflictError when a user with this email already exists.
+   */
   createUser(email: string, name: string): Promise<string>;
-  /** Link (provider, subject) to a user, replacing a stale link. */
+  /**
+   * Link (provider, subject) to a user, replacing a stale link.
+   * @throws LinkConflictError when the user is already linked to another subject.
+   */
   link(identity: VerifiedIdentity, userId: string): Promise<void>;
   /** Drop a link whose user no longer exists. */
   unlink(provider: string, subject: string): Promise<void>;
@@ -134,6 +153,27 @@ export type AccountResolution =
  * provider allows creating users.
  */
 export async function resolveAccount(
+  store: IdentityStore,
+  provider: OidcProviderConfig,
+  identity: VerifiedIdentity
+): Promise<AccountResolution> {
+  try {
+    return await resolveAccountOnce(store, provider, identity);
+  } catch (error) {
+    if (!(error instanceof LinkConflictError)) throw error;
+    // A concurrent login changed the picture between our reads and our write.
+    // Resolve once more against the settled state: the same subject's own
+    // winning login now finds its link; any other subject is refused.
+    try {
+      return await resolveAccountOnce(store, provider, identity);
+    } catch (retryError) {
+      if (retryError instanceof LinkConflictError) return { denied: 'emailInUse' };
+      throw retryError;
+    }
+  }
+}
+
+async function resolveAccountOnce(
   store: IdentityStore,
   provider: OidcProviderConfig,
   identity: VerifiedIdentity
