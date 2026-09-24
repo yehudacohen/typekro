@@ -13,3 +13,6 @@ export const HYPERDX_OIDC_PLUGIN_SHA256: string = '86a4c5f372e7e416543b29d09d3ac
 
 /** Size of the decoded bundle in bytes. */
 export const HYPERDX_OIDC_PLUGIN_BYTES: number = 47796;
+
+/** Hash of the inputs the bundle was built from (see the --check mode of the build script). */
+export const HYPERDX_OIDC_PLUGIN_INPUTS_SHA256: string = '94144b124d2b4240d976d44c68b4b1048bffa0ed978491aaa78380632bbb9bba';

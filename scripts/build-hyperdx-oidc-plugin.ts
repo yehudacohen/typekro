@@ -8,15 +8,48 @@
  *
  *   bun run scripts/build-hyperdx-oidc-plugin.ts          # regenerate
  *   bun run scripts/build-hyperdx-oidc-plugin.ts --check  # fail if stale (CI)
+ *
+ * The check compares INPUTS, not output: minified output differs between Bun
+ * versions, so a byte comparison would fail on any machine whose Bun differs
+ * from the one that generated the file. The generated file records a hash of
+ * the plugin sources, the bundled oauth4webapi version and this script.
  */
 
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = join(import.meta.dir, '..');
 const ENTRY = join(ROOT, 'plugins/hyperdx-oidc/src/index.ts');
 const OUTPUT = join(ROOT, 'src/factories/clickstack/hyperdx-oidc/plugin-bundle.generated.ts');
+const SOURCE_DIR = join(ROOT, 'plugins/hyperdx-oidc/src');
+
+/** Hash of everything that determines the bundle's behaviour. */
+function inputsSha256(): string {
+  const hash = createHash('sha256');
+  for (const file of readdirSync(SOURCE_DIR).filter((name) => name.endsWith('.ts')).sort()) {
+    hash.update(`${file}\0${readFileSync(join(SOURCE_DIR, file), 'utf8')}\0`);
+  }
+  const oauth = JSON.parse(readFileSync(join(ROOT, 'node_modules/oauth4webapi/package.json'), 'utf8')) as { version: string };
+  hash.update(`oauth4webapi@${oauth.version}\0`);
+  hash.update(readFileSync(import.meta.path, 'utf8'));
+  return hash.digest('hex');
+}
+
+const inputs = inputsSha256();
+if (process.argv.includes('--check')) {
+  let current = '';
+  try {
+    current = readFileSync(OUTPUT, 'utf8');
+  } catch {}
+  const recorded = /HYPERDX_OIDC_PLUGIN_INPUTS_SHA256: string = '([0-9a-f]{64})'/.exec(current)?.[1];
+  if (recorded !== inputs) {
+    console.error(`${OUTPUT} is stale (plugin sources changed). Run: bun run scripts/build-hyperdx-oidc-plugin.ts`);
+    process.exit(1);
+  }
+  console.log(`hyperdx-oidc plugin bundle is current (inputs sha256 ${inputs.slice(0, 12)})`);
+  process.exit(0);
+}
 
 const result = await Bun.build({
   entrypoints: [ENTRY],
@@ -52,21 +85,10 @@ export const HYPERDX_OIDC_PLUGIN_SHA256: string = '${sha256}';
 
 /** Size of the decoded bundle in bytes. */
 export const HYPERDX_OIDC_PLUGIN_BYTES: number = ${bytes.length};
+
+/** Hash of the inputs the bundle was built from (see the --check mode of the build script). */
+export const HYPERDX_OIDC_PLUGIN_INPUTS_SHA256: string = '${inputs}';
 `;
 
-if (process.argv.includes('--check')) {
-  let current = '';
-  try {
-    current = readFileSync(OUTPUT, 'utf8');
-  } catch {}
-  if (current !== generated) {
-    console.error(
-      `${OUTPUT} is stale. Run: bun run scripts/build-hyperdx-oidc-plugin.ts`
-    );
-    process.exit(1);
-  }
-  console.log(`hyperdx-oidc plugin bundle is current (${bytes.length} bytes, sha256 ${sha256.slice(0, 12)})`);
-} else {
-  writeFileSync(OUTPUT, generated);
-  console.log(`wrote ${OUTPUT} (${bytes.length} bytes, sha256 ${sha256.slice(0, 12)})`);
-}
+writeFileSync(OUTPUT, generated);
+console.log(`wrote ${OUTPUT} (${bytes.length} bytes, sha256 ${sha256.slice(0, 12)}, inputs ${inputs.slice(0, 12)})`);

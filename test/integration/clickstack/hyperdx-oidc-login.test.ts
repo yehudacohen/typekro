@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -83,7 +83,7 @@ const PROVIDER = {
 };
 
 function writeConfig(config: Record<string, unknown>) {
-  writeFileSync(join(workDir, 'config.json'), JSON.stringify({ allowInsecureHttp: true, ...config }));
+  writeFileSync(join(workDir, 'config.json'), JSON.stringify({ allowInsecureHttp: true, ...config }), { mode: 0o644 });
 }
 
 /** How many HyperDX log lines match (stdout and stderr interleave, so count rather than slice). */
@@ -149,7 +149,7 @@ class Browser {
   /** Start at HyperDX's login route, submit the mock IdP's form with these claims, land back on HyperDX. */
   async signIn(claims: Record<string, unknown>, provider = 'mock', base = hdxUrl) {
     const form = await this.go(`${base}/api/login/oidc/${provider}`);
-    expect(form.response.status).toBe(200);
+    expect(form.response.status, `login form at ${form.url}`).toBe(200);
     return this.go(form.url, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -176,7 +176,11 @@ const allowedClaims = (sub: string, email: string) => ({
 beforeAll(async () => {
   if (!dockerAvailable) return;
   workDir = mkdtempSync(join(tmpdir(), 'typekro-hdx-oidc-'));
-  writeFileSync(join(workDir, 'plugin.js'), Buffer.from(HYPERDX_OIDC_PLUGIN_BASE64, 'base64'));
+  // mkdtemp creates the directory 0700 for the runner's user; HyperDX runs as
+  // another user inside the container and must be able to read it (Docker
+  // Desktop hides this; Linux CI does not).
+  chmodSync(workDir, 0o755);
+  writeFileSync(join(workDir, 'plugin.js'), Buffer.from(HYPERDX_OIDC_PLUGIN_BASE64, 'base64'), { mode: 0o644 });
   writeConfig({ providers: [PROVIDER] });
 
   const hdxPort = await freePort();
@@ -227,6 +231,14 @@ beforeAll(async () => {
   ]);
   if (!openStarted.ok) throw new Error(`docker run hyperdx (open) failed: ${openStarted.stderr}`);
 
+  // The mock provider must be serving discovery before HyperDX's plugin (and
+  // the browser) use it.
+  for (let attempt = 0; attempt < 120; attempt++) {
+    try {
+      if ((await fetch(`${mockExternal}/default/.well-known/openid-configuration`)).status === 200) break;
+    } catch {}
+    await Bun.sleep(1000);
+  }
   for (let attempt = 0; attempt < 120; attempt++) {
     try {
       if ((await fetch(`${hdxUrl}/api/installation`)).status === 200) break;
@@ -234,10 +246,17 @@ beforeAll(async () => {
     await Bun.sleep(1000);
   }
   await waitForLog(/"plugin":"typekro-oidc","message":"installed"/);
+  // Installed is not enough: the configuration must have been read and applied.
+  await waitForLog(/"message":"OIDC configuration applied","providers":\["mock"\]/);
   for (let attempt = 0; attempt < 120; attempt++) {
     try {
       if ((await fetch(`${openUrl}/api/installation`)).status === 200) break;
     } catch {}
+    await Bun.sleep(1000);
+  }
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const logs = docker(['logs', HYPERDX_OPEN]);
+    if (`${logs.stdout}\n${logs.stderr}`.includes('"message":"OIDC configuration applied","providers":["mock"]')) break;
     await Bun.sleep(1000);
   }
 });
