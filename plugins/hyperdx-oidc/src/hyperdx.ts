@@ -89,6 +89,7 @@ interface MongooseModel {
 
 interface Collection {
   createIndex(spec: Record<string, number>, options: Record<string, unknown>): Promise<unknown>;
+  insertOne(doc: Record<string, unknown>): Promise<unknown>;
   findOne(filter: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   updateOne(filter: Record<string, unknown>, update: Record<string, unknown>, options?: Record<string, unknown>): Promise<unknown>;
   deleteOne(filter: Record<string, unknown>): Promise<unknown>;
@@ -113,6 +114,17 @@ export interface Logger {
 
 const STRATEGY_PREFIX = 'typekro-oidc:';
 const IDENTITY_COLLECTION = 'typekro_oidc_identities';
+/** Plugin-owned coordination documents (the team-claim lock). */
+const STATE_COLLECTION = 'typekro_oidc_state';
+const TEAM_CLAIM_ID = 'team-claim';
+/** How long a first login waits for another login's team creation. */
+const TEAM_CLAIM_WAIT_MS = 15_000;
+/** A claim older than this with still no team is from a crashed process and may be taken over. */
+const TEAM_CLAIM_STALE_MS = 60_000;
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return (error as { code?: unknown })?.code === 11000;
+}
 const PASSWORD_NOT_ALLOWED = 'Authentication method password is not allowed by your team admin.';
 
 // ── Resolution and self-check ─────────────────────────────────────────────
@@ -178,9 +190,13 @@ function mongoIdentityStore(
   log: Logger
 ): IdentityStore {
   const links = hyperdx.User.db.collection(IDENTITY_COLLECTION);
+  const state = hyperdx.User.db.collection(STATE_COLLECTION);
   links
     .createIndex({ provider: 1, subject: 1 }, { unique: true, name: 'provider_subject' })
     .catch((error: unknown) => log.error('could not create the identity-link index', { error: String(error) }));
+  links
+    .createIndex({ userId: 1 }, { name: 'user' })
+    .catch((error: unknown) => log.error('could not create the identity-link user index', { error: String(error) }));
 
   async function newUserTeamId(email: string): Promise<string> {
     const configured = config().teamId;
@@ -201,13 +217,40 @@ function mongoIdentityStore(
     }
     // No team yet: this login claims the instance, exactly as HyperDX's own
     // first registration does (create the team, then its default sources).
+    //
+    // HyperDX's own check-then-create is not atomic, so concurrent first
+    // logins — across replicas too — would each create a team. They race for
+    // a claim document with a unique _id instead: exactly one wins and
+    // creates the team; the rest wait for it and never create one.
+    const onlyTeam = (teams: Array<{ _id: { toString(): string } }>) =>
+      teams.length === 1 ? (teams[0] as { _id: { toString(): string } })._id.toString() : undefined;
+    try {
+      await state.insertOne({ _id: TEAM_CLAIM_ID, at: new Date(), by: email });
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+      const deadline = Date.now() + TEAM_CLAIM_WAIT_MS;
+      while (Date.now() < deadline) {
+        const claimed = onlyTeam(await findTeams());
+        if (claimed !== undefined) return claimed;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      const claim = await state.findOne({ _id: TEAM_CLAIM_ID });
+      const claimedAt = claim?.at instanceof Date ? claim.at.getTime() : 0;
+      if (Date.now() - claimedAt > TEAM_CLAIM_STALE_MS) {
+        // The claimant died before creating the team; release the claim so
+        // the next attempt can take it.
+        await state.deleteOne({ _id: TEAM_CLAIM_ID, at: claim?.at });
+      }
+      throw new OidcFlowError('instanceNotReady', 'another first login is creating the HyperDX team');
+    }
     let team: { _id: { toString(): string } };
     try {
       team = await hyperdx.createTeam({ name: `${email}'s Team`, collectorAuthenticationEnforced: true });
     } catch (error) {
-      // A concurrent first login (or registration) won the race: use its team.
-      const raced = await findTeams();
-      if (raced.length === 1) return (raced[0] as { _id: { toString(): string } })._id.toString();
+      // HyperDX's own registration got there first: use its team.
+      const raced = onlyTeam(await findTeams());
+      if (raced !== undefined) return raced;
+      await state.deleteOne({ _id: TEAM_CLAIM_ID });
       throw error;
     }
     const teamId = team._id.toString();
@@ -339,7 +382,9 @@ export function installPlugin(
           const decision = evaluateClaims(provider.config, claims);
           if (!decision.allowed) {
             log.warn('OIDC login denied', { provider: id, reason: decision.reason });
-            if (decision.reason === 'groupNotAllowed' || decision.reason === 'emailDomainNotAllowed' || decision.reason === 'emailNotVerified') {
+            if (decision.reason !== 'subjectMissing') {
+              // Keyed on this provider's validated `sub`: only the user linked to
+              // exactly that subject is affected.
               await revokeAccessKeyOfLinkedSubject(id, claims.sub);
             }
             this.fail({ reason: decision.reason, returnTo: pending.returnTo }, 403);

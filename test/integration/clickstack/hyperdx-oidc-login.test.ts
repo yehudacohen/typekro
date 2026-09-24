@@ -65,8 +65,11 @@ const NETWORK = `typekro-oidc-${suffix}`;
 const MONGO = `typekro-oidc-mongo-${suffix}`;
 const MOCK = `typekro-oidc-mock-${suffix}`;
 const HYPERDX = `typekro-oidc-hdx-${suffix}`;
+/** A second HyperDX, on its own database, where a first OIDC login may create the team. */
+const HYPERDX_OPEN = `typekro-oidc-hdx-open-${suffix}`;
 
 let hdxUrl = '';
+let openUrl = '';
 let mockExternal = '';
 let workDir = '';
 
@@ -144,8 +147,8 @@ class Browser {
   }
 
   /** Start at HyperDX's login route, submit the mock IdP's form with these claims, land back on HyperDX. */
-  async signIn(claims: Record<string, unknown>, provider = 'mock') {
-    const form = await this.go(`${hdxUrl}/api/login/oidc/${provider}`);
+  async signIn(claims: Record<string, unknown>, provider = 'mock', base = hdxUrl) {
+    const form = await this.go(`${base}/api/login/oidc/${provider}`);
     expect(form.response.status).toBe(200);
     return this.go(form.url, {
       method: 'POST',
@@ -178,10 +181,12 @@ beforeAll(async () => {
 
   const hdxPort = await freePort();
   const mockPort = await freePort();
+  const openPort = await freePort();
   hdxUrl = `http://localhost:${hdxPort}`;
+  openUrl = `http://localhost:${openPort}`;
   mockExternal = `http://localhost:${mockPort}`;
 
-  for (const name of [HYPERDX, MOCK, MONGO]) docker(['rm', '-f', name]);
+  for (const name of [HYPERDX, HYPERDX_OPEN, MOCK, MONGO]) docker(['rm', '-f', name]);
   docker(['network', 'rm', NETWORK]);
   expect(docker(['network', 'create', NETWORK]).ok).toBe(true);
   expect(docker(['run', '-d', '--name', MONGO, '--network', NETWORK, MONGO_IMAGE]).ok).toBe(true);
@@ -208,6 +213,19 @@ beforeAll(async () => {
     HYPERDX_IMAGE,
   ]);
   if (!started.ok) throw new Error(`docker run hyperdx failed: ${started.stderr}`);
+  const openStarted = docker([
+    'run', '-d', '--name', HYPERDX_OPEN, '--network', NETWORK, '-p', `${openPort}:8080`,
+    '-e', `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-open`,
+    '-e', `FRONTEND_URL=${openUrl}`,
+    '-e', 'HYPERDX_APP_PORT=8080',
+    '-e', 'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
+    '-e', 'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
+    '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=true',
+    '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
+    '-v', `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
+    HYPERDX_IMAGE,
+  ]);
+  if (!openStarted.ok) throw new Error(`docker run hyperdx (open) failed: ${openStarted.stderr}`);
 
   for (let attempt = 0; attempt < 120; attempt++) {
     try {
@@ -216,11 +234,17 @@ beforeAll(async () => {
     await Bun.sleep(1000);
   }
   await waitForLog(/"plugin":"typekro-oidc","message":"installed"/);
+  for (let attempt = 0; attempt < 120; attempt++) {
+    try {
+      if ((await fetch(`${openUrl}/api/installation`)).status === 200) break;
+    } catch {}
+    await Bun.sleep(1000);
+  }
 });
 
 afterAll(() => {
   if (!dockerAvailable) return;
-  for (const name of [HYPERDX, MOCK, MONGO]) docker(['rm', '-f', name]);
+  for (const name of [HYPERDX, HYPERDX_OPEN, MOCK, MONGO]) docker(['rm', '-f', name]);
   docker(['network', 'rm', NETWORK]);
   if (workDir) rmSync(workDir, { recursive: true, force: true });
 });
@@ -228,6 +252,22 @@ afterAll(() => {
 const ADMIN = { email: 'admin@example.com', password: 'Break-Glass-Passw0rd!' };
 
 describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
+  it('creates exactly one team when several first logins race on a fresh instance', async () => {
+    // Without initialUser, the first OIDC login claims the instance. HyperDX's
+    // own check-then-create is not atomic; the plugin's claim lock must be.
+    const signIn = (n: number) =>
+      new Browser()
+        .signIn(allowedClaims(`racer-${n}`, `racer-${n}@example.com`), 'mock', openUrl)
+        .then((landed) => landed.response.status);
+    const statuses = await Promise.all([1, 2, 3, 4, 5].map(signIn));
+    expect(statuses.every((status) => status === 200 || status === 503)).toBe(true);
+    expect(statuses.filter((status) => status === 200).length).toBeGreaterThanOrEqual(1);
+    const teams = docker([
+      'exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx-open', '--eval', 'db.teams.countDocuments()',
+    ]);
+    expect(teams.stdout.trim()).toBe('1');
+  });
+
   it('does not create the team on a first OIDC login when initialUser claims the instance', async () => {
     const browser = new Browser();
     const landed = await browser.signIn(allowedClaims('early', 'early@example.com'));

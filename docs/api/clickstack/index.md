@@ -348,7 +348,16 @@ collection in HyperDX's MongoDB, not by email:
 **Revoking access.** A sign-in that the provider no longer admits (group or domain removed, email no longer
 verified) is refused. For a linked user it also rotates their HyperDX access key, which ends their external
 API and MCP access. Sessions end through `maxSessionAge`. To remove someone outright, delete their HyperDX
-user.
+user. Note that a typo in `allow` rules that is live while linked users sign in rotates their keys too, so
+check rule changes before applying them.
+
+**Removing a provider** leaves its links in `typekro_oidc_identities`, so its users' emails stay attached to
+their accounts, and a sign-in from another provider with the same email is refused. To move a user to a new
+provider, delete their link document (`db.typekro_oidc_identities.deleteOne({ provider, subject })`).
+
+**Concurrent first sign-ins.** Without `initialUser`, the first OIDC sign-in creates HyperDX's team.
+Simultaneous first sign-ins, across replicas too, race for a claim document in `typekro_oidc_state`. Exactly
+one creates the team, and the others wait for it.
 
 **With `initialUser`.** The first OIDC sign-in does not create HyperDX's team when `initialUser` is set, so
 the bootstrap's break-glass account always claims the instance. Until it has, OIDC sign-in answers "still
