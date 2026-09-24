@@ -221,7 +221,10 @@ function mongoIdentityStore(
     }
     return indexes;
   };
-  ensureIndexes().catch(() => {});
+  // Start creating them now; a failure is already logged, and retried by the next login.
+  ensureIndexes().catch(() => {
+    /* logged in ensureIndexes */
+  });
 
   async function newUserTeamId(email: string): Promise<string> {
     const configured = config().teamId;

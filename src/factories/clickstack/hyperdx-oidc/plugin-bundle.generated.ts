@@ -15,4 +15,4 @@ export const HYPERDX_OIDC_PLUGIN_SHA256: string = 'ebdadd90372a404a266a1f5775e99
 export const HYPERDX_OIDC_PLUGIN_BYTES: number = 48828;
 
 /** Hash of the inputs the bundle was built from (see the --check mode of the build script). */
-export const HYPERDX_OIDC_PLUGIN_INPUTS_SHA256: string = '48434164b7700d7094136f0d086094a981fd987ff610e0c878583c08a8af9b89';
+export const HYPERDX_OIDC_PLUGIN_INPUTS_SHA256: string = 'f9702138d036142823f6859d6e5f739b9e67782fa84a324ba2afd2efe6b6801d';
