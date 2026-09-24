@@ -34,6 +34,7 @@
  * @module
  */
 export * from './compositions/index.js';
+export * from './hyperdx-oidc/index.js';
 export * from './resources/index.js';
 export * from './types.js';
 export * from './utils/index.js';

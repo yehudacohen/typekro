@@ -149,6 +149,16 @@ import {
   renderRetentionScript,
   resolveClickStackStorage,
 } from '../utils/storage.js';
+import {
+  applyHyperdxOidcValues,
+  CLICKSTACK_HYPERDX_OIDC_VALIDATED_APP_VERSION,
+  CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS,
+  hyperdxOidcPluginConfigMapData,
+  hyperdxOidcPluginConfigMapName,
+  isClickStackHyperdxOidcValidatedChartVersion,
+  type ResolvedClickStackHyperdxOidc,
+  resolveClickStackHyperdxOidc,
+} from '../hyperdx-oidc/index.js';
 import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.js';
 
 /** Concrete, resolved build choices the composition body branches on. */
@@ -170,6 +180,8 @@ interface ResolvedBuildConfig {
    * which is Mongo's PVC.
    */
   clickhouseStorage: ResolvedClickStackStorage;
+  /** HyperDX OIDC sign-in wiring, when configured (see `hyperdx-oidc/`). */
+  hyperdxOidc?: ResolvedClickStackHyperdxOidc;
   /**
    * The first HyperDX account the Team-bootstrap CronJob seeds, when one is
    * configured. Build-time: it is rendered into the CronJob's mongosh script.
@@ -508,6 +520,33 @@ function assertClickStackInitialUserChartVersion(
 }
 
 /**
+ * Refuse `hyperdxOidc` on a chart version the plugin was not audited against —
+ * the build-time half; the KRO half is the shared `spec.version` narrowing in
+ * {@link clickStackSchemaFieldValidations}.
+ *
+ * The plugin also checks its hook points at startup and turns itself off if
+ * they are missing, so an unaudited chart fails CLOSED to password-only login
+ * rather than breaking HyperDX. The throw is about not shipping a sign-in path
+ * nobody has verified.
+ */
+function assertClickStackHyperdxOidcChartVersion(
+  version: unknown,
+  hyperdxOidc?: ResolvedClickStackHyperdxOidc
+): void {
+  if (hyperdxOidc === undefined || hyperdxOidc.allowUnvalidatedChartVersion) return;
+  if (typeof version !== 'string') return;
+  if (!isClickStackHyperdxOidcValidatedChartVersion(version)) {
+    throw new Error(
+      'ClickStack hyperdxOidc is audited only against chart version(s) ' +
+        `${CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS.join(', ')} (appVersion ` +
+        `${CLICKSTACK_HYPERDX_OIDC_VALIDATED_APP_VERSION}), but version ${JSON.stringify(version)} ` +
+        "was requested. The plugin hooks HyperDX's Passport instance, root router and user/team " +
+        'models. Verify them on that chart, then set hyperdxOidc.allowUnvalidatedChartVersion: true.'
+    );
+  }
+}
+
+/**
  * Schema field validations for a composition, with the chart-version narrowing
  * added when `initialUser` is configured.
  *
@@ -524,10 +563,16 @@ function assertClickStackInitialUserChartVersion(
  */
 function clickStackSchemaFieldValidations(
   base: Readonly<Record<string, string>>,
-  initialUser?: ResolvedClickStackInitialUser
+  initialUser?: ResolvedClickStackInitialUser,
+  hyperdxOidc?: ResolvedClickStackHyperdxOidc
 ): { schemaFieldValidations?: Readonly<Record<string, string>> } {
   const merged: Record<string, string> = { ...base };
-  if (initialUser !== undefined && !initialUser.allowUnvalidatedChartVersion) {
+  // Both features are audited against the same chart series, so one rule
+  // covers either (see CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS).
+  if (
+    (initialUser !== undefined && !initialUser.allowUnvalidatedChartVersion) ||
+    (hyperdxOidc !== undefined && !hyperdxOidc.allowUnvalidatedChartVersion)
+  ) {
     merged.version = clickStackInitialUserVersionValidationRule();
   }
   return Object.keys(merged).length > 0 ? { schemaFieldValidations: merged } : {};
@@ -565,6 +610,11 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       isKubernetesRef(spec.version) ? undefined : (spec.version ?? DEFAULT_CLICKSTACK_VERSION),
       build.initialUser
     );
+    // The OIDC plugin hooks HyperDX internals, so the same audited-chart rule applies.
+    assertClickStackHyperdxOidcChartVersion(
+      isKubernetesRef(spec.version) ? undefined : (spec.version ?? DEFAULT_CLICKSTACK_VERSION),
+      build.hyperdxOidc
+    );
 
     // The schema constrains `name` — DNS-label syntax and the derived length
     // bound — for KRO admission and direct-mode `deploy`; direct-mode `toYaml`
@@ -588,10 +638,17 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       }
     }
 
+    // HyperDX OIDC: fold the plugin's env, volumes and mounts into the static
+    // values (appended to the caller's lists, which a deep merge would replace).
+    const staticValues =
+      build.hyperdxOidc === undefined
+        ? build.values
+        : applyHyperdxOidcValues('makeClickstackBootstrap', build.values, build.hyperdxOidc, spec.name);
+
     const helmValues = mapClickStackConfigToHelmValues(spec, {
       mongoMode: build.mongoMode,
       credentialSource: build.credentialSource,
-      ...(build.values !== undefined && { values: build.values }),
+      ...(staticValues !== undefined && { values: staticValues }),
       storage: build.clickhouseStorage,
     });
 
@@ -737,6 +794,27 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // exist before helm-controller creates the Deployment.
     if (queueClaim !== undefined) {
       _clickstackHelmRelease.dependsOn(queueClaim);
+    }
+
+    // ── HyperDX OIDC plugin ──────────────────────────────────────────────
+    // The HyperDX pod mounts the plugin from this ConfigMap, so it has to
+    // exist before the Deployment. The caller's configuration Secret is theirs
+    // to create; see hyperdx-oidc/index.ts.
+    if (build.hyperdxOidc !== undefined) {
+      const oidcPlugin = configMap({
+        id: 'clickstackHyperdxOidcPlugin',
+        metadata: {
+          name: hyperdxOidcPluginConfigMapName(spec.name),
+          namespace: resolvedNamespace as string,
+          labels: {
+            'app.kubernetes.io/name': 'hyperdx-oidc-plugin',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+        ...hyperdxOidcPluginConfigMapData(),
+      });
+      _clickstackHelmRelease.dependsOn(oidcPlugin);
     }
 
     // HyperDX's production OpAMP controller activates OTLP only after its
@@ -1113,6 +1191,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     CLICKSTACK_SECRET_NAME,
     options.initialUser
   );
+  const hyperdxOidc = resolveClickStackHyperdxOidc('makeClickstackBootstrap', options.hyperdxOidc);
   return {
     mongoMode: 'internal',
     credentialSource: options.credentials?.source ?? 'inline',
@@ -1121,6 +1200,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
     ...(initialUser !== undefined && { initialUser }),
+    ...(hyperdxOidc !== undefined && { hyperdxOidc }),
   };
 }
 
@@ -1130,6 +1210,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     CLICKSTACK_SECRET_NAME,
     options.initialUser
   );
+  const hyperdxOidc = resolveClickStackHyperdxOidc('makeClickstackBootstrap', options.hyperdxOidc);
   return {
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
@@ -1137,6 +1218,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
     ...(initialUser !== undefined && { initialUser }),
+    ...(hyperdxOidc !== undefined && { hyperdxOidc }),
   };
 }
 
@@ -1150,7 +1232,7 @@ function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser)
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser, build.hyperdxOidc)
   );
 }
 
@@ -1169,7 +1251,7 @@ function buildInternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build.initialUser)
+    clickStackSchemaFieldValidations({}, build.initialUser, build.hyperdxOidc)
   );
 }
 
@@ -1183,7 +1265,7 @@ function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser)
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser, build.hyperdxOidc)
   );
 }
 
@@ -1202,7 +1284,7 @@ function buildExternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build.initialUser)
+    clickStackSchemaFieldValidations({}, build.initialUser, build.hyperdxOidc)
   );
 }
 

@@ -266,6 +266,94 @@ resource at apply time is refused by admission. Set
 `initialUser.allowUnvalidatedChartVersion: true` once you have checked the registration contract and
 the `teams.apiKey` field on a newer chart yourself.
 
+## Sign-in with OpenID Connect (`hyperdxOidc`)
+
+HyperDX's open-source build signs users in only with an email and password; its SSO is a commercial
+feature. `hyperdxOidc` adds OpenID Connect sign-in, without forking or rebuilding the HyperDX image (#241).
+
+```typescript
+const stack = makeClickstackBootstrap({
+  initialUser: { email: 'ops@example.com' },          // keep a break-glass password account
+  hyperdxOidc: { configSecretRef: { name: 'hyperdx-oidc' } },
+});
+```
+
+`configSecretRef` names a Secret **you** create in the release's namespace, with the configuration under
+the key `oidc.json` (override with `configSecretRef.key`):
+
+```json
+{
+  "providers": [
+    {
+      "id": "cognito",
+      "displayName": "Company SSO",
+      "issuer": "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EXAMPLE",
+      "clientId": "…",
+      "clientSecret": "…",
+      "claims": { "groups": "cognito:groups" },
+      "allow": { "groups": ["hyperdx-users"] }
+    }
+  ],
+  "passwordLogin": true,
+  "maxSessionAge": "12h"
+}
+```
+
+Register `https://<hyperdx host>/api/login/oidc/<provider id>/callback` as the redirect URI with each
+provider. Users sign in at `/api/login/oidc`, which goes straight to the provider when there is only one and
+shows a chooser otherwise.
+
+### How it works
+
+HyperDX authenticates with Passport and keeps sessions in MongoDB. TypeKro ships a small plugin
+(`plugins/hyperdx-oidc/`) that joins that same path. It is shipped as a ConfigMap
+(`<release>-hyperdx-oidc-plugin`) and loaded into the HyperDX container with `NODE_OPTIONS=--require`, and it
+activates only in the API process. There it:
+
+- registers one Passport strategy per provider on HyperDX's own `passport`;
+- adds the `/api/login/oidc/...` routes to HyperDX's root router;
+- ends every sign-in in `req.logIn()`, so a signed-in user holds an ordinary HyperDX session. Logout and every
+  API route work unchanged.
+
+The flow is the authorization-code flow with PKCE, `state` and `nonce`. Issuer metadata is discovered and
+refreshed.
+
+The Secret is mounted as a directory (never `subPath`). The plugin re-reads it every `reloadSeconds`
+(default 15), so **providers can be added, changed or removed without a restart**. An invalid document is
+rejected, and the last good configuration keeps serving. A new plugin build changes the pod annotation
+`typekro.io/hyperdx-oidc-plugin-sha256`, which rolls the pod.
+
+### Who gets in
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `allow.groups` / `allow.emailDomains` | — (one is required) | Every rule that is set must pass. An empty rule is refused, because it would admit every account the provider can authenticate. |
+| `claims.email` / `claims.groups` / `claims.name` | `email` / `groups` / `name` | Claim names per provider, e.g. `cognito:groups` for Cognito, `roles` for Entra ID app roles. |
+| `requireVerifiedEmail` | `true` | Refuse an ID token whose `email_verified` is not true. Turn off only for a provider that never sends it but owns the email (Entra ID), together with `allow.emailDomains`. |
+| `linkExistingUsersByEmail` | `true` | Link an existing HyperDX user with the same email (e.g. the `initialUser`) on first sign-in. |
+| `createUsers` | `true` | Create a HyperDX user on first sign-in, in HyperDX's team (the open-source build has one). |
+| `tokenEndpointAuthMethod` | `client_secret_basic` | Or `client_secret_post`. |
+| `scopes` | `openid email profile` | Must include `openid`. |
+| `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. |
+| `maxSessionAge` | `12h` | OIDC sessions older than this, or from a provider that was removed, are logged out. `0` never expires them. |
+| `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs. |
+
+Accounts are linked by the provider's stable subject (`sub`), recorded in the `typekro_oidc_identities`
+collection in HyperDX's MongoDB, not by email. An email alone never moves a session to a different account.
+
+### Guard rails
+
+- The plugin checks every HyperDX hook point at startup. If one is missing, as on a HyperDX version it wasn't
+  built for, it logs why and disables itself, and password login keeps working.
+- It is enabled only on audited chart versions (`3.2.0`, HyperDX `2.35.0`), like `initialUser`: at build time
+  in direct mode, and by narrowing `spec.version` on the CRD in KRO mode. After verifying a newer chart, set
+  `hyperdxOidc.allowUnvalidatedChartVersion: true`.
+- `team.allowedAuthMethods` is left untouched. HyperDX's own response schemas type it as `'password'` only,
+  so the plugin enforces `passwordLogin` itself.
+- If the caller's static `values` already set `NODE_OPTIONS` or the plugin's volume names, the build fails
+  instead of silently overriding them. The plugin's env, volumes and mounts are appended to the caller's own
+  lists.
+
 ## Build-Time Options vs Runtime Spec
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,

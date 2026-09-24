@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenID Connect sign-in for HyperDX:** the `hyperdxOidc` option on `makeClickstackBootstrap` (#241).
+  HyperDX's open-source build has only email-and-password login. TypeKro now ships a small plugin
+  (`plugins/hyperdx-oidc/`, bundled into the library) that joins HyperDX's own Passport and session path, so
+  no image fork is needed. It is shipped as a ConfigMap, loaded with `NODE_OPTIONS=--require`, and active
+  only in the API process. It registers one Passport strategy per provider and adds the
+  `/api/login/oidc/...` routes. Every login ends in `req.logIn()`, which gives an ordinary HyperDX session.
+  - Authorization-code flow with PKCE via a bundled `oauth4webapi`, with multiple providers and per-provider
+    claim names.
+  - Access rules on groups and email domains, and verified email required by default.
+  - Accounts are linked by (provider, `sub`). Existing users with the same email are linked, and new users
+    are created just-in-time.
+  - Configuration comes from a caller-owned Secret that is re-read at runtime, so providers can be added or
+    removed without a restart. An invalid config keeps the last good one.
+  - `passwordLogin: false` refuses password login, and `maxSessionAge` expires OIDC sessions.
+  - The plugin self-checks its hook points and turns itself off on a mismatched HyperDX. It is gated to
+    audited chart versions like `initialUser`.
+  - New CI steps: the committed bundle must match the plugin source, and a Docker-gated suite signs in
+    against the real `hyperdx:2.35.0` image and a mock OIDC provider.
+
+  New exports: `ClickStackHyperdxOidcOptions`, `resolveClickStackHyperdxOidc`, `applyHyperdxOidcValues`,
+  `hyperdxOidcPluginConfigMapName`, `hyperdxOidcPluginConfigMapData`,
+  `CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS`, `HYPERDX_OIDC_PLUGIN_SHA256` and related constants.
+
 - `ClickHouseKeeperClusterNameSchema` and `assertClickHouseKeeperClusterName` — the CHK's
   own cluster-name contract: Altinity's CRD alphabet and cap, plus the one rule the
   operator's own naming requires (at least one alphanumeric) —

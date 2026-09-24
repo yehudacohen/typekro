@@ -67,6 +67,14 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:integration:yaml
 
+      - name: HyperDX OIDC plugin bundle is current
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bun run check:hyperdx-oidc-plugin
+
+      - name: HyperDX OIDC login test (real HyperDX image)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bun run test:integration:hyperdx-oidc
+
       - name: ClickHouse server boot test
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:integration:clickhouse-boot
