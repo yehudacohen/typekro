@@ -38,12 +38,15 @@
  * WHAT IT COVERS. The digest is over each pod template as TypeKro renders it
  * at construction time, so a zone template's digest moves only when that
  * template does (adding a zone leaves the existing zones' digests alone).
- * Schema references (e.g. KRO-mode `podResources` or `version`) are hashed as
- * their reference, not their runtime value, so a
- * change that only alters a runtime value does not change the digest. Image
- * changes are handled by the operator itself (`isImageChangeRequested` defers
- * the restart to the rollout); the remaining runtime-valued fields are
- * resources, which are harmless to run for one extra restart.
+ * Runtime-only template values (e.g. composition `podResources` or `version`)
+ * are represented by their schema reference, so changing only the instance
+ * value does not move the digest. Image changes are handled by the operator
+ * itself (`isImageChangeRequested` defers the restart to the rollout). A
+ * resources-only change still rolls normally through the StatefulSet; but if
+ * it is combined with restart-requiring ClickHouse configuration, the operator
+ * may perform its pre-rollout software restart first, under the OLD resource
+ * limits. That matters if the new limits are what the server needs to boot
+ * (e.g. escaping an OOM); covering it would need a runtime-derived env value.
  *
  * OPERATOR VERSIONS. `hostRequiresStatefulSetRollout()` is identical across
  * 0.27.0–0.27.3. Before 0.27 the operator had no such check and always

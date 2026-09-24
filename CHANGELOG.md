@@ -356,8 +356,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   template includes its affinity, so adding a zone leaves the other zones' digests alone), so any
   template change changes the env and the operator restarts the pod once, through the rollout, with the
   new template and config together. A config-only change keeps the operator's in-place restart.
-  Schema references are hashed by what they point at, so a runtime-only value change (e.g. KRO-mode
-  `podResources`) does not move the digest. New exports: `CLICKHOUSE_POD_TEMPLATE_HASH_ENV` and
+  Runtime-only template values such as composition `podResources` are represented by their schema
+  reference, so changing only the instance value does not move the digest. Those changes still roll
+  normally through the StatefulSet; combined with restart-requiring ClickHouse configuration, the
+  operator may still perform its pre-rollout software restart first, under the old resource limits.
+  New exports: `CLICKHOUSE_POD_TEMPLATE_HASH_ENV` and
   `clickHousePodTemplateHash`.
 
   NOTE FOR EXISTING INSTALLATIONS: the first reconcile after upgrading adds the env var, which is
