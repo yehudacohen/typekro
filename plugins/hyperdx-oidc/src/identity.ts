@@ -29,6 +29,7 @@ export interface VerifiedIdentity {
 export type DenialReason =
   | 'subjectMissing'
   | 'emailMissing'
+  | 'emailInvalid'
   | 'emailNotVerified'
   | 'groupNotAllowed'
   | 'emailDomainNotAllowed'
@@ -66,7 +67,12 @@ export function evaluateClaims(
   }
 
   const rawEmail = claims[provider.claims.email];
-  const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
+  if (typeof rawEmail !== 'string' || rawEmail.trim().length === 0) return { allowed: false, reason: 'emailMissing' };
+  // ASCII only, checked BEFORE lowercasing: Unicode case mapping folds look-alikes
+  // (the Kelvin sign "\u212A" lowercases to "k"), which would let "\u212Aevin@…"
+  // match an existing "kevin@…" account.
+  if (!/^[\x21-\x7e]+$/.test(rawEmail.trim())) return { allowed: false, reason: 'emailInvalid' };
+  const email = rawEmail.trim().toLowerCase();
   const at = email.lastIndexOf('@');
   if (at <= 0 || at === email.length - 1) return { allowed: false, reason: 'emailMissing' };
   if (provider.requireVerifiedEmail && !isVerified(claims.email_verified)) {
@@ -103,6 +109,8 @@ export interface IdentityStore {
   userExists(userId: string): Promise<boolean>;
   /** The HyperDX user id with this (lowercased) email, if any. */
   findUserIdByEmail(email: string): Promise<string | null>;
+  /** Whether any provider has already linked a subject to this user. */
+  userHasAnyLink(userId: string): Promise<boolean>;
   /** Create a HyperDX user in the team new users join; returns its id. */
   createUser(email: string, name: string): Promise<string>;
   /** Link (provider, subject) to a user, replacing a stale link. */
@@ -115,7 +123,7 @@ export interface IdentityStore {
 
 export type AccountResolution =
   | { readonly userId: string; readonly outcome: 'linked' | 'linkedByEmail' | 'created' }
-  | { readonly denied: 'noAccount' };
+  | { readonly denied: 'noAccount' | 'emailInUse' };
 
 /**
  * Find or create the HyperDX user for an admitted identity.
@@ -140,12 +148,18 @@ export async function resolveAccount(
     await store.unlink(identity.provider, identity.subject);
   }
 
-  if (provider.linkExistingUsersByEmail) {
-    const existing = await store.findUserIdByEmail(identity.email);
-    if (existing !== null) {
+  const existing = await store.findUserIdByEmail(identity.email);
+  if (existing !== null) {
+    // Only an account no provider has claimed yet (e.g. the password-only
+    // break-glass user) may be linked by email. An account already linked to
+    // another subject belongs to that subject: a recycled or re-asserted email
+    // must not hand it to someone else.
+    if (provider.linkExistingUsersByEmail && !(await store.userHasAnyLink(existing))) {
       await store.link(identity, existing);
       return { userId: existing, outcome: 'linkedByEmail' };
     }
+    // The email is taken; creating a second user with it would fail anyway.
+    return { denied: 'emailInUse' };
   }
 
   if (!provider.createUsers) return { denied: 'noAccount' };

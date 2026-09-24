@@ -643,7 +643,15 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     const staticValues =
       build.hyperdxOidc === undefined
         ? build.values
-        : applyHyperdxOidcValues('makeClickstackBootstrap', build.values, build.hyperdxOidc, spec.name);
+        : applyHyperdxOidcValues(
+            'makeClickstackBootstrap',
+            build.values,
+            build.hyperdxOidc,
+            spec.name,
+            // With initialUser, the bootstrap CronJob claims the instance; a
+            // first OIDC login must not create the team in its place.
+            build.initialUser === undefined
+          );
 
     const helmValues = mapClickStackConfigToHelmValues(spec, {
       mongoMode: build.mongoMode,

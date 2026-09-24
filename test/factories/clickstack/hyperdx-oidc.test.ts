@@ -59,7 +59,15 @@ describe('hyperdxOidc wiring', () => {
       { name: 'NODE_OPTIONS', value: '--require=/opt/typekro/hyperdx-oidc/plugin.js' },
       { name: 'TYPEKRO_HDX_OIDC_CONFIG', value: '/etc/typekro/hyperdx-oidc/config.json' },
       { name: 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS', value: '30' },
+      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: 'true' },
     ]);
+  });
+
+  it('stops a first OIDC login from creating the team when initialUser claims the instance', () => {
+    const env = hyperdxDeploymentValues(
+      directDocs({ hyperdxOidc: OIDC, initialUser: { email: 'ops@example.com' } })
+    ).env as { name: string; value: string }[];
+    expect(env.find((entry) => entry.name === 'TYPEKRO_HDX_OIDC_CREATE_TEAM')?.value).toBe('false');
   });
 
   it('mounts the configuration Secret as a directory, never with subPath (hot reload)', () => {
@@ -99,6 +107,7 @@ describe('hyperdxOidc wiring', () => {
       'NODE_OPTIONS',
       'TYPEKRO_HDX_OIDC_CONFIG',
       'TYPEKRO_HDX_OIDC_RELOAD_SECONDS',
+      'TYPEKRO_HDX_OIDC_CREATE_TEAM',
     ]);
     expect((deployment.volumes as { name: string }[]).map((volume) => volume.name)).toEqual([
       'certs',

@@ -330,7 +330,7 @@ rejected, and the last good configuration keeps serving. A new plugin build chan
 | `allow.groups` / `allow.emailDomains` | — (one is required) | Every rule that is set must pass. An empty rule is refused, because it would admit every account the provider can authenticate. |
 | `claims.email` / `claims.groups` / `claims.name` | `email` / `groups` / `name` | Claim names per provider, e.g. `cognito:groups` for Cognito, `roles` for Entra ID app roles. |
 | `requireVerifiedEmail` | `true` | Refuse an ID token whose `email_verified` is not true. Turn off only for a provider that never sends it but owns the email (Entra ID), together with `allow.emailDomains`. |
-| `linkExistingUsersByEmail` | `true` | Link an existing HyperDX user with the same email (e.g. the `initialUser`) on first sign-in. |
+| `linkExistingUsersByEmail` | follows `requireVerifiedEmail` | On a subject's first sign-in, link an existing HyperDX user with the same email, but only one no provider has linked yet (e.g. the password-only `initialUser`). Setting it to `true` with `requireVerifiedEmail: false` is refused: an unverified email is only a claim. |
 | `createUsers` | `true` | Create a HyperDX user on first sign-in, in HyperDX's team (the open-source build has one). |
 | `tokenEndpointAuthMethod` | `client_secret_basic` | Or `client_secret_post`. |
 | `scopes` | `openid email profile` | Must include `openid`. |
@@ -339,7 +339,20 @@ rejected, and the last good configuration keeps serving. A new plugin build chan
 | `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs. |
 
 Accounts are linked by the provider's stable subject (`sub`), recorded in the `typekro_oidc_identities`
-collection in HyperDX's MongoDB, not by email. An email alone never moves a session to a different account.
+collection in HyperDX's MongoDB, not by email:
+- An account that is already linked to one subject is never handed to another subject through its email.
+  That covers a recycled email and the same email asserted by a second provider; the sign-in is refused.
+- Emails must be ASCII. Unicode look-alikes (such as the Kelvin sign case-folding to `k`) are refused before
+  any comparison.
+
+**Revoking access.** A sign-in that the provider no longer admits (group or domain removed, email no longer
+verified) is refused. For a linked user it also rotates their HyperDX access key, which ends their external
+API and MCP access. Sessions end through `maxSessionAge`. To remove someone outright, delete their HyperDX
+user.
+
+**With `initialUser`.** The first OIDC sign-in does not create HyperDX's team when `initialUser` is set, so
+the bootstrap's break-glass account always claims the instance. Until it has, OIDC sign-in answers "still
+being set up". The first OIDC sign-in with the break-glass account's email links to it.
 
 ### Guard rails
 
@@ -348,6 +361,16 @@ collection in HyperDX's MongoDB, not by email. An email alone never moves a sess
 - It is enabled only on audited chart versions (`3.2.0`, HyperDX `2.35.0`), like `initialUser`: at build time
   in direct mode, and by narrowing `spec.version` on the CRD in KRO mode. After verifying a newer chart, set
   `hyperdxOidc.allowUnvalidatedChartVersion: true`.
+- `passwordLogin: false` is enforced on HyperDX's password strategy itself, so it holds for every route
+  that uses it, however the path is spelled (Express matches routes case-insensitively). First-run
+  registration and team-invite acceptance, which create password accounts without the strategy, are refused
+  too.
+- If no valid configuration has loaded since the process started (e.g. a broken Secret at startup), no
+  provider is active and password login stays **allowed**. That's the break-glass path for a broken OIDC
+  configuration, and it is logged as an error. A configuration that later becomes invalid keeps the last good
+  one.
+- Per-instance runtime `values` that replace `hyperdx.deployment.env` would drop `NODE_OPTIONS` and switch
+  the plugin off. Pass extra env through the build-time `values` instead, which the wiring appends to.
 - `team.allowedAuthMethods` is left untouched. HyperDX's own response schemas type it as `'password'` only,
   so the plugin enforces `passwordLogin` itself.
 - If the caller's static `values` already set `NODE_OPTIONS` or the plugin's volume names, the build fails

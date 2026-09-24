@@ -87,7 +87,12 @@ export const HYPERDX_OIDC_PLUGIN_HASH_ANNOTATION = 'typekro.io/hyperdx-oidc-plug
 const PLUGIN_VOLUME = 'typekro-hyperdx-oidc-plugin';
 const CONFIG_VOLUME = 'typekro-hyperdx-oidc-config';
 /** Env names the plugin wiring owns; a caller setting any of them is refused. */
-const OWNED_ENV = ['NODE_OPTIONS', 'TYPEKRO_HDX_OIDC_CONFIG', 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS'] as const;
+const OWNED_ENV = [
+  'NODE_OPTIONS',
+  'TYPEKRO_HDX_OIDC_CONFIG',
+  'TYPEKRO_HDX_OIDC_RELOAD_SECONDS',
+  'TYPEKRO_HDX_OIDC_CREATE_TEAM',
+] as const;
 
 /** RFC 1123 subdomain: a Secret's name. */
 const SECRET_NAME = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
@@ -195,13 +200,18 @@ function namesOf(list: unknown[]): string[] {
  * @param values - The caller's static chart values, if any (not mutated)
  * @param oidc - The resolved option
  * @param releaseName - The release name; the plugin ConfigMap is named from it
+ * @param createTeam - Whether a first OIDC login may create HyperDX's team.
+ *   False when `initialUser` claims the instance: otherwise the first OIDC
+ *   login could create the team and the break-glass account would never be
+ *   registered.
  * @returns New values with the wiring folded in
  */
 export function applyHyperdxOidcValues(
   context: string,
   values: Values | undefined,
   oidc: ResolvedClickStackHyperdxOidc,
-  releaseName: string
+  releaseName: string,
+  createTeam = true
 ): Values {
   const merged: Values = structuredClone(values ?? {});
   try {
@@ -220,6 +230,7 @@ export function applyHyperdxOidcValues(
       { name: 'NODE_OPTIONS', value: `--require=${HYPERDX_OIDC_PLUGIN_DIR}/${HYPERDX_OIDC_PLUGIN_FILE}` },
       { name: 'TYPEKRO_HDX_OIDC_CONFIG', value: `${HYPERDX_OIDC_CONFIG_DIR}/${HYPERDX_OIDC_CONFIG_FILE}` },
       { name: 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS', value: String(oidc.reloadSeconds) },
+      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: String(createTeam) },
     ];
 
     const volumes = listAt(deployment, 'volumes', 'hyperdx.deployment.volumes');

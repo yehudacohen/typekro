@@ -49,7 +49,13 @@ export interface OidcProviderConfig {
    * (Entra ID); pair that with `allow.emailDomains`.
    */
   readonly requireVerifiedEmail: boolean;
-  /** Link an existing HyperDX user (e.g. a password user) with the same email. Default true. */
+  /**
+   * On a subject's first login, link an existing HyperDX user with the same
+   * email — only a user no provider has linked yet (e.g. the password-only
+   * break-glass account). Default: on when `requireVerifiedEmail` is on, off
+   * otherwise; turning it on without verified emails is refused, because an
+   * unverified email is just a claim.
+   */
   readonly linkExistingUsersByEmail: boolean;
   /** Create a HyperDX user on first login. Default true. */
   readonly createUsers: boolean;
@@ -232,6 +238,16 @@ function parseProvider(raw: unknown, index: number, allowInsecure: boolean): Oid
     );
   }
 
+  const requireVerifiedEmail = optionalBoolean(raw, 'requireVerifiedEmail', where, true);
+  const linkExistingUsersByEmail = optionalBoolean(raw, 'linkExistingUsersByEmail', where, requireVerifiedEmail);
+  if (linkExistingUsersByEmail && !requireVerifiedEmail) {
+    throw new OidcConfigError(
+      `${where}.linkExistingUsersByEmail cannot be true when requireVerifiedEmail is false: an unverified ` +
+        'email is only a claim, so linking by it would let anyone who can set their email at the provider ' +
+        'take over the HyperDX account that has it.'
+    );
+  }
+
   return {
     id,
     displayName: optionalString(raw, 'displayName', where, id),
@@ -242,8 +258,8 @@ function parseProvider(raw: unknown, index: number, allowInsecure: boolean): Oid
     scopes,
     claims,
     allow,
-    requireVerifiedEmail: optionalBoolean(raw, 'requireVerifiedEmail', where, true),
-    linkExistingUsersByEmail: optionalBoolean(raw, 'linkExistingUsersByEmail', where, true),
+    requireVerifiedEmail,
+    linkExistingUsersByEmail,
     createUsers: optionalBoolean(raw, 'createUsers', where, true),
   };
 }
@@ -268,7 +284,12 @@ export function parseOidcPluginConfig(text: string): OidcPluginConfig {
   try {
     raw = JSON.parse(text);
   } catch (error) {
-    throw new OidcConfigError(`configuration is not valid JSON: ${(error as Error).message}`);
+    // Never echo the parser's message: it can quote source text, and the
+    // source contains client secrets. Report the position only.
+    const position = /position (\d+)/.exec((error as Error).message)?.[1];
+    throw new OidcConfigError(
+      `configuration is not valid JSON${position === undefined ? '' : ` (near character ${position})`}`
+    );
   }
   if (!isRecord(raw)) throw new OidcConfigError('configuration must be a JSON object');
   rejectUnknownKeys(raw, TOP_LEVEL_KEYS, 'configuration');

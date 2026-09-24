@@ -18,11 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Authorization-code flow with PKCE via a bundled `oauth4webapi`, with multiple providers and per-provider
     claim names.
   - Access rules on groups and email domains, and verified email required by default.
-  - Accounts are linked by (provider, `sub`). Existing users with the same email are linked, and new users
-    are created just-in-time.
+  - Accounts are linked by (provider, `sub`). An existing user is linked by email only if no provider has
+    claimed it yet (e.g. the break-glass `initialUser`), and emails must be ASCII. Otherwise new users are
+    created just-in-time. A linked user whom the provider stops admitting has their API access key rotated.
+  - With `initialUser`, a first OIDC login never creates HyperDX's team, so the break-glass account always
+    claims the instance.
   - Configuration comes from a caller-owned Secret that is re-read at runtime, so providers can be added or
     removed without a restart. An invalid config keeps the last good one.
-  - `passwordLogin: false` refuses password login, and `maxSessionAge` expires OIDC sessions.
+  - `passwordLogin: false` is enforced on HyperDX's password strategy itself, which covers every spelling of
+    the route, and also refuses registration and team-invite acceptance. `maxSessionAge` expires OIDC
+    sessions.
   - The plugin self-checks its hook points and turns itself off on a mismatched HyperDX. It is gated to
     audited chart versions like `initialUser`.
   - New CI steps: the committed bundle must match the plugin source, and a Docker-gated suite signs in

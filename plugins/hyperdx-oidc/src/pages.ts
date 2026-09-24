@@ -45,6 +45,10 @@ export function renderChooser(
 const DENIAL_TEXT: Record<string, string> = {
   subjectMissing: 'The identity provider did not return a user identifier.',
   emailMissing: 'The identity provider did not return an email address for your account.',
+  emailInvalid: 'Your email address contains characters HyperDX sign-in does not accept.',
+  emailInUse: 'A HyperDX account with your email address already belongs to another sign-in. Ask an administrator.',
+  instanceNotReady: 'HyperDX is still being set up. Try again in a minute.',
+  unknownProvider: 'That sign-in provider is not configured.',
   emailNotVerified: 'Your email address is not verified with the identity provider.',
   groupNotAllowed: 'Your account is not in a group that is allowed to use HyperDX.',
   emailDomainNotAllowed: "Your email address's domain is not allowed to use HyperDX.",

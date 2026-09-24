@@ -21,6 +21,7 @@ import { installPlugin, type Logger, resolveHyperdx } from './hyperdx.js';
 
 const CONFIG_ENV = 'TYPEKRO_HDX_OIDC_CONFIG';
 const RELOAD_ENV = 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS';
+const CREATE_TEAM_ENV = 'TYPEKRO_HDX_OIDC_CREATE_TEAM';
 const API_ENTRY = /[\\/]packages[\\/]api[\\/]build[\\/]index\.js$/;
 
 const log: Logger = {
@@ -34,7 +35,13 @@ const INSTALL_WARNING_MS = 60_000;
 
 function activate(configPath: string, entry: string) {
   // The module cache is keyed by real path, so resolve symlinks first.
-  const apiBuildDir = realpathSync(dirname(entry));
+  let apiBuildDir: string;
+  try {
+    apiBuildDir = realpathSync(dirname(entry));
+  } catch (error) {
+    log.error('not installed; could not resolve the API build directory', { error: String(error) });
+    return;
+  }
   const rootRouterPath = join(apiBuildDir, 'routers', 'api', 'root.js');
   const moduleInternals = Module as unknown as {
     _load: (request: string, parent: unknown, isMain: boolean) => unknown;
@@ -43,13 +50,16 @@ function activate(configPath: string, entry: string) {
   const originalLoad = moduleInternals._load;
   let done = false;
 
-  moduleInternals._load = function load(this: unknown, request, parent, isMain) {
+  const hook = function load(this: unknown, request: string, parent: unknown, isMain: boolean) {
     const exported = originalLoad.call(this, request, parent, isMain);
     if (!done && moduleInternals._cache[rootRouterPath]?.loaded === true) {
       done = true;
-      moduleInternals._load = originalLoad;
+      // Unhook only if nothing wrapped Module._load after us.
+      if (moduleInternals._load === hook) moduleInternals._load = originalLoad;
       try {
-        const plugin = installPlugin(resolveHyperdx(apiBuildDir), configPath, log);
+        const plugin = installPlugin(resolveHyperdx(apiBuildDir), configPath, log, {
+          createTeam: process.env[CREATE_TEAM_ENV] !== 'false',
+        });
         const seconds = Number(process.env[RELOAD_ENV] ?? '15');
         setInterval(() => plugin.reload(), Math.max(1, Number.isFinite(seconds) ? seconds : 15) * 1000).unref();
         log.info('installed', { providers: plugin.providerIds() });
@@ -59,6 +69,7 @@ function activate(configPath: string, entry: string) {
     }
     return exported;
   };
+  moduleInternals._load = hook;
 
   setTimeout(() => {
     if (!done) log.error('HyperDX never loaded its root router; the plugin was not installed', { rootRouterPath });

@@ -85,6 +85,19 @@ describe('evaluateClaims', () => {
     ).toBe(true);
   });
 
+  it('refuses a non-ASCII email before case-folding (Unicode look-alikes)', () => {
+    // "\u212A" (KELVIN SIGN) lowercases to "k": without the check this would
+    // become "kevin@example.com" and could match someone else's account.
+    expect(evaluateClaims(providerWith(), claims({ email: '\u212Aevin@example.com' }))).toEqual({
+      allowed: false,
+      reason: 'emailInvalid',
+    });
+    expect(evaluateClaims(providerWith(), claims({ email: 'k\u00e9vin@example.com' }))).toEqual({
+      allowed: false,
+      reason: 'emailInvalid',
+    });
+  });
+
   it('refuses a missing subject or email', () => {
     expect(evaluateClaims(providerWith(), claims({ sub: undefined }))).toEqual({ allowed: false, reason: 'subjectMissing' });
     expect(evaluateClaims(providerWith(), claims({ email: 'not-an-email' }))).toEqual({ allowed: false, reason: 'emailMissing' });
@@ -119,6 +132,9 @@ function memoryStore(initial: { users?: Record<string, string>; links?: Record<s
     },
     async findUserIdByEmail(email) {
       return [...users].find(([, e]) => e === email)?.[0] ?? null;
+    },
+    async userHasAnyLink(userId) {
+      return [...links.values()].includes(userId);
     },
     async createUser(email) {
       const id = `new-${next++}`;
@@ -168,11 +184,18 @@ describe('resolveAccount', () => {
     expect(events[0]).toBe('unlink:s1');
   });
 
+  it('never links by email to an account another subject already holds', async () => {
+    // A recycled email, or a second provider asserting it, must not take over
+    // the account that is already linked to someone.
+    const { store, events } = memoryStore({ users: { u1: 'alice@example.com' }, links: { 'other:s9': 'u1' } });
+    expect(await resolveAccount(store, providerWith(), identity)).toEqual({ denied: 'emailInUse' });
+    expect(events).toEqual([]);
+  });
+
   it('honours linkExistingUsersByEmail: false and createUsers: false', async () => {
     const noLink = memoryStore({ users: { u1: 'alice@example.com' } });
     expect(await resolveAccount(noLink.store, providerWith({ linkExistingUsersByEmail: false }), identity)).toEqual({
-      userId: 'new-1',
-      outcome: 'created',
+      denied: 'emailInUse',
     });
     const noCreate = memoryStore();
     expect(await resolveAccount(noCreate.store, providerWith({ createUsers: false }), identity)).toEqual({ denied: 'noAccount' });

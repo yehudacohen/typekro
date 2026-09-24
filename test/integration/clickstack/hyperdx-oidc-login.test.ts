@@ -200,6 +200,9 @@ beforeAll(async () => {
     '-e', 'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
     '-e', 'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
     '-e', 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS=1',
+    // As with initialUser: the team is claimed by a password registration,
+    // never by a first OIDC login.
+    '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=false',
     '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
     '-v', `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
     HYPERDX_IMAGE,
@@ -222,8 +225,32 @@ afterAll(() => {
   if (workDir) rmSync(workDir, { recursive: true, force: true });
 });
 
+const ADMIN = { email: 'admin@example.com', password: 'Break-Glass-Passw0rd!' };
+
 describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
-  it('signs in an allowed user, creating the account (and the team on a fresh instance)', async () => {
+  it('does not create the team on a first OIDC login when initialUser claims the instance', async () => {
+    const browser = new Browser();
+    const landed = await browser.signIn(allowedClaims('early', 'early@example.com'));
+    expect(landed.response.status).toBe(503);
+    expect(await landed.response.text()).toContain('still being set up');
+    expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({ isTeamExisting: false });
+  });
+
+  it('lets the break-glass registration claim the instance, then links it by email', async () => {
+    // What TypeKro's initialUser CronJob does.
+    const registered = await fetch(`${hdxUrl}/api/register/password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...ADMIN, confirmPassword: ADMIN.password }),
+    });
+    expect(registered.status).toBe(200);
+    // The password-only account is unclaimed, so the first OIDC login with its email links to it.
+    const browser = new Browser();
+    await browser.signIn(allowedClaims('admin-sub', ADMIN.email));
+    expect((await browser.me()).body?.email).toBe(ADMIN.email);
+  });
+
+  it('signs in an allowed user, creating the account', async () => {
     const browser = new Browser();
     const landed = await browser.signIn(allowedClaims('alice', 'alice@example.com'));
     expect(landed.response.status).toBe(200);
@@ -256,6 +283,39 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     expect((await browser.me()).status).toBe(401);
   });
 
+  it('refuses a Unicode look-alike of an existing email (Kelvin sign)', async () => {
+    const browser = new Browser();
+    const landed = await browser.signIn(allowedClaims('attacker', '\u212Alice@example.com'));
+    expect(landed.response.status).toBe(403);
+    expect((await browser.me()).status).toBe(401);
+  });
+
+  it('refuses a different subject asserting an email another sign-in already holds', async () => {
+    const browser = new Browser();
+    const landed = await browser.signIn(allowedClaims('not-alice', 'alice@example.com'));
+    expect(landed.response.status).toBe(403);
+    expect(await landed.response.text()).toContain('already belongs to another sign-in');
+    expect((await browser.me()).status).toBe(401);
+  });
+
+  it('answers an unknown provider with 404, not 500', async () => {
+    expect((await fetch(`${hdxUrl}/api/login/oidc/nope`)).status).toBe(404);
+  });
+
+  it("revokes a linked user's API access key when the provider stops admitting them", async () => {
+    const browser = new Browser();
+    await browser.signIn(allowedClaims('gina', 'gina@example.com'));
+    const key = ((await fetch(`${hdxUrl}/api/me`, { headers: { cookie: browser.cookies(hdxUrl) } }).then((r) => r.json())) as {
+      accessKey: string;
+    }).accessKey;
+    const v2 = (accessKey: string) => fetch(`${hdxUrl}/api/api/v2/`, { headers: { authorization: `Bearer ${accessKey}` } });
+    expect((await v2(key)).status).toBe(200);
+    // Removed from the allowed group at the provider:
+    const denied = await new Browser().signIn({ ...allowedClaims('gina', 'gina@example.com'), groups: ['former'] });
+    expect(denied.response.status).toBe(403);
+    expect((await v2(key)).status).toBe(401);
+  });
+
   it('applies a configuration change without a restart: second provider, password login off', async () => {
     const applied = /"message":"OIDC configuration applied".*"second"/;
     const before = countLogMatches(applied);
@@ -276,6 +336,39 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     });
     expect(password.status).toBe(303);
     expect(password.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
+
+    // Express matches routes case-insensitively: the policy must hold for any spelling.
+    for (const path of ['/api/Login/Password', '/api/LOGIN/PASSWORD']) {
+      const response = await fetch(`${hdxUrl}${path}`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ email: ADMIN.email, password: ADMIN.password }).toString(),
+      });
+      const cookie = response.headers.getSetCookie().map((header) => header.split(';')[0]).join('; ');
+      const me = await fetch(`${hdxUrl}/api/me`, { headers: { cookie } });
+      expect([path, me.status]).toEqual([path, 401]);
+    }
+
+    // Team-invite acceptance creates a password account too; it is refused.
+    const inviter = new Browser();
+    await inviter.signIn(allowedClaims('alice', 'alice@example.com'));
+    const invitation = await fetch(`${hdxUrl}/api/team/invitation`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: inviter.cookies(hdxUrl) },
+      body: JSON.stringify({ email: 'invitee@example.com' }),
+    });
+    expect(invitation.status).toBe(200);
+    const url = new URL(((await invitation.json()) as { url: string }).url);
+    const token = url.searchParams.get('token') ?? url.pathname.split('/').pop();
+    const setup = await fetch(`${hdxUrl}/api/team/setup/${token}`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ password: 'Invitee-Passw0rd!' }).toString(),
+    });
+    expect(setup.status).toBe(303);
+    expect(setup.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
 
     const browser = new Browser();
     await browser.signIn(allowedClaims('dave', 'dave@example.com'), 'second');

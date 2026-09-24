@@ -83,8 +83,24 @@ describe('parseOidcPluginConfig', () => {
     expect(config.providers[0]?.issuer).toBe('https://idp.example');
   });
 
-  it('reports invalid JSON as a configuration error', () => {
-    expect(() => parseOidcPluginConfig('{nope')).toThrow(OidcConfigError);
+  it('reports invalid JSON without echoing the source (it holds client secrets)', () => {
+    let message = '';
+    try {
+      parseOidcPluginConfig('{"providers":[{"clientSecret":SUPERSECRET}]}');
+    } catch (error) {
+      expect(error).toBeInstanceOf(OidcConfigError);
+      message = (error as Error).message;
+    }
+    expect(message).toContain('not valid JSON');
+    expect(message).not.toContain('SUPERSECRET');
+  });
+
+  it('defaults email linking to off when verification is off, and refuses turning it on', () => {
+    const config = parse({ providers: [provider({ requireVerifiedEmail: false, allow: { emailDomains: ['example.com'] } })] });
+    expect(config.providers[0]?.linkExistingUsersByEmail).toBe(false);
+    expect(() =>
+      parse({ providers: [provider({ requireVerifiedEmail: false, linkExistingUsersByEmail: true })] })
+    ).toThrow(/cannot be true when requireVerifiedEmail is false/);
   });
 });
 

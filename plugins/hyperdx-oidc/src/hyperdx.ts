@@ -14,6 +14,7 @@
  * why and does nothing — password login keeps working.
  */
 
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -65,10 +66,16 @@ interface StrategyContext {
   error(error: unknown): void;
 }
 
+interface Strategy {
+  name?: string;
+  authenticate(this: StrategyContext, req: Request, options?: unknown): void;
+}
+
 interface Passport {
-  use(name: string, strategy: { name: string; authenticate(this: StrategyContext, req: Request): void }): void;
+  use(name: string, strategy: Strategy & { name: string }): void;
   unuse(name: string): void;
   authenticate(name: string, callback: (error: unknown, user: unknown, info: unknown) => void): Handler;
+  _strategy(name: string): Strategy | undefined;
 }
 
 interface MongooseModel {
@@ -76,6 +83,7 @@ interface MongooseModel {
   find(filter: Record<string, unknown>): { select(fields: string): { limit(n: number): { lean(): Promise<unknown[]> } } };
   findById(id: string): Promise<unknown>;
   create(doc: Record<string, unknown>): Promise<{ _id: { toString(): string } }>;
+  updateOne(filter: Record<string, unknown>, update: Record<string, unknown>): Promise<unknown>;
   db: { collection(name: string): Collection };
 }
 
@@ -136,8 +144,9 @@ export function resolveHyperdx(apiBuildDir: string): Hyperdx {
     ['passport.use', typeof passport?.use === 'function'],
     ['passport.unuse', typeof passport?.unuse === 'function'],
     ['passport.authenticate', typeof passport?.authenticate === 'function'],
+    ["passport._strategy('local')", typeof passport?._strategy === 'function' && typeof passport._strategy('local')?.authenticate === 'function'],
     ['routers/api/root router', Array.isArray(rootRouter?.stack) && typeof rootRouter?.get === 'function'],
-    ['models/user', typeof User?.findOne === 'function' && typeof User?.create === 'function'],
+    ['models/user', typeof User?.findOne === 'function' && typeof User?.create === 'function' && typeof User?.updateOne === 'function'],
     ['models/team', typeof Team?.find === 'function'],
     ['controllers/team.createTeam', typeof teamController.createTeam === 'function'],
     ['setupDefaults.setupTeamDefaults', typeof setupDefaults.setupTeamDefaults === 'function'],
@@ -162,7 +171,12 @@ export function resolveHyperdx(apiBuildDir: string): Hyperdx {
 
 // ── Accounts in HyperDX's MongoDB ─────────────────────────────────────────
 
-function mongoIdentityStore(hyperdx: Hyperdx, config: () => OidcPluginConfig, log: Logger): IdentityStore {
+function mongoIdentityStore(
+  hyperdx: Hyperdx,
+  config: () => OidcPluginConfig,
+  options: PluginOptions,
+  log: Logger
+): IdentityStore {
   const links = hyperdx.User.db.collection(IDENTITY_COLLECTION);
   links
     .createIndex({ provider: 1, subject: 1 }, { unique: true, name: 'provider_subject' })
@@ -175,12 +189,27 @@ function mongoIdentityStore(hyperdx: Hyperdx, config: () => OidcPluginConfig, lo
       if (team === null) throw new Error(`configured teamId ${configured} does not exist`);
       return configured;
     }
-    const teams = (await hyperdx.Team.find({}).select('_id').limit(2).lean()) as Array<{ _id: { toString(): string } }>;
+    const findTeams = async () =>
+      (await hyperdx.Team.find({}).select('_id').limit(2).lean()) as Array<{ _id: { toString(): string } }>;
+    const teams = await findTeams();
     if (teams.length === 1) return (teams[0] as { _id: { toString(): string } })._id.toString();
     if (teams.length > 1) throw new Error('more than one HyperDX team exists; set teamId in the OIDC configuration');
+    if (!options.createTeam) {
+      // Something else claims the instance (TypeKro's initialUser bootstrap);
+      // creating the team here would take the break-glass account's place.
+      throw new OidcFlowError('instanceNotReady', 'no HyperDX team exists yet and this plugin does not create one');
+    }
     // No team yet: this login claims the instance, exactly as HyperDX's own
     // first registration does (create the team, then its default sources).
-    const team = await hyperdx.createTeam({ name: `${email}'s Team`, collectorAuthenticationEnforced: true });
+    let team: { _id: { toString(): string } };
+    try {
+      team = await hyperdx.createTeam({ name: `${email}'s Team`, collectorAuthenticationEnforced: true });
+    } catch (error) {
+      // A concurrent first login (or registration) won the race: use its team.
+      const raced = await findTeams();
+      if (raced.length === 1) return (raced[0] as { _id: { toString(): string } })._id.toString();
+      throw error;
+    }
     const teamId = team._id.toString();
     await hyperdx.setupTeamDefaults(teamId).catch((error: unknown) =>
       log.error('setting up default connections and sources for the new team failed', { error: String(error) })
@@ -199,6 +228,9 @@ function mongoIdentityStore(hyperdx: Hyperdx, config: () => OidcPluginConfig, lo
     async findUserIdByEmail(email) {
       const user = (await hyperdx.User.findOne({ email }).select('_id').lean()) as { _id: unknown } | null;
       return user === null ? null : String(user._id);
+    },
+    async userHasAnyLink(userId) {
+      return (await links.findOne({ userId })) !== null;
     },
     async createUser(email, name) {
       const team = await newUserTeamId(email);
@@ -224,6 +256,15 @@ function mongoIdentityStore(hyperdx: Hyperdx, config: () => OidcPluginConfig, lo
 
 // ── The plugin ────────────────────────────────────────────────────────────
 
+/** Deployment-level options, set by the wiring rather than the configuration document. */
+export interface PluginOptions {
+  /**
+   * Whether a first login on an instance with no team may create it. TypeKro
+   * turns this off when its `initialUser` bootstrap claims the instance.
+   */
+  readonly createTeam: boolean;
+}
+
 export interface InstalledPlugin {
   /** Re-read the configuration file; returns whether it was (re)applied. */
   reload(): boolean;
@@ -235,15 +276,35 @@ export interface InstalledPlugin {
  * Install the plugin into a resolved HyperDX: register routes and the session
  * guard, then load the configuration and bind one strategy per provider.
  */
-export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger): InstalledPlugin {
+export function installPlugin(
+  hyperdx: Hyperdx,
+  configPath: string,
+  log: Logger,
+  options: PluginOptions = { createTeam: true }
+): InstalledPlugin {
   let config: OidcPluginConfig | undefined;
   let lastText: string | undefined;
+  let readFailing = false;
   let providers = new Map<string, ProviderRuntime>();
   const store = mongoIdentityStore(
     hyperdx,
     () => config ?? parseOidcPluginConfig('{"providers":[]}'),
+    options,
     log
   );
+
+  /**
+   * Revoke API access (external API v2, MCP) for a linked user whom the
+   * provider no longer admits. Sessions end through the session guard;
+   * the long-lived access key would otherwise keep working.
+   */
+  async function revokeAccessKeyOfLinkedSubject(provider: string, subject: unknown) {
+    if (typeof subject !== 'string') return;
+    const userId = await store.findLinkedUserId(provider, subject);
+    if (userId === null) return;
+    await hyperdx.User.updateOne({ _id: userId }, { $set: { accessKey: randomUUID() } });
+    log.warn('rotated the access key of a linked user the provider no longer admits', { provider, userId });
+  }
 
   const apiPrefix = () => config?.apiPathPrefix ?? '/api';
   const baseUrl = () => config?.redirectBaseUrl ?? hyperdx.frontendUrl;
@@ -278,6 +339,9 @@ export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger)
           const decision = evaluateClaims(provider.config, claims);
           if (!decision.allowed) {
             log.warn('OIDC login denied', { provider: id, reason: decision.reason });
+            if (decision.reason === 'groupNotAllowed' || decision.reason === 'emailDomainNotAllowed' || decision.reason === 'emailNotVerified') {
+              await revokeAccessKeyOfLinkedSubject(id, claims.sub);
+            }
             this.fail({ reason: decision.reason, returnTo: pending.returnTo }, 403);
             return;
           }
@@ -294,7 +358,8 @@ export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger)
         run().catch((error: unknown) => {
           if (error instanceof OidcFlowError) {
             log.warn('OIDC login failed', { provider: id, reason: error.reason, detail: error.message });
-            this.fail({ reason: error.reason }, error.reason === 'providerUnavailable' ? 503 : 400);
+            const unavailable = error.reason === 'providerUnavailable' || error.reason === 'instanceNotReady';
+            this.fail({ reason: error.reason }, unavailable ? 503 : 400);
             return;
           }
           this.error(error);
@@ -325,6 +390,9 @@ export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger)
     for (const id of nextProviders.keys()) hyperdx.passport.use(`${STRATEGY_PREFIX}${id}`, strategyFor(id));
     providers = nextProviders;
     config = next;
+    if (next.allowInsecureHttp) {
+      log.warn('allowInsecureHttp is on: issuers and callbacks may use plain http. Use this only for tests; it removes the TLS protection the ID-token checks rely on.');
+    }
     // Warm discovery in the background so the first login does not pay for it.
     for (const provider of providers.values()) {
       provider.authorizationServer().catch((error: unknown) =>
@@ -338,16 +406,35 @@ export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger)
     try {
       text = readFileSync(configPath, 'utf8');
     } catch (error) {
-      if (config === undefined) log.error('OIDC configuration unreadable; no providers active', { path: configPath, error: String(error) });
+      if (!readFailing) {
+        readFailing = true;
+        log.error(
+          config === undefined
+            ? 'OIDC configuration unreadable; no providers active'
+            : 'OIDC configuration became unreadable; keeping the previous one',
+          { path: configPath, error: String(error) }
+        );
+      }
       return false;
+    }
+    if (readFailing) {
+      readFailing = false;
+      log.info('OIDC configuration readable again', { path: configPath });
     }
     if (text === lastText) return false;
     lastText = text;
     try {
       apply(parseOidcPluginConfig(text));
     } catch (error) {
-      // Keep serving the last good configuration.
-      log.error('OIDC configuration rejected; keeping the previous one', { error: String(error) });
+      // Keep serving the last good configuration. With none since start, the
+      // password-login policy is at its default (allowed): that is the
+      // break-glass path when the OIDC configuration itself is broken.
+      log.error(
+        config === undefined
+          ? 'OIDC configuration rejected and none has been applied since start; no providers active and password login is allowed'
+          : 'OIDC configuration rejected; keeping the previous one',
+        { error: String(error) }
+      );
       return false;
     }
     log.info('OIDC configuration applied', {
@@ -386,12 +473,34 @@ export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger)
     req.logout((error) => next(error));
   });
 
-  // Password policy: HyperDX's own login and first-run registration are
-  // refused when `passwordLogin` is false. The redirect lands on HyperDX's
-  // login page with the error it already has copy for.
+  // Password policy, in two layers, when `passwordLogin` is false.
+  //
+  // 1. The password strategy itself refuses. Every route that authenticates
+  //    with it is covered, however its path is spelled: Express routes match
+  //    case-insensitively and with a trailing slash, so a path check alone is
+  //    bypassable ("/Login/Password"). The failure message is the one
+  //    HyperDX's own error handler maps to `passwordAuthNotAllowed`.
+  const localStrategy = hyperdx.passport._strategy('local') as Strategy;
+  const originalLocalAuthenticate = localStrategy.authenticate;
+  localStrategy.authenticate = function authenticate(this: StrategyContext, req, strategyOptions) {
+    if (config !== undefined && !config.passwordLogin) {
+      this.fail({ message: PASSWORD_NOT_ALLOWED });
+      return;
+    }
+    originalLocalAuthenticate.call(this, req, strategyOptions);
+  };
+  // 2. The routes that create a password account without the strategy:
+  //    first-run registration and team-invite acceptance (which registers
+  //    and calls req.login directly). Paths are normalized the way Express
+  //    matches them.
+  const PASSWORD_ACCOUNT_ROUTES = [/^\/login\/password$/, /^\/register\/password$/, /^\/team\/setup\/[^/]+$/];
   prepend((req, res, next) => {
-    const passwordRoute = req.path === '/login/password' || req.path === '/register/password';
-    if (req.method !== 'POST' || !passwordRoute || config === undefined || config.passwordLogin) {
+    if (req.method !== 'POST' || config === undefined || config.passwordLogin) {
+      next();
+      return;
+    }
+    const path = req.path.toLowerCase().replace(/\/+$/, '');
+    if (!PASSWORD_ACCOUNT_ROUTES.some((route) => route.test(path))) {
       next();
       return;
     }
@@ -421,6 +530,10 @@ export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger)
 
   const authenticate = (req: Request, res: Response, next: Next) => {
     const id = req.params.provider ?? '';
+    if (!providers.has(id)) {
+      res.status(404).type('html').send(renderDenied('unknownProvider', loginPath()));
+      return;
+    }
     hyperdx.passport.authenticate(`${STRATEGY_PREFIX}${id}`, (error, user, info) => {
       if (error) {
         next(error);
@@ -428,7 +541,12 @@ export function installPlugin(hyperdx: Hyperdx, configPath: string, log: Logger)
       }
       const details = (info ?? {}) as { reason?: string; returnTo?: string };
       if (!user) {
-        const status = details.reason === 'unknownProvider' ? 404 : details.reason === 'providerUnavailable' ? 503 : 403;
+        const status =
+          details.reason === 'unknownProvider'
+            ? 404
+            : details.reason === 'providerUnavailable' || details.reason === 'instanceNotReady'
+              ? 503
+              : 403;
         res.status(status).type('html').send(renderDenied(details.reason ?? 'unknown', loginPath()));
         return;
       }
