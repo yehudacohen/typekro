@@ -353,21 +353,23 @@ function createFakeMongo() {
 interface FakeFetchCall {
   url: string;
   method: string;
+  redirect: string;
   headers: Record<string, string>;
   body: unknown;
 }
 
 function createFakeFetch(
-  respond: (call: FakeFetchCall) => { status: number; body: string } | Error
+  respond: (call: FakeFetchCall) => { status: number; body: string; location?: string } | Error
 ) {
   const calls: FakeFetchCall[] = [];
   const fetchImpl = async (
     url: string,
-    init: { method?: string; headers?: Record<string, string>; body?: string } = {}
+    init: { method?: string; redirect?: string; headers?: Record<string, string>; body?: string } = {}
   ) => {
     const call: FakeFetchCall = {
       url,
       method: init.method ?? 'GET',
+      redirect: init.redirect ?? 'follow',
       headers: init.headers ?? {},
       body: init.body === undefined ? undefined : JSON.parse(init.body),
     };
@@ -377,6 +379,7 @@ function createFakeFetch(
     if (outcome instanceof Error) throw outcome;
     return {
       status: outcome.status,
+      headers: { get: (name: string) => (name.toLowerCase() === 'location' ? (outcome.location ?? null) : null) },
       text: async () => outcome.body,
     };
   };
@@ -533,6 +536,8 @@ describe('clickstackBootstrap initialUser (#227)', () => {
     expect(http.calls[0]?.url).toBe(`${API_BASE_URL}/register/password`);
     expect(http.calls[0]?.method).toBe('POST');
     expect(http.calls[0]?.headers['content-type']).toBe('application/json');
+    // A refusal redirects to the login page; following it would read as a 200.
+    expect(http.calls[0]?.redirect).toBe('manual');
     // `confirmPassword` is required by `registrationSchema` — omitting it is a
     // 400, so the script must send it.
     expect(http.calls[0]?.body).toEqual({
@@ -826,6 +831,24 @@ describe('clickstackBootstrap initialUser failure modes', () => {
     // And the reassurance that matters: a refused registration is not a
     // consumed one, so the single registration is still available.
     await expect(failure).rejects.toThrow(/no registration was consumed/);
+    expect(mongo.documentsIn(CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION)).toHaveLength(0);
+  });
+
+  it('treats a redirect as a refusal, never as a registration, and writes no marker', async () => {
+    // hyperdxOidc with passwordLogin: false refuses a registration it does not
+    // admit with a 303 to the login page (e.g. the HyperDX pod has not synced
+    // a just-added Secret key yet).
+    const mongo = createFakeMongo();
+    const http = createFakeFetch(() => ({
+      status: 303,
+      body: '',
+      location: 'https://hyperdx.example.com/login?err=passwordAuthNotAllowed',
+    }));
+
+    const failure = runBootstrapScript(script, CONFIGURED_ENVIRONMENT, mongo, http.fetch as never);
+
+    await expect(failure).rejects.toThrow(/HTTP 303 to https:\/\/hyperdx\.example\.com\/login\?err=passwordAuthNotAllowed/);
+    await expect(failure).rejects.toThrow(/No registration was consumed; the CronJob retries/);
     expect(mongo.documentsIn(CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION)).toHaveLength(0);
   });
 

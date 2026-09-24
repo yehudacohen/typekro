@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenID Connect sign-in for HyperDX:** the `hyperdxOidc` option on `makeClickstackBootstrap` (#241).
+  HyperDX's open-source build has only email-and-password login. TypeKro now ships a small plugin
+  (`plugins/hyperdx-oidc/`, bundled into the library) that joins HyperDX's own Passport and session path, so
+  no image fork is needed. It is shipped as a ConfigMap, loaded with `NODE_OPTIONS=--require`, and active
+  only in the API process. It registers one Passport strategy per provider and adds the
+  `/api/login/oidc/...` routes. Every login ends in `req.logIn()`, which gives an ordinary HyperDX session.
+  - Authorization-code flow with PKCE via a bundled `oauth4webapi`, with multiple providers and per-provider
+    claim names.
+  - Access rules on groups and email domains, and verified email required by default.
+  - Accounts are linked by (provider, `sub`). An existing user is linked by email only if no provider has
+    claimed it yet (e.g. the break-glass `initialUser`), and emails must be ASCII. Otherwise new users are
+    created just-in-time. A linked user whom the provider stops admitting has their API access key rotated.
+  - With `initialUser`, a first OIDC login never creates HyperDX's team. With `passwordLogin: false`, the
+    only first-run registration let through is the `initialUser`'s own: the plugin gets its email, and the
+    same password Secret key the bootstrap CronJob reads is projected into the HyperDX pod as a file. The
+    plugin re-reads that file on every attempt and compares the password in constant time, and only while no
+    team exists. Anything else is refused, and while the password key is missing every registration is
+    refused. A key added or rotated before the bootstrap registers takes effect without restarting HyperDX.
+    Once any team exists, every registration is refused identically without reading or comparing the
+    password, so the endpoint can't be used to test guesses at it. The plugin refuses with a `303` to the
+    login page, so the `initialUser` CronJob no longer follows redirects: following one would read the
+    login page's `200` as a registration. A redirect fails the run without a marker, and it retries.
+  - The link invariants (one link per subject, one per HyperDX user) are enforced by unique indexes, so
+    concurrent sign-ins can't both claim an account. Sign-in fails closed until the indexes exist.
+  - Configuration comes from a caller-owned Secret that is re-read at runtime, so providers can be added or
+    removed without a restart. An invalid config keeps the last good one.
+  - `passwordLogin: false` is enforced on HyperDX's password strategy itself, which covers every spelling of
+    the route, and also refuses registration and team-invite acceptance. `maxSessionAge` expires OIDC
+    sessions.
+  - The plugin self-checks its hook points and turns itself off on a mismatched HyperDX. It is gated to
+    audited chart versions like `initialUser`.
+  - New CI steps: the committed bundle must match the plugin source, and a Docker-gated suite signs in
+    against the real `hyperdx:2.35.0` image and a mock OIDC provider.
+
+  New exports: `ClickStackHyperdxOidcOptions`, `resolveClickStackHyperdxOidc`, `applyHyperdxOidcValues`,
+  `hyperdxOidcPluginConfigMapName`, `hyperdxOidcPluginConfigMapData`,
+  `CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS`, `HYPERDX_OIDC_PLUGIN_SHA256` and related constants.
+
 - `ClickHouseKeeperClusterNameSchema` and `assertClickHouseKeeperClusterName` — the CHK's
   own cluster-name contract: Altinity's CRD alphabet and cap, plus the one rule the
   operator's own naming requires (at least one alphanumeric) —

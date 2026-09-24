@@ -15,6 +15,6 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true
   },
-  "include": ["test/**/*", "src/**/*"],
+  "include": ["test/**/*", "src/**/*", "plugins/**/*"],
   "exclude": ["node_modules/**/*", "dist", "examples", "**/node_modules/**/*"]
 }

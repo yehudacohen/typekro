@@ -149,6 +149,16 @@ import {
   renderRetentionScript,
   resolveClickStackStorage,
 } from '../utils/storage.js';
+import {
+  applyHyperdxOidcValues,
+  CLICKSTACK_HYPERDX_OIDC_VALIDATED_APP_VERSION,
+  CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS,
+  hyperdxOidcPluginConfigMapData,
+  hyperdxOidcPluginConfigMapName,
+  isClickStackHyperdxOidcValidatedChartVersion,
+  type ResolvedClickStackHyperdxOidc,
+  resolveClickStackHyperdxOidc,
+} from '../hyperdx-oidc/index.js';
 import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.js';
 
 /** Concrete, resolved build choices the composition body branches on. */
@@ -170,6 +180,8 @@ interface ResolvedBuildConfig {
    * which is Mongo's PVC.
    */
   clickhouseStorage: ResolvedClickStackStorage;
+  /** HyperDX OIDC sign-in wiring, when configured (see `hyperdx-oidc/`). */
+  hyperdxOidc?: ResolvedClickStackHyperdxOidc;
   /**
    * The first HyperDX account the Team-bootstrap CronJob seeds, when one is
    * configured. Build-time: it is rendered into the CronJob's mongosh script.
@@ -356,7 +368,10 @@ const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
  *     whole objective. A 400 is relayed with the endpoint's own body, which
  *     names the offending field far better than a second copy of its rules
  *     could — and a rejected registration is not a consumed one, so a bad
- *     password costs a failed run and nothing else.
+ *     password costs a failed run and nothing else. A redirect is a refusal
+ *     too (the POST never follows one): it is how HyperDX, and the
+ *     `hyperdxOidc` plugin under `passwordLogin: false`, turn a registration
+ *     away, and following it would read the login page's 200 as success.
  *  3. PATCH ONLY `teams.apiKey`. The collector holds a pre-shared ingestion key
  *     from the chart's Secret, so the Team the app just created has to carry
  *     that key. One `updateOne`, and it runs on EVERY pass — not just the
@@ -414,6 +429,10 @@ export function renderClickStackTeamBootstrapScript(
     '      try {',
     "        response = await fetch(apiBaseUrl + '/register/password', {",
     "          method: 'POST',",
+    // Never follow a redirect: HyperDX (and the hyperdxOidc plugin under
+    // passwordLogin: false) refuse with a 303 to the login page, and
+    // following it would turn the refusal into the login page's 200.
+    "          redirect: 'manual',",
     "          headers: { 'content-type': 'application/json' },",
     '          body: JSON.stringify({ email: initialUserEmail, password: initialUserPassword, confirmPassword: initialUserPassword }),',
     '        });',
@@ -427,6 +446,14 @@ export function renderClickStackTeamBootstrapScript(
     // an administrator exists — which is the whole objective.
     "      if (response.status === 409 && responseBody.indexOf('teamAlreadyExists') !== -1) {",
     "        print('ClickStack initial user: the HyperDX instance was already claimed by an earlier registration; recording bootstrap as complete.');",
+    // A redirect is a refusal, not a registration. With hyperdxOidc and
+    // passwordLogin: false it means the plugin did not admit this request:
+    // a Team appeared since the check above (the next run records the
+    // bootstrap as complete), or the password HyperDX's pod sees differs,
+    // typically because the kubelet has not synced a just-added or rotated
+    // Secret key yet. Nothing was consumed either way; retry next run.
+    '      } else if (response.status >= 300 && response.status < 400) {',
+    "        throw new Error('HyperDX redirected the initial-user registration at ' + apiBaseUrl + '/register/password (HTTP ' + response.status + ' to ' + response.headers.get('location') + ') instead of registering it. With hyperdxOidc and passwordLogin: false this is the plugin refusing it: either a Team now exists, or the HyperDX pod does not see this password yet (the kubelet syncs a changed Secret within a minute or two). No registration was consumed; the CronJob retries every minute.');",
     '      } else if (response.status < 200 || response.status >= 300) {',
     // HyperDX validates the address and the password itself and answers with a
     // body naming the field. Relay it; a second copy of its rules here could
@@ -508,6 +535,33 @@ function assertClickStackInitialUserChartVersion(
 }
 
 /**
+ * Refuse `hyperdxOidc` on a chart version the plugin was not audited against —
+ * the build-time half; the KRO half is the shared `spec.version` narrowing in
+ * {@link clickStackSchemaFieldValidations}.
+ *
+ * The plugin also checks its hook points at startup and turns itself off if
+ * they are missing, so an unaudited chart fails CLOSED to password-only login
+ * rather than breaking HyperDX. The throw is about not shipping a sign-in path
+ * nobody has verified.
+ */
+function assertClickStackHyperdxOidcChartVersion(
+  version: unknown,
+  hyperdxOidc?: ResolvedClickStackHyperdxOidc
+): void {
+  if (hyperdxOidc === undefined || hyperdxOidc.allowUnvalidatedChartVersion) return;
+  if (typeof version !== 'string') return;
+  if (!isClickStackHyperdxOidcValidatedChartVersion(version)) {
+    throw new Error(
+      'ClickStack hyperdxOidc is audited only against chart version(s) ' +
+        `${CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS.join(', ')} (appVersion ` +
+        `${CLICKSTACK_HYPERDX_OIDC_VALIDATED_APP_VERSION}), but version ${JSON.stringify(version)} ` +
+        "was requested. The plugin hooks HyperDX's Passport instance, root router and user/team " +
+        'models. Verify them on that chart, then set hyperdxOidc.allowUnvalidatedChartVersion: true.'
+    );
+  }
+}
+
+/**
  * Schema field validations for a composition, with the chart-version narrowing
  * added when `initialUser` is configured.
  *
@@ -524,10 +578,16 @@ function assertClickStackInitialUserChartVersion(
  */
 function clickStackSchemaFieldValidations(
   base: Readonly<Record<string, string>>,
-  initialUser?: ResolvedClickStackInitialUser
+  initialUser?: ResolvedClickStackInitialUser,
+  hyperdxOidc?: ResolvedClickStackHyperdxOidc
 ): { schemaFieldValidations?: Readonly<Record<string, string>> } {
   const merged: Record<string, string> = { ...base };
-  if (initialUser !== undefined && !initialUser.allowUnvalidatedChartVersion) {
+  // Both features are audited against the same chart series, so one rule
+  // covers either (see CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS).
+  if (
+    (initialUser !== undefined && !initialUser.allowUnvalidatedChartVersion) ||
+    (hyperdxOidc !== undefined && !hyperdxOidc.allowUnvalidatedChartVersion)
+  ) {
     merged.version = clickStackInitialUserVersionValidationRule();
   }
   return Object.keys(merged).length > 0 ? { schemaFieldValidations: merged } : {};
@@ -565,6 +625,11 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       isKubernetesRef(spec.version) ? undefined : (spec.version ?? DEFAULT_CLICKSTACK_VERSION),
       build.initialUser
     );
+    // The OIDC plugin hooks HyperDX internals, so the same audited-chart rule applies.
+    assertClickStackHyperdxOidcChartVersion(
+      isKubernetesRef(spec.version) ? undefined : (spec.version ?? DEFAULT_CLICKSTACK_VERSION),
+      build.hyperdxOidc
+    );
 
     // The schema constrains `name` — DNS-label syntax and the derived length
     // bound — for KRO admission and direct-mode `deploy`; direct-mode `toYaml`
@@ -588,10 +653,26 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       }
     }
 
+    // HyperDX OIDC: fold the plugin's env, volumes and mounts into the static
+    // values (appended to the caller's lists, which a deep merge would replace).
+    const staticValues =
+      build.hyperdxOidc === undefined
+        ? build.values
+        : applyHyperdxOidcValues(
+            'makeClickstackBootstrap',
+            build.values,
+            build.hyperdxOidc,
+            spec.name,
+            // With initialUser, the bootstrap CronJob claims the instance: a
+            // first OIDC login must not create the team in its place, and
+            // only the initial user's own registration passes passwordLogin: false.
+            build.initialUser
+          );
+
     const helmValues = mapClickStackConfigToHelmValues(spec, {
       mongoMode: build.mongoMode,
       credentialSource: build.credentialSource,
-      ...(build.values !== undefined && { values: build.values }),
+      ...(staticValues !== undefined && { values: staticValues }),
       storage: build.clickhouseStorage,
     });
 
@@ -737,6 +818,27 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // exist before helm-controller creates the Deployment.
     if (queueClaim !== undefined) {
       _clickstackHelmRelease.dependsOn(queueClaim);
+    }
+
+    // ── HyperDX OIDC plugin ──────────────────────────────────────────────
+    // The HyperDX pod mounts the plugin from this ConfigMap, so it has to
+    // exist before the Deployment. The caller's configuration Secret is theirs
+    // to create; see hyperdx-oidc/index.ts.
+    if (build.hyperdxOidc !== undefined) {
+      const oidcPlugin = configMap({
+        id: 'clickstackHyperdxOidcPlugin',
+        metadata: {
+          name: hyperdxOidcPluginConfigMapName(spec.name),
+          namespace: resolvedNamespace as string,
+          labels: {
+            'app.kubernetes.io/name': 'hyperdx-oidc-plugin',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+        ...hyperdxOidcPluginConfigMapData(),
+      });
+      _clickstackHelmRelease.dependsOn(oidcPlugin);
     }
 
     // HyperDX's production OpAMP controller activates OTLP only after its
@@ -1113,6 +1215,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     CLICKSTACK_SECRET_NAME,
     options.initialUser
   );
+  const hyperdxOidc = resolveClickStackHyperdxOidc('makeClickstackBootstrap', options.hyperdxOidc);
   return {
     mongoMode: 'internal',
     credentialSource: options.credentials?.source ?? 'inline',
@@ -1121,6 +1224,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
     ...(initialUser !== undefined && { initialUser }),
+    ...(hyperdxOidc !== undefined && { hyperdxOidc }),
   };
 }
 
@@ -1130,6 +1234,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     CLICKSTACK_SECRET_NAME,
     options.initialUser
   );
+  const hyperdxOidc = resolveClickStackHyperdxOidc('makeClickstackBootstrap', options.hyperdxOidc);
   return {
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
@@ -1137,6 +1242,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
     clickhouseStorage: resolveClickHouseStorageForBuild(options),
     ...(initialUser !== undefined && { initialUser }),
+    ...(hyperdxOidc !== undefined && { hyperdxOidc }),
   };
 }
 
@@ -1150,7 +1256,7 @@ function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser)
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser, build.hyperdxOidc)
   );
 }
 
@@ -1169,7 +1275,7 @@ function buildInternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build.initialUser)
+    clickStackSchemaFieldValidations({}, build.initialUser, build.hyperdxOidc)
   );
 }
 
@@ -1183,7 +1289,7 @@ function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser)
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser, build.hyperdxOidc)
   );
 }
 
@@ -1202,7 +1308,7 @@ function buildExternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build.initialUser)
+    clickStackSchemaFieldValidations({}, build.initialUser, build.hyperdxOidc)
   );
 }
 

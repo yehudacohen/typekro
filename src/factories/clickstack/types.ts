@@ -40,6 +40,7 @@
  * @see https://clickhouse.com/docs/use-cases/observability/clickstack
  */
 
+import type { ClickStackHyperdxOidcOptions } from './hyperdx-oidc/index.js';
 import { type } from 'arktype';
 import type { ValuesMergeExpression } from '../../core/aspects/values-merge.js';
 import {
@@ -747,6 +748,12 @@ interface ClickStackBuildOptionsBase {
    * `teamAlreadyExists` from then on) — see {@link ClickStackInitialUserOptions}.
    */
   initialUser?: ClickStackInitialUserOptions;
+  /**
+   * Sign in to HyperDX with OpenID Connect providers, via TypeKro's HyperDX
+   * OIDC plugin. The providers live in a caller-owned Secret that the plugin
+   * re-reads at runtime. See {@link ClickStackHyperdxOidcOptions}.
+   */
+  hyperdxOidc?: ClickStackHyperdxOidcOptions;
 }
 
 /** Build-time options for inline credentials with internal Mongo. */

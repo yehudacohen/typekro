@@ -212,6 +212,8 @@ may not), the container variable is always `HYPERDX_INITIAL_USER_PASSWORD` in th
    none of it can drift.
 3. **Records the marker** — on every exit from the bootstrap branch, including a `409
    teamAlreadyExists` (a human beat the CronJob to it, which is a success: the instance is claimed).
+   A redirect is a refusal, not a registration: the POST never follows one, so the run fails without a
+   marker and retries.
 4. **Patches `teams.apiKey`.** One `updateOne`, on every run, so the Team carries the pre-shared
    ingestion key the collector authenticates with and a rotated Secret still converges. This is the
    **entire** remaining coupling to HyperDX's private schema.
@@ -265,6 +267,169 @@ concrete version outside the list is refused at render time, and the generated C
 resource at apply time is refused by admission. Set
 `initialUser.allowUnvalidatedChartVersion: true` once you have checked the registration contract and
 the `teams.apiKey` field on a newer chart yourself.
+
+## Sign-in with OpenID Connect (`hyperdxOidc`)
+
+HyperDX's open-source build signs users in only with an email and password; its SSO is a commercial
+feature. `hyperdxOidc` adds OpenID Connect sign-in, without forking or rebuilding the HyperDX image (#241).
+
+```typescript
+const stack = makeClickstackBootstrap({
+  initialUser: { email: 'ops@example.com' },          // keep a break-glass password account
+  hyperdxOidc: { configSecretRef: { name: 'hyperdx-oidc' } },
+});
+```
+
+`configSecretRef` names a Secret **you** create in the release's namespace, with the configuration under
+the key `oidc.json` (override with `configSecretRef.key`):
+
+```json
+{
+  "providers": [
+    {
+      "id": "cognito",
+      "displayName": "Company SSO",
+      "issuer": "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EXAMPLE",
+      "clientId": "…",
+      "clientSecret": "…",
+      "claims": { "groups": "cognito:groups" },
+      "allow": { "groups": ["hyperdx-users"] }
+    }
+  ],
+  "passwordLogin": true,
+  "maxSessionAge": "12h"
+}
+```
+
+Register `https://<hyperdx host>/api/login/oidc/<provider id>/callback` as the redirect URI with each
+provider. Users sign in at `/api/login/oidc`, which goes straight to the provider when there is only one and
+shows a chooser otherwise.
+
+### How it works
+
+HyperDX authenticates with Passport and keeps sessions in MongoDB. TypeKro ships a small plugin
+(`plugins/hyperdx-oidc/`) that joins that same path. It is shipped as a ConfigMap
+(`<release>-hyperdx-oidc-plugin`) and loaded into the HyperDX container with `NODE_OPTIONS=--require`, and it
+activates only in the API process. There it:
+
+- registers one Passport strategy per provider on HyperDX's own `passport`;
+- adds the `/api/login/oidc/...` routes to HyperDX's root router;
+- ends every sign-in in `req.logIn()`, so a signed-in user holds an ordinary HyperDX session. Logout and every
+  API route work unchanged.
+
+The flow is the authorization-code flow with PKCE, `state` and `nonce`. Issuer metadata is discovered and
+refreshed.
+
+The Secret is mounted as a directory (never `subPath`). The plugin re-reads it every `reloadSeconds`
+(default 15), so **providers can be added, changed or removed without a restart**. An invalid document is
+rejected, and the last good configuration keeps serving. A new plugin build changes the pod annotation
+`typekro.io/hyperdx-oidc-plugin-sha256`, which rolls the pod.
+
+### Who gets in
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `allow.groups` / `allow.emailDomains` | — (one is required) | Every rule that is set must pass. An empty rule is refused, because it would admit every account the provider can authenticate. |
+| `claims.email` / `claims.groups` / `claims.name` | `email` / `groups` / `name` | Claim names per provider, e.g. `cognito:groups` for Cognito, `roles` for Entra ID app roles. |
+| `requireVerifiedEmail` | `true` | Refuse an ID token whose `email_verified` is not true. Turn off only for a provider that never sends it but owns the email (Entra ID), together with `allow.emailDomains`. |
+| `linkExistingUsersByEmail` | follows `requireVerifiedEmail` | On a subject's first sign-in, link an existing HyperDX user with the same email, but only one no provider has linked yet (e.g. the password-only `initialUser`). Setting it to `true` with `requireVerifiedEmail: false` is refused: an unverified email is only a claim. |
+| `createUsers` | `true` | Create a HyperDX user on first sign-in, in HyperDX's team (the open-source build has one). |
+| `tokenEndpointAuthMethod` | `client_secret_basic` | Or `client_secret_post`. |
+| `scopes` | `openid email profile` | Must include `openid`. |
+| `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. With `initialUser`, the one exception is that account's own registration while no team exists (see below). |
+| `maxSessionAge` | `12h` | OIDC sessions older than this, or from a provider that was removed, are logged out. `0` never expires them. |
+| `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs. |
+
+Accounts are linked by the provider's stable subject (`sub`), recorded in the `typekro_oidc_identities`
+collection in HyperDX's MongoDB, not by email. Two unique indexes enforce the invariants below: one link per
+(provider, subject), and one link per HyperDX user. They hold even when sign-ins race, and sign-in is refused
+until the indexes exist.
+- An account that is already linked to one subject is never handed to another subject through its email.
+  That covers a recycled email and the same email asserted by a second provider; the sign-in is refused.
+- Emails must be ASCII. Unicode look-alikes (such as the Kelvin sign case-folding to `k`) are refused before
+  any comparison.
+
+**Revoking access.** A sign-in that the provider no longer admits (group or domain removed, email no longer
+verified) is refused. For a linked user it also rotates their HyperDX access key, which ends their external
+API and MCP access. Sessions end through `maxSessionAge`. To remove someone outright, delete their HyperDX
+user. Note that a typo in `allow` rules that is live while linked users sign in rotates their keys too, so
+check rule changes before applying them.
+
+**Removing a provider** leaves its links in `typekro_oidc_identities`, so its users' emails stay attached to
+their accounts, and a sign-in from another provider with the same email is refused. To move a user to a new
+provider, delete their link document (`db.typekro_oidc_identities.deleteOne({ provider, subject })`).
+
+**Concurrent first sign-ins.** Without `initialUser`, the first OIDC sign-in creates HyperDX's team.
+Simultaneous first sign-ins, across replicas too, race for a claim document in `typekro_oidc_state`. Exactly
+one creates the team, and the others wait for it. HyperDX's own first-run registration is outside that lock
+(its check-then-create isn't atomic upstream), so don't register a password account by hand while the first
+OIDC sign-ins happen. With `initialUser` or `passwordLogin: false` this can't arise.
+
+**With `initialUser`.** The first OIDC sign-in does not create HyperDX's team when `initialUser` is set.
+Until a team exists, OIDC sign-in answers "still being set up". What else can claim the instance depends on
+`passwordLogin`:
+
+- With `passwordLogin: false`, only the `initialUser` credentials can use first-run registration, and only
+  while no team exists. The wiring
+  gives the plugin the `initialUser` email (`TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL`) and projects the same
+  password Secret key the bootstrap CronJob reads into the HyperDX pod as a file: an optional Secret volume
+  mounted as a whole directory at `/etc/typekro/hyperdx-bootstrap` (the file is `password`, named by
+  `TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE`). The plugin reads the file on every registration attempt and
+  lets a registration through only when no team exists yet, its email matches (case-insensitively) and its
+  password matches the file's exact bytes, as the CronJob sends them (compared in constant time; nothing is
+  trimmed). The team check comes first. Any other registration is refused before HyperDX sees it. While the key is missing, every registration is refused,
+  the bootstrap's included. Adding the key to the Secret, or rotating it before the bootstrap has
+  registered, takes effect without restarting HyperDX once the kubelet syncs the Secret volume (typically
+  within a minute or two), and the CronJob's next run then succeeds.
+- With `passwordLogin: true`, registration is HyperDX's own and open to anyone until a team exists, exactly
+  as without the plugin. Whoever registers first owns the instance, and the CronJob treats the resulting
+  `teamAlreadyExists` as done. Keep the API unreachable until the bootstrap has run if that matters.
+
+Once a team exists, registration is closed. With `passwordLogin: true`, HyperDX answers every registration
+with `teamAlreadyExists`. With `passwordLogin: false`, the plugin refuses every registration identically,
+the `initialUser` credentials included (the same `303` to `/login?err=passwordAuthNotAllowed`), without
+reading the password file or comparing anything, so the endpoint can't be used to test guesses at the
+initial password. The bootstrap CronJob doesn't need the `409`: it checks for a team before registering and
+records the bootstrap as complete when one exists. The first OIDC sign-in with that account's email links
+to it.
+
+What that account is depends on `passwordLogin`. With `true` it's a **break-glass** login for when OIDC is
+broken. With `false` it's only the **initial account**: it exists and owns the team, but can't sign in with
+its password. Keep it as a break-glass login by leaving `passwordLogin: true`, or plan to flip the Secret back
+if OIDC ever breaks, since the change applies without a restart.
+
+### Guard rails
+
+- The plugin checks every HyperDX hook point at startup. If one is missing, as on a HyperDX version it wasn't
+  built for, it logs why and disables itself, and password login keeps working.
+- It is enabled only on audited chart versions (`3.2.0`, HyperDX `2.35.0`), like `initialUser`: at build time
+  in direct mode, and by narrowing `spec.version` on the CRD in KRO mode. After verifying a newer chart, set
+  `hyperdxOidc.allowUnvalidatedChartVersion: true`.
+- Turning `passwordLogin` off doesn't end password sessions that already exist; they expire on HyperDX's own
+  30-day rolling cookie. To end them now, rotate the session secret or delete the sessions in MongoDB.
+- When the first OIDC sign-in creates the team, its default connections and sources are provisioned
+  best-effort, as HyperDX's own registration does. A failure is logged, and the team stays.
+- `passwordLogin: false` is enforced on HyperDX's password strategy itself, so it holds for every route
+  that uses it, however the path is spelled (Express matches routes case-insensitively). First-run
+  registration and team-invite acceptance, which create password accounts without the strategy, are refused
+  too.
+- If no valid configuration has loaded since the process started (e.g. a broken Secret at startup), no
+  provider is active and password login stays **allowed**. That's the break-glass path for a broken OIDC
+  configuration, and it is logged as an error. A configuration that later becomes invalid keeps the last good
+  one.
+- Per-instance runtime `values` that replace `hyperdx.deployment.env` would drop `NODE_OPTIONS` and switch
+  the plugin off. Pass extra env through the build-time `values` instead, which the wiring appends to.
+- With `initialUser` and `hyperdxOidc`, the HyperDX pod mounts the initial password's Secret key as a file,
+  the key the bootstrap CronJob reads. The plugin never logs it. Rotating the key away after the bootstrap
+  has registered is safe; the volume is optional, and HyperDX starts without it.
+- Known cleanup debt: if one subject's first two sign-ins run at once and present two different verified
+  emails, one of the two HyperDX users they create can be left with no link. Delete it by hand if it turns
+  up.
+- `team.allowedAuthMethods` is left untouched. HyperDX's own response schemas type it as `'password'` only,
+  so the plugin enforces `passwordLogin` itself.
+- If the caller's static `values` already set `NODE_OPTIONS` or the plugin's volume names, the build fails
+  instead of silently overriding them. The plugin's env, volumes and mounts are appended to the caller's own
+  lists.
 
 ## Build-Time Options vs Runtime Spec
 
