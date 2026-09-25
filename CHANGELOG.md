@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`teamName` and `teamDefaults` build options on `makeClickstackBootstrap`.** `teamName` names the
+  HyperDX Team (default `ClickStack`, at most 100 characters). With `initialUser` it renames HyperDX's
+  registered Team only when set. `teamDefaults` controls the one-time seed of an empty Team's
+  connection and sources. It is on by default with inline credentials and off by default with
+  `secretValues`, where `true` (or an options object) opts in. `{ allowUnvalidatedChartVersion: true }`
+  lifts its chart-version guard. See "Team name and default sources" in the ClickStack docs.
+
 - **OpenID Connect sign-in for HyperDX:** the `hyperdxOidc` option on `makeClickstackBootstrap` (#241).
   HyperDX's open-source build has only email-and-password login. TypeKro now ships a small plugin
   (`plugins/hyperdx-oidc/`, bundled into the library) that joins HyperDX's own Passport and session path, so
@@ -382,6 +389,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ClickStack: the HyperDX Team the bootstrap creates now has a ClickHouse connection and sources,
+  so signed-in users no longer land on HyperDX's "set up your connection" onboarding modal.** Without
+  `initialUser`, the team-bootstrap CronJob inserts the Team into MongoDB itself. HyperDX provisions a
+  Team's connection and sources only in `setupTeamDefaults`, which runs when `POST /register/password`
+  creates a Team (read from the HyperDX 2.35.0 image: `setupDefaults.js`, called from
+  `routers/api/root.js`). The CronJob's Team never got them, and neither did any Team created before
+  this fix. Found on a downstream deployment, it affected every deployment without `initialUser`, with
+  or without OIDC.
+  - **What is seeded.** The CronJob seeds the `External ClickHouse` connection and the `Logs`, `Traces`,
+    `Metrics` and `Sessions` sources, from the same values TypeKro renders into the chart's
+    `defaultConnections` / `defaultSources`.
+  - **Exact HyperDX shape.** The documents are written exactly as `setupTeamDefaults` stores them in
+    HyperDX 2.35.0, and a new real-image test compares them field by field. As in HyperDX, the
+    connection password is stored in plain text in the `connections` collection.
+  - **Which password.** In both credential modes, HyperDX's default connection and the seed take the
+    password from the same chart value, `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. The seed reads it,
+    by `secretKeyRef`, from `clickstack-secret`, which the chart renders from that value. While the key
+    is missing, the CronJob seeds nothing and records nothing, and seeds once it appears. Any value is
+    seeded as it is, including an empty one and `hyperdx` (TypeKro reserves no password values).
+  - **Default by credential mode.** On with inline credentials, where TypeKro owns the connection. Off
+    with `secretValues`, where the values fragment may replace `defaultConnections` and the CronJob
+    can't see it: without `initialUser`, a default seed would replace the caller's connection with
+    TypeKro's. `teamDefaults: true` opts in.
+  - **Seeded once.** The seed runs once per Team, and only into a Team with no connection and no source.
+    The seed's ids and its progress are recorded in a `typekro_bootstrap` marker, so an interrupted run
+    is finished without duplicates and without re-creating a document deleted in between. Once per run,
+    just before it writes, it checks that the Team holds only its planned documents, and stops if not.
+  - **Never overwrites.** After that the Team is never seeded again, so connections and sources edited
+    or deleted in the UI are never overwritten or recreated.
+  - **With `initialUser`.** The CronJob records the defaults HyperDX's registration created, after a
+    60-second grace period, and fills them in only if that registration left the Team empty.
+  - **Chart-version guard.** The seed writes HyperDX 2.35.0's private schema, so it carries the same
+    exact allowlist as `initialUser` (chart 3.2.0), including for the default
+    `makeClickstackBootstrap()`. There are three checks. A concrete version is refused at render time.
+    The KRO CRD narrows `spec.version`, on CRDs KRO creates fresh only. The CronJob seeds nothing on an
+    unaudited `CLICKSTACK_CHART_VERSION` at runtime, and that is the check that holds on existing KRO
+    CRDs. `teamDefaults: { allowUnvalidatedChartVersion: true }` lifts all three.
+  - **Opting out.** `teamDefaults: false` turns the seed off, and its guard with it. The seed is also
+    off when build-time `values` replace the chart's default connections or sources.
+- **ClickStack `secretValues` mode: HyperDX's default connection is TypeKro's external ClickHouse.**
+  TypeKro rendered no `defaultConnections` in this mode, so chart 3.2.0 fell back to its own "Local
+  ClickHouse" at the bundled ClickHouse Service, which TypeKro disables. With `initialUser`, HyperDX's
+  registration provisioned that broken connection.
+  - A `<release>-default-connections` ConfigMap now sets `hyperdx.deployment.defaultConnections` to the
+    spec's host, HTTP port and UI user.
+  - Every field is a Helm template the chart's `tpl` serialises with `toJson`. The password comes from
+    the fragment's `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`, and the host, port and user from typed
+    values TypeKro sets under `typekro.clickstack.defaultConnection`. The ConfigMap is a constant that
+    carries no credential, and a quote or backslash in any field stays valid JSON (checked with
+    `helm template` against chart 3.2.0).
+  - **No user value is spliced into HyperDX's connection or sources JSON in either mode.** Inline mode
+    now uses the same Helm templates as `secretValues`: `hyperdx.deployment.defaultConnections` and
+    `defaultSources` are `toJson` templates over typed values under `typekro.clickstack` (host URL,
+    port, user, database) and `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. Before, KRO mode spliced the
+    host, user, password and database into the JSON by hand, so a quote or backslash produced
+    malformed `DEFAULT_CONNECTIONS`. Checked with `helm template` against chart 3.2.0.
+  - `clickhouse.host` is checked at render time for a concrete value, by a CRD rule in KRO mode, and
+    by the seed at runtime. The runtime check is the one that holds on existing KRO CRDs; on an
+    invalid host it seeds nothing, writes no marker, and logs the host but never the password.
+    Accepted: short names and FQDNs (with or without a trailing dot) of ASCII letters, digits, `.`,
+    `-` and `_`, in any case; dotted-quad IPv4; and bracketed IPv6, validated as IPv6 by `net.isIPv6`.
+    Refused: an empty value; whitespace, `/`, `\`, `?`, `#` or `@`; a scheme; a `:` outside brackets
+    (a port); a bracketed value that isn't IPv6 (`[abc]`, `[:::]`); unbracketed IPv6, with a hint to
+    bracket it; any other character; and a host WHATWG URL parsing would rewrite (`127.1`). The render
+    time and runtime checks are identical, and the CRD rule is a syntactic pre-check that lets
+    `[:::]` and `127.1` through to them.
+  - The ConfigMap is listed in `valuesFrom` before the caller's Secret, so a `defaultConnections` in the
+    fragment still wins.
+- **ClickStack: the Team the bootstrap creates is named `ClickStack` (or `teamName`), not a hard-coded
+  product name.**
+  - **Only names TypeKro owns are renamed.** TypeKro records that it owns the name of a Team it
+    creates before inserting it. A Team with no record is TypeKro's only while it still carries the
+    name earlier releases hard-coded (matched by SHA-256, so the old name doesn't reappear in the
+    source) or, with `initialUser`, HyperDX's registration name, `<email>'s Team`. Any other name,
+    including one equal to `teamName`, is a person's, and once recorded as theirs it stays theirs.
+  - **Nothing else changes.** Only `name` is updated, so the Team keeps its `_id`, its `apiKey` and its
+    users.
+  - **Concurrent renames.** TypeKro records the name it applied, and the rename is conditional on the
+    name it read, so a rename in HyperDX (`PATCH /api/team/name`) wins, even one made at the same moment.
+- **ClickStack + HyperDX OIDC without `initialUser`: a first OIDC sign-in can no longer create a second
+  Team.** The plugin was allowed to create the Team there, so a sign-in before the team-bootstrap
+  CronJob's first run left two Teams, and the plugin then refused every new user. The CronJob owns the
+  Team on both paths now: the plugin gets `TYPEKRO_HDX_OIDC_CREATE_TEAM=false`. Until the Team exists,
+  sign-in answers "HyperDX is still being set up. Try again in a minute." The plugin's startup line
+  for that setup, which read as a warning about missing initial-user credentials, is now an accurate
+  informational message.
+
 - **HyperDX OIDC: sign-ins started or completed at the same moment in one browser all complete, each
   exactly once.** The plugin kept the pending sign-in (state, nonce, PKCE verifier, `returnTo`) in the
   HyperDX session, one per session. Several sign-ins in one browser therefore collided: a second start
@@ -588,7 +682,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are legal Helm ranges a prefix check would admit. It is enforced in both modes: a concrete version
   outside the list is refused at render time, and the generated CRD narrows `spec.version` with a CEL
   validation so a KRO consumer setting an unaudited version on the custom resource at apply time is
-  refused by admission. `allowUnvalidatedChartVersion` is the opt-out.
+  refused by admission. KRO 0.9.2 adds that rule only to CRDs it creates fresh, so an upgraded CRD
+  keeps only the render-time half. `allowUnvalidatedChartVersion` is the opt-out.
 
 - `createKubernetesClientProvider(config?)` initialized the provider only when a config
   object was passed, although its signature and documentation promised "create and
@@ -1093,6 +1188,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct-mode status resolution.
 
 ### Changed
+
+- **⚠️ Upgrade notes for ClickStack (Team defaults and `secretValues` connections).** See "Upgrading"
+  in the ClickStack docs.
+  - **The default composition now carries a chart-version guard.** The Team-defaults seed is on by
+    default with inline credentials and writes HyperDX 2.35.0's schema, so a chart version other than
+    3.2.0 is refused at render time, and the KRO CRD narrows `spec.version`. Users pinned to another
+    chart must set `teamDefaults: false` or `teamDefaults: { allowUnvalidatedChartVersion: true }`.
+    On KRO, the CronJob also checks the chart version at runtime and seeds nothing on an unaudited one.
+    KRO 0.9.2 doesn't add a validation-only change to a CRD it already created (verified in its source
+    and on a real cluster), so the CRD rule reaches new CRDs only.
+  - **`secretValues` deployments get a `<release>-default-connections` ConfigMap in `valuesFrom`**,
+    before the caller's Secret. The seed is opt-in there.
+  - **A Team HyperDX already gave the wrong connection is never repaired.** This includes the chart's
+    "Local ClickHouse", which a `secretValues` + `initialUser` registration used to get. The Team isn't
+    empty, so fix the connection in HyperDX's UI.
+  - **The HelmRelease's `hyperdx.deployment.defaultConnections` / `defaultSources` are Helm templates
+    now, in both modes**, which the chart's `tpl` renders into `DEFAULT_CONNECTIONS` /
+    `DEFAULT_SOURCES`. Anything that read them from the HelmRelease as JSON must render them first.
+  - **`clickhouse.host` values that break the connection URLs are now refused:** an empty value;
+    whitespace, `/`, `\`, `?`, `#` or `@`; a scheme; a port; a bracketed value that isn't IPv6;
+    unbracketed IPv6; non-ASCII or other characters outside letters, digits, `.`, `-` and `_`; and
+    shorthand IPv4. Trailing-dot FQDNs and bracketed IPv6 still work.
+
+- **Documentation and test examples use generic names.** The NATS JetStream examples use
+  `ORDERS_EVENTS` / `orders.events.>`, the Envoy AI Gateway examples use the `x-acme-principal`
+  header, and the semantic-planning RFP refers to downstream application platforms in general.
 
 - **The CHI and the CHK no longer share one cluster-name rule.**
   `CLICKHOUSE_CLUSTER_NAME_PATTERN` (CHI) was

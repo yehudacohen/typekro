@@ -28,7 +28,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadAll } from 'js-yaml';
+import { load, loadAll } from 'js-yaml';
 
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import {
@@ -48,6 +48,10 @@ import {
   ClickStackBootstrapConfigSchema,
   ClickStackBootstrapStatusSchema,
 } from '../../../src/factories/clickstack/types.js';
+import {
+  CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE,
+  CLICKSTACK_DEFAULT_SOURCES_TEMPLATE,
+} from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 
 const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
 const ORIGINAL_KUBECONFIG = process.env.KUBECONFIG;
@@ -381,11 +385,21 @@ describe('clickstackBootstrap factory modes', () => {
         'MONGO_URI: mongodb://clickstack-mongodb.clickstack.svc.cluster.local:27017/hyperdx'
       );
 
-      // HyperDX UI connection/sources are concrete JSON (http port default 8123).
-      expect(release).toContain(
-        '"host":"http://clickhouse-observability.clickhouse.svc.cluster.local:8123"'
+      // HyperDX UI connection/sources are Helm templates over typed values
+      // (http port default 8123), so no field is spliced into JSON by hand.
+      const values = (load(release ?? '') as { spec: { values: Record<string, any> } }).spec.values;
+      expect(values.typekro.clickstack).toEqual({
+        defaultConnection: {
+          host: 'http://clickhouse-observability.clickhouse.svc.cluster.local:8123',
+          port: 8123,
+          username: 'otelcollector',
+        },
+        defaultSources: { database: 'default' },
+      });
+      expect(values.hyperdx.deployment.defaultConnections).toBe(
+        CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE
       );
-      expect(release).toContain('"username":"otelcollector"');
+      expect(values.hyperdx.deployment.defaultSources).toBe(CLICKSTACK_DEFAULT_SOURCES_TEMPLATE);
       expect(release).toContain('"tableName":"otel_logs"');
     });
 
@@ -453,7 +467,9 @@ describe('clickstackBootstrap factory modes', () => {
           jobTemplate: {
             spec: {
               template: {
-                spec: { containers: { env: { name: string; value?: string; valueFrom?: unknown }[] }[] };
+                spec: {
+                  containers: { env: { name: string; value?: string; valueFrom?: unknown }[] }[];
+                };
               };
             };
           };
@@ -556,8 +572,15 @@ describe('clickstackBootstrap factory modes', () => {
       expect(serialized).toContain(
         'has(schema.spec.credentialsSecret) && has(schema.spec.credentialsSecret.valuesKey)'
       );
-      expect(serialized).not.toContain('CLICKHOUSE_PASSWORD');
-      expect(serialized).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      // The UI password is named in exactly one place, and not as a value: the
+      // chart template in HyperDX's default connection. The Team-defaults seed
+      // is off by default in secretValues mode, so it references nothing.
+      const passwordTemplate = '{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}';
+      expect(serialized).toContain(passwordTemplate);
+      expect(serialized).not.toContain('HYPERDX_DEFAULT_CONNECTION_PASSWORD');
+      const withoutTemplate = serialized.split(passwordTemplate).join('');
+      expect(withoutTemplate).not.toContain('CLICKHOUSE_PASSWORD');
+      expect(withoutTemplate).not.toContain('CLICKHOUSE_APP_PASSWORD');
       expect(serialized).not.toContain('schema.spec.apiKey');
       expect(yaml).toContain('key: HYPERDX_API_KEY');
       expect(yaml).toContain('name: clickstack-secret');

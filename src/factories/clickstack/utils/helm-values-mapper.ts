@@ -57,6 +57,7 @@ import type { TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
 import { type CollectorConfigFragment, renderCollectorConfig } from './collector-config.js';
+import { CLICKSTACK_CONNECTION_NAME, CLICKSTACK_DEFAULT_SOURCES } from './team-defaults.js';
 import {
   type ResolvedClickStackStorage,
   clickStackQueueClaimName,
@@ -99,8 +100,7 @@ export const DEFAULT_CLICKSTACK_GATEWAY_ENDPOINT =
  */
 export const DEFAULT_K8S_TELEMETRY_COLLECTOR_IMAGE = 'otel/opentelemetry-collector-contrib';
 
-/** Name of the HyperDX connection emitted into `defaultConnections`/`defaultSources`. */
-export const CLICKSTACK_CONNECTION_NAME = 'External ClickHouse';
+export { CLICKSTACK_CONNECTION_NAME } from './team-defaults.js';
 
 /**
  * The ClickStack image runs under the OpAMP supervisor. Its built-in remote
@@ -281,100 +281,136 @@ function mergeOverridesWithPinsLast(
  * `defaultConnections`/`defaultSources` pointing at the (nonexistent) bundled
  * ClickHouse Service, so both must be overridden for external mode. The
  * sources below mirror the chart defaults (values.yaml `defaultSources`,
- * chart 3.2.0) with the connection renamed and the database parameterized
- * (`%s` slots filled per mode).
+ * chart 3.2.0) with the connection renamed and the database a Helm template.
  */
-const DEFAULT_SOURCES_FORMAT = JSON.stringify([
-  {
-    from: { databaseName: '%s', tableName: 'otel_logs' },
-    kind: 'log',
-    timestampValueExpression: 'Timestamp',
-    name: 'Logs',
-    displayedTimestampValueExpression: 'Timestamp',
-    implicitColumnExpression: 'Body',
-    serviceNameExpression: 'ServiceName',
-    bodyExpression: 'Body',
-    eventAttributesExpression: 'LogAttributes',
-    resourceAttributesExpression: 'ResourceAttributes',
-    defaultTableSelectExpression: 'Timestamp,ServiceName,SeverityText,Body',
-    severityTextExpression: 'SeverityText',
-    traceIdExpression: 'TraceId',
-    spanIdExpression: 'SpanId',
-    connection: CLICKSTACK_CONNECTION_NAME,
-    traceSourceId: 'Traces',
-    sessionSourceId: 'Sessions',
-    metricSourceId: 'Metrics',
-  },
-  {
-    from: { databaseName: '%s', tableName: 'otel_traces' },
-    kind: 'trace',
-    timestampValueExpression: 'Timestamp',
-    name: 'Traces',
-    displayedTimestampValueExpression: 'Timestamp',
-    implicitColumnExpression: 'SpanName',
-    serviceNameExpression: 'ServiceName',
-    bodyExpression: 'SpanName',
-    eventAttributesExpression: 'SpanAttributes',
-    resourceAttributesExpression: 'ResourceAttributes',
-    defaultTableSelectExpression: 'Timestamp,ServiceName,StatusCode,round(Duration/1e6),SpanName',
-    traceIdExpression: 'TraceId',
-    spanIdExpression: 'SpanId',
-    durationExpression: 'Duration',
-    durationPrecision: 9,
-    parentSpanIdExpression: 'ParentSpanId',
-    spanNameExpression: 'SpanName',
-    spanKindExpression: 'SpanKind',
-    statusCodeExpression: 'StatusCode',
-    statusMessageExpression: 'StatusMessage',
-    connection: CLICKSTACK_CONNECTION_NAME,
-    logSourceId: 'Logs',
-    sessionSourceId: 'Sessions',
-    metricSourceId: 'Metrics',
-  },
-  {
-    from: { databaseName: '%s', tableName: '' },
-    kind: 'metric',
-    timestampValueExpression: 'TimeUnix',
-    name: 'Metrics',
-    resourceAttributesExpression: 'ResourceAttributes',
-    metricTables: {
-      gauge: 'otel_metrics_gauge',
-      histogram: 'otel_metrics_histogram',
-      sum: 'otel_metrics_sum',
-      _id: '682586a8b1f81924e628e808',
-      id: '682586a8b1f81924e628e808',
-    },
-    connection: CLICKSTACK_CONNECTION_NAME,
-    logSourceId: 'Logs',
-    traceSourceId: 'Traces',
-    sessionSourceId: 'Sessions',
-  },
-  {
-    from: { databaseName: '%s', tableName: 'hyperdx_sessions' },
-    kind: 'session',
-    timestampValueExpression: 'TimestampTime',
-    name: 'Sessions',
-    displayedTimestampValueExpression: 'Timestamp',
-    implicitColumnExpression: 'Body',
-    serviceNameExpression: 'ServiceName',
-    bodyExpression: 'Body',
-    eventAttributesExpression: 'LogAttributes',
-    resourceAttributesExpression: 'ResourceAttributes',
-    defaultTableSelectExpression: 'Timestamp,ServiceName,SeverityText,Body',
-    severityTextExpression: 'SeverityText',
-    traceIdExpression: 'TraceId',
-    spanIdExpression: 'SpanId',
-    connection: CLICKSTACK_CONNECTION_NAME,
-    logSourceId: 'Logs',
-    traceSourceId: 'Traces',
-    metricSourceId: 'Metrics',
-  },
-]);
+// The JSON itself is a Helm template, built below (CLICKSTACK_DEFAULT_SOURCES_TEMPLATE).
 
-/** `defaultConnections` JSON with %s slots: host, httpPort, httpPort, username, password. */
-const DEFAULT_CONNECTIONS_FORMAT =
-  `[{"name":"${CLICKSTACK_CONNECTION_NAME}","host":"http://%s:%s","port":%s,` +
-  '"username":"%s","password":"%s"}]';
+/**
+ * The connection and database the Team bootstrap seeds, derived exactly as
+ * `defaultConnections` / `defaultSources` derive them: `http://<host>:<httpPort>`,
+ * the UI user (`appUsername`, else `username`, else `default`) and the OTel
+ * database. Concrete values in direct mode, CEL in KRO mode. The password is
+ * not here: the CronJob reads it from the chart-owned Secret.
+ */
+export function clickStackDefaultConnectionTarget(config: ClickStackBootstrapRuntimeConfig): {
+  host: string;
+  username: string;
+  database: string;
+} {
+  const ch = config.clickhouse;
+  if (isKubernetesRef(config.name) || isKubernetesRef(ch)) {
+    const httpPortStr = Cel.expr<string>(
+      `string(${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123)`
+    );
+    return {
+      host: Cel.template('http://%s:%s', ch.host, httpPortStr) as unknown as string,
+      username: Cel.expr<string>(
+        `${hasSchemaPath('schema.spec.clickhouse.appUsername')} ? schema.spec.clickhouse.appUsername : ` +
+          `(${hasSchemaPath('schema.spec.clickhouse.username')} ? schema.spec.clickhouse.username : "default")`
+      ) as unknown as string,
+      database: resolve(ch.database, 'default'),
+    };
+  }
+  return {
+    host: `http://${ch.host}:${ch.httpPort ?? 8123}`,
+    username: ch.appUsername ?? ch.username ?? 'default',
+    database: ch.database ?? 'default',
+  };
+}
+
+/**
+ * The chart value HyperDX's `DEFAULT_CONNECTIONS` password is read from in
+ * `secretValues` mode, as a Helm template. The chart runs `tpl` over
+ * `hyperdx.deployment.defaultConnections` with the release's merged values
+ * (its own default uses `{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD }}`),
+ * so the caller's `valuesFrom` fragment supplies the password while TypeKro
+ * supplies the topology. `toJson` quotes and escapes it as a JSON string.
+ */
+export const CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE =
+  '{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}';
+
+/** Key of the values document in the `secretValues` default-connections ConfigMap. */
+export const CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY = 'values.yaml';
+
+/**
+ * Where, in the HelmRelease's own `spec.values`, TypeKro puts the non-secret
+ * values HyperDX's default connection and sources are built from: host URL,
+ * port and user under `.defaultConnection`, the OTel database under
+ * `.defaultSources`. The chart ignores the key; the templates below read it.
+ */
+export const CLICKSTACK_DEFAULTS_VALUES_PATH = 'typekro.clickstack';
+/** @deprecated Use {@link CLICKSTACK_DEFAULTS_VALUES_PATH}; kept for the `.defaultConnection` path. */
+export const CLICKSTACK_DEFAULT_CONNECTION_VALUES_PATH = `${CLICKSTACK_DEFAULTS_VALUES_PATH}.defaultConnection`;
+
+/** A Helm template that serialises one chart value as JSON. */
+const toJsonTemplate = (path: string) => `{{ .Values.${path} | toJson }}`;
+
+/**
+ * HyperDX's `defaultConnections`, in BOTH credential modes: a Helm template
+ * the chart runs `tpl` over (with the release's merged values) when it sets
+ * `DEFAULT_CONNECTIONS`. Every field is serialised by `toJson`: the host,
+ * port and user from {@link CLICKSTACK_DEFAULTS_VALUES_PATH}, the password
+ * from `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD` (rendered by TypeKro inline,
+ * supplied by the values fragment with `secretValues`). Nothing user-supplied
+ * is ever interpolated into JSON by hand, so a quote, backslash or space in
+ * any field stays valid JSON, in direct and KRO mode alike.
+ */
+export const CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE = (() => {
+  const connection = `${CLICKSTACK_DEFAULTS_VALUES_PATH}.defaultConnection`;
+  return `[{"name":${JSON.stringify(CLICKSTACK_CONNECTION_NAME)},"host":${toJsonTemplate(`${connection}.host`)},"port":${toJsonTemplate(`${connection}.port`)},"username":${toJsonTemplate(`${connection}.username`)},"password":${CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE}}]`;
+})();
+
+/**
+ * HyperDX's `defaultSources`: {@link CLICKSTACK_DEFAULT_SOURCES} with every
+ * `databaseName` a `toJson` template of the OTel database, for the same
+ * reason as {@link CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE}.
+ */
+export const CLICKSTACK_DEFAULT_SOURCES_TEMPLATE = JSON.stringify(
+  CLICKSTACK_DEFAULT_SOURCES
+).replaceAll('"%s"', toJsonTemplate(`${CLICKSTACK_DEFAULTS_VALUES_PATH}.defaultSources.database`));
+
+/**
+ * The `secretValues`-mode values document that sets
+ * `hyperdx.deployment.defaultConnections` to
+ * {@link CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE}.
+ *
+ * WHY A SEPARATE DOCUMENT. TypeKro renders no `defaultConnections` in
+ * `spec.values` in this mode, because Flux applies `spec.values` last and it
+ * would override a `defaultConnections` in the caller's fragment. Without one
+ * the chart falls back to its own "Local ClickHouse" at the bundled ClickHouse
+ * Service TypeKro disables, which HyperDX's registration (`initialUser`) would
+ * provision. The composition hands this document to Flux as a ConfigMap
+ * `valuesFrom` entry BEFORE the caller's Secret, so the fragment still wins.
+ */
+export const CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT = [
+  'hyperdx:',
+  '  deployment:',
+  '    defaultConnections: |',
+  `      ${CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE}`,
+  '',
+].join('\n');
+
+/**
+ * The typed values the templates read (see {@link CLICKSTACK_DEFAULTS_VALUES_PATH}):
+ * the same host, port, user and database the seed uses.
+ */
+function clickStackDefaultsValues(config: ClickStackBootstrapRuntimeConfig): {
+  defaultConnection: { host: string; port: number; username: string };
+  defaultSources: { database: string };
+} {
+  const target = clickStackDefaultConnectionTarget(config);
+  const ch = config.clickhouse;
+  const port =
+    isKubernetesRef(config.name) || isKubernetesRef(ch)
+      ? (Cel.expr<number>(
+          `${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123`
+        ) as unknown as number)
+      : (ch.httpPort ?? 8123);
+  return {
+    defaultConnection: { host: target.host, port, username: target.username },
+    defaultSources: { database: target.database },
+  };
+}
 
 // ============================================================================
 // clickstackBootstrap values
@@ -407,9 +443,6 @@ export function mapClickStackConfigToHelmValues(
     const nativePortStr = Cel.expr<string>(
       `string(${hasSchemaPath('schema.spec.clickhouse.nativePort')} ? schema.spec.clickhouse.nativePort : 9000)`
     );
-    const httpPortStr = Cel.expr<string>(
-      `string(${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123)`
-    );
     hyperdxConfig.CLICKHOUSE_ENDPOINT = Cel.template(
       'tcp://%s:%s?dial_timeout=10s',
       ch.host,
@@ -433,10 +466,6 @@ export function mapClickStackConfigToHelmValues(
         | ClickStackBootstrapConfig
         | ClickStackExternalMongoBootstrapConfig;
       const inlineClickhouse = inlineConfig.clickhouse;
-      const appUsername = Cel.expr<string>(
-        `${hasSchemaPath('schema.spec.clickhouse.appUsername')} ? schema.spec.clickhouse.appUsername : ` +
-          `(${hasSchemaPath('schema.spec.clickhouse.username')} ? schema.spec.clickhouse.username : "default")`
-      );
       const appPassword = Cel.expr<string>(
         `${hasSchemaPath('schema.spec.clickhouse.appPassword')} ? schema.spec.clickhouse.appPassword : ` +
           `(${hasSchemaPath('schema.spec.clickhouse.password')} ? schema.spec.clickhouse.password : "")`
@@ -444,30 +473,15 @@ export function mapClickStackConfigToHelmValues(
       hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(inlineClickhouse.password, '');
       hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
       hyperdxSecrets.HYPERDX_API_KEY = inlineConfig.apiKey;
-      hyperdxDeployment.defaultConnections = Cel.template(
-        DEFAULT_CONNECTIONS_FORMAT,
-        ch.host,
-        httpPortStr,
-        httpPortStr,
-        appUsername,
-        appPassword
-      );
+      hyperdxDeployment.defaultConnections = CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE;
     }
 
     hyperdxDeployment.replicas = graphOptional('schema.spec.hyperdx.replicas');
     hyperdxDeployment.resources = graphOptional('schema.spec.hyperdx.resources');
     hyperdxDeployment.image = graphOptional('schema.spec.hyperdx.image');
-    const database = resolve(ch.database, 'default');
-    hyperdxDeployment.defaultSources = Cel.template(
-      DEFAULT_SOURCES_FORMAT,
-      database,
-      database,
-      database,
-      database
-    );
+    hyperdxDeployment.defaultSources = CLICKSTACK_DEFAULT_SOURCES_TEMPLATE;
   } else {
     const nativePort = ch.nativePort ?? 9000;
-    const httpPort = ch.httpPort ?? 8123;
     const database = ch.database ?? 'default';
     const username = ch.username ?? 'default';
     hyperdxConfig.CLICKHOUSE_ENDPOINT = `tcp://${ch.host}:${nativePort}?dial_timeout=10s`;
@@ -486,26 +500,17 @@ export function mapClickStackConfigToHelmValues(
         | ClickStackExternalMongoBootstrapConfig;
       const inlineClickhouse = inlineConfig.clickhouse;
       const password = inlineClickhouse.password ?? '';
-      const appUsername = inlineClickhouse.appUsername ?? username;
       const appPassword = inlineClickhouse.appPassword ?? password;
       hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
       hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
       hyperdxSecrets.HYPERDX_API_KEY = inlineConfig.apiKey;
-      hyperdxDeployment.defaultConnections = JSON.stringify([
-        {
-          name: CLICKSTACK_CONNECTION_NAME,
-          host: `http://${ch.host}:${httpPort}`,
-          port: httpPort,
-          username: appUsername,
-          password: appPassword,
-        },
-      ]);
+      hyperdxDeployment.defaultConnections = CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE;
     }
 
     setIfDefined(hyperdxDeployment, 'replicas', config.hyperdx?.replicas);
     setIfDefined(hyperdxDeployment, 'resources', config.hyperdx?.resources);
     setIfDefined(hyperdxDeployment, 'image', config.hyperdx?.image);
-    hyperdxDeployment.defaultSources = DEFAULT_SOURCES_FORMAT.replace(/%s/g, () => database);
+    hyperdxDeployment.defaultSources = CLICKSTACK_DEFAULT_SOURCES_TEMPLATE;
   }
 
   const values: ClickStackHelmValues = {
@@ -514,7 +519,10 @@ export function mapClickStackConfigToHelmValues(
       ...(credentialSource === 'inline' ? { secrets: hyperdxSecrets } : {}),
       deployment: hyperdxDeployment,
     },
-  };
+    // The non-secret values the defaultConnections / defaultSources templates
+    // read (both credential modes).
+    typekro: { clickstack: clickStackDefaultsValues(config) },
+  } as ClickStackHelmValues;
 
   // Hard pins (see module doc): external-only build-around + the status
   // contract's naming anchor. Merged AFTER every passthrough so they always

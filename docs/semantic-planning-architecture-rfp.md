@@ -66,7 +66,7 @@ TypeKro will not own:
 - Generic retry queues, worker leasing, concurrency scheduling, or durable rate limiting.
 - Encryption and persistence of provider secrets and outputs.
 - Generic provider compensation or recovery after process interruption.
-- Applik8s's application model, commands, queries, UI model, or provider-neutral semantics.
+- A downstream application platform's application model, commands, queries, UI model, or provider-neutral semantics.
 - KRO controller behavior that can only be corrected upstream.
 - Lossless serialization of unrestricted JavaScript or undeclared ambient effects.
 - A guarantee that every current direct-only escape hatch becomes portable.
@@ -125,7 +125,7 @@ mechanism from the compiled artifact plan.
 
 ### 4.3 Application Platforms
 
-Applik8s and similar platforms own their application model, provider-neutral product semantics, commands, queries, and user workflows. They translate application intent into TypeKro compositions and non-Kubernetes Alchemy resources. They must not need to inspect TypeKro private fields, replay composition functions, or parse emitted YAML to understand the Kubernetes subgraph.
+Downstream application platforms own their application model, provider-neutral product semantics, commands, queries, and user workflows. They translate application intent into TypeKro compositions and non-Kubernetes Alchemy resources. They must not need to inspect TypeKro private fields, replay composition functions, or parse emitted YAML to understand the Kubernetes subgraph.
 
 ### 4.4 KRO and Kubernetes
 

@@ -165,7 +165,10 @@ export function resolveClickStackHyperdxOidc(
     );
   }
   const passwordLoginPath = options.passwordLoginPath;
-  if (passwordLoginPath !== undefined && (typeof passwordLoginPath !== 'string' || !SAME_ORIGIN_PATH.test(passwordLoginPath))) {
+  if (
+    passwordLoginPath !== undefined &&
+    (typeof passwordLoginPath !== 'string' || !SAME_ORIGIN_PATH.test(passwordLoginPath))
+  ) {
     throw new Error(
       `${context}: hyperdxOidc.passwordLoginPath ${JSON.stringify(passwordLoginPath)} must be a path on ` +
         'HyperDX\'s own origin, starting with a single "/" (no "//", backslash, whitespace or control character).'
@@ -208,19 +211,23 @@ function recordAt(parent: Values, key: string, path: string): Values {
     parent[key] = created;
     return created;
   }
-  if (!isRecord(existing)) throw new Error(`values.${path} must be an object to combine with hyperdxOidc`);
+  if (!isRecord(existing))
+    throw new Error(`values.${path} must be an object to combine with hyperdxOidc`);
   return existing;
 }
 
 function listAt(parent: Values, key: string, path: string): unknown[] {
   const existing = parent[key];
   if (existing === undefined) return [];
-  if (!Array.isArray(existing)) throw new Error(`values.${path} must be a list to combine with hyperdxOidc`);
+  if (!Array.isArray(existing))
+    throw new Error(`values.${path} must be a list to combine with hyperdxOidc`);
   return existing;
 }
 
 function namesOf(list: unknown[]): string[] {
-  return list.flatMap((item) => (isRecord(item) && typeof item.name === 'string' ? [item.name] : []));
+  return list.flatMap((item) =>
+    isRecord(item) && typeof item.name === 'string' ? [item.name] : []
+  );
 }
 
 /**
@@ -237,8 +244,8 @@ function namesOf(list: unknown[]): string[] {
  * @param oidc - The resolved option
  * @param releaseName - The release name; the plugin ConfigMap is named from it
  * @param initialUser - The resolved `initialUser`, when it claims the
- *   instance. Then a first OIDC login may not create HyperDX's team (it would
- *   take the initial account's place), and the plugin gets the initial user's
+ *   instance. (A first OIDC login never creates HyperDX's team: the bootstrap
+ *   CronJob owns it on both paths.) With it, the plugin gets the initial user's
  *   email and its password Secret key projected as a file, so that only that
  *   account's own first-run registration passes `passwordLogin: false`.
  * @returns New values with the wiring folded in
@@ -248,7 +255,10 @@ export function applyHyperdxOidcValues(
   values: Values | undefined,
   oidc: ResolvedClickStackHyperdxOidc,
   releaseName: string,
-  initialUser?: Pick<ResolvedClickStackInitialUser, 'email' | 'passwordSecretName' | 'passwordSecretKey'>
+  initialUser?: Pick<
+    ResolvedClickStackInitialUser,
+    'email' | 'passwordSecretName' | 'passwordSecretKey'
+  >
 ): Values {
   const merged: Values = structuredClone(values ?? {});
   try {
@@ -256,7 +266,9 @@ export function applyHyperdxOidcValues(
     const deployment = recordAt(hyperdx, 'deployment', 'hyperdx.deployment');
 
     const env = listAt(deployment, 'env', 'hyperdx.deployment.env');
-    const clashingEnv = namesOf(env).filter((name) => (OWNED_ENV as readonly string[]).includes(name));
+    const clashingEnv = namesOf(env).filter((name) =>
+      (OWNED_ENV as readonly string[]).includes(name)
+    );
     if (clashingEnv.length > 0) {
       throw new Error(
         `values.hyperdx.deployment.env already sets ${clashingEnv.join(', ')}, which hyperdxOidc owns`
@@ -264,10 +276,21 @@ export function applyHyperdxOidcValues(
     }
     deployment.env = [
       ...env,
-      { name: 'NODE_OPTIONS', value: `--require=${HYPERDX_OIDC_PLUGIN_DIR}/${HYPERDX_OIDC_PLUGIN_FILE}` },
-      { name: 'TYPEKRO_HDX_OIDC_CONFIG', value: `${HYPERDX_OIDC_CONFIG_DIR}/${HYPERDX_OIDC_CONFIG_FILE}` },
+      {
+        name: 'NODE_OPTIONS',
+        value: `--require=${HYPERDX_OIDC_PLUGIN_DIR}/${HYPERDX_OIDC_PLUGIN_FILE}`,
+      },
+      {
+        name: 'TYPEKRO_HDX_OIDC_CONFIG',
+        value: `${HYPERDX_OIDC_CONFIG_DIR}/${HYPERDX_OIDC_CONFIG_FILE}`,
+      },
       { name: 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS', value: String(oidc.reloadSeconds) },
-      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: String(initialUser === undefined) },
+      // Never: the Team-bootstrap CronJob owns the Team on both paths. Without
+      // initialUser it creates the Team itself, so a first OIDC login that got
+      // there first would leave two Teams (and the plugin refuses new users
+      // once more than one exists). Until the Team exists, OIDC sign-in answers
+      // "HyperDX is still being set up. Try again in a minute."
+      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: 'false' },
       ...(oidc.passwordLoginPath === undefined
         ? []
         : [{ name: 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH', value: oidc.passwordLoginPath }]),
@@ -288,7 +311,9 @@ export function applyHyperdxOidcValues(
       (OWNED_VOLUMES as readonly string[]).includes(name)
     );
     if (clashingVolumes.length > 0) {
-      throw new Error(`values.hyperdx.deployment already uses volume name(s) ${clashingVolumes.join(', ')}`);
+      throw new Error(
+        `values.hyperdx.deployment already uses volume name(s) ${clashingVolumes.join(', ')}`
+      );
     }
     deployment.volumes = [
       ...volumes,
@@ -314,7 +339,12 @@ export function applyHyperdxOidcValues(
                 // refuses the registration (fail closed) until the kubelet
                 // projects the key.
                 optional: true,
-                items: [{ key: initialUser.passwordSecretKey, path: HYPERDX_OIDC_BOOTSTRAP_PASSWORD_FILE }],
+                items: [
+                  {
+                    key: initialUser.passwordSecretKey,
+                    path: HYPERDX_OIDC_BOOTSTRAP_PASSWORD_FILE,
+                  },
+                ],
               },
             },
           ]),

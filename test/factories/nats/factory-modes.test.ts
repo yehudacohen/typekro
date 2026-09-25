@@ -41,7 +41,7 @@ const streamResources = kubernetesComposition(
       name: 'application-events',
       streamName: spec.name,
       namespace: spec.namespace,
-      subjects: ['applik8s.events.>'],
+      subjects: ['orders.events.>'],
       storage: 'file',
       retention: 'limits',
       replicas: 1,
@@ -57,7 +57,7 @@ const streamResources = kubernetesComposition(
       ackPolicy: 'explicit',
       ackWait: '30s',
       maxDeliver: 5,
-      filterSubject: 'applik8s.events.account-changed.>',
+      filterSubject: 'orders.events.order-placed.>',
       servers: ['nats://nats.nats-system.svc:4222'],
     });
     return {
@@ -503,7 +503,7 @@ describe('NATS and JetStream factories', () => {
   });
 
   it('emits NACK Stream and Consumer resources in direct and KRO modes', () => {
-    const spec = { name: 'APPLIK8S_EVENTS', namespace: 'apps' };
+    const spec = { name: 'ORDERS_EVENTS', namespace: 'apps' };
     const direct = streamResources.factory('direct', { namespace: 'apps' }).toYaml(spec);
     const kro = streamResources.factory('kro', { namespace: 'typekro-system' }).toYaml();
 

@@ -29,6 +29,8 @@ import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } 
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadAll } from 'js-yaml';
+import { makeClickstackBootstrap } from '../../../src/factories/clickstack/index.js';
 import { HYPERDX_OIDC_PLUGIN_BASE64 } from '../../../src/factories/clickstack/hyperdx-oidc/plugin-bundle.generated.js';
 
 setDefaultTimeout(300_000);
@@ -85,10 +87,19 @@ const HYPERDX_OPEN = `typekro-oidc-hdx-open-${suffix}`;
 /** A third HyperDX, on its own database and configuration, reached only through the reverse proxy. */
 const HYPERDX_PROXIED = `typekro-oidc-hdx-proxied-${suffix}`;
 const PROXY = `typekro-oidc-proxy-${suffix}`;
-const CONTAINERS = [PROXY, HYPERDX, HYPERDX_OPEN, HYPERDX_PROXIED, MOCK, MONGO];
+/**
+ * A fourth HyperDX, on its own database, wired as the composition renders it
+ * WITHOUT initialUser: the team-bootstrap CronJob creates the Team, so the
+ * plugin never does.
+ */
+const HYPERDX_DEGRADED = `typekro-oidc-hdx-degraded-${suffix}`;
+const CONTAINERS = [PROXY, HYPERDX, HYPERDX_OPEN, HYPERDX_PROXIED, HYPERDX_DEGRADED, MOCK, MONGO];
 
 let hdxUrl = '';
 let openUrl = '';
+let degradedUrl = '';
+/** The degraded HyperDX's own configuration directory. */
+let degradedConfigDir = '';
 let mockExternal = '';
 /** Caddy's published address, standing in for PUBLIC_ORIGIN. */
 let proxyExternal = '';
@@ -224,6 +235,23 @@ class Browser {
   }
 }
 
+/** The composition without initialUser, with hyperdxOidc: its HyperDX values and bootstrap CronJob. */
+function renderDegraded() {
+  const yaml = makeClickstackBootstrap({ hyperdxOidc: { configSecretRef: { name: 'hyperdx-oidc' } } })
+    .factory('direct', { namespace: 'clickstack' })
+    .toYaml({
+      name: 'clickstack',
+      namespace: 'clickstack',
+      clickhouse: { host: 'clickhouse', username: 'hyperdx', password: 'ch-secret' },
+      apiKey: '6f1c1d2e-3a4b-4c5d-8e9f-0a1b2c3d4e5f',
+    } as never);
+  return (loadAll(yaml) as Record<string, any>[]).filter(Boolean);
+}
+function degradedDeployment(): Record<string, unknown> {
+  const release = renderDegraded().find((doc) => doc.kind === 'HelmRelease' && doc.spec?.chart?.spec?.chart === 'clickstack');
+  return release?.spec.values.hyperdx.deployment;
+}
+
 /** The initialUser account: what TypeKro's CronJob registers, and what the plugin is told to admit. */
 const ADMIN = { email: 'admin@example.com', password: 'Break-Glass-Passw0rd!' };
 
@@ -257,6 +285,10 @@ beforeAll(async () => {
   mkdirSync(proxiedConfigDir);
   chmodSync(proxiedConfigDir, 0o755);
   writeConfig({ providers: [PROVIDER], passwordLogin: false }, proxiedConfigDir);
+  degradedConfigDir = join(workDir, 'degraded');
+  mkdirSync(degradedConfigDir);
+  chmodSync(degradedConfigDir, 0o755);
+  writeConfig({ providers: [PROVIDER] }, degradedConfigDir);
   const caddyDir = join(workDir, 'caddy');
   mkdirSync(caddyDir);
   chmodSync(caddyDir, 0o755);
@@ -273,6 +305,8 @@ beforeAll(async () => {
   const mockPort = await freePort();
   const openPort = await freePort();
   const proxyPort = await freePort();
+  const degradedPort = await freePort();
+  degradedUrl = `http://localhost:${degradedPort}`;
   hdxUrl = `http://localhost:${hdxPort}`;
   openUrl = `http://localhost:${openPort}`;
   mockExternal = `http://localhost:${mockPort}`;
@@ -342,6 +376,22 @@ beforeAll(async () => {
     HYPERDX_IMAGE,
   ]);
   if (!proxiedStarted.ok) throw new Error(`docker run hyperdx (proxied) failed: ${proxiedStarted.stderr}`);
+  // The plugin env exactly as the composition renders it without initialUser.
+  const degradedEnv = (degradedDeployment().env as Array<{ name: string; value: string }>).flatMap(({ name, value }) => [
+    '-e',
+    `${name}=${value}`,
+  ]);
+  const degradedStarted = docker([
+    'run', '-d', '--name', HYPERDX_DEGRADED, '--network', NETWORK, '-p', `${degradedPort}:8080`,
+    '-e', `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-degraded`,
+    '-e', `FRONTEND_URL=${degradedUrl}`,
+    '-e', 'HYPERDX_APP_PORT=8080',
+    ...degradedEnv,
+    '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
+    '-v', `${degradedConfigDir}:/etc/typekro/hyperdx-oidc:ro`,
+    HYPERDX_IMAGE,
+  ]);
+  if (!degradedStarted.ok) throw new Error(`docker run hyperdx (degraded) failed: ${degradedStarted.stderr}`);
   const proxyStarted = docker([
     'run', '-d', '--name', PROXY, '--network', NETWORK, '-p', `${proxyPort}:80`,
     '-v', `${caddyDir}:/etc/caddy:ro`,
@@ -385,6 +435,13 @@ beforeAll(async () => {
     await Bun.sleep(1000);
   }
   await waitForLog(/"message":"OIDC configuration applied","providers":\["mock"\]/, 0, HYPERDX_PROXIED);
+  for (let attempt = 0; attempt < 120; attempt++) {
+    try {
+      if ((await fetch(`${degradedUrl}/api/installation`)).status === 200) break;
+    } catch {}
+    await Bun.sleep(1000);
+  }
+  await waitForLog(/"message":"OIDC configuration applied","providers":\["mock"\]/, 0, HYPERDX_DEGRADED);
 });
 
 afterAll(() => {
@@ -926,5 +983,52 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
     writeConfig({ providers, passwordLogin: true, passwordLoginPath: '/login?via=config' }, proxiedConfigDir);
     await waitForLog(applied, before, HYPERDX_PROXIED);
     expect(await chooserLink()).toBe(`${PUBLIC_ORIGIN}/login?via=config`);
+  });
+});
+
+describeOrSkip('HyperDX OIDC without initialUser: the bootstrap owns the Team', () => {
+  it('answers "still being set up" until the bootstrap creates the one Team, then signs users into it', async () => {
+    // Before the CronJob's first run: the plugin does not create a Team, so
+    // there can never be a second one next to the CronJob's.
+    const early = await new Browser().signIn(allowedClaims('early-bird', 'early-bird@example.com'), 'mock', degradedUrl);
+    expect(early.response.status).toBe(503);
+    expect(await early.response.text()).toContain('HyperDX is still being set up. Try again in a minute.');
+    const count = (query: string) =>
+      docker(['exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx-degraded', '--eval', query]).stdout.trim();
+    expect(count('db.teams.countDocuments()')).toBe('0');
+
+    // The team-bootstrap CronJob as rendered, its Secret references resolved.
+    const cronJob = renderDegraded().find((doc) => doc.kind === 'CronJob' && doc.metadata.name.endsWith('-team-bootstrap'));
+    const container = cronJob?.spec.jobTemplate.spec.template.spec.containers[0];
+    const secret: Record<string, string> = {
+      HYPERDX_API_KEY: '6f1c1d2e-3a4b-4c5d-8e9f-0a1b2c3d4e5f',
+      CLICKHOUSE_APP_PASSWORD: 'ch-secret',
+    };
+    type EnvVar = { name: string; value?: string; valueFrom?: { secretKeyRef: { key: string } } };
+    const env = (container.env as EnvVar[]).flatMap((variable) => [
+      '-e',
+      `${variable.name}=${variable.value ?? secret[variable.valueFrom?.secretKeyRef.key ?? '']}`,
+    ]);
+    const script = (container.command[4] as string).replace("getSiblingDB('hyperdx')", "getSiblingDB('hyperdx-degraded')");
+    const bootstrap = docker([
+      'run', '--rm', '--network', NETWORK, ...env, MONGO_IMAGE,
+      'mongosh', '--quiet', `mongodb://${MONGO}:27017/hyperdx`, '--eval', script,
+    ]);
+    expect(bootstrap.ok, bootstrap.stderr).toBe(true);
+
+    // Now OIDC users join that one Team, which has a connection and sources.
+    for (const who of ['early-bird', 'second']) {
+      const browser = new Browser();
+      const landed = await browser.signIn(allowedClaims(who, `${who}@example.com`), 'mock', degradedUrl);
+      expect(landed.response.status).toBe(200);
+      expect((await browser.me(degradedUrl)).status).toBe(200);
+      const connections = (await fetch(`${degradedUrl}/api/connections`, {
+        headers: { cookie: browser.cookies(degradedUrl) },
+      }).then((response) => response.json())) as unknown[];
+      expect(connections).toHaveLength(1);
+    }
+    expect(count('db.teams.countDocuments()')).toBe('1');
+    expect(count('db.teams.findOne().name')).toBe('ClickStack');
+    expect(count('db.users.countDocuments({ team: db.teams.findOne()._id })')).toBe('2');
   });
 });

@@ -75,6 +75,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:integration:hyperdx-oidc
 
+      - name: HyperDX Team defaults test (real HyperDX image)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bun run test:integration:hyperdx-team-defaults
+
       - name: ClickHouse server boot test
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:integration:clickhouse-boot

@@ -136,9 +136,9 @@ condition. The aggregate never reports `Ready` unless both releases are ready.
 const events = jetStreamStream({
   id: 'events',
   name: 'application-events',       // Kubernetes object name
-  streamName: 'APPLIK8S_EVENTS',    // JetStream stream name
+  streamName: 'ORDERS_EVENTS',      // JetStream stream name
   namespace: 'apps',
-  subjects: ['applik8s.events.>'],
+  subjects: ['orders.events.>'],
   storage: 'file',
   retention: 'limits',
   replicas: 3,
@@ -152,11 +152,11 @@ const processor = jetStreamConsumer({
   id: 'accountProcessor',
   name: 'account-commands',
   namespace: 'apps',
-  streamName: 'APPLIK8S_EVENTS',
+  streamName: 'ORDERS_EVENTS',
   ackPolicy: 'explicit',
   ackWait: '30s',
   maxDeliver: 10,
-  filterSubject: 'applik8s.events.account-changed.>',
+  filterSubject: 'orders.events.order-placed.>',
   servers: ['nats://nats.nats-system.svc:4222'],
 });
 ```
