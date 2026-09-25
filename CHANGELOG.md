@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `processorTimeout` (default `200ms`). Verified against the exporter helper in collector v0.155.0,
   the version `clickstack-otel-collector` 2.35.0 is built from: requests are persisted before they
   are batched and deleted only after their batch is exported, and in-flight requests are replayed
-  after a restart. Ranges are validated at construction, including a check that one batch cannot
-  take more than half of the queue. The new `persistentQueue.queueSize` option sets
-  `sending_queue.queue_size`. See "Batching inside the queue" in the ClickStack docs.
+  after a restart. The options are validated at construction. The new `persistentQueue.queueSize`
+  option sets `sending_queue.queue_size`, the number of requests each queue keeps. With `batch` it
+  defaults to `1000 × 5s / processorTimeout` (25000 at 200ms), because the processor then sends
+  requests more often. The lower processor timeout applies to every pipeline, including session
+  replay's. See "Batching inside the queue" in the ClickStack docs.
 
 - **`teamName` and `teamDefaults` build options on `makeClickstackBootstrap`.** `teamName` names the
   HyperDX Team (default `ClickStack`, at most 100 characters). With `initialUser` it renames HyperDX's

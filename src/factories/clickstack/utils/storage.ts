@@ -174,12 +174,37 @@ export const QUEUE_FS_GROUP_CHANGE_POLICY = 'OnRootMismatch';
 export const QUEUE_ACCESS_MODES = ['ReadWriteOnce'] as const;
 
 /**
- * The exporter's `sending_queue.queue_size` default, in requests. TypeKro
- * renders `queue_size` only when `persistentQueue.queueSize` is set; this is
- * the value the collector applies otherwise, and the one the batch capacity
- * check assumes.
+ * The exporter's `sending_queue.queue_size` default, in requests: what the
+ * collector applies when TypeKro renders no `queue_size`.
  */
 export const COLLECTOR_DEFAULT_QUEUE_CAPACITY = 1000;
+
+/**
+ * The ClickStack image's own `batch` processor timeout
+ * (`HYPERDX_OTEL_BATCH_TIMEOUT`, default 5s in `clickstack-otel-collector`
+ * 2.35.0), in milliseconds.
+ */
+export const CLICKSTACK_IMAGE_BATCH_PROCESSOR_TIMEOUT_MS = 5_000;
+
+/**
+ * The default `queue_size` while exporter-side batching is on: the
+ * collector's 1000 scaled by `5s / processorTimeout` (25000 at 200ms).
+ *
+ * With the default `requests` sizer the queue counts the requests the
+ * processor sends it, and under light load the processor sends one per
+ * `processorTimeout`. Lowering that timeout from the image's 5s therefore
+ * fills a 1000-request queue about 25 times sooner during an outage. Scaling
+ * the default keeps it holding roughly the same span of data. It is a default,
+ * not a guarantee: the processor also sends whenever `send_batch_size` fills,
+ * and the collector enforces the capacity itself.
+ *
+ * @param processorMs - The resolved `processorTimeout`, in milliseconds
+ */
+export function defaultBatchedQueueSize(processorMs: number): number {
+  return Math.ceil(
+    (COLLECTOR_DEFAULT_QUEUE_CAPACITY * CLICKSTACK_IMAGE_BATCH_PROCESSOR_TIMEOUT_MS) / processorMs
+  );
+}
 
 /** Default `sending_queue.batch.min_size`: the collector's own default. */
 export const DEFAULT_QUEUE_BATCH_MIN_SIZE = 8192;
@@ -438,7 +463,10 @@ export interface ResolvedClickStackStorage {
     /** Always non-empty — `resolveClickStackStorage` rejects an empty list. */
     readonly exporterNames: readonly string[];
     readonly extensions: readonly string[];
-    /** `sending_queue.queue_size`, rendered only when the caller set it. */
+    /**
+     * `sending_queue.queue_size`: the caller's value, else
+     * {@link defaultBatchedQueueSize} when `batch` is set, else not rendered.
+     */
     readonly queueSize?: number;
     /** Exporter-side batching, when requested. Defaults already applied. */
     readonly batch?: ResolvedQueueBatch;
@@ -619,18 +647,23 @@ export function resolveClickStackStorage(
     assertQueueComponentNames(context, 'exporterNames', exporterNames);
     assertQueueComponentNames(context, 'extensions', queueExtensions);
   }
-  const queueSize = queue?.queueSize;
-  if (queue?.enabled === true && queueSize !== undefined && !isPositiveSafeInteger(queueSize)) {
+  const requestedQueueSize = queue?.queueSize;
+  if (
+    queue?.enabled === true &&
+    requestedQueueSize !== undefined &&
+    !isPositiveSafeInteger(requestedQueueSize)
+  ) {
     throw new Error(
       `${context}: 'storage.persistentQueue.queueSize' must be a positive integer (the most ` +
-        `requests the exporter's sending_queue holds). Got ${JSON.stringify(queueSize)}. Omit ` +
-        `the option to keep the collector's default of ${COLLECTOR_DEFAULT_QUEUE_CAPACITY}.`
+        `requests each of the exporter's queues holds). Got ${JSON.stringify(requestedQueueSize)}.`
     );
   }
-  const batch =
+  const batched =
     queue?.enabled === true && queue.batch !== undefined
-      ? resolveQueueBatch(context, queue.batch, queueSize ?? COLLECTOR_DEFAULT_QUEUE_CAPACITY)
+      ? resolveQueueBatch(context, queue.batch, requestedQueueSize)
       : undefined;
+  const batch = batched?.batch;
+  const queueSize = batched?.queueSize ?? requestedQueueSize;
 
   return {
     mode,
@@ -664,20 +697,20 @@ export function resolveClickStackStorage(
  * Validate `persistentQueue.batch` and apply its defaults.
  *
  * Every bound mirrors a rule the collector enforces when it loads the config,
- * or a queue that would fill up: see {@link ClickStackPersistentQueueBatchOptions}.
+ * except the two timeout ranges and `processorTimeout < flushTimeout`, which
+ * keep the in-memory window short: see {@link ClickStackPersistentQueueBatchOptions}.
  *
  * @param context - Entry point name for every error message
  * @param batch - The caller's batch options
- * @param queueCapacity - The queue's `queue_size`, rendered or default
- * @returns The resolved batch options
- * @throws Error when a value is malformed or out of range, or when one batch
- *   could take more than half of the queue
+ * @param requestedQueueSize - The caller's `queueSize`, if any
+ * @returns The resolved batch options and the `queue_size` to render
+ * @throws Error when a value is malformed or out of range
  */
 function resolveQueueBatch(
   context: string,
   batch: ClickStackPersistentQueueBatchOptions,
-  queueCapacity: number
-): ResolvedQueueBatch {
+  requestedQueueSize: number | undefined
+): { readonly batch: ResolvedQueueBatch; readonly queueSize: number } {
   const path = 'storage.persistentQueue.batch';
   const flushMs = parseQueueBatchDuration(
     context,
@@ -723,27 +756,15 @@ function resolveQueueBatch(
     );
   }
 
-  // A request keeps its queue slot until the batch holding it is exported, and
-  // the processor sends one request per `processorTimeout` while data flows.
-  const requestsPerBatch = Math.ceil(flushMs / processorMs);
-  if (requestsPerBatch > queueCapacity / 2) {
-    throw new Error(
-      `${context}: one batch could take more than half of the persistent queue. With ` +
-        `'${path}.flushTimeout' ${batch.flushTimeout} and processorTimeout ` +
-        `${processorTimeout}, a batch holds up to ${requestsPerBatch} requests, and each keeps ` +
-        `its queue slot until the batch is exported. The queue holds ${queueCapacity} ` +
-        `requests, and half of it must stay free for a backlog while ClickHouse is unavailable; ` +
-        `a full queue refuses new data. Raise 'storage.persistentQueue.queueSize' to at least ` +
-        `${requestsPerBatch * 2}, raise processorTimeout, or shorten flushTimeout.`
-    );
-  }
-
   return {
-    flushTimeout: batch.flushTimeout,
-    minSize,
-    ...(maxSize !== undefined && { maxSize }),
-    sizer,
-    processorTimeout,
+    batch: {
+      flushTimeout: batch.flushTimeout,
+      minSize,
+      ...(maxSize !== undefined && { maxSize }),
+      sizer,
+      processorTimeout,
+    },
+    queueSize: requestedQueueSize ?? defaultBatchedQueueSize(processorMs),
   };
 }
 

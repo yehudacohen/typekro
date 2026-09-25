@@ -1871,6 +1871,8 @@ describe('persistentQueue.batch: batching inside the persistent queue', () => {
     expect(overlay.exporters?.clickhouse?.sending_queue).toEqual({
       enabled: true,
       storage: 'file_storage/hyperdx',
+      // The default scales with the processor timeout: 1000 × 5s / 200ms.
+      queue_size: 25_000,
       batch: { flush_timeout: '30s', min_size: 8192, sizer: 'items' },
     });
     expect(overlay.processors).toEqual({ batch: { timeout: '200ms' } });
@@ -1934,9 +1936,9 @@ describe('persistentQueue.batch: batching inside the persistent queue', () => {
       );
     }
     expect(resolveBatch({ flushTimeout: '999ms' })).toThrow(/must be between 1s and 10m/);
-    expect(resolveBatch({ flushTimeout: '11m' }, 100_000)).toThrow(/must be between 1s and 10m/);
+    expect(resolveBatch({ flushTimeout: '11m' })).toThrow(/must be between 1s and 10m/);
     expect(resolveBatch({ flushTimeout: '1s' })).not.toThrow();
-    expect(resolveBatch({ flushTimeout: '10m' }, 6000)).not.toThrow();
+    expect(resolveBatch({ flushTimeout: '10m' })).not.toThrow();
   });
 
   it('keeps processorTimeout within 10ms..5s and shorter than flushTimeout', () => {
@@ -1983,16 +1985,23 @@ describe('persistentQueue.batch: batching inside the persistent queue', () => {
     }
   });
 
-  it('refuses a batch that could take more than half of the queue', () => {
-    // 100s / 200ms = 500 requests: exactly half of the default 1000.
+  it('scales the default queueSize with processorTimeout, and never overrides the caller', () => {
+    const queueSizeOf = (options: Partial<ClickStackPersistentQueueOptions>) =>
+      queueWith(options).queueSize;
+
     expect(COLLECTOR_DEFAULT_QUEUE_CAPACITY).toBe(1000);
-    expect(resolveBatch({ flushTimeout: '100s' })).not.toThrow();
-    expect(resolveBatch({ flushTimeout: '101s' })).toThrow(
-      /a batch holds up to 505 requests.*Raise 'storage\.persistentQueue\.queueSize' to at least 1010/
-    );
-    // Either remedy the message names works.
-    expect(resolveBatch({ flushTimeout: '101s' }, 1010)).not.toThrow();
-    expect(resolveBatch({ flushTimeout: '101s', processorTimeout: '250ms' })).not.toThrow();
+    expect(queueSizeOf({})).toBeUndefined();
+    expect(queueSizeOf({ batch: { flushTimeout: '30s' } })).toBe(25_000);
+    expect(queueSizeOf({ batch: { flushTimeout: '30s', processorTimeout: '1s' } })).toBe(5000);
+    expect(queueSizeOf({ batch: { flushTimeout: '30s', processorTimeout: '5s' } })).toBe(1000);
+    expect(queueSizeOf({ batch: { flushTimeout: '30s', processorTimeout: '300ms' } })).toBe(16_667);
+    expect(queueSizeOf({ queueSize: 700, batch: { flushTimeout: '10m' } })).toBe(700);
+  });
+
+  it('does not bound flushTimeout by the queue size', () => {
+    // The collector enforces the queue's capacity itself, and requests per batch
+    // are not bounded by the timeouts alone, so no ratio is refused.
+    expect(resolveBatch({ flushTimeout: '10m', processorTimeout: '10ms' }, 1)).not.toThrow();
   });
 
   it('carries the batch into the KRO RGD and the direct-mode HelmRelease', () => {

@@ -341,14 +341,11 @@ export interface ClickStackPersistentQueueOptions {
    */
   extensions?: readonly string[];
   /**
-   * Most requests the queue holds (the exporter's `sending_queue.queue_size`;
-   * a positive integer). Omitted, nothing is rendered and the collector's own
-   * default of 1000 applies.
-   *
-   * A request read from the queue keeps its slot until it has been exported,
-   * so with {@link batch} set the queue also holds every request waiting in the
-   * current batch. See {@link ClickStackPersistentQueueBatchOptions} for how
-   * that bounds `flushTimeout`.
+   * `sending_queue.queue_size`: the number of upstream requests each queue
+   * keeps, since the queue uses its default `requests` sizer. A positive
+   * integer; the collector enforces the capacity. Default: the collector's
+   * 1000, or with {@link batch} set, `1000 × 5s / processorTimeout` (25000 at
+   * 200ms), because the processor then sends requests more often.
    */
   queueSize?: number;
   /**
@@ -368,9 +365,8 @@ export interface ClickStackPersistentQueueOptions {
  * request is persisted before it is batched and deleted only after its batch
  * is exported, and in-flight requests are replayed on restart (at-least-once).
  *
- * A request keeps its queue slot until its batch is exported, so
- * `flushTimeout / processorTimeout` must be at most half of `queueSize`
- * (default 1000). See "Batching inside the queue" in the ClickStack docs.
+ * `minSize` / `maxSize` count with the batch's own `sizer`, independent of
+ * the queue's. See "Batching inside the queue" in the ClickStack docs.
  */
 export interface ClickStackPersistentQueueBatchOptions {
   /**
