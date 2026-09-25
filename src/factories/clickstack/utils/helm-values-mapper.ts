@@ -49,17 +49,13 @@
  */
 
 import {
+  isMergeableValuesObject,
   isValuesMergeExpression,
   mergeValuesExpression,
 } from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
 import type { TypeKroChartValues } from '../../../core/types/common.js';
-import {
-  isCelExpression,
-  isKubernetesRef,
-  isMixedTemplate,
-  isResourceReference,
-} from '../../../utils/type-guards.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
 import { type CollectorConfigFragment, renderCollectorConfig } from './collector-config.js';
 import { CLICKSTACK_CONNECTION_NAME, CLICKSTACK_DEFAULT_SOURCES } from './team-defaults.js';
@@ -210,14 +206,7 @@ function setIfDefined(target: Record<string, unknown>, key: string, value: unkno
 }
 
 function isMergeObject(value: unknown): value is Record<string, unknown> {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    !isKubernetesRef(value) &&
-    !isCelExpression(value) &&
-    !isValuesMergeExpression(value)
-  );
+  return isMergeableValuesObject(value);
 }
 
 /**
@@ -248,12 +237,14 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 
 /**
  * Copy a values subtree: plain objects and arrays are rebuilt at every depth.
- * References, CEL expressions, templates and merge nodes are immutable markers
- * and stay as they are, as does any non-plain object.
+ * Opaque leaves (references, CEL expressions, templates, merge nodes, and
+ * anything carrying a symbol brand, such as the planning markers) stay as they
+ * are, as does any frozen or non-plain object. A frozen object cannot be
+ * mutated through the result, and the recursion above copies before writing.
  */
 function cloneMergeValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(cloneMergeValue);
-  if (!isMergeObject(value) || isMixedTemplate(value) || isResourceReference(value)) return value;
+  if (!isMergeObject(value) || Object.isFrozen(value)) return value;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return value;
   const copy: Record<string, unknown> = {};

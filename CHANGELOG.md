@@ -397,10 +397,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render could leave a literal `claimName: <name>-otel-queue` in `values`, and a KRO RGD built
   afterwards then carried that literal instead of `${string(schema.spec.name)}-otel-queue`, which is
   wrong for every instance with a different `spec.name`. The merge is now copy-on-write: it copies a
-  nested object before merging into it and clones every subtree it takes from `values` or the pins.
+  nested object before merging into it and clones every plain subtree it takes from `values` or the
+  pins. Opaque leaves are kept as they are: references, CEL expressions, templates, merge nodes, and
+  any object carrying a symbol brand, such as the `sensitiveValue` / `externalInput` /
+  `artifactOutput` planning markers.
   The ClickHouse operator, Rook Ceph and Inngest values mappers had the same in-place merge, which
   wrote `customValues` / `values` into typed config objects such as `metrics`, `resources` and
-  `nodeSelector`. They now copy before merging too.
+  `nodeSelector`. They now copy before merging too, and all four share one predicate
+  (`isMergeableValuesObject`) for what a values merge may recurse into. The Inngest mapper also no
+  longer rebuilds a CEL expression in `customValues` into a plain object, which dropped its brand.
 
 - **ClickStack: the HyperDX Team the bootstrap creates now has a ClickHouse connection and sources,
   so signed-in users no longer land on HyperDX's "set up your connection" onboarding modal.** Without

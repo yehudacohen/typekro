@@ -1,6 +1,7 @@
 /** Map typed bootstrap options into official `rook-ceph` chart values. */
 
 import {
+  isMergeableValuesObject,
   isValuesMergeExpression,
   mergeValuesExpression,
   type ValuesMergeExpression,
@@ -89,14 +90,7 @@ function mergeValuesLast<T extends Record<string, unknown>>(
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    !isKubernetesRef(value) &&
-    !isCelExpression(value) &&
-    !isValuesMergeExpression(value)
-  );
+  return isMergeableValuesObject(value);
 }
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {

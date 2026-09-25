@@ -16,6 +16,7 @@ import {
   DNS_LABEL_MAX_LENGTH,
   deriveNameLengthLimit,
 } from '../../../src/core/kubernetes/naming.js';
+import { containsExplicitPlanValue, sensitiveValue } from '../../../src/core/planning/values.js';
 import { makeClickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import { CLICKSTACK_GATEWAY_NAME_SUFFIX } from '../../../src/factories/clickstack/resources/helm.js';
 import {
@@ -1914,5 +1915,47 @@ describe('the build-time `values` object is never mutated', () => {
     expect(mapped['otel-collector']).not.toBe(values['otel-collector']);
     expect(mapped['otel-collector']?.podAnnotations).toEqual({ 'example.com/owner': 'platform' });
     expect(mapped['otel-collector']?.replicaCount).toBe(1);
+  });
+
+  it('keeps symbol-branded planning markers inside values intact', () => {
+    const secret = sensitiveValue('collector-token');
+    const values = {
+      'otel-collector': { podAnnotations: { 'example.com/token': secret } },
+      hyperdx: { env: [{ name: 'TOKEN', value: secret }] },
+    };
+    expect(containsExplicitPlanValue(values)).toBe(true);
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+
+    const mapped = mapClickStackConfigToHelmValues(SPEC, {
+      storage,
+      values: values as never,
+    }) as Record<string, Record<string, unknown>>;
+
+    expect(containsExplicitPlanValue(mapped)).toBe(true);
+    // The marker is carried over as the same frozen object, brand and all.
+    const annotations = mapped['otel-collector']?.podAnnotations as Record<string, unknown>;
+    expect(annotations['example.com/token']).toBe(secret);
+    const env = mapped.hyperdx?.env as Array<{ value: unknown }>;
+    expect(env[0]?.value).toBe(secret);
+    // The array around it is still a copy.
+    expect(env).not.toBe(values.hyperdx.env);
+  });
+
+  it('replaces, never merges into, a marker in the typed base', () => {
+    const secret = sensitiveValue('collector-token');
+    const mapped = mapClickStackConfigToHelmValues(SPEC, {
+      values: { 'otel-collector': { podAnnotations: secret } } as never,
+    }) as Record<string, Record<string, unknown>>;
+    expect(mapped['otel-collector']?.podAnnotations).toBe(secret);
+
+    const replaced = mapClickStackConfigToHelmValues(
+      { ...SPEC, customValues: { 'otel-collector': { podAnnotations: { a: 'b' } } } },
+      { values: { 'otel-collector': { podAnnotations: secret } } as never }
+    ) as Record<string, Record<string, unknown>>;
+    expect(replaced['otel-collector']?.podAnnotations).toEqual({ a: 'b' });
+    expect(Object.isFrozen(secret)).toBe(true);
   });
 });

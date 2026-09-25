@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { Cel } from '../../../src/core/references/cel.js';
 import { inngestBootstrap } from '../../../src/factories/inngest/compositions/inngest-bootstrap.js';
 import {
   DEFAULT_INNGEST_REPO_NAME,
@@ -449,6 +450,19 @@ describe('Inngest Helm Values Mapper', () => {
       expect(values.inngest?.postgres).toEqual({ uri: 'postgresql://user@other:5432/db' });
       expect(nodeSelector).toEqual({ tier: 'app' });
       expect(postgres).toEqual({ uri: 'postgresql://user@host:5432/db' });
+    });
+
+    it('should replace, never flatten, a CEL expression in customValues', () => {
+      const nodeSelector = { tier: 'app' };
+      const selectorExpression = Cel.expr<Record<string, string>>('schema.spec.nodeSelector');
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        nodeSelector,
+        customValues: { nodeSelector: selectorExpression },
+      });
+
+      expect(values.nodeSelector).toBe(selectorExpression);
+      expect(nodeSelector).toEqual({ tier: 'app' });
     });
   });
 });

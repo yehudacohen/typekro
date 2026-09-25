@@ -13,6 +13,7 @@
  */
 
 import {
+  isMergeableValuesObject,
   isValuesMergeExpression,
   mergeValuesExpression,
   type ValuesMergeExpression,
@@ -170,14 +171,7 @@ function mergeCustomValuesLast(
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    !isKubernetesRef(value) &&
-    !isCelExpression(value) &&
-    !isValuesMergeExpression(value)
-  );
+  return isMergeableValuesObject(value);
 }
 
 /** Minimal deep merge (objects only; arrays/scalars replace), proto-safe. */
