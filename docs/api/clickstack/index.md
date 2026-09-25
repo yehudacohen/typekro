@@ -1011,6 +1011,95 @@ miss. Build-time `postRenderers` you pass to `makeClickstackBootstrap` are still
 the HelmRelease unchanged — the composition just no longer appends any of its own.
 :::
 
+#### Batching inside the queue
+
+The ClickStack collector batches in its `batch` processor, which runs **ahead of** the exporter's
+queue. The image's default timeout is 5s (`HYPERDX_OTEL_BATCH_TIMEOUT`). Data waiting in the
+processor has already been acknowledged to the sender, but it is not on disk yet, so a collector
+crash loses up to one timeout of it. On an S3-backed ClickHouse you want long batches, because each
+insert costs object-store PUTs. With the processor doing the batching, a 60s batch means a 60s loss
+window.
+
+`persistentQueue.batch` moves the long wait into the persistent queue:
+
+```typescript
+makeClickstackBootstrap({
+  storage: {
+    mode: 's3',
+    persistentQueue: {
+      enabled: true,
+      batch: { flushTimeout: '30s', minSize: 50_000 },
+    },
+  },
+});
+```
+
+TypeKro renders the batch into every queued exporter's `sending_queue`, sets `queue_size`, and
+lowers the processor's timeout to `processorTimeout`:
+
+```yaml
+processors:
+  batch:
+    timeout: 200ms
+exporters:
+  clickhouse:
+    sending_queue:
+      enabled: true
+      storage: file_storage/hyperdx
+      queue_size: 25000
+      batch: {flush_timeout: 30s, min_size: 50000, sizer: items}
+```
+
+| Option | Default | Range |
+| --- | --- | --- |
+| `batch.flushTimeout` | required | `1s`–`10m` (`ms`, `s` or `m`) |
+| `batch.minSize` | `8192` | positive integer, in units of `batch.sizer` |
+| `batch.maxSize` | unset (no split) | positive integer, at least `minSize` |
+| `batch.sizer` | `'items'` | `'items'` or `'bytes'` |
+| `batch.processorTimeout` | `'200ms'` | `10ms`–`5s`, shorter than `flushTimeout` |
+| `queueSize` | see below | positive integer |
+
+**Two sizers.** `queueSize` is the number of upstream requests each queue keeps: the queue uses
+its default `requests` sizer, and the collector enforces that capacity itself. A request is one
+batch the processor sent. Each request keeps its slot until the batch holding it has been exported,
+including while that batch is retrying. `batch.minSize` and `batch.maxSize` count with the batch's
+own, independent sizer, log records, spans and data points (`items`) or `bytes`.
+
+**The `queueSize` default.** Without `batch`, TypeKro renders no `queue_size`, and the collector's
+default of 1000 applies. With `batch`, the processor sends requests more often, one per
+`processorTimeout` under light load instead of one per 5s, so a 1000-request queue would fill about
+25 times sooner while ClickHouse is unreachable. The default is therefore scaled to
+`1000 × 5s / processorTimeout`, which is 25000 at 200ms. That is a default, not a guarantee. The
+processor also sends whenever its `send_batch_size` fills, so how long a full queue lasts depends on
+your traffic. Size `queueSize`, and the claim's `size`, for the outage you need to ride out.
+
+**Crash safety.** This was checked against the exporter helper in collector v0.155.0, the version
+`clickstack-otel-collector` 2.35.0 is built from. The queue writes each request to the
+`file_storage` database before accepting it. The batcher reads requests from there, and the queue
+deletes a request only after the batch holding it has been exported. On restart, requests that
+were read but not exported go back on the queue. Delivery is at-least-once: a crash after ClickHouse
+accepted a batch, but before the queue deleted it, sends that batch again. The `file_storage`
+extension does not fsync by default. That is safe against a collector or Pod crash, but not against
+losing the node.
+
+**The trade-offs:**
+
+::: warning The processor timeout applies to every pipeline
+The `batch` processor is shared, so lowering its timeout also affects pipelines whose exporter is not
+in `exporterNames`. In ClickStack 2.35.0 that is session replay's `logs/out-rrweb` pipeline and its
+`clickhouse/rrweb` exporter. It gets 200ms batches instead of 5s, which means more, smaller inserts
+into `hyperdx_sessions`. Add `clickhouse/rrweb` to `exporterNames` to batch it in the queue too.
+
+Scoping the timeout to the queued pipelines would take a second processor and a rewrite of each
+pipeline's `processors` list. Those lists come from the image's own configuration, and the OpAMP
+supervisor manages the pipelines, so TypeKro does not rewrite them.
+:::
+
+- **The processor stays in the pipeline.** The ClickHouse exporter's upstream guidance allows
+  dropping the separate `batch` processor once `sending_queue.batch` is used. TypeKro keeps it, with
+  a short timeout, for the reason above.
+- **The batch is also held in memory** while it fills. Set `maxSize` to cap it under heavy load.
+
 #### Release-name length
 
 The runtime `name` is a Kubernetes DNS label — lowercase alphanumerics and `-`, starting and ending
