@@ -63,6 +63,15 @@ describe('hyperdxOidc wiring', () => {
     ]);
   });
 
+  it('passes passwordLoginPath to the plugin only when set', () => {
+    const env = hyperdxDeploymentValues(
+      directDocs({ hyperdxOidc: { ...OIDC, passwordLoginPath: '/login?password' } })
+    ).env as { name: string; value: string }[];
+    expect(env.find((entry) => entry.name === 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH')?.value).toBe('/login?password');
+    const defaults = hyperdxDeploymentValues(directDocs({ hyperdxOidc: OIDC })).env as { name: string }[];
+    expect(defaults.some((entry) => entry.name === 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH')).toBe(false);
+  });
+
   it('stops a first OIDC login from creating the team when initialUser claims the instance', () => {
     const env = hyperdxDeploymentValues(
       directDocs({ hyperdxOidc: OIDC, initialUser: { email: 'ops@example.com' } })
@@ -204,6 +213,13 @@ describe('hyperdxOidc validation', () => {
     expect(() => resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'Bad_Name' } })).toThrow(/not a valid Secret name/);
     expect(() => resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'ok', key: 'a/b' } })).toThrow(/not a valid Secret key/);
     expect(() => resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'ok' }, reloadSeconds: 0 })).toThrow(/reloadSeconds/);
+  });
+
+  it("refuses a passwordLoginPath that could leave HyperDX's origin", () => {
+    for (const passwordLoginPath of ['login', '//evil.example/login', 'https://evil.example/', '/a\\b', '/a b', '/a\nb', '']) {
+      expect(() => resolveClickStackHyperdxOidc('t', { ...OIDC, passwordLoginPath })).toThrow(/passwordLoginPath/);
+    }
+    expect(resolveClickStackHyperdxOidc('t', { ...OIDC, passwordLoginPath: '/login?password' })?.passwordLoginPath).toBe('/login?password');
   });
 
   it('refuses caller values that already set the env or volumes it owns', () => {

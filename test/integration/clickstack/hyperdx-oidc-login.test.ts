@@ -174,7 +174,11 @@ class Browser {
       const [pair] = header.split(';');
       const index = (pair as string).indexOf('=');
       const cookies = this.jar.get(host) ?? new Map<string, string>();
-      cookies.set((pair as string).slice(0, index), (pair as string).slice(index + 1));
+      const name = (pair as string).slice(0, index);
+      const value = (pair as string).slice(index + 1);
+      // A cookie cleared by the server (`Max-Age=0`) is gone, as in a browser.
+      if (/;\s*max-age=0\s*(;|$)/i.test(header)) cookies.delete(name);
+      else cookies.set(name, value);
       this.jar.set(host, cookies);
     }
   }
@@ -330,6 +334,9 @@ beforeAll(async () => {
     '-e', 'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
     '-e', 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS=1',
     '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=true',
+    // As `hyperdxOidc.passwordLoginPath` renders it: this proxy's bare
+    // `/login` would start SSO, so the chooser links the password form here.
+    '-e', 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH=/login?password',
     '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
     '-v', `${proxiedConfigDir}:/etc/typekro/hyperdx-oidc:ro`,
     HYPERDX_IMAGE,
@@ -546,6 +553,125 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     const me = await browser.me();
     expect(me.status).toBe(200);
     expect(me.body?.email).toBe('alice@example.com');
+  });
+
+  it('completes two sign-ins started in one browser before either returns, in either order', async () => {
+    // A reverse proxy that starts sign-in for every signed-out page load (a
+    // browser restoring several tabs, links opened from chat) starts several
+    // flows in one session. Each must complete on its own returnTo: the
+    // second start must not overwrite the first, and the first callback
+    // (which regenerates the session on login) must not drop the second.
+    const submit = (browser: Browser, formUrl: string) =>
+      browser.go(formUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ username: 'tabs', claims: JSON.stringify(allowedClaims('tabs', 'tabs@example.com')) }).toString(),
+      });
+    for (const order of [
+      ['first', 'second'],
+      ['second', 'first'],
+    ] as const) {
+      const browser = new Browser();
+      const forms = {
+        first: await browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2F`),
+        second: await browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2Fsearch`),
+      };
+      expect(forms.first.response.status, `login form at ${forms.first.url}`).toBe(200);
+      expect(forms.second.response.status, `login form at ${forms.second.url}`).toBe(200);
+      const expected = { first: `${hdxUrl}/`, second: `${hdxUrl}/search` };
+      for (const tab of order) {
+        const landed = await submit(browser, forms[tab].url);
+        expect([order, tab, landed.response.status, landed.url]).toEqual([order, tab, 200, expected[tab]]);
+        expect((await browser.me()).body?.email).toBe('tabs@example.com');
+      }
+    }
+  });
+
+  /** Submit the mock provider's form for a login flow; returns where the browser lands. */
+  const completeFlow = (browser: Browser, formUrl: string, sub: string) =>
+    browser.go(formUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: sub, claims: JSON.stringify(allowedClaims(sub, `${sub}@example.com`)) }).toString(),
+    });
+  /** Start two sign-ins in one browser at the same moment, as restored tabs do. */
+  const startTogether = async (browser: Browser) => {
+    const [first, second] = await Promise.all([
+      browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2F`),
+      browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2Fsearch`),
+    ]);
+    expect([first.response.status, second.response.status], `login forms at ${first.url} and ${second.url}`).toEqual([200, 200]);
+    return { first, second };
+  };
+  const RACE_RUNS = 5;
+
+  it('completes sign-ins started at the same moment in a browser with no HyperDX session yet', async () => {
+    // Each start used to create its own session; the browser kept only the
+    // last session cookie, so the other sign-in's pending state was lost.
+    for (let run = 0; run < RACE_RUNS; run++) {
+      const browser = new Browser();
+      const { first, second } = await startTogether(browser);
+      const landedFirst = await completeFlow(browser, first.url, 'racetabs');
+      const landedSecond = await completeFlow(browser, second.url, 'racetabs');
+      expect([run, landedFirst.response.status, landedFirst.url]).toEqual([run, 200, `${hdxUrl}/`]);
+      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([run, 200, `${hdxUrl}/search`]);
+      expect((await browser.me()).body?.email).toBe('racetabs@example.com');
+    }
+  });
+
+  it('completes sign-ins started at the same moment in a browser that already has a HyperDX session', async () => {
+    // Two starts loading and saving one session: the last save used to win,
+    // dropping the other sign-in's pending state.
+    for (let run = 0; run < RACE_RUNS; run++) {
+      const browser = new Browser();
+      await browser.signIn(allowedClaims('racetabs', 'racetabs@example.com'));
+      expect((await browser.me()).status).toBe(200);
+      const { first, second } = await startTogether(browser);
+      const landedFirst = await completeFlow(browser, first.url, 'racetabs');
+      const landedSecond = await completeFlow(browser, second.url, 'racetabs');
+      expect([run, landedFirst.response.status, landedFirst.url]).toEqual([run, 200, `${hdxUrl}/`]);
+      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([run, 200, `${hdxUrl}/search`]);
+    }
+  });
+
+  it('completes callbacks that return at the same moment, and refuses each replayed before any token exchange', async () => {
+    const noPending = /"message":"OIDC callback matched no pending sign-in"/;
+    // Every path past the pending-login lookup (token exchange, then a
+    // denial or a login) logs one of these.
+    const pastLookup = /"message":"OIDC login( failed| denied)?"/;
+    for (let run = 0; run < RACE_RUNS; run++) {
+      const browser = new Browser();
+      // Started one after the other, so this isolates the callbacks racing.
+      const first = await browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2F`);
+      const second = await browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2Fsearch`);
+      const [landedFirst, landedSecond] = await Promise.all([
+        completeFlow(browser, first.url, 'racetabs'),
+        completeFlow(browser, second.url, 'racetabs'),
+      ]);
+      expect([run, landedFirst.response.status, landedFirst.url]).toEqual([run, 200, `${hdxUrl}/`]);
+      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([run, 200, `${hdxUrl}/search`]);
+      expect((await browser.me()).body?.email).toBe('racetabs@example.com');
+
+      // Each callback URL, used once, is refused at the pending-login lookup:
+      // a used one never reaches the provider's token endpoint again.
+      const callbacks = browser.locations.filter((location) => location.includes('/api/login/oidc/mock/callback?'));
+      expect(callbacks).toHaveLength(2);
+      const replays: Array<{ refused: number; pastLookup: number; status: number; expired: boolean }> = [];
+      for (const callback of callbacks) {
+        const before = { refused: countLogMatches(noPending), pastLookup: countLogMatches(pastLookup) };
+        const replayed = await browser.go(callback);
+        const counts = () => ({
+          refused: countLogMatches(noPending) - before.refused,
+          pastLookup: countLogMatches(pastLookup) - before.pastLookup,
+        });
+        // Wait for the plugin to log the outcome, whichever it is.
+        for (let attempt = 0; attempt < 15 && counts().refused + counts().pastLookup === 0; attempt++) await Bun.sleep(1000);
+        const text = await replayed.response.text();
+        replays.push({ ...counts(), status: replayed.response.status, expired: text.includes('The sign-in took too long') });
+      }
+      const refusedAtLookup = { refused: 1, pastLookup: 0, status: 403, expired: true };
+      expect({ run, replays }).toEqual({ run, replays: [refusedAtLookup, refusedAtLookup] });
+    }
   });
 
   it('signs the same subject into the same account next time', async () => {
@@ -780,5 +906,25 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
     const form = await browser.go(new URL(href as string, chooserUrl).href);
     expect(form.response.status, `login form at ${form.url}`).toBe(200);
     expect(browser.locations[0]?.startsWith(`${MOCK_INTERNAL}/default/authorize?`), browser.locations[0]).toBe(true);
+  });
+
+  it("links the chooser's password form at the configured path, on the public URL", async () => {
+    const chooserLink = async () => {
+      const html = await (await fetch(`${proxyExternal}/api/login/oidc`)).text();
+      return /<a href="([^"]*)">Sign in with email and password<\/a>/.exec(html)?.[1];
+    };
+    const providers = [PROVIDER, { ...PROVIDER, id: 'second', displayName: 'Second IdP' }];
+    // The deployment's path (the env var above), with password login on.
+    let applied = /"message":"OIDC configuration applied".*"passwordLogin":true,"passwordLoginPath":"\/login\?password"/;
+    let before = countLogMatches(applied, HYPERDX_PROXIED);
+    writeConfig({ providers, passwordLogin: true }, proxiedConfigDir);
+    await waitForLog(applied, before, HYPERDX_PROXIED);
+    expect(await chooserLink()).toBe(`${PUBLIC_ORIGIN}/login?password`);
+    // The configuration document's own path takes precedence.
+    applied = /"message":"OIDC configuration applied".*"passwordLoginPath":"\/login\?via=config"/;
+    before = countLogMatches(applied, HYPERDX_PROXIED);
+    writeConfig({ providers, passwordLogin: true, passwordLoginPath: '/login?via=config' }, proxiedConfigDir);
+    await waitForLog(applied, before, HYPERDX_PROXIED);
+    expect(await chooserLink()).toBe(`${PUBLIC_ORIGIN}/login?via=config`);
   });
 });

@@ -19,10 +19,12 @@ import Module from 'node:module';
 import { dirname, join } from 'node:path';
 import { bootstrapCredentialsFromEnv, readBootstrapPassword } from './bootstrap.js';
 import { installPlugin, type Logger, resolveHyperdx } from './hyperdx.js';
+import { isSameOriginPath } from './redirects.js';
 
 const CONFIG_ENV = 'TYPEKRO_HDX_OIDC_CONFIG';
 const RELOAD_ENV = 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS';
 const CREATE_TEAM_ENV = 'TYPEKRO_HDX_OIDC_CREATE_TEAM';
+const PASSWORD_LOGIN_PATH_ENV = 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH';
 const API_ENTRY = /[\\/]packages[\\/]api[\\/]build[\\/]index\.js$/;
 
 const log: Logger = {
@@ -73,9 +75,18 @@ function activate(configPath: string, entry: string) {
             { passwordFile: bootstrap.passwordFile }
           );
         }
+        // Set by the wiring from `hyperdxOidc.passwordLoginPath`, which
+        // validates it; checked again here, as it becomes a redirect target.
+        const envPasswordLoginPath = process.env[PASSWORD_LOGIN_PATH_ENV];
+        const passwordLoginPath =
+          envPasswordLoginPath !== undefined && isSameOriginPath(envPasswordLoginPath) ? envPasswordLoginPath : undefined;
+        if (envPasswordLoginPath !== undefined && passwordLoginPath === undefined) {
+          log.warn('ignoring a password login path that is not a same-origin path', { env: PASSWORD_LOGIN_PATH_ENV });
+        }
         const plugin = installPlugin(resolveHyperdx(apiBuildDir), configPath, log, {
           createTeam,
           ...(bootstrap !== undefined && { bootstrap }),
+          ...(passwordLoginPath !== undefined && { passwordLoginPath }),
         });
         const seconds = Number(process.env[RELOAD_ENV] ?? '15');
         setInterval(() => plugin.reload(), Math.max(1, Number.isFinite(seconds) ? seconds : 15) * 1000).unref();

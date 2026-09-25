@@ -382,6 +382,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **HyperDX OIDC: sign-ins started or completed at the same moment in one browser all complete, each
+  exactly once.** The plugin kept the pending sign-in (state, nonce, PKCE verifier, `returnTo`) in the
+  HyperDX session, one per session. Several sign-ins in one browser therefore collided: a second start
+  overwrote the first, and the first callback consumed the entry the second needed, so both got the 403
+  denial page. A downstream end-to-end test with a reverse proxy that starts sign-in automatically for every
+  signed-out page load found this: a browser restoring several tabs, or several links opened from chat,
+  starts several at once. No session-based fix holds under real concurrency, because express-session saves
+  the whole session and the last write wins, a browser with no session yet gets one session per concurrent
+  start, and Passport regenerates the session on login.
+  - Pending sign-ins now live in a plugin-owned collection, `typekro_oidc_pending_logins`, keyed by
+    `state`, with a TTL index. They're no longer in the session, and any left there by earlier builds is
+    removed.
+  - Each sign-in is bound to the browser by its own random HttpOnly, SameSite=Lax cookie (Secure on
+    https, path limited to the login routes). Only a SHA-256 of the cookie is stored.
+  - A callback takes its entry with one atomic `findOneAndDelete` on state, binding hash, provider and
+    expiry, before any token exchange. A replayed callback URL is refused at that lookup.
+  - The per-entry nonce, PKCE verifier and 10-minute limit are unchanged.
+  - A browser keeps at most 10 sign-ins in flight; the oldest is evicted first.
+  - A `returnTo` longer than 2,048 characters now becomes `/`.
+  - The real-image suite fires sign-ins concurrently in one cookie jar, both with and without an existing
+    HyperDX session. It also fires concurrent callbacks and checks that each replayed callback URL is
+    refused before any token exchange, five times each.
+- **HyperDX OIDC: the chooser's password link can be configured.** With several providers the chooser
+  linked HyperDX's password form at `/login`, which a deployment's reverse proxy may send to SSO. The new
+  `passwordLoginPath` setting in the configuration document, or the `hyperdxOidc.passwordLoginPath` build
+  option, sets the link (e.g. `/login?password`). The document's setting wins, and the default is still
+  `/login`. It must be a same-origin path.
 - **HyperDX OIDC: the provider chooser works behind a reverse proxy.** `GET /api/login/oidc` redirected to
   the single provider with a relative `Location`. HyperDX's UI proxies `/api/*` to its API server on port
   8000, and when the request's `Host` header has no port (every request through a TLS proxy on 443) it

@@ -12,6 +12,8 @@
  * dependency is size it pays for on every HyperDX pod.
  */
 
+import { isSameOriginPath } from './redirects.js';
+
 /** Claim names to read from the ID token, per provider. */
 export interface OidcClaimNames {
   /** Claim holding the user's email. Default `email`. */
@@ -65,6 +67,12 @@ export interface OidcPluginConfig {
   readonly providers: readonly OidcProviderConfig[];
   /** Whether HyperDX's own password login stays available. Default true. */
   readonly passwordLogin: boolean;
+  /**
+   * Where the provider chooser links HyperDX's password form, e.g.
+   * `/login?password` when a reverse proxy sends a bare `/login` to SSO.
+   * Default: the deployment's setting, else `/login`.
+   */
+  readonly passwordLoginPath?: string;
   /** OIDC sessions older than this are logged out and must re-authenticate. 0 = never. */
   readonly maxSessionAgeMs: number;
   /**
@@ -284,12 +292,29 @@ function parseRedirectBaseUrl(raw: Record<string, unknown>, allowInsecure: boole
 const TOP_LEVEL_KEYS = [
   'providers',
   'passwordLogin',
+  'passwordLoginPath',
   'maxSessionAge',
   'redirectBaseUrl',
   'apiPathPrefix',
   'teamId',
   'allowInsecureHttp',
 ] as const;
+
+/** HyperDX's own sign-in page, where its password form is. */
+export const DEFAULT_PASSWORD_LOGIN_PATH = '/login';
+
+/**
+ * Where the provider chooser links HyperDX's password form: the document's
+ * `passwordLoginPath`, else the deployment's, else `/login`. `undefined`
+ * when password login is off (no link at all).
+ */
+export function chooserPasswordLoginPath(
+  config: Pick<OidcPluginConfig, 'passwordLogin' | 'passwordLoginPath'> | undefined,
+  deploymentPath: string | undefined
+): string | undefined {
+  if (config?.passwordLogin === false) return undefined;
+  return config?.passwordLoginPath ?? deploymentPath ?? DEFAULT_PASSWORD_LOGIN_PATH;
+}
 
 /**
  * Parse and validate the plugin configuration document.
@@ -331,10 +356,19 @@ export function parseOidcPluginConfig(text: string): OidcPluginConfig {
     throw new OidcConfigError('configuration.teamId must be a HyperDX team id (24 hexadecimal characters)');
   }
   const redirectBaseUrl = raw.redirectBaseUrl === undefined ? undefined : parseRedirectBaseUrl(raw, allowInsecure);
+  const passwordLoginPath =
+    raw.passwordLoginPath === undefined ? undefined : requireString(raw, 'passwordLoginPath', 'configuration');
+  if (passwordLoginPath !== undefined && !isSameOriginPath(passwordLoginPath)) {
+    throw new OidcConfigError(
+      'configuration.passwordLoginPath must be a path on HyperDX\'s own origin, starting with a single "/" ' +
+        '(no "//", backslash, whitespace or control character)'
+    );
+  }
 
   return {
     providers,
     passwordLogin: optionalBoolean(raw, 'passwordLogin', 'configuration', true),
+    ...(passwordLoginPath !== undefined && { passwordLoginPath }),
     maxSessionAgeMs:
       raw.maxSessionAge === undefined ? 12 * 3_600_000 : parseDuration(raw.maxSessionAge, 'configuration.maxSessionAge'),
     apiPathPrefix: apiPathPrefix.replace(/\/+$/, ''),

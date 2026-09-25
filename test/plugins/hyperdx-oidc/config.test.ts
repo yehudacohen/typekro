@@ -7,7 +7,13 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { OidcConfigError, parseDuration, parseOidcPluginConfig } from '../../../plugins/hyperdx-oidc/src/config.js';
+import {
+  chooserPasswordLoginPath,
+  OidcConfigError,
+  parseDuration,
+  parseOidcPluginConfig,
+} from '../../../plugins/hyperdx-oidc/src/config.js';
+import { renderChooser } from '../../../plugins/hyperdx-oidc/src/pages.js';
 
 const provider = (overrides: Record<string, unknown> = {}) => ({
   id: 'cognito',
@@ -35,6 +41,7 @@ describe('parseOidcPluginConfig', () => {
       createUsers: true,
     });
     expect(config.passwordLogin).toBe(true);
+    expect(config.passwordLoginPath).toBeUndefined();
     expect(config.maxSessionAgeMs).toBe(12 * 3_600_000);
     expect(config.apiPathPrefix).toBe('/api');
     expect(config.allowInsecureHttp).toBe(false);
@@ -120,6 +127,34 @@ describe('parseOidcPluginConfig', () => {
     expect(() =>
       parse({ providers: [provider({ requireVerifiedEmail: false, linkExistingUsersByEmail: true })] })
     ).toThrow(/cannot be true when requireVerifiedEmail is false/);
+  });
+});
+
+describe('the chooser password link (passwordLoginPath)', () => {
+  const link = (doc: Record<string, unknown>, deploymentPath?: string) => {
+    const path = chooserPasswordLoginPath(parse({ providers: [], ...doc }), deploymentPath);
+    return /<a href="([^"]*)">Sign in with email and password<\/a>/.exec(renderChooser([{ label: 'A', href: '/a' }], path))?.[1];
+  };
+
+  it('links /login by default', () => {
+    expect(link({})).toBe('/login');
+    expect(chooserPasswordLoginPath(undefined, undefined)).toBe('/login');
+  });
+
+  it("honours the document's passwordLoginPath, over the deployment's", () => {
+    expect(link({ passwordLoginPath: '/login?password' })).toBe('/login?password');
+    expect(link({}, '/login?password')).toBe('/login?password');
+    expect(link({ passwordLoginPath: '/signin' }, '/login?password')).toBe('/signin');
+  });
+
+  it('shows no password link when password login is off, whatever the path', () => {
+    expect(link({ passwordLogin: false, passwordLoginPath: '/login?password' }, '/login?password')).toBeUndefined();
+  });
+
+  it("refuses a path that could leave HyperDX's origin", () => {
+    for (const passwordLoginPath of ['login', '//evil.example/login', 'https://evil.example/', '/a\\b', '/a b', '']) {
+      expect(() => parse({ providers: [], passwordLoginPath })).toThrow(/passwordLoginPath/);
+    }
   });
 });
 
