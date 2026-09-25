@@ -107,6 +107,24 @@ Point `spec.clickhouse` at your CHI — the [`clickhouse` factories'](../clickho
 gives you the coordinates (`chi.status.clickhouse.host`, ports, cluster name) without hand-building
 service names.
 
+### ClickHouse host
+
+`clickhouse.host` goes into `http://<host>:<httpPort>` and `tcp://<host>:<nativePort>` as it is, so it must be a
+host and nothing more.
+
+- **Accepted:** a short name, an FQDN with or without a trailing dot, an IPv4 address, or a bracketed
+  IPv6 address (`[fd00::1]`), in any case.
+- **Refused:**
+  - an empty value;
+  - whitespace, `/`, `?`, `#` or `@` (a path, query, fragment or userinfo);
+  - a scheme (`http://…`);
+  - a `:` outside brackets (a port; use `httpPort` / `nativePort`);
+  - brackets that don't wrap a single IPv6 address (e.g. `[fd00::1]:8123`);
+  - an unbracketed IPv6 address. The error says to bracket it.
+
+A concrete host is checked at render time. The generated CRD carries the same rule for KRO mode, with
+the [KRO caveat](#chart-versions-it-is-valid-for) that it reaches new CRDs only.
+
 ## MongoDB Modes (build-time)
 
 HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata only):
@@ -325,15 +343,15 @@ reads it from there by `secretKeyRef`. There is one connection definition, and H
 and the seed both use it. If your fragment replaces `defaultConnections` itself, the seed can't follow
 that, so leave `teamDefaults` off.
 
-The seed holds off, and records nothing, in two cases. It seeds on the first run after the case clears:
+The seed holds off, and records nothing, only while the key is missing. It seeds on the first run after
+the key appears. The reference is `optional: true`, so a missing Secret or key can't stop the CronJob
+from reconciling the ingestion key.
 
-- **The key is missing.** The reference is `optional: true`, so a missing Secret or key can't stop the
-  CronJob from reconciling the ingestion key.
-- **The password is still the chart's published default** (`hyperdx`), meaning the values never set
-  `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. The log says so without printing the value.
-
-A key that exists but is empty is seeded as an empty password, as HyperDX itself does for a ClickHouse
-user without one.
+Any value the key holds is seeded as it is, including an empty one (a ClickHouse user without a
+password, as HyperDX itself does) and including `hyperdx`. That also happens to be the chart's
+published default, but it is an ordinary password, and TypeKro reserves no values. If your
+`secretValues` fragment omits `CLICKHOUSE_APP_PASSWORD` and you opt in, the chart's default is what gets
+seeded. HyperDX's own registration would use it too.
 
 **The name.** `teamName` (default `ClickStack`, at most 100 characters) names the Team the degraded
 path creates. With `initialUser`, HyperDX names the Team at registration, and TypeKro renames it only
@@ -388,6 +406,11 @@ Check these when upgrading from a release without the Team-defaults seed:
   empty, so the seed leaves it alone. Fix or delete the connection in HyperDX's UI.
 - **Team names:** a Team still carrying the old hard-coded default is renamed to `teamName` on the
   first run. Any other name is kept.
+- **`clickhouse.host`:** a value with a scheme, port, path, userinfo or whitespace, or an unbracketed
+  IPv6 address, is now refused. [The rules](#clickhouse-host) list exactly what's accepted.
+- **KRO CRDs you already have** don't get the new admission rules, because KRO 0.9.2 doesn't apply a
+  validation-only change to an existing CRD (see the [KRO caveat](#chart-versions-it-is-valid-for)).
+  The render-time checks and the seed's runtime version check still apply.
 
 ### Chart versions it is valid for
 
@@ -410,11 +433,20 @@ The allowlist is **exact**: chart **3.2.0** (appVersion 2.35.0). Not a series an
 and a patch bump promises nothing about the app's data contract. Whenever any of the three is on, it is
 enforced in **both** modes. A concrete version outside the list is refused at render time. The
 generated CRD narrows `spec.version` with a CEL validation, so a KRO consumer who sets an unaudited
-version on the custom resource at apply time is refused by admission. The rule is an
-`x-kubernetes-validations` entry, which KRO 0.9.2's CRD compatibility check doesn't compare, so adding
-it to an existing CRD isn't treated as a breaking change and the CRD is updated in place. Existing
-custom resources are affected only when their `spec.version` is next changed, on Kubernetes versions
-where CRD validation ratcheting is on (the default since 1.30).
+version on the custom resource at apply time is refused by admission.
+
+**KRO caveat: the CRD rule only reaches new CRDs.** The rule is an `x-kubernetes-validations` entry.
+KRO 0.9.2's CRD compatibility check doesn't compare those, so it treats a change that only adds or
+edits one as "no changes" and doesn't touch a CRD it already created. This was checked against its
+source (`Ensure` in `pkg/client/crd.go`, `pkg/graph/crd/compat/schema.go`) and on a real cluster.
+The rule lands on CRDs KRO creates from this release on, or on an existing one the next time a
+compared schema change, such as a new field, makes KRO patch it. For that reason:
+
+- **The Team-defaults seed checks the chart version again at runtime.** The CronJob gets the release's
+  chart version and seeds nothing on an unaudited one, whatever the CRD says. That holds on an
+  upgraded KRO deployment too.
+- **The `initialUser` and `hyperdxOidc` rules have the same limitation**, and it predates this release:
+  on an upgraded CRD, only their build-time halves apply.
 
 Each feature has its own escape hatch, for once you have checked its contract on a newer chart yourself:
 `initialUser.allowUnvalidatedChartVersion`, `teamDefaults: { allowUnvalidatedChartVersion: true }` and

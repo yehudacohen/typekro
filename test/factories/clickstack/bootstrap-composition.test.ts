@@ -28,6 +28,8 @@ import {
 import {
   type ClickStackBuildOptions,
   type ResolvedClickStackInitialUser,
+  CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE,
+  validateClickStackClickhouseHost,
   CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION,
   CLICKSTACK_INITIAL_USER_API_BASE_URL_ENV,
   CLICKSTACK_INITIAL_USER_MARKER_ID,
@@ -532,6 +534,7 @@ const SEED_ENVIRONMENT = {
   HYPERDX_DEFAULT_CONNECTION_USERNAME: 'hyperdx',
   HYPERDX_DEFAULT_CONNECTION_PASSWORD: 'app-secret',
   HYPERDX_DEFAULT_SOURCES_DATABASE: 'otel',
+  CLICKSTACK_CHART_VERSION: '3.2.0',
 };
 
 /** The environment the CronJob container gives the configured script. */
@@ -1892,7 +1895,40 @@ describe('clickstackBootstrap Team name and defaults', () => {
     ).toEqual(container.env);
   });
 
-  it('refuses a concrete clickhouse.host that is not a bare DNS host', () => {
+  it('checks the chart version at runtime too, since KRO does not add the CRD rule to an existing CRD', async () => {
+    const mongo = createFakeMongo();
+    const printed: string[] = [];
+    await runBootstrapScript(
+      renderClickStackTeamBootstrapScript(),
+      { ...degradedEnvironment, CLICKSTACK_CHART_VERSION: '4.0.0' },
+      mongo,
+      undefined,
+      (line) => printed.push(line)
+    );
+    expect(mongo.documentsIn('connections')).toHaveLength(0);
+    expect(markers(mongo, 'team-defaults:')).toHaveLength(0);
+    expect(printed.join('\n')).toContain('chart version "4.0.0" is not one TypeKro has audited');
+
+    // The escape hatch renders no runtime check.
+    await runBootstrapScript(
+      renderClickStackTeamBootstrapScript(undefined, { seedChartVersions: null }),
+      { ...degradedEnvironment, CLICKSTACK_CHART_VERSION: '4.0.0' },
+      mongo
+    );
+    expect(mongo.documentsIn('connections')).toHaveLength(1);
+  });
+
+  it('passes the release chart version to the CronJob, and drops the check with the escape hatch', () => {
+    const env = (options: ClickStackBuildOptions) =>
+      Object.fromEntries(cronJobOf(options).env.map((variable) => [variable.name, variable.value]));
+    expect(env({}).CLICKSTACK_CHART_VERSION).toBe('3.2.0');
+    expect(cronJobOf({}).command[4]).toContain('.indexOf(chartVersion) === -1');
+    expect(
+      cronJobOf({ teamDefaults: { allowUnvalidatedChartVersion: true } }).command[4]
+    ).not.toContain('chartVersion');
+  });
+
+  it('checks clickhouse.host by what breaks the URLs, accepting every host that worked before', () => {
     const withHost = (host: string) => () =>
       docsOf(
         {},
@@ -1901,32 +1937,93 @@ describe('clickstackBootstrap Team name and defaults', () => {
           clickhouse: { ...BOOTSTRAP_SPEC_FOR_VERSION_GUARD.clickhouse, host },
         }
       );
-    for (const host of ['http://clickhouse', 'clickhouse:8123', 'click house', 'ch/path', '']) {
-      expect(withHost(host), host).toThrow(/clickhouse.host/);
-    }
-    for (const host of ['ClickHouse.Example.com', '10.0.0.7', 'ch-0.ch.svc']) {
+    for (const host of [
+      'clickhouse',
+      'clickhouse.analytics.svc.cluster.local',
+      'clickhouse.analytics.svc.cluster.local.',
+      '10.0.0.7',
+      '[fd00::1]',
+      '[::ffff:10.0.0.7]',
+      'ClickHouse.Example.COM',
+    ]) {
       expect(withHost(host), host).not.toThrow();
+      expect(validateClickStackClickhouseHost(host), host).toBeUndefined();
+    }
+    const refused: [string, RegExp][] = [
+      ['http://clickhouse', /scheme/],
+      ['clickhouse:8123', /port/],
+      ['clickhouse/path', /path/],
+      ['click house', /whitespace/],
+      ['user@clickhouse', /userinfo/],
+      ['fd00::1', /brackets, e\.g\. "\[fd00::1\]"/],
+      ['[fd00::1]:8123', /bracketed IPv6/],
+      ['', /non-empty/],
+    ];
+    for (const [host, reason] of refused) {
+      expect(withHost(host), host).toThrow(reason);
     }
   });
 
-  it("does not seed the chart's published default password, and seeds once a real one is set", async () => {
-    const mongo = createFakeMongo();
-    const printed: string[] = [];
-    await runBootstrapScript(
-      renderClickStackTeamBootstrapScript(),
-      { ...degradedEnvironment, HYPERDX_DEFAULT_CONNECTION_PASSWORD: 'hyperdx' },
-      mongo,
-      undefined,
-      (line) => printed.push(line)
-    );
-    expect(mongo.documentsIn('connections')).toHaveLength(0);
-    expect(markers(mongo, 'team-defaults:')).toHaveLength(0);
-    expect(printed.join('\n')).toContain("chart's published default");
+  it('carries the same host rule on the CRD in every variant', () => {
+    for (const options of [
+      { name: 'cs-host-inline', kind: 'CsHostInline' },
+      { credentials: { source: 'secretValues' as const }, name: 'cs-host-sv', kind: 'CsHostSv' },
+    ]) {
+      const rgd = makeClickstackBootstrap(options as never)
+        .toYaml()
+        .split(/^---$/m)
+        .map((doc) => load(doc) as Record<string, any>)
+        .find(
+          (doc) => doc?.kind === 'ResourceGraphDefinition' && doc.metadata.name === options.name
+        );
+      expect(rgd?.spec.schema.spec.clickhouse.host).toBe(
+        `string | validation="${CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE}"`
+      );
+    }
+  });
 
-    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
-    expect(mongo.documentsIn('connections')[0]?.password).toBe(
-      SEED_ENVIRONMENT.HYPERDX_DEFAULT_CONNECTION_PASSWORD
+  it('seeds a password that happens to be "hyperdx" like any other (inline mode, the default seed)', async () => {
+    // A valid user password must not be read as "unset": HyperDX's
+    // DEFAULT_CONNECTIONS gets it, and so must the seed.
+    const docs = docsOf(
+      {},
+      {
+        ...BOOTSTRAP_SPEC_FOR_VERSION_GUARD,
+        clickhouse: {
+          ...BOOTSTRAP_SPEC_FOR_VERSION_GUARD.clickhouse,
+          appUsername: 'hyperdx',
+          appPassword: 'hyperdx',
+        },
+      }
     );
+    const release = docs.find(
+      (doc) => doc.kind === 'HelmRelease' && doc.spec?.chart?.spec?.chart === 'clickstack'
+    );
+    const chartSecret = release?.spec.values.hyperdx.secrets as Record<string, string>;
+    expect(chartSecret.CLICKHOUSE_APP_PASSWORD).toBe('hyperdx');
+    expect(JSON.parse(release?.spec.values.hyperdx.deployment.defaultConnections)[0].password).toBe(
+      'hyperdx'
+    );
+    const container = docs.find(
+      (doc) => doc.kind === 'CronJob' && doc.metadata.name.endsWith('-team-bootstrap')
+    )?.spec.jobTemplate.spec.template.spec.containers[0];
+    // The CronJob's environment, its Secret references resolved from the chart Secret.
+    const environment = Object.fromEntries(
+      (container.env as Array<{ name: string; value?: string; valueFrom?: any }>).map(
+        (variable) => [
+          variable.name,
+          variable.value ?? chartSecret[variable.valueFrom.secretKeyRef.key],
+        ]
+      )
+    );
+    const mongo = createFakeMongo();
+    await runBootstrapScript(container.command[4], environment, mongo);
+    expect(mongo.documentsIn('connections')).toHaveLength(1);
+    expect(mongo.documentsIn('connections')[0]).toMatchObject({
+      username: 'hyperdx',
+      password: 'hyperdx',
+    });
+    expect(mongo.documentsIn('sources')).toHaveLength(4);
   });
 
   it('secretValues in KRO mode: the ConfigMap is the constant template, the topology CEL in typed values', () => {

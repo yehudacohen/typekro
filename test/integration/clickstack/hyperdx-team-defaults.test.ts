@@ -830,7 +830,7 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     expect(state).toEqual({ teams: 1, connections: 0, sources: 0 });
   });
 
-  it('secretValues + teamDefaults: true: seeds the same connection HyperDX registers, never a placeholder, and nothing while the key is missing', () => {
+  it('secretValues + teamDefaults: true: seeds the same connection HyperDX registers, and nothing while the key is missing', () => {
     const rendered = render(
       { credentials: { source: 'secretValues' }, teamDefaults: true },
       SECRET_VALUES_SPEC
@@ -862,19 +862,6 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     expect(missing.stdout).toContain('password Secret key is missing');
     expect(connections()).toHaveLength(0);
 
-    // The fragment never set CLICKHOUSE_APP_PASSWORD: the chart's public default.
-    const placeholder = runBootstrap(
-      onOwnDb,
-      MONGO_SECRET_VALUES,
-      {},
-      {
-        'clickstack-secret': { ...clickstackSecret, CLICKHOUSE_APP_PASSWORD: 'hyperdx' },
-      }
-    );
-    expect(placeholder.ok).toBe(true);
-    expect(placeholder.stdout).toContain("chart's published default");
-    expect(connections()).toHaveLength(0);
-
     expect(runBootstrap(onOwnDb, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);
     const [seeded] = connections();
     const [registered] = dump(MONGO_SECRET_VALUES).connections;
@@ -882,5 +869,35 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     for (const field of ['name', 'host', 'username', 'password']) {
       expect([field, seeded?.[field]]).toEqual([field, registered?.[field]]);
     }
+  });
+
+  it('seeds a password that happens to be "hyperdx" like any other (inline, default seed)', () => {
+    const spec = {
+      ...SPEC,
+      clickhouse: { ...SPEC.clickhouse, appUsername: 'hyperdx', appPassword: 'hyperdx' },
+    };
+    const rendered = render({}, spec);
+    const chartSecret = rendered.releaseValues.hyperdx.secrets as Record<string, string>;
+    expect(chartSecret.CLICKHOUSE_APP_PASSWORD).toBe('hyperdx');
+    const onOwnDb: RenderedBootstrap = {
+      ...rendered,
+      script: rendered.script.replace("getSiblingDB('hyperdx')", "getSiblingDB('hyperdx-literal')"),
+    };
+    const run = runBootstrap(
+      onOwnDb,
+      MONGO_SECRET_VALUES,
+      {},
+      { 'clickstack-secret': chartSecret }
+    );
+    expect(run.ok, run.stderr).toBe(true);
+    const connections = JSON.parse(
+      mongoEval(
+        MONGO_SECRET_VALUES,
+        "print(EJSON.stringify(db.getSiblingDB('hyperdx-literal').connections.find().toArray()))"
+      )
+    ) as Record<string, unknown>[];
+    expect(connections).toHaveLength(1);
+    expect(connections[0]?.username).toBe('hyperdx');
+    expect(connections[0]?.password).toBe('hyperdx');
   });
 });

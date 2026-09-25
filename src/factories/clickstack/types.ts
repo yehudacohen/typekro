@@ -400,6 +400,52 @@ export const DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY = 'HYPERDX_INITIAL_USE
  */
 export const CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION = 'typekro_bootstrap';
 
+/**
+ * The CEL rule the generated CRD carries on `spec.clickhouse.host`, the KRO
+ * twin of {@link validateClickStackClickhouseHost}. It refuses exactly what
+ * breaks the `http://<host>:<port>` / `tcp://<host>:<port>` URLs the host is
+ * built into, and nothing else: whitespace, `/`, `?`, `#`, `@`, and a `:` or
+ * bracket outside one bracketed IPv6 literal (so a scheme or a port).
+ * Written without backslashes (RE2 POSIX classes and bracket literals), so it
+ * survives the KRO marker's quoting unchanged. `x-kubernetes-validations`
+ * is not compared by KRO's CRD compatibility check, so adding it is not a
+ * breaking CRD change.
+ */
+export const CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE =
+  "size(self) > 0 && !self.matches('[[:space:]/?#@]') && " +
+  "(self.startsWith('[') ? self.matches('^[[][0-9A-Fa-f:.]+[]]$') : " +
+  "!self.contains(':') && !self.contains('[') && !self.contains(']'))";
+
+/**
+ * Check a concrete `clickhouse.host`: the same rule as
+ * {@link CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE}, with a reason a person
+ * can act on. Accepts a short name, an FQDN (with or without a trailing dot),
+ * an IPv4 address and a bracketed IPv6 address, in any case.
+ *
+ * @returns A reason the host is unusable, or `undefined` when it is valid
+ */
+export function validateClickStackClickhouseHost(host: unknown): string | undefined {
+  if (typeof host !== 'string' || host.length === 0) return 'must be a non-empty string';
+  if (host.includes('://')) return 'must not include a scheme (drop the "http://" or "tcp://")';
+  // RE2's [[:space:]] is exactly [\t\n\v\f\r ].
+  if (/[\t\n\v\f\r /?#@]/.test(host)) {
+    return 'must not contain whitespace, "/", "?", "#" or "@" (no path, query or userinfo)';
+  }
+  if (host.startsWith('[')) {
+    return /^\[[0-9A-Fa-f:.]+\]$/.test(host)
+      ? undefined
+      : 'must be a single bracketed IPv6 address when it starts with "["';
+  }
+  if (host.includes('[') || host.includes(']'))
+    return 'must not contain "[" or "]" except around an IPv6 address';
+  if (host.includes(':')) {
+    return (host.match(/:/g) ?? []).length > 1
+      ? 'looks like an IPv6 address: write it in brackets, e.g. "[fd00::1]"'
+      : 'must not include a port (set clickhouse.httpPort / clickhouse.nativePort instead)';
+  }
+  return undefined;
+}
+
 /** Name of the HyperDX Team the bootstrap creates when `teamName` is not set. */
 export const DEFAULT_CLICKSTACK_TEAM_NAME = 'ClickStack';
 
@@ -799,12 +845,18 @@ interface ClickStackBuildOptionsBase {
   teamName?: string;
   /**
    * Seed an empty Team's ClickHouse connection and log/trace/metric/session
-   * sources, once (default on; pass options to adjust it). The connection is
-   * the same one HyperDX's own registration creates, from the same values and
-   * the same password. `false` turns it off; so do build-time `values` that
-   * replace the chart's `defaultConnections`, `defaultSources` or
-   * `useExistingConfigSecret`. Only on audited chart versions, like
-   * `initialUser` (see {@link ClickStackTeamDefaultsOptions}).
+   * sources, once. The connection is the one HyperDX's own registration
+   * creates, from the same values and the same password.
+   *
+   * - Inline credentials: default ON (TypeKro owns the connection).
+   * - `secretValues`: default OFF, since the values fragment may replace
+   *   `defaultConnections` and the CronJob cannot see it; `true` or an
+   *   options object seeds TypeKro's typed ClickHouse topology.
+   *
+   * `false` turns it off; so do build-time `values` that replace the chart's
+   * `defaultConnections`, `defaultSources` or `useExistingConfigSecret`. Only
+   * on audited chart versions, like `initialUser` (see
+   * {@link ClickStackTeamDefaultsOptions}).
    */
   teamDefaults?: boolean | ClickStackTeamDefaultsOptions;
 }

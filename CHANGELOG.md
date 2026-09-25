@@ -406,9 +406,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Which password.** In both credential modes, HyperDX's default connection and the seed take the
     password from the same chart value, `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. The seed reads it,
     by `secretKeyRef`, from `clickstack-secret`, which the chart renders from that value. While the key
-    is missing, or still holds the chart's published default (`hyperdx`, meaning the values never set
-    one), the CronJob seeds nothing and records nothing, and seeds once a real password appears. A key
-    that exists but is empty is seeded as an empty password.
+    is missing, the CronJob seeds nothing and records nothing, and seeds once it appears. Any value is
+    seeded as it is, including an empty one and `hyperdx` (TypeKro reserves no password values).
   - **Default by credential mode.** On with inline credentials, where TypeKro owns the connection. Off
     with `secretValues`, where the values fragment may replace `defaultConnections` and the CronJob
     can't see it: without `initialUser`, a default seed would replace the caller's connection with
@@ -439,7 +438,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     values TypeKro sets under `typekro.clickstack.defaultConnection`. The ConfigMap is a constant that
     carries no credential, and a quote or backslash in any field stays valid JSON (checked with
     `helm template` against chart 3.2.0).
-  - A concrete `clickhouse.host` must now be a bare DNS host or IPv4 address (no scheme, port or path).
+  - `clickhouse.host` is checked, at render time for a concrete value and by a CRD rule in KRO mode.
+    Accepted: short names, FQDNs with or without a trailing dot, IPv4, and bracketed IPv6, in any
+    case. Refused: an empty value; whitespace, `/`, `?`, `#` or `@`; a scheme; a `:` outside brackets
+    (a port); brackets that don't wrap a single IPv6 address; and unbracketed IPv6, with a hint to
+    bracket it.
   - The ConfigMap is listed in `valuesFrom` before the caller's Secret, so a `defaultConnections` in the
     fragment still wins.
 - **ClickStack: the Team the bootstrap creates is named `ClickStack` (or `teamName`), not a hard-coded
@@ -1179,14 +1182,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     default with inline credentials and writes HyperDX 2.35.0's schema, so a chart version other than
     3.2.0 is refused at render time, and the KRO CRD narrows `spec.version`. Users pinned to another
     chart must set `teamDefaults: false` or `teamDefaults: { allowUnvalidatedChartVersion: true }`.
-    The CRD rule is an `x-kubernetes-validations` entry, which KRO 0.9.2's compatibility check doesn't
-    treat as breaking, so the CRD updates in place.
+    On KRO, the CronJob also checks the chart version at runtime and seeds nothing on an unaudited one.
+    KRO 0.9.2 doesn't add a validation-only change to a CRD it already created (verified in its source
+    and on a real cluster), so the CRD rule reaches new CRDs only.
   - **`secretValues` deployments get a `<release>-default-connections` ConfigMap in `valuesFrom`**,
     before the caller's Secret. The seed is opt-in there.
   - **A Team HyperDX already gave the wrong connection is never repaired.** This includes the chart's
     "Local ClickHouse", which a `secretValues` + `initialUser` registration used to get. The Team isn't
     empty, so fix the connection in HyperDX's UI.
-  - A concrete `clickhouse.host` with a scheme, port or path is now refused.
+  - **`clickhouse.host` values that break the connection URLs are now refused:** an empty value;
+    whitespace, `/`, `?`, `#` or `@`; a scheme; a port; stray brackets; and unbracketed IPv6.
+    Trailing-dot FQDNs and bracketed IPv6 still work.
 
 - **Documentation and test examples use generic names.** The NATS JetStream examples use
   `ORDERS_EVENTS` / `orders.events.>`, the Envoy AI Gateway examples use the `x-acme-principal`

@@ -79,7 +79,6 @@
 import type { V1CronJob, V1PersistentVolumeClaim } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { validateDnsSubdomainName } from '../../../core/kubernetes/naming.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/portable-strategies.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
@@ -125,6 +124,7 @@ import {
   type ResolvedClickStackInitialUser,
   assertClickStackReleaseName,
   CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION,
+  CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE,
   CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX,
   CLICKSTACK_INITIAL_USER_API_BASE_URL_ENV,
   CLICKSTACK_INITIAL_USER_MARKER_ID,
@@ -135,6 +135,7 @@ import {
   clickStackInitialUserVersionValidationRule,
   DEFAULT_CLICKSTACK_TEAM_NAME,
   resolveClickStackTeamName,
+  validateClickStackClickhouseHost,
   isClickStackInitialUserValidatedChartVersion,
   resolveClickStackInitialUser,
 } from '../types.js';
@@ -147,6 +148,7 @@ import {
 } from '../utils/helm-values-mapper.js';
 import {
   CLICKSTACK_APP_PASSWORD_SECRET_KEY,
+  CLICKSTACK_CHART_VERSION_ENV,
   HYPERDX_DEFAULT_CONNECTION_HOST_ENV,
   HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV,
   HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV,
@@ -314,7 +316,13 @@ const CLICKSTACK_HELM_RELEASE_RESOURCE_ID = 'clickstackHelmRelease';
  */
 const CLICKSTACK_CONTRACT_RESOURCE_ID = 'clickstackContract';
 
+/** Every variant: the host the connection URLs are built from. */
+const hostSchemaFieldValidations = {
+  'clickhouse.host': CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE,
+} as const;
+
 const inlineSchemaFieldValidations = {
+  ...hostSchemaFieldValidations,
   apiKey: `self != "${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}"`,
 } as const;
 
@@ -327,6 +335,11 @@ export interface ClickStackTeamBootstrapScriptOptions {
   teamName?: string;
   /** Seed an empty Team's connection and sources (default `true`). */
   teamDefaults?: boolean;
+  /**
+   * Chart versions the seed checks the runtime version against (default: the
+   * audited list); `null` skips the check (`allowUnvalidatedChartVersion`).
+   */
+  seedChartVersions?: readonly string[] | null;
   /**
    * @internal Hashes of legacy default names the degraded path may rename
    * (default {@link CLICKSTACK_LEGACY_TEAM_NAME_SHA256}); for tests.
@@ -354,7 +367,8 @@ export interface ClickStackTeamBootstrapScriptOptions {
 function renderDegradedTeamBootstrapScript(
   teamName: string,
   teamDefaults: boolean,
-  legacyTeamNameHashes: readonly string[]
+  legacyTeamNameHashes: readonly string[],
+  seedChartVersions: readonly string[] | undefined
 ): string {
   return [
     "const database = db.getSiblingDB('hyperdx');",
@@ -365,6 +379,7 @@ function renderDegradedTeamBootstrapScript(
     ...renderTeamBootstrapHelpers({
       seed: teamDefaults,
       untouchedName: { sha256: legacyTeamNameHashes },
+      ...(seedChartVersions !== undefined && { validatedChartVersions: seedChartVersions }),
     }),
     `const hookId = '${CLICKSTACK_MANAGED_TEAM_HOOK_ID}';`,
     `const teamName = ${JSON.stringify(teamName)};`,
@@ -473,11 +488,16 @@ export function renderClickStackTeamBootstrapScript(
   options: ClickStackTeamBootstrapScriptOptions = {}
 ): string {
   const teamDefaults = options.teamDefaults ?? true;
+  const seedChartVersions =
+    options.seedChartVersions === null
+      ? undefined
+      : (options.seedChartVersions ?? CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS);
   if (initialUser === undefined) {
     return renderDegradedTeamBootstrapScript(
       options.teamName ?? DEFAULT_CLICKSTACK_TEAM_NAME,
       teamDefaults,
-      options.legacyTeamNameHashes ?? [CLICKSTACK_LEGACY_TEAM_NAME_SHA256]
+      options.legacyTeamNameHashes ?? [CLICKSTACK_LEGACY_TEAM_NAME_SHA256],
+      seedChartVersions
     );
   }
 
@@ -510,6 +530,7 @@ export function renderClickStackTeamBootstrapScript(
         exact: `${initialUser.email}'s Team`,
         sha256: options.legacyTeamNameHashes ?? [CLICKSTACK_LEGACY_TEAM_NAME_SHA256],
       },
+      ...(seedChartVersions !== undefined && { validatedChartVersions: seedChartVersions }),
     }).map((line) => `  ${line}`),
     `  const initialUserMarkerId = ${JSON.stringify(CLICKSTACK_INITIAL_USER_MARKER_ID)};`,
     // Marker present => the instance was claimed under TypeKro's watch. Short
@@ -668,19 +689,16 @@ function assertClickStackHyperdxOidcChartVersion(
 }
 
 /**
- * Refuse a concrete `clickhouse.host` that is not a bare DNS host: no scheme,
- * port, path or whitespace (the schema documents it as exactly that).
- * Hostnames are case-insensitive, so the RFC 1123 check runs on lower case;
- * an IPv4 address passes it too.
+ * Refuse a concrete `clickhouse.host` that would break the URLs it is built
+ * into (see {@link validateClickStackClickhouseHost}); the CRD carries the same
+ * rule for KRO mode.
  *
  * @throws Error naming the offending value and the rule it breaks
  */
 function assertClickStackClickhouseHost(host: unknown): void {
-  const reason = validateDnsSubdomainName(typeof host === 'string' ? host.toLowerCase() : host);
+  const reason = validateClickStackClickhouseHost(host);
   if (reason !== undefined) {
-    throw new Error(
-      `ClickStack clickhouse.host ${JSON.stringify(host)} is not a DNS host (no scheme, port or path): it ${reason}.`
-    );
+    throw new Error(`ClickStack clickhouse.host ${JSON.stringify(host)} ${reason}.`);
   }
 }
 
@@ -796,8 +814,8 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // plus status endpoints naming a gateway Service the chart truncated away.
     // The guard runs the SAME schema, so the message cannot drift from it.
     if (!isKubernetesRef(spec.name)) assertClickStackReleaseName(spec.name);
-    // The host becomes `http://<host>:<port>` in HyperDX's connection and the
-    // seed, so a concrete one must be a bare DNS host (or IPv4 address).
+    // The host becomes `http://<host>:<port>` and `tcp://<host>:<port>`, so a
+    // concrete one must not carry a scheme, port, path or userinfo.
     if (!isKubernetesRef(spec.clickhouse) && !isKubernetesRef(spec.clickhouse.host)) {
       assertClickStackClickhouseHost(spec.clickhouse.host);
     }
@@ -1100,6 +1118,9 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                       renderClickStackTeamBootstrapScript(build.initialUser, {
                         ...(build.teamName !== undefined && { teamName: build.teamName }),
                         teamDefaults: build.teamDefaults !== undefined,
+                        ...(build.teamDefaults?.allowUnvalidatedChartVersion === true && {
+                          seedChartVersions: null,
+                        }),
                       }),
                     ],
                     env: [
@@ -1182,6 +1203,13 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                             {
                               name: HYPERDX_DEFAULT_SOURCES_DATABASE_ENV,
                               value: seedTarget.database,
+                            },
+                            // For the seed's runtime version check: the one
+                            // guard that holds on a KRO CRD created before
+                            // the version rule existed.
+                            {
+                              name: CLICKSTACK_CHART_VERSION_ENV,
+                              value: resolvedVersion as string,
                             },
                           ]
                         : []),
@@ -1576,7 +1604,7 @@ function buildInternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build)
+    clickStackSchemaFieldValidations(hostSchemaFieldValidations, build)
   );
 }
 
@@ -1609,7 +1637,7 @@ function buildExternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build)
+    clickStackSchemaFieldValidations(hostSchemaFieldValidations, build)
   );
 }
 

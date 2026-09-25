@@ -145,12 +145,8 @@ export const HYPERDX_DEFAULT_CONNECTION_HOST_ENV = 'HYPERDX_DEFAULT_CONNECTION_H
 export const HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV = 'HYPERDX_DEFAULT_CONNECTION_USERNAME';
 export const HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV = 'HYPERDX_DEFAULT_CONNECTION_PASSWORD';
 export const HYPERDX_DEFAULT_SOURCES_DATABASE_ENV = 'HYPERDX_DEFAULT_SOURCES_DATABASE';
-/**
- * Chart 3.2.0's published default for `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`
- * (values.yaml). It reaches `clickstack-secret` whenever the values never set
- * the key, so the seed treats it as "no password configured".
- */
-export const CLICKSTACK_CHART_PLACEHOLDER_APP_PASSWORD = 'hyperdx';
+/** The chart version the release runs, for the seed's runtime version check. */
+export const CLICKSTACK_CHART_VERSION_ENV = 'CLICKSTACK_CHART_VERSION';
 /** Key of the chart-owned `clickstack-secret` holding the HyperDX UI user's ClickHouse password. */
 export const CLICKSTACK_APP_PASSWORD_SECRET_KEY = 'CLICKHOUSE_APP_PASSWORD';
 
@@ -338,6 +334,15 @@ export interface UntouchedTeamName {
 export interface TeamBootstrapHelperOptions {
   /** `false` renders a `seedTeamDefaults` that does nothing. */
   seed: boolean;
+  /**
+   * The chart versions the seed may write on, checked at RUNTIME against
+   * {@link CLICKSTACK_CHART_VERSION_ENV}; `undefined` skips the check (the
+   * `allowUnvalidatedChartVersion` escape hatch). The build-time guard and
+   * the CRD rule cover the same ground, but KRO 0.9.2 does not add a
+   * validation rule to a CRD it already created, so this is what holds on an
+   * upgraded KRO deployment.
+   */
+  validatedChartVersions?: readonly string[];
   untouchedName: UntouchedTeamName;
 }
 
@@ -422,6 +427,15 @@ export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions):
     `  const markerId = ${JSON.stringify(TEAM_DEFAULTS_MARKER_PREFIX)} + String(team._id);`,
     '  let marker = bootstrapMarkers.findOne({ _id: markerId });',
     "  if (marker !== null && marker.state === 'complete') return;",
+    ...(options.validatedChartVersions === undefined
+      ? []
+      : [
+          `  const chartVersion = process.env.${CLICKSTACK_CHART_VERSION_ENV};`,
+          `  if (${JSON.stringify(options.validatedChartVersions)}.indexOf(chartVersion) === -1) {`,
+          `    print('ClickStack team defaults: chart version ' + JSON.stringify(chartVersion) + ' is not one TypeKro has audited HyperDX\\'s connections/sources schema on (${options.validatedChartVersions.join(', ')}), so TypeKro seeds nothing. Set teamDefaults: { allowUnvalidatedChartVersion: true } once you have checked it.');`,
+          '    return;',
+          '  }',
+        ]),
     `  const host = process.env.${HYPERDX_DEFAULT_CONNECTION_HOST_ENV};`,
     `  const username = process.env.${HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV};`,
     `  const sourceDatabase = process.env.${HYPERDX_DEFAULT_SOURCES_DATABASE_ENV};`,
@@ -433,14 +447,6 @@ export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions):
     // passwordless ClickHouse user and is seeded as '', as HyperDX does.
     "  if (typeof password !== 'string') {",
     `    print('ClickStack team defaults: the ClickHouse password Secret key is missing, so TypeKro seeds nothing until it exists (${HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV} is unset).');`,
-    '    return;',
-    '  }',
-    // The chart's published default for CLICKHOUSE_APP_PASSWORD means the
-    // values never set one: seeding it would leave a Team that looks set up
-    // with a connection that cannot log in, for good. Nothing, no marker, and
-    // no echo of the value; a later run seeds once a real password is set.
-    `  if (password === ${JSON.stringify(CLICKSTACK_CHART_PLACEHOLDER_APP_PASSWORD)}) {`,
-    "    print('ClickStack team defaults: the ClickHouse UI password is still the chart\\'s published default (hyperdx.secrets.CLICKHOUSE_APP_PASSWORD was never set), so TypeKro seeds nothing until a real one is set.');",
     '    return;',
     '  }',
     '  if (marker === null) {',
