@@ -215,8 +215,10 @@ may not), the container variable is always `HYPERDX_INITIAL_USER_PASSWORD` in th
    A redirect is a refusal, not a registration: the POST never follows one, so the run fails without a
    marker and retries.
 4. **Patches `teams.apiKey`.** One `updateOne`, on every run, so the Team carries the pre-shared
-   ingestion key the collector authenticates with and a rotated Secret still converges. This is the
-   **entire** remaining coupling to HyperDX's private schema.
+   ingestion key the collector authenticates with and a rotated Secret still converges.
+5. **Checks the Team's defaults.** Registration already ran `setupTeamDefaults`, so this normally
+   finds the connection and sources in place and records that. See
+   [Team name and default sources](#team-name-and-default-sources).
 
 ### What it guarantees
 
@@ -251,11 +253,65 @@ in short of deleting the Team so registration reopens. It remains the default on
 deployments whose ingestion key is already converged do not break. It is not a configuration to
 choose.
 
+A Team the CronJob inserts never passes through HyperDX's `setupTeamDefaults`, so on its own it has no
+ClickHouse connection and no sources. The CronJob seeds them itself, and names the Team — see
+[Team name and default sources](#team-name-and-default-sources).
+
+### Team name and default sources
+
+HyperDX's UI opens its "set up your connection to ClickHouse" onboarding modal for a Team with no
+connection (`GET /api/connections` is empty) or no source (`GET /api/sources` is empty). HyperDX only
+provisions them in `setupTeamDefaults`, which it calls when `POST /register/password` creates a
+Team. A Team created any other way, like the one the degraded path inserts, stays empty. On every
+run the CronJob therefore also reconciles the Team's name and, once, its defaults.
+
+**What is seeded.** One connection named `External ClickHouse`, with host
+`http://<clickhouse.host>:<clickhouse.httpPort>`, the UI user `clickhouse.appUsername` (else
+`username`, else `default`), and that user's password. The password is read by `secretKeyRef` from the
+chart-owned `clickstack-secret` key `CLICKHOUSE_APP_PASSWORD`, in both credential modes, so it never
+appears in the manifest or the log. Then the `Logs`, `Traces`, `Metrics` and `Sessions` sources on
+`otel_logs`, `otel_traces`, `otel_metrics_{gauge,histogram,sum}` and `hyperdx_sessions` in
+`clickhouse.database`, with the column mappings and cross-references TypeKro renders into the chart's
+`defaultSources`. The documents are exactly what `setupTeamDefaults` stores for the same
+`DEFAULT_CONNECTIONS` / `DEFAULT_SOURCES` in HyperDX 2.35.0. The real-image test compares the two
+field by field.
+
+**Only into an empty Team, and only once.** The first time the CronJob sees a Team, it seeds only if
+the Team has no connection and no source. Anything already there is someone else's configuration, and
+the Team is left alone for good. Seeding reserves its document ids in a marker in `typekro_bootstrap`
+first, so a run interrupted halfway is finished by the next without duplicating anything. After that,
+the Team is never seeded again. **Edits made in the UI afterwards are never overwritten**, and
+connections or sources deleted on purpose stay deleted. A Team TypeKro did not create itself gets a
+60-second grace period first, so the CronJob never writes while HyperDX's own
+registration is still setting the Team up.
+
+**The name.** `teamName` (default `ClickStack`, at most 100 characters) names the Team the degraded
+path creates. With `initialUser`, HyperDX names the Team at registration, and TypeKro renames it only
+if you set `teamName`. A rename touches only `name`, so the Team keeps its `_id`, its `apiKey` and its
+users. TypeKro records the name it last applied. If the Team's name no longer matches that record,
+someone renamed it in HyperDX, and TypeKro keeps their name, even when `teamName` changes later.
+
+**Existing deployments** converge on the first run after upgrading. The existing Team is renamed to
+`teamName`, since it has no record of a name TypeKro applied. It is seeded if it is still empty.
+
+**Turning it off.** `teamDefaults: false` skips the seed. It is also skipped when build-time `values`
+replace `hyperdx.deployment.defaultConnections` or `defaultSources`, or set `useExistingConfigSecret`,
+because what HyperDX would seed is then yours, and so is its password.
+
+```typescript
+const bootstrap = makeClickstackBootstrap({
+  teamName: 'Observability',
+  teamDefaults: true, // the default
+});
+```
+
 ### Chart versions it is valid for
 
 Registration goes through HyperDX's own endpoint, so the account document, its hashing and
 `setupTeamDefaults` are no longer TypeKro's business. What remains is one write into an upstream-owned
-schema — `teams.apiKey` — plus the registration HTTP contract. The HTTP half fails loudly if it moves
+schema — `teams.apiKey` — plus the registration HTTP contract. (The Team name and the one-time
+[default sources](#team-name-and-default-sources) are written on every path, in HyperDX 2.35.0's
+document shape.) The HTTP half fails loudly if it moves
 (a 404 turns the CronJob red); the `teams.apiKey` half does not, and that is what the version
 allowlist guards: a renamed field would leave the Job green and ingestion silently unauthenticated.
 
@@ -481,6 +537,7 @@ if OIDC ever breaks, since the change applies without a restart.
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
 credential source, the [`initialUser`](#initial-user-and-the-one-registration-hyperdx-hands-out) account,
+the Team's [`teamName` and `teamDefaults`](#team-name-and-default-sources),
 the external ClickHouse's [`storage`](#s3-backed-clickhouse) story,
 static raw chart `values`, static Flux `postRenderers` on the ClickStack HelmRelease (passed through
 verbatim — the composition adds none of its own), RGD `name`/`kind`. Runtime spec (proxy-safe):

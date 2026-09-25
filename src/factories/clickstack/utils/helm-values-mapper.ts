@@ -57,6 +57,7 @@ import type { TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
 import { type CollectorConfigFragment, renderCollectorConfig } from './collector-config.js';
+import { CLICKSTACK_CONNECTION_NAME, CLICKSTACK_DEFAULT_SOURCES } from './team-defaults.js';
 import {
   type ResolvedClickStackStorage,
   clickStackQueueClaimName,
@@ -99,8 +100,7 @@ export const DEFAULT_CLICKSTACK_GATEWAY_ENDPOINT =
  */
 export const DEFAULT_K8S_TELEMETRY_COLLECTOR_IMAGE = 'otel/opentelemetry-collector-contrib';
 
-/** Name of the HyperDX connection emitted into `defaultConnections`/`defaultSources`. */
-export const CLICKSTACK_CONNECTION_NAME = 'External ClickHouse';
+export { CLICKSTACK_CONNECTION_NAME } from './team-defaults.js';
 
 /**
  * The ClickStack image runs under the OpAMP supervisor. Its built-in remote
@@ -284,97 +284,45 @@ function mergeOverridesWithPinsLast(
  * chart 3.2.0) with the connection renamed and the database parameterized
  * (`%s` slots filled per mode).
  */
-const DEFAULT_SOURCES_FORMAT = JSON.stringify([
-  {
-    from: { databaseName: '%s', tableName: 'otel_logs' },
-    kind: 'log',
-    timestampValueExpression: 'Timestamp',
-    name: 'Logs',
-    displayedTimestampValueExpression: 'Timestamp',
-    implicitColumnExpression: 'Body',
-    serviceNameExpression: 'ServiceName',
-    bodyExpression: 'Body',
-    eventAttributesExpression: 'LogAttributes',
-    resourceAttributesExpression: 'ResourceAttributes',
-    defaultTableSelectExpression: 'Timestamp,ServiceName,SeverityText,Body',
-    severityTextExpression: 'SeverityText',
-    traceIdExpression: 'TraceId',
-    spanIdExpression: 'SpanId',
-    connection: CLICKSTACK_CONNECTION_NAME,
-    traceSourceId: 'Traces',
-    sessionSourceId: 'Sessions',
-    metricSourceId: 'Metrics',
-  },
-  {
-    from: { databaseName: '%s', tableName: 'otel_traces' },
-    kind: 'trace',
-    timestampValueExpression: 'Timestamp',
-    name: 'Traces',
-    displayedTimestampValueExpression: 'Timestamp',
-    implicitColumnExpression: 'SpanName',
-    serviceNameExpression: 'ServiceName',
-    bodyExpression: 'SpanName',
-    eventAttributesExpression: 'SpanAttributes',
-    resourceAttributesExpression: 'ResourceAttributes',
-    defaultTableSelectExpression: 'Timestamp,ServiceName,StatusCode,round(Duration/1e6),SpanName',
-    traceIdExpression: 'TraceId',
-    spanIdExpression: 'SpanId',
-    durationExpression: 'Duration',
-    durationPrecision: 9,
-    parentSpanIdExpression: 'ParentSpanId',
-    spanNameExpression: 'SpanName',
-    spanKindExpression: 'SpanKind',
-    statusCodeExpression: 'StatusCode',
-    statusMessageExpression: 'StatusMessage',
-    connection: CLICKSTACK_CONNECTION_NAME,
-    logSourceId: 'Logs',
-    sessionSourceId: 'Sessions',
-    metricSourceId: 'Metrics',
-  },
-  {
-    from: { databaseName: '%s', tableName: '' },
-    kind: 'metric',
-    timestampValueExpression: 'TimeUnix',
-    name: 'Metrics',
-    resourceAttributesExpression: 'ResourceAttributes',
-    metricTables: {
-      gauge: 'otel_metrics_gauge',
-      histogram: 'otel_metrics_histogram',
-      sum: 'otel_metrics_sum',
-      _id: '682586a8b1f81924e628e808',
-      id: '682586a8b1f81924e628e808',
-    },
-    connection: CLICKSTACK_CONNECTION_NAME,
-    logSourceId: 'Logs',
-    traceSourceId: 'Traces',
-    sessionSourceId: 'Sessions',
-  },
-  {
-    from: { databaseName: '%s', tableName: 'hyperdx_sessions' },
-    kind: 'session',
-    timestampValueExpression: 'TimestampTime',
-    name: 'Sessions',
-    displayedTimestampValueExpression: 'Timestamp',
-    implicitColumnExpression: 'Body',
-    serviceNameExpression: 'ServiceName',
-    bodyExpression: 'Body',
-    eventAttributesExpression: 'LogAttributes',
-    resourceAttributesExpression: 'ResourceAttributes',
-    defaultTableSelectExpression: 'Timestamp,ServiceName,SeverityText,Body',
-    severityTextExpression: 'SeverityText',
-    traceIdExpression: 'TraceId',
-    spanIdExpression: 'SpanId',
-    connection: CLICKSTACK_CONNECTION_NAME,
-    logSourceId: 'Logs',
-    traceSourceId: 'Traces',
-    metricSourceId: 'Metrics',
-  },
-]);
+const DEFAULT_SOURCES_FORMAT = JSON.stringify(CLICKSTACK_DEFAULT_SOURCES);
 
 /** `defaultConnections` JSON with %s slots: host, httpPort, httpPort, username, password. */
 const DEFAULT_CONNECTIONS_FORMAT =
   `[{"name":"${CLICKSTACK_CONNECTION_NAME}","host":"http://%s:%s","port":%s,` +
   '"username":"%s","password":"%s"}]';
+
+/**
+ * The connection and database the Team bootstrap seeds, derived exactly as
+ * `defaultConnections` / `defaultSources` derive them: `http://<host>:<httpPort>`,
+ * the UI user (`appUsername`, else `username`, else `default`) and the OTel
+ * database. Concrete values in direct mode, CEL in KRO mode. The password is
+ * not here: the CronJob reads it from the chart-owned Secret.
+ */
+export function clickStackDefaultConnectionTarget(config: ClickStackBootstrapRuntimeConfig): {
+  host: string;
+  username: string;
+  database: string;
+} {
+  const ch = config.clickhouse;
+  if (isKubernetesRef(config.name) || isKubernetesRef(ch)) {
+    const httpPortStr = Cel.expr<string>(
+      `string(${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123)`
+    );
+    return {
+      host: Cel.template('http://%s:%s', ch.host, httpPortStr) as unknown as string,
+      username: Cel.expr<string>(
+        `${hasSchemaPath('schema.spec.clickhouse.appUsername')} ? schema.spec.clickhouse.appUsername : ` +
+          `(${hasSchemaPath('schema.spec.clickhouse.username')} ? schema.spec.clickhouse.username : "default")`
+      ) as unknown as string,
+      database: resolve(ch.database, 'default'),
+    };
+  }
+  return {
+    host: `http://${ch.host}:${ch.httpPort ?? 8123}`,
+    username: ch.appUsername ?? ch.username ?? 'default',
+    database: ch.database ?? 'default',
+  };
+}
 
 // ============================================================================
 // clickstackBootstrap values

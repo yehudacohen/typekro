@@ -122,7 +122,7 @@ const limited = makeEnvoyAIGateway({
     redisUrl: 'valkey.valkey-system.svc.cluster.local:6379',
     rules: [
       {
-        identityHeader: 'x-applik8s-principal',
+        identityHeader: 'x-acme-principal',
         requests: 100_000,
         unit: 'Hour',
         cost: 'total-tokens',

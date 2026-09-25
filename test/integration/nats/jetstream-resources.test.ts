@@ -73,9 +73,9 @@ const liveResources = kubernetesComposition(
     const stream = jetStreamStream({
       id: 'events',
       name: 'application-events',
-      streamName: 'APPLIK8S_EVENTS',
+      streamName: 'ORDERS_EVENTS',
       namespace: spec.namespace,
-      subjects: ['applik8s.events.>'],
+      subjects: ['orders.events.>'],
       description: spec.description,
       storage: 'file',
       replicas: 1,
@@ -86,11 +86,11 @@ const liveResources = kubernetesComposition(
       id: 'processor',
       name: 'account-commands',
       namespace: spec.namespace,
-      streamName: 'APPLIK8S_EVENTS',
+      streamName: 'ORDERS_EVENTS',
       ackPolicy: 'explicit',
       ackWait: '30s',
       maxDeliver: 5,
-      filterSubject: 'applik8s.events.>',
+      filterSubject: 'orders.events.>',
       servers: [spec.endpoint],
     });
 
@@ -281,7 +281,7 @@ async function runNatsDataPlaneProbe(
             command: [
               'sh',
               '-ec',
-              `nats --server ${endpoint} pub applik8s.events.test hello >/dev/null; nats --server ${endpoint} stream info APPLIK8S_EVENTS --json`,
+              `nats --server ${endpoint} pub orders.events.test hello >/dev/null; nats --server ${endpoint} stream info ORDERS_EVENTS --json`,
             ],
           },
         ],

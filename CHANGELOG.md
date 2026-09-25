@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`teamName` and `teamDefaults` build options on `makeClickstackBootstrap`.** `teamName` names the
+  HyperDX Team (default `ClickStack`, at most 100 characters). With `initialUser` it renames HyperDX's
+  registered Team only when set. `teamDefaults` (default `true`) controls the one-time seed of an empty
+  Team's connection and sources. See "Team name and default sources" in the ClickStack docs.
+
 - **OpenID Connect sign-in for HyperDX:** the `hyperdxOidc` option on `makeClickstackBootstrap` (#241).
   HyperDX's open-source build has only email-and-password login. TypeKro now ships a small plugin
   (`plugins/hyperdx-oidc/`, bundled into the library) that joins HyperDX's own Passport and session path, so
@@ -381,6 +386,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of reaching generated configuration.
 
 ### Fixed
+
+- **ClickStack: the HyperDX Team the bootstrap creates now has a ClickHouse connection and sources,
+  so signed-in users no longer land on HyperDX's "set up your connection" onboarding modal.** Without
+  `initialUser`, the team-bootstrap CronJob inserts the Team into MongoDB itself. HyperDX provisions a
+  Team's connection and sources only in `setupTeamDefaults`, which runs when `POST /register/password`
+  creates a Team (read from the HyperDX 2.35.0 image: `setupDefaults.js`, called from
+  `routers/api/root.js`). The CronJob's Team never got them, and neither did any Team created before
+  this fix. Found on a downstream deployment, it affected every deployment without `initialUser`, with
+  or without OIDC. The CronJob now seeds the `External ClickHouse` connection (host, UI user, and the
+  UI password by `secretKeyRef` to `clickstack-secret`'s `CLICKHOUSE_APP_PASSWORD` in both credential
+  modes) and the `Logs`, `Traces`, `Metrics` and `Sessions` sources, from the same values TypeKro
+  renders into the chart's `defaultConnections` / `defaultSources`. The documents are written in
+  exactly the shape `setupTeamDefaults` stores in HyperDX 2.35.0, and a new real-image test compares
+  them field by field. The seed runs once per Team, and only into a Team with no connection and no
+  source. Its ids are reserved in a `typekro_bootstrap` marker first, so an interrupted run is finished
+  without duplicates. After that the Team is never seeded again, so connections and sources edited or
+  deleted in the UI are never overwritten or recreated. The `initialUser` path records the defaults
+  HyperDX's registration created, after a 60-second grace period so it never writes while HyperDX is
+  still setting up a new Team, and fills them in only if that registration left the Team empty.
+  `teamDefaults: false` turns the seed off, and it is off when build-time `values` replace the chart's
+  default connections or sources.
+- **ClickStack: the Team the bootstrap creates is named `ClickStack` (or `teamName`), not a hard-coded
+  product name.** Existing Teams are renamed on the next run. Only `name` changes, so the Team keeps its
+  `_id`, its `apiKey` and its users. TypeKro records the name it applied, and a rename made in HyperDX
+  afterwards (`PATCH /api/team/name`) is kept.
 
 - **HyperDX OIDC: sign-ins started or completed at the same moment in one browser all complete, each
   exactly once.** The plugin kept the pending sign-in (state, nonce, PKCE verifier, `returnTo`) in the
@@ -1093,6 +1123,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct-mode status resolution.
 
 ### Changed
+
+- **Documentation and test examples use generic names.** The NATS JetStream examples use
+  `ORDERS_EVENTS` / `orders.events.>`, the Envoy AI Gateway examples use the `x-acme-principal`
+  header, and the semantic-planning RFP refers to downstream application platforms in general.
 
 - **The CHI and the CHK no longer share one cluster-name rule.**
   `CLICKHOUSE_CLUSTER_NAME_PATTERN` (CHI) was

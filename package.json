@@ -192,6 +192,7 @@
     "test:integration:yaml": "bun test --timeout 10000 test/core/yaml-generation.test.ts",
     "test:integration:clickhouse-boot": "REQUIRE_DOCKER_TESTS=true bun test --timeout 300000 test/integration/clickhouse/system-logs-server-boot.test.ts",
     "test:integration:hyperdx-oidc": "REQUIRE_DOCKER_TESTS=true bun test --timeout 300000 test/integration/clickstack/hyperdx-oidc-login.test.ts",
+    "test:integration:hyperdx-team-defaults": "REQUIRE_DOCKER_TESTS=true bun test --timeout 300000 test/integration/clickstack/hyperdx-team-defaults.test.ts",
     "build:hyperdx-oidc-plugin": "bun run scripts/build-hyperdx-oidc-plugin.ts",
     "check:hyperdx-oidc-plugin": "bun run scripts/build-hyperdx-oidc-plugin.ts --check",
     "test:integration:e2e": "bun test --timeout 60000 test/integration/e2e-cluster.test.ts",

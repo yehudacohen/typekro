@@ -132,13 +132,24 @@ import {
   CLICKSTACK_RETENTION_NAME_SUFFIX,
   CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
   clickStackInitialUserVersionValidationRule,
+  DEFAULT_CLICKSTACK_TEAM_NAME,
+  resolveClickStackTeamName,
   isClickStackInitialUserValidatedChartVersion,
   resolveClickStackInitialUser,
 } from '../types.js';
 import {
+  clickStackDefaultConnectionTarget,
   DEFAULT_CLICKSTACK_NAMESPACE,
   mapClickStackConfigToHelmValues,
 } from '../utils/helm-values-mapper.js';
+import {
+  CLICKSTACK_APP_PASSWORD_SECRET_KEY,
+  HYPERDX_DEFAULT_CONNECTION_HOST_ENV,
+  HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV,
+  HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV,
+  HYPERDX_DEFAULT_SOURCES_DATABASE_ENV,
+  renderTeamBootstrapHelpers,
+} from '../utils/team-defaults.js';
 import {
   CLICKSTACK_CONFIG_MAP_NAME,
   CLICKSTACK_SECRET_NAME,
@@ -187,6 +198,10 @@ interface ResolvedBuildConfig {
    * configured. Build-time: it is rendered into the CronJob's mongosh script.
    */
   initialUser?: ResolvedClickStackInitialUser;
+  /** Team name the bootstrap reconciles; `undefined` leaves HyperDX's name. */
+  teamName?: string;
+  /** Whether the bootstrap seeds an empty Team's connection and sources. */
+  teamDefaults: boolean;
 }
 
 const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
@@ -287,6 +302,17 @@ const inlineSchemaFieldValidations = {
   apiKey: `self != "${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}"`,
 } as const;
 
+/** The Team the degraded script creates, and so the one it may rename and seed. */
+const CLICKSTACK_MANAGED_TEAM_HOOK_ID = 'typekro-managed-ingestion';
+
+/** Build-time choices both Team-bootstrap scripts render in. */
+export interface ClickStackTeamBootstrapScriptOptions {
+  /** Team name to reconcile; `undefined` leaves the name alone. */
+  teamName?: string;
+  /** Seed an empty Team's connection and sources (default `true`). */
+  teamDefaults?: boolean;
+}
+
 /**
  * The DEGRADED script: reconcile the ingestion key by creating the Team
  * outright. Rendered only when `initialUser` is NOT configured.
@@ -300,33 +326,44 @@ const inlineSchemaFieldValidations = {
  * (#227). This path exists because it is what shipped, and removing it would
  * break deployments whose ingestion key is already converged; it is not the
  * supported way to run the composition. Configure `initialUser`.
+ *
+ * A Team inserted here also skips HyperDX's `setupTeamDefaults`, so the script
+ * seeds its connection and sources itself (see `utils/team-defaults.ts`).
  */
-const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
-  "const database = db.getSiblingDB('hyperdx');",
-  'const apiKey = process.env.HYPERDX_API_KEY;',
-  "if (typeof apiKey !== 'string' || apiKey.trim().length === 0) throw new Error('HYPERDX_API_KEY is required.');",
-  `if (apiKey === '${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}') throw new Error('HYPERDX_API_KEY must override the published ClickStack chart placeholder.');`,
-  "const hookId = 'typekro-managed-ingestion';",
-  'const teams = database.teams.find({ hookId }).toArray();',
-  "if (teams.length > 1) throw new Error('Multiple TypeKro-managed ClickStack Teams exist.');",
-  'if (teams.length === 0) {',
-  '  const now = new Date();',
-  '  database.teams.insertOne({',
-  "    name: 'Applik8s Observability',",
-  '    allowedAuthMethods: [],',
-  '    hookId,',
-  '    apiKey,',
-  '    collectorAuthenticationEnforced: true,',
-  '    isMetricsSeriesTableEnabled: false,',
-  '    createdAt: now,',
-  '    updatedAt: now,',
-  '  });',
-  '} else if (teams[0].apiKey !== apiKey || teams[0].collectorAuthenticationEnforced !== true) {',
-  '  database.teams.updateOne({ _id: teams[0]._id }, {',
-  '    $set: { apiKey, collectorAuthenticationEnforced: true, updatedAt: new Date() },',
-  '  });',
-  '}',
-].join('\n');
+function renderDegradedTeamBootstrapScript(teamName: string, teamDefaults: boolean): string {
+  return [
+    "const database = db.getSiblingDB('hyperdx');",
+    `const bootstrapMarkers = database.${CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION};`,
+    'const apiKey = process.env.HYPERDX_API_KEY;',
+    "if (typeof apiKey !== 'string' || apiKey.trim().length === 0) throw new Error('HYPERDX_API_KEY is required.');",
+    `if (apiKey === '${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}') throw new Error('HYPERDX_API_KEY must override the published ClickStack chart placeholder.');`,
+    ...renderTeamBootstrapHelpers(teamDefaults),
+    `const hookId = '${CLICKSTACK_MANAGED_TEAM_HOOK_ID}';`,
+    `const teamName = ${JSON.stringify(teamName)};`,
+    'const teams = database.teams.find({ hookId }).toArray();',
+    "if (teams.length > 1) throw new Error('Multiple TypeKro-managed ClickStack Teams exist.');",
+    'if (teams.length === 0) {',
+    '  const now = new Date();',
+    '  database.teams.insertOne({',
+    '    name: teamName,',
+    '    allowedAuthMethods: [],',
+    '    hookId,',
+    '    apiKey,',
+    '    collectorAuthenticationEnforced: true,',
+    '    isMetricsSeriesTableEnabled: false,',
+    '    createdAt: now,',
+    '    updatedAt: now,',
+    '  });',
+    '} else if (teams[0].apiKey !== apiKey || teams[0].collectorAuthenticationEnforced !== true) {',
+    '  database.teams.updateOne({ _id: teams[0]._id }, {',
+    '    $set: { apiKey, collectorAuthenticationEnforced: true, updatedAt: new Date() },',
+    '  });',
+    '}',
+    'const team = database.teams.findOne({ hookId });',
+    'reconcileTeamName(team, teamName);',
+    'seedTeamDefaults(team, true);',
+  ].join('\n');
+}
 
 /**
  * Render the mongosh script the bootstrap CronJob runs.
@@ -343,7 +380,7 @@ const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
  * WHAT TYPEKRO USED TO DO TO IT. Creating the Team directly, to pre-seed the
  * ingestion key, spends the registration without producing the account: one
  * Team, zero users, a login page nobody can satisfy, and no connections or
- * sources either (#227). {@link CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT} is that
+ * sources either (#227). The degraded script is that
  * behaviour, kept for compatibility and documented as degraded.
  *
  * WHAT IT DOES NOW, WITH `initialUser`. It spends the registration the way
@@ -388,14 +425,26 @@ const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
  *     and the HyperDX API may still be starting, so a connection failure is
  *     reported as the transient it is, in those words, instead of as a stack
  *     trace that reads like a broken deployment.
+ *  6. TEAM NAME AND DEFAULTS, ON BOTH PATHS. `reconcileTeamName` and
+ *     `seedTeamDefaults` (utils/team-defaults.ts) rename the Team unless a
+ *     human renamed it after TypeKro did, and seed the connection and sources
+ *     once into a Team that has neither. Neither ever overwrites a document.
  *
  * @param initialUser - The resolved build-time option, or `undefined`
+ * @param options - Team name and defaults (see {@link ClickStackTeamBootstrapScriptOptions})
  * @returns The complete `--eval` script
  */
 export function renderClickStackTeamBootstrapScript(
-  initialUser?: ResolvedClickStackInitialUser
+  initialUser?: ResolvedClickStackInitialUser,
+  options: ClickStackTeamBootstrapScriptOptions = {}
 ): string {
-  if (initialUser === undefined) return CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT;
+  const teamDefaults = options.teamDefaults ?? true;
+  if (initialUser === undefined) {
+    return renderDegradedTeamBootstrapScript(
+      options.teamName ?? DEFAULT_CLICKSTACK_TEAM_NAME,
+      teamDefaults
+    );
+  }
 
   const passwordVar = initialUser.passwordEnvVarName;
 
@@ -416,6 +465,7 @@ export function renderClickStackTeamBootstrapScript(
     // TypeKro's OWN state, in TypeKro's OWN collection — not an extra field on
     // an upstream-owned team or user document.
     `  const bootstrapMarkers = database.${CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION};`,
+    ...renderTeamBootstrapHelpers(teamDefaults).map((line) => `  ${line}`),
     `  const initialUserMarkerId = ${JSON.stringify(CLICKSTACK_INITIAL_USER_MARKER_ID)};`,
     // Marker present => the instance was claimed under TypeKro's watch. Short
     // -circuit BEFORE looking at teams, the password, or the network at all.
@@ -481,6 +531,17 @@ export function renderClickStackTeamBootstrapScript(
     '      $set: { apiKey, collectorAuthenticationEnforced: true, updatedAt: new Date() },',
     '    });',
     '  }',
+    // HyperDX named this Team at registration; rename it only when asked to.
+    ...(options.teamName === undefined
+      ? []
+      : [`  reconcileTeamName(teams[0], ${JSON.stringify(options.teamName)});`]),
+    // Registration already ran setupTeamDefaults, so this normally finds the
+    // defaults in place and records that. It fills an empty Team: one from
+    // before initialUser was configured, or one whose defaults HyperDX failed
+    // to set up (it logs that and carries on).
+    // `false`: this path never creates the Team, so a new one is HyperDX's and
+    // gets the grace period (a Team from the degraded path is long past it).
+    '  seedTeamDefaults(teams[0], false);',
     "  return 'clickstack-bootstrap-ok';",
     '};',
     'main();',
@@ -524,7 +585,7 @@ function assertClickStackInitialUserChartVersion(
       'ClickStack initialUser is audited only against chart version(s) ' +
         `${CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS.join(', ')} (appVersion ` +
         `${CLICKSTACK_INITIAL_USER_VALIDATED_APP_VERSION}), but version ${JSON.stringify(version)} ` +
-        'was requested. Registration goes through HyperDX\'s own endpoint, but TypeKro still ' +
+        "was requested. Registration goes through HyperDX's own endpoint, but TypeKro still " +
         "patches the Team's apiKey directly in HyperDX's schema — if that field moves the Job " +
         'still succeeds and ingestion is silently unauthenticated. The list is exact on purpose: ' +
         'a range such as ">=3.2.0" resolves to a chart nobody audited. Verify the registration ' +
@@ -861,6 +922,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
             spec.name,
             resolvedNamespace
           );
+    const seedTarget = clickStackDefaultConnectionTarget(spec);
     const _teamBootstrap = cronJob({
       id: 'clickstackTeamBootstrap',
       metadata: {
@@ -899,7 +961,10 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                       '--quiet',
                       mongoUri as string,
                       '--eval',
-                      renderClickStackTeamBootstrapScript(build.initialUser),
+                      renderClickStackTeamBootstrapScript(build.initialUser, {
+                        ...(build.teamName !== undefined && { teamName: build.teamName }),
+                        teamDefaults: build.teamDefaults,
+                      }),
                     ],
                     env: [
                       {
@@ -956,6 +1021,36 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                               ) as unknown as string,
                             },
                           ]),
+                      // The connection an empty Team is seeded with: the same
+                      // host, user and database `defaultConnections` /
+                      // `defaultSources` render, and the UI user's password by
+                      // reference to the chart-owned Secret, never by value.
+                      // `optional: true` because HyperDX itself seeds '' for
+                      // an absent password, and a missing key must not stop
+                      // ingestion-key reconciliation.
+                      ...(build.teamDefaults
+                        ? [
+                            { name: HYPERDX_DEFAULT_CONNECTION_HOST_ENV, value: seedTarget.host },
+                            {
+                              name: HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV,
+                              value: seedTarget.username,
+                            },
+                            {
+                              name: HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV,
+                              valueFrom: {
+                                secretKeyRef: {
+                                  name: CLICKSTACK_SECRET_NAME,
+                                  key: CLICKSTACK_APP_PASSWORD_SECRET_KEY,
+                                  optional: true,
+                                },
+                              },
+                            },
+                            {
+                              name: HYPERDX_DEFAULT_SOURCES_DATABASE_ENV,
+                              value: seedTarget.database,
+                            },
+                          ]
+                        : []),
                     ],
                   },
                 ],
@@ -1154,9 +1249,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
           ),
         }),
         ...(build.clickhouseStorage.policyName !== undefined && {
-          policyName: Cel.expr<string>(
-            `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storagePolicyName`
-          ),
+          policyName: Cel.expr<string>(`${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storagePolicyName`),
         }),
         ...(build.clickhouseStorage.retention !== undefined && {
           retention: {
@@ -1209,6 +1302,31 @@ function resolveClickHouseStorageForBuild(
   return resolved;
 }
 
+/**
+ * Whether the bootstrap seeds Team defaults. The seed is TypeKro's own
+ * `defaultConnections` / `defaultSources`, so it is off when build-time values
+ * replace either one (or point HyperDX at an existing config Secret): what
+ * HyperDX would seed is then the caller's, and its password is not TypeKro's
+ * to read.
+ */
+function resolveTeamDefaults(
+  options: ClickStackInternalMongoBuildOptions | ClickStackExternalMongoBuildOptions
+): boolean {
+  if (options.teamDefaults === false) return false;
+  const hyperdx = (options.values as Record<string, unknown> | undefined)?.hyperdx;
+  const deployment =
+    typeof hyperdx === 'object' && hyperdx !== null
+      ? (hyperdx as { deployment?: unknown }).deployment
+      : undefined;
+  if (typeof deployment !== 'object' || deployment === null) return true;
+  const overrides = deployment as Record<string, unknown>;
+  return (
+    overrides.defaultConnections === undefined &&
+    overrides.defaultSources === undefined &&
+    (overrides.useExistingConfigSecret === undefined || overrides.useExistingConfigSecret === false)
+  );
+}
+
 function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): ResolvedBuildConfig {
   const initialUser = resolveClickStackInitialUser(
     'makeClickstackBootstrap',
@@ -1216,8 +1334,15 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     options.initialUser
   );
   const hyperdxOidc = resolveClickStackHyperdxOidc('makeClickstackBootstrap', options.hyperdxOidc);
+  const teamName = resolveClickStackTeamName(
+    'makeClickstackBootstrap',
+    options.teamName,
+    initialUser !== undefined
+  );
   return {
     mongoMode: 'internal',
+    ...(teamName !== undefined && { teamName }),
+    teamDefaults: resolveTeamDefaults(options),
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
@@ -1235,8 +1360,15 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     options.initialUser
   );
   const hyperdxOidc = resolveClickStackHyperdxOidc('makeClickstackBootstrap', options.hyperdxOidc);
+  const teamName = resolveClickStackTeamName(
+    'makeClickstackBootstrap',
+    options.teamName,
+    initialUser !== undefined
+  );
   return {
     mongoMode: 'external',
+    ...(teamName !== undefined && { teamName }),
+    teamDefaults: resolveTeamDefaults(options),
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),
@@ -1256,7 +1388,11 @@ function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser, build.hyperdxOidc)
+    clickStackSchemaFieldValidations(
+      inlineSchemaFieldValidations,
+      build.initialUser,
+      build.hyperdxOidc
+    )
   );
 }
 
@@ -1289,7 +1425,11 @@ function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build.initialUser, build.hyperdxOidc)
+    clickStackSchemaFieldValidations(
+      inlineSchemaFieldValidations,
+      build.initialUser,
+      build.hyperdxOidc
+    )
   );
 }
 

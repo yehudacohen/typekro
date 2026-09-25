@@ -404,9 +404,7 @@ describe('Envoy AI Gateway integration', () => {
         namespace: 'secured-ai',
         lifecycle: 'external',
       });
-    const route = declarations.find(
-      ({ props }) => props.resource.kind === 'AIGatewayRoute'
-    );
+    const route = declarations.find(({ props }) => props.resource.kind === 'AIGatewayRoute');
     const securityPolicy = declarations.find(
       ({ props }) => props.resource.kind === 'BackendSecurityPolicy'
     );
@@ -414,9 +412,7 @@ describe('Envoy AI Gateway integration', () => {
     expect(route).toBeDefined();
     expect(securityPolicy).toBeDefined();
     expect(route?.dependsOn).toContain(securityPolicy?.id);
-    expect(declarations.indexOf(securityPolicy!)).toBeLessThan(
-      declarations.indexOf(route!)
-    );
+    expect(declarations.indexOf(securityPolicy!)).toBeLessThan(declarations.indexOf(route!));
   });
 
   test('renders token accounting and rate limiting without leaking provider details', () => {
@@ -435,7 +431,7 @@ describe('Envoy AI Gateway integration', () => {
         redisUrl: 'valkey.valkey-system.svc.cluster.local:6379',
         rules: [
           {
-            identityHeader: 'x-applik8s-principal',
+            identityHeader: 'x-acme-principal',
             requests: 100_000,
             unit: 'Hour',
             cost: 'total-tokens',
@@ -458,7 +454,7 @@ describe('Envoy AI Gateway integration', () => {
     expect(yaml).toContain('globalLLMRequestCosts:');
     expect(yaml).toContain('metadataKey: llm_input_token');
     expect(yaml).toContain('metadataKey: llm_total_token');
-    expect(yaml).toContain('name: x-applik8s-principal');
+    expect(yaml).toContain('name: x-acme-principal');
     expect(yaml).toContain('requests: 100000');
     expect(yaml).toContain('namespace: io.envoy.ai_gateway');
     expect(yaml).toContain('key: llm_total_token');
@@ -571,7 +567,7 @@ describe('Envoy AI Gateway integration', () => {
             },
             forwardHeaders: [
               {
-                name: 'x-applik8s-principal',
+                name: 'x-acme-principal',
                 backendHeader: 'x-principal-id',
               },
             ],
@@ -698,9 +694,7 @@ describe('Envoy AI Gateway integration', () => {
       name: 'envoy-ai',
     });
 
-    expect(
-      documents(yaml).filter((document) => document.kind === 'Namespace')
-    ).toEqual([]);
+    expect(documents(yaml).filter((document) => document.kind === 'Namespace')).toEqual([]);
     expect(yaml).toContain('namespace: envoy-gateway-system');
     expect(yaml).toContain('namespace: envoy-ai-gateway-system');
   });
@@ -716,9 +710,7 @@ describe('Envoy AI Gateway integration', () => {
       namespaceOwnership: 'owned',
     });
 
-    expect(
-      documents(yaml).filter((document) => document.kind === 'Namespace')
-    ).toHaveLength(2);
+    expect(documents(yaml).filter((document) => document.kind === 'Namespace')).toHaveLength(2);
   });
 
   test('rejects a nested platform profile that weakens or conflicts with the gateway profile', () => {

@@ -400,6 +400,29 @@ export const DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY = 'HYPERDX_INITIAL_USE
  */
 export const CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION = 'typekro_bootstrap';
 
+/** Name of the HyperDX Team the bootstrap creates when `teamName` is not set. */
+export const DEFAULT_CLICKSTACK_TEAM_NAME = 'ClickStack';
+
+/**
+ * Resolve the build-time `teamName`: `undefined` means "leave the name alone"
+ * (only with `initialUser`, where HyperDX's registration names the Team).
+ *
+ * @throws Error when the name is empty or longer than HyperDX accepts (100)
+ */
+export function resolveClickStackTeamName(
+  context: string,
+  teamName: string | undefined,
+  hasInitialUser: boolean
+): string | undefined {
+  if (teamName === undefined) return hasInitialUser ? undefined : DEFAULT_CLICKSTACK_TEAM_NAME;
+  if (typeof teamName !== 'string' || teamName.trim().length === 0 || teamName.length > 100) {
+    throw new Error(
+      `${context}: teamName must be a non-empty string of at most 100 characters (HyperDX's own limit for a Team name).`
+    );
+  }
+  return teamName;
+}
+
 /** `_id` of the marker document recording that initial-user bootstrap is done. */
 export const CLICKSTACK_INITIAL_USER_MARKER_ID = 'initial-user';
 
@@ -754,6 +777,19 @@ interface ClickStackBuildOptionsBase {
    * re-reads at runtime. See {@link ClickStackHyperdxOidcOptions}.
    */
   hyperdxOidc?: ClickStackHyperdxOidcOptions;
+  /**
+   * Name of the HyperDX Team (1–100 characters). Default
+   * {@link DEFAULT_CLICKSTACK_TEAM_NAME} for the Team the bootstrap creates;
+   * with `initialUser`, HyperDX names the Team and it is renamed only when this
+   * is set. A rename made in HyperDX afterwards is kept.
+   */
+  teamName?: string;
+  /**
+   * Seed an empty Team's ClickHouse connection and log/trace/metric/session
+   * sources, once (default `true`). Off when build-time `values` override the
+   * chart's `defaultConnections`, `defaultSources` or `useExistingConfigSecret`.
+   */
+  teamDefaults?: boolean;
 }
 
 /** Build-time options for inline credentials with internal Mongo. */
@@ -951,7 +987,9 @@ export const ClickStackReleaseNameSchema = type(CLICKSTACK_NAME_PATTERN).and(
 export function assertClickStackReleaseName(name: string): void {
   const result = ClickStackReleaseNameSchema(name);
   if (result instanceof type.errors) {
-    throw new Error(`ClickStack release name ${JSON.stringify(name)} is invalid: ${result.summary}`);
+    throw new Error(
+      `ClickStack release name ${JSON.stringify(name)} is invalid: ${result.summary}`
+    );
   }
 }
 
