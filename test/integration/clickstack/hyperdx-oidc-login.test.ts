@@ -16,6 +16,12 @@
  * test (the browser leg). The browser-side client rewrites one to the other;
  * the provider derives its issuer from the Host header, so the issuer HyperDX
  * sees stays consistent.
+ *
+ * A third HyperDX is reached only through a Caddy reverse proxy, as in
+ * production: the browser uses a public name on the default port, so the Host
+ * header HyperDX receives carries no port. That is the case HyperDX's UI
+ * proxy mishandles for relative redirects from the API (see redirects.ts in
+ * the plugin).
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
@@ -30,7 +36,16 @@ setDefaultTimeout(300_000);
 const HYPERDX_IMAGE = process.env.HYPERDX_OIDC_TEST_IMAGE ?? 'docker.hyperdx.io/hyperdx/hyperdx:2.35.0';
 const MONGO_IMAGE = 'mongo:7.0';
 const MOCK_IMAGE = 'ghcr.io/navikt/mock-oauth2-server:2.1.10';
+const CADDY_IMAGE = 'caddy:2.11.2';
 const MOCK_INTERNAL = 'http://mockoidc:8080';
+/**
+ * The public origin of the proxied HyperDX: default port, so no port in the
+ * Host header. The browser reaches it through Caddy's published port (the
+ * Browser rewrites the origin); Caddy forwards `Host: hyperdx.example.test`,
+ * exactly what it forwards for a browser on the real name.
+ */
+const PUBLIC_HOST = 'hyperdx.example.test';
+const PUBLIC_ORIGIN = `http://${PUBLIC_HOST}`;
 
 function docker(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const result = Bun.spawnSync(['docker', ...args], { stdout: 'pipe', stderr: 'pipe' });
@@ -67,11 +82,19 @@ const MOCK = `typekro-oidc-mock-${suffix}`;
 const HYPERDX = `typekro-oidc-hdx-${suffix}`;
 /** A second HyperDX, on its own database, where a first OIDC login may create the team. */
 const HYPERDX_OPEN = `typekro-oidc-hdx-open-${suffix}`;
+/** A third HyperDX, on its own database and configuration, reached only through the reverse proxy. */
+const HYPERDX_PROXIED = `typekro-oidc-hdx-proxied-${suffix}`;
+const PROXY = `typekro-oidc-proxy-${suffix}`;
+const CONTAINERS = [PROXY, HYPERDX, HYPERDX_OPEN, HYPERDX_PROXIED, MOCK, MONGO];
 
 let hdxUrl = '';
 let openUrl = '';
 let mockExternal = '';
+/** Caddy's published address, standing in for PUBLIC_ORIGIN. */
+let proxyExternal = '';
 let workDir = '';
+/** The proxied HyperDX's own configuration directory. */
+let proxiedConfigDir = '';
 /** Stands in for the projected initialUser password Secret: bind-mounted at the plugin's bootstrap directory. */
 let bootstrapDir = '';
 /** When the initialUser HyperDX container started; unchanged means it was never restarted. */
@@ -86,8 +109,8 @@ const PROVIDER = {
   allow: { groups: ['hyperdx-users'] },
 };
 
-function writeConfig(config: Record<string, unknown>) {
-  writeFileSync(join(workDir, 'config.json'), JSON.stringify({ allowInsecureHttp: true, ...config }), { mode: 0o644 });
+function writeConfig(config: Record<string, unknown>, dir = workDir) {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ allowInsecureHttp: true, ...config }), { mode: 0o644 });
 }
 
 /**
@@ -109,25 +132,34 @@ function setBootstrapPassword(password: string | undefined) {
 }
 
 /** How many HyperDX log lines match (stdout and stderr interleave, so count rather than slice). */
-function countLogMatches(pattern: RegExp): number {
-  const logs = docker(['logs', HYPERDX]);
+function countLogMatches(pattern: RegExp, container = HYPERDX): number {
+  const logs = docker(['logs', container]);
   return `${logs.stdout}\n${logs.stderr}`.split('\n').filter((line) => pattern.test(line)).length;
 }
 
 /** Wait until more HyperDX log lines match `pattern` than did before. */
-async function waitForLog(pattern: RegExp, matchesBefore = 0): Promise<void> {
+async function waitForLog(pattern: RegExp, matchesBefore = 0, container = HYPERDX): Promise<void> {
   for (let attempt = 0; attempt < 30; attempt++) {
-    if (countLogMatches(pattern) > matchesBefore) return;
+    if (countLogMatches(pattern, container) > matchesBefore) return;
     await Bun.sleep(1000);
   }
-  throw new Error(`HyperDX never logged ${pattern}`);
+  throw new Error(`HyperDX (${container}) never logged ${pattern}`);
 }
 
-/** A minimal browser: per-host cookie jar, manual redirects, internal→external rewrite for the mock IdP. */
+/**
+ * A minimal browser: per-host cookie jar, manual redirects, internal→external
+ * rewrite for the mock IdP and the proxied HyperDX's public origin. Every
+ * redirect target it is sent to is recorded, as the server sent it.
+ */
 class Browser {
   private readonly jar = new Map<string, Map<string, string>>();
+  /** Every `Location` received, in order, before any rewrite. */
+  readonly locations: string[] = [];
 
   private rewrite(url: string): string {
+    const parsed = new URL(url);
+    // Exact origin match: `http://hyperdx.example.test:8000` is NOT the public origin.
+    if (parsed.origin === PUBLIC_ORIGIN) return `${proxyExternal}${parsed.pathname}${parsed.search}`;
     return url.replace(MOCK_INTERNAL, mockExternal);
   }
 
@@ -159,6 +191,7 @@ class Browser {
       this.store(current, response);
       const location = response.headers.get('location');
       if (response.status >= 300 && response.status < 400 && location) {
+        this.locations.push(location);
         current = this.rewrite(new URL(location, current).href);
         request = {};
         continue;
@@ -179,8 +212,8 @@ class Browser {
     });
   }
 
-  async me(): Promise<{ status: number; body?: { id: string; email: string } }> {
-    const response = await fetch(`${hdxUrl}/api/me`, { headers: { cookie: this.cookies(hdxUrl) } });
+  async me(base = hdxUrl): Promise<{ status: number; body?: { id: string; email: string } }> {
+    const response = await fetch(`${this.rewrite(base)}/api/me`, { headers: { cookie: this.cookies(this.rewrite(base)) } });
     return response.status === 200
       ? { status: 200, body: (await response.json()) as { id: string; email: string } }
       : { status: response.status };
@@ -214,14 +247,34 @@ beforeAll(async () => {
   mkdirSync(bootstrapDir);
   chmodSync(bootstrapDir, 0o755);
 
+  // The proxied HyperDX has its own configuration, so the tests below that
+  // rewrite the shared one do not reach it.
+  proxiedConfigDir = join(workDir, 'proxied');
+  mkdirSync(proxiedConfigDir);
+  chmodSync(proxiedConfigDir, 0o755);
+  writeConfig({ providers: [PROVIDER], passwordLogin: false }, proxiedConfigDir);
+  const caddyDir = join(workDir, 'caddy');
+  mkdirSync(caddyDir);
+  chmodSync(caddyDir, 0o755);
+  // Plain HTTP on the default port. `header_up Host` sets what a browser on
+  // the public name sends (Caddy forwards Host unchanged otherwise); the test
+  // itself can only reach Caddy through a published port.
+  writeFileSync(
+    join(caddyDir, 'Caddyfile'),
+    `{\n\tauto_https off\n\tadmin off\n}\n:80 {\n\treverse_proxy ${HYPERDX_PROXIED}:8080 {\n\t\theader_up Host ${PUBLIC_HOST}\n\t}\n}\n`,
+    { mode: 0o644 }
+  );
+
   const hdxPort = await freePort();
   const mockPort = await freePort();
   const openPort = await freePort();
+  const proxyPort = await freePort();
   hdxUrl = `http://localhost:${hdxPort}`;
   openUrl = `http://localhost:${openPort}`;
   mockExternal = `http://localhost:${mockPort}`;
+  proxyExternal = `http://localhost:${proxyPort}`;
 
-  for (const name of [HYPERDX, HYPERDX_OPEN, MOCK, MONGO]) docker(['rm', '-f', name]);
+  for (const name of CONTAINERS) docker(['rm', '-f', '-v', name]);
   docker(['network', 'rm', NETWORK]);
   expect(docker(['network', 'create', NETWORK]).ok).toBe(true);
   expect(docker(['run', '-d', '--name', MONGO, '--network', NETWORK, MONGO_IMAGE]).ok).toBe(true);
@@ -267,6 +320,27 @@ beforeAll(async () => {
     HYPERDX_IMAGE,
   ]);
   if (!openStarted.ok) throw new Error(`docker run hyperdx (open) failed: ${openStarted.stderr}`);
+  const proxiedStarted = docker([
+    'run', '-d', '--name', HYPERDX_PROXIED, '--network', NETWORK,
+    '-e', `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-proxied`,
+    // The public URL, as a deployment behind a reverse proxy sets it.
+    '-e', `FRONTEND_URL=${PUBLIC_ORIGIN}`,
+    '-e', 'HYPERDX_APP_PORT=8080',
+    '-e', 'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
+    '-e', 'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
+    '-e', 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS=1',
+    '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=true',
+    '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
+    '-v', `${proxiedConfigDir}:/etc/typekro/hyperdx-oidc:ro`,
+    HYPERDX_IMAGE,
+  ]);
+  if (!proxiedStarted.ok) throw new Error(`docker run hyperdx (proxied) failed: ${proxiedStarted.stderr}`);
+  const proxyStarted = docker([
+    'run', '-d', '--name', PROXY, '--network', NETWORK, '-p', `${proxyPort}:80`,
+    '-v', `${caddyDir}:/etc/caddy:ro`,
+    CADDY_IMAGE,
+  ]);
+  if (!proxyStarted.ok) throw new Error(`docker run caddy failed: ${proxyStarted.stderr}`);
 
   // The mock provider must be serving discovery before HyperDX's plugin (and
   // the browser) use it.
@@ -297,11 +371,19 @@ beforeAll(async () => {
     if (`${logs.stdout}\n${logs.stderr}`.includes('"message":"OIDC configuration applied","providers":["mock"]')) break;
     await Bun.sleep(1000);
   }
+  for (let attempt = 0; attempt < 120; attempt++) {
+    try {
+      if ((await fetch(`${proxyExternal}/api/installation`)).status === 200) break;
+    } catch {}
+    await Bun.sleep(1000);
+  }
+  await waitForLog(/"message":"OIDC configuration applied","providers":\["mock"\]/, 0, HYPERDX_PROXIED);
 });
 
 afterAll(() => {
   if (!dockerAvailable) return;
-  for (const name of [HYPERDX, HYPERDX_OPEN, MOCK, MONGO]) docker(['rm', '-f', name]);
+  // -v: MongoDB's image declares volumes; without it every run leaks them.
+  for (const name of CONTAINERS) docker(['rm', '-f', '-v', name]);
   docker(['network', 'rm', NETWORK]);
   if (workDir) rmSync(workDir, { recursive: true, force: true });
 });
@@ -623,5 +705,80 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     expect((await browser.me()).status).toBe(200);
     await Bun.sleep(4500);
     expect((await browser.me()).status).toBe(401);
+  });
+});
+
+describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host header)', () => {
+  /** What HyperDX's UI proxy makes of a relative redirect when the Host header has no port. */
+  const apiPortLeak = /:8000\b/;
+
+  it("redirects the provider chooser to the public URL, not the API server's port", async () => {
+    for (const [query, expected] of [
+      ['', `${PUBLIC_ORIGIN}/api/login/oidc/mock`],
+      ['?returnTo=%2Fsearch', `${PUBLIC_ORIGIN}/api/login/oidc/mock?returnTo=%2Fsearch`],
+    ] as const) {
+      const response = await fetch(`${proxyExternal}/api/login/oidc${query}`, { redirect: 'manual' });
+      expect(response.status).toBe(302);
+      expect(response.headers.get('location')).toBe(expected);
+    }
+    // FRONTEND_URL is a valid public URL: no fallback to relative redirects.
+    expect(countLogMatches(/FRONTEND_URL (is not set|is not a valid)/, HYPERDX_PROXIED)).toBe(0);
+  });
+
+  it('signs in from the chooser: provider route, issuer, callback, then the public UI', async () => {
+    const browser = new Browser();
+    const form = await browser.go(`${PUBLIC_ORIGIN}/api/login/oidc?returnTo=%2Fsearch`);
+    expect(form.response.status, `login form at ${form.url}`).toBe(200);
+    expect(browser.locations[0]).toBe(`${PUBLIC_ORIGIN}/api/login/oidc/mock?returnTo=%2Fsearch`);
+    expect(browser.locations[1]?.startsWith(`${MOCK_INTERNAL}/default/authorize?`), browser.locations[1]).toBe(true);
+    const authorize = new URL(browser.locations[1] as string);
+    expect(authorize.searchParams.get('redirect_uri')).toBe(`${PUBLIC_ORIGIN}/api/login/oidc/mock/callback`);
+
+    const landed = await browser.go(form.url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        username: 'proxied',
+        claims: JSON.stringify(allowedClaims('proxied', 'proxied@example.com')),
+      }).toString(),
+    });
+    const [callback, postLogin] = browser.locations.slice(2);
+    expect(callback?.startsWith(`${PUBLIC_ORIGIN}/api/login/oidc/mock/callback?`), callback).toBe(true);
+    expect(postLogin).toBe(`${PUBLIC_ORIGIN}/search`);
+    expect(landed.response.status).toBe(200);
+    expect(landed.url).toBe(`${proxyExternal}/search`);
+    expect(browser.locations.filter((location) => apiPortLeak.test(location))).toEqual([]);
+    expect((await browser.me(PUBLIC_ORIGIN)).body?.email).toBe('proxied@example.com');
+  });
+
+  it('sends password-policy refusals to the public login page', async () => {
+    const response = await fetch(`${proxyExternal}/api/login/password`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ email: 'proxied@example.com', password: 'whatever' }).toString(),
+    });
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`${PUBLIC_ORIGIN}/login?err=passwordAuthNotAllowed`);
+  });
+
+  it("serves the multi-provider chooser whose links resolve against the page's public URL", async () => {
+    const applied = /"message":"OIDC configuration applied".*"second"/;
+    const before = countLogMatches(applied, HYPERDX_PROXIED);
+    writeConfig(
+      { providers: [PROVIDER, { ...PROVIDER, id: 'second', displayName: 'Second IdP' }], passwordLogin: false },
+      proxiedConfigDir
+    );
+    await waitForLog(applied, before, HYPERDX_PROXIED);
+
+    const browser = new Browser();
+    const chooserUrl = `${PUBLIC_ORIGIN}/api/login/oidc`;
+    const chooser = await browser.go(chooserUrl);
+    expect(chooser.response.status).toBe(200);
+    const href = /href="([^"]*\/second)"/.exec(await chooser.response.text())?.[1];
+    expect(href).toBeDefined();
+    const form = await browser.go(new URL(href as string, chooserUrl).href);
+    expect(form.response.status, `login form at ${form.url}`).toBe(200);
+    expect(browser.locations[0]?.startsWith(`${MOCK_INTERNAL}/default/authorize?`), browser.locations[0]).toBe(true);
   });
 });

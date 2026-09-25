@@ -305,6 +305,34 @@ Register `https://<hyperdx host>/api/login/oidc/<provider id>/callback` as the r
 provider. Users sign in at `/api/login/oidc`, which goes straight to the provider when there is only one and
 shows a chooser otherwise.
 
+### Public URL
+
+Set `hyperdx.frontendUrl` (HyperDX's `FRONTEND_URL`) to the URL users type, e.g.
+`https://hyperdx.example.com`. The plugin builds every redirect it issues as an absolute URL:
+
+- the callback URL and the chooser's redirect to the one provider use `redirectBaseUrl` if set, else
+  `FRONTEND_URL`. They share one base, so the sign-in starts and ends on the same origin;
+- the redirect back to HyperDX after sign-in and the `?err=` redirects to `/login` use HyperDX's own
+  redirect base (`FRONTEND_URL`), as HyperDX's routes do.
+
+If you set `redirectBaseUrl`, give it the same origin as `FRONTEND_URL`. Sign-in sets its session cookie on
+the callback's origin and then sends the browser to `FRONTEND_URL`. On another origin that cookie isn't
+sent, so the plugin logs a warning when the two origins differ.
+
+Absolute redirects matter behind a reverse proxy. HyperDX's UI proxies `/api/*` to its API server on port
+8000, and it rewrites a relative `Location` from the API by swapping in only the request's host. When the
+`Host` header carries no port, as with every request through a TLS proxy on 443, the API server's port and
+scheme stay, and the browser is sent to an unreachable `http://<host>:8000/...`.
+
+The plugin never builds a redirect from the request's `Host` header, because that would be an open
+redirect. HyperDX's image always sets `FRONTEND_URL`, defaulting to `http://localhost:<app port>`, so leaving
+`hyperdx.frontendUrl` unset sends users to `localhost` after sign-in. `redirectBaseUrl` is refused unless it's
+a plain `http(s)` base URL (no credentials, query or fragment). A `FRONTEND_URL` that isn't one is ignored,
+and with no `redirectBaseUrl` the plugin falls back to relative redirects and logs a warning that says
+which. Those work only when the browser reaches HyperDX on an explicit port, and no provider accepts a
+relative callback. The chooser page's own links are relative, which is fine: the browser resolves them
+against the page's public URL.
+
 ### How it works
 
 HyperDX authenticates with Passport and keeps sessions in MongoDB. TypeKro ships a small plugin
@@ -338,7 +366,7 @@ rejected, and the last good configuration keeps serving. A new plugin build chan
 | `scopes` | `openid email profile` | Must include `openid`. |
 | `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. With `initialUser`, the one exception is that account's own registration while no team exists (see below). |
 | `maxSessionAge` | `12h` | OIDC sessions older than this, or from a provider that was removed, are logged out. `0` never expires them. |
-| `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs. |
+| `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs and the chooser's redirect. Must share `FRONTEND_URL`'s origin (see [Public URL](#public-url)). |
 
 Accounts are linked by the provider's stable subject (`sub`), recorded in the `typekro_oidc_identities`
 collection in HyperDX's MongoDB, not by email. Two unique indexes enforce the invariants below: one link per

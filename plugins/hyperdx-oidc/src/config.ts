@@ -69,7 +69,8 @@ export interface OidcPluginConfig {
   readonly maxSessionAgeMs: number;
   /**
    * External base URL the browser reaches HyperDX on, used to build callback
-   * URLs. Default: HyperDX's own `FRONTEND_URL`.
+   * URLs and the provider chooser's redirect. Default: HyperDX's own
+   * `FRONTEND_URL`.
    */
   readonly redirectBaseUrl?: string;
   /** Path prefix under which the UI proxies the API. Default `/api`. */
@@ -264,6 +265,22 @@ function parseProvider(raw: unknown, index: number, allowInsecure: boolean): Oid
   };
 }
 
+/**
+ * A base URL: callback URLs and redirects are built by appending paths to it,
+ * so it may carry no credentials, query or fragment, not even an empty `?` or
+ * `#` (the URL parser drops those, but they would still end up mid-URL).
+ * Normalized to origin plus path without a trailing slash.
+ */
+function parseRedirectBaseUrl(raw: Record<string, unknown>, allowInsecure: boolean): string {
+  const value = requireString(raw, 'redirectBaseUrl', 'configuration');
+  parseHttpsUrl(value, 'configuration.redirectBaseUrl', allowInsecure);
+  const url = new URL(value);
+  if (url.username !== '' || url.password !== '' || value.includes('?') || value.includes('#')) {
+    throw new OidcConfigError('configuration.redirectBaseUrl must not contain credentials, a query or a fragment');
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
 const TOP_LEVEL_KEYS = [
   'providers',
   'passwordLogin',
@@ -313,10 +330,7 @@ export function parseOidcPluginConfig(text: string): OidcPluginConfig {
   if (teamId !== undefined && !/^[0-9a-f]{24}$/.test(teamId)) {
     throw new OidcConfigError('configuration.teamId must be a HyperDX team id (24 hexadecimal characters)');
   }
-  const redirectBaseUrl =
-    raw.redirectBaseUrl === undefined
-      ? undefined
-      : parseHttpsUrl(requireString(raw, 'redirectBaseUrl', 'configuration'), 'configuration.redirectBaseUrl', allowInsecure);
+  const redirectBaseUrl = raw.redirectBaseUrl === undefined ? undefined : parseRedirectBaseUrl(raw, allowInsecure);
 
   return {
     providers,

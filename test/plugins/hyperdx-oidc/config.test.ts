@@ -83,6 +83,20 @@ describe('parseOidcPluginConfig', () => {
     expect(config.providers[0]?.issuer).toBe('https://idp.example');
   });
 
+  it('refuses a redirect base that cannot have paths appended (credentials, query, fragment)', () => {
+    for (const redirectBaseUrl of [
+      'https://user:pw@hyperdx.example',
+      'https://hyperdx.example/?x=1',
+      'https://hyperdx.example/#top',
+      'https://hyperdx.example?',
+      'https://hyperdx.example/#',
+    ]) {
+      expect(() => parse({ redirectBaseUrl, providers: [] })).toThrow(/must not contain credentials, a query or a fragment/);
+    }
+    expect(parse({ redirectBaseUrl: 'https://example.com/hyperdx/', providers: [] }).redirectBaseUrl).toBe('https://example.com/hyperdx');
+    expect(parse({ redirectBaseUrl: 'HTTPS://HyperDX.Example:443/', providers: [] }).redirectBaseUrl).toBe('https://hyperdx.example');
+  });
+
   it('requires teamId to be a HyperDX team id', () => {
     expect(() => parse({ providers: [], teamId: 'team-1' })).toThrow(/24 hexadecimal/);
     expect(parse({ providers: [], teamId: '5f6c6f63616c5f7465616d5f' }).teamId).toBe('5f6c6f63616c5f7465616d5f');

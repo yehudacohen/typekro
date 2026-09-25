@@ -13,6 +13,7 @@ TypeKro bundles it into the library (`src/factories/clickstack/hyperdx-oidc/plug
 | `src/bootstrap.ts` | The one registration `passwordLogin: false` lets through: the `initialUser`'s own, only while no team exists, matched against its email from the env and its password, re-read from the projected Secret file on every attempt. |
 | `src/config.ts` | Configuration parsing and validation. |
 | `src/pages.ts` | The provider chooser and access-denied pages. |
+| `src/redirects.ts` | Redirect targets: absolute on the configured public URL, never on the `Host` header. HyperDX's UI proxy rewrites a relative redirect to the API server's port when the request came through a reverse proxy on the default port. |
 
 After changing anything here, regenerate the bundle (CI fails if it's stale):
 

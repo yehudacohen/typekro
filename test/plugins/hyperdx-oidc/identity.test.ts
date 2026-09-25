@@ -240,6 +240,14 @@ describe('safeReturnTo', () => {
       expect(safeReturnTo(bad)).toBe('/');
     }
   });
+
+  it('refuses whitespace and control characters, which browsers strip or reinterpret', () => {
+    // "/\t/evil.test" becomes "//evil.test" once a browser drops the tab.
+    for (const bad of ['/\t/evil.test', '/\n/evil.test', '/\r\n/x', '/ /evil.test', '/a\u0000b', '/a\u007fb', '/search?q=a b']) {
+      expect([JSON.stringify(bad), safeReturnTo(bad)]).toEqual([JSON.stringify(bad), '/']);
+    }
+    expect(safeReturnTo('/search?q=a%20b')).toBe('/search?q=a%20b');
+  });
 });
 
 describe('pages', () => {
