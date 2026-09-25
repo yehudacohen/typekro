@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  isMergeableValuesObject,
   isValuesMergeExpression,
   materializeValuesMergeExpressions,
   mergeValuesExpression,
   type ValuesMergeExpression,
   withChartValueDefaults,
 } from '../../src/core/aspects/values-merge.js';
-import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import {
+  CEL_EXPRESSION_BRAND,
+  KUBERNETES_REF_BRAND,
+  MIXED_TEMPLATE_BRAND,
+} from '../../src/core/constants/brands.js';
+import { sensitiveValue } from '../../src/core/planning/values.js';
+import { Cel } from '../../src/core/references/cel.js';
 
 describe('direct values merge materialization', () => {
   it('deep-merges objects, replaces arrays and scalars, and preserves its inputs', () => {
@@ -140,5 +147,44 @@ describe('withChartValueDefaults', () => {
         overlays: (merged as ValuesMergeExpression).overlays.slice(1),
       })
     ).toEqual({ crds: { create: true, keep: true }, replicaCount: 1 });
+  });
+});
+
+describe('isMergeableValuesObject', () => {
+  it('accepts plain objects, with either plain prototype', () => {
+    expect(isMergeableValuesObject({})).toBe(true);
+    expect(isMergeableValuesObject({ nested: { a: 1 } })).toBe(true);
+    expect(isMergeableValuesObject(Object.create(null))).toBe(true);
+    // Frozen is still mergeable: the merges copy before they write.
+    expect(isMergeableValuesObject(Object.freeze({ a: 1 }))).toBe(true);
+  });
+
+  it('refuses every opaque leaf', () => {
+    class Settings {
+      replicas = 1;
+    }
+    const leaves: [string, unknown][] = [
+      ['array', []],
+      ['null', null],
+      ['string', 'x'],
+      ['class instance', new Settings()],
+      ['Date', new Date(0)],
+      ['CEL expression', Cel.expr<string>('schema.spec.name')],
+      ['values merge node', mergeValuesExpression({}, {})],
+      [
+        'resource reference',
+        { __type: 'ResourceReference', resourceId: 'db', fieldPath: 'status.host' },
+      ],
+      ['mixed template', { [MIXED_TEMPLATE_BRAND]: true, expression: 'a-${b}' }],
+      ['planning marker', sensitiveValue('token')],
+      [
+        'object kubernetes ref',
+        { [KUBERNETES_REF_BRAND]: true, resourceId: 'db', fieldPath: 'status.host' },
+      ],
+      ['symbol-keyed object', { [Symbol('brand')]: true, a: 1 }],
+    ];
+    for (const [label, value] of leaves) {
+      expect(isMergeableValuesObject(value), label).toBe(false);
+    }
   });
 });

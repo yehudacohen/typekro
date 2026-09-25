@@ -42,34 +42,20 @@ export function mergeValuesExpression(base: unknown, overlay: unknown): ValuesMe
 }
 
 /**
- * True for a value a chart-values merge must treat as one opaque leaf, never
- * merging into it, recursing through it or rebuilding it: a schema or
- * resource reference, a CEL expression, a mixed template, a merge node, or any
- * object carrying an own symbol key. The planning markers (`sensitiveValue`,
- * `externalInput`, `artifactOutput`) are plain frozen objects recognised only
- * by a symbol brand, and rebuilding one from its string keys drops the brand.
- */
-export function isOpaqueValuesLeaf(value: unknown): boolean {
-  if (typeof value === 'function') return true;
-  if (!value || typeof value !== 'object') return false;
-  return (
-    isValuesMergeExpression(value) ||
-    isKubernetesRef(value) ||
-    isResourceReference(value) ||
-    isCelExpression(value) ||
-    isMixedTemplate(value) ||
-    Object.getOwnPropertySymbols(value).length > 0
-  );
-}
-
-/**
- * True for an object a chart-values deep merge may merge into or recurse
- * through: any non-array object that is not an {@link isOpaqueValuesLeaf}.
+ * True for an object a chart-values deep merge may merge into, recurse
+ * through or rebuild: a plain object (prototype `Object.prototype` or `null`)
+ * that is not a schema or resource reference, a CEL expression, a mixed
+ * template or a merge node, and carries no own symbol key.
+ *
+ * Anything else is an opaque leaf that a later layer replaces whole. The
+ * symbol check matters for the planning markers (`sensitiveValue`,
+ * `externalInput`, `artifactOutput`): they are plain frozen objects recognised
+ * only by a symbol brand, and rebuilding one from its string keys drops it.
+ * This is {@link isPlainMergeObject}, the test the runtime merge
+ * materialisation uses, plus that symbol check.
  */
 export function isMergeableValuesObject(value: unknown): value is Record<string, unknown> {
-  return (
-    !!value && typeof value === 'object' && !Array.isArray(value) && !isOpaqueValuesLeaf(value)
-  );
+  return isPlainMergeObject(value) && Object.getOwnPropertySymbols(value).length === 0;
 }
 
 /**

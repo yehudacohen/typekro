@@ -404,7 +404,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The ClickHouse operator, Rook Ceph and Inngest values mappers had the same in-place merge, which
   wrote `customValues` / `values` into typed config objects such as `metrics`, `resources` and
   `nodeSelector`. They now copy before merging too, and all four share one predicate
-  (`isMergeableValuesObject`) for what a values merge may recurse into. The Inngest mapper also no
+  (`isMergeableValuesObject`) for what a values merge may recurse into. It accepts only plain
+  objects (prototype `Object.prototype` or `null`), the same test the runtime merge
+  materialisation uses, so a class instance in `values` or `customValues` replaces what it
+  overrides instead of having its fields merged into a plain copy. The Inngest mapper also no
   longer rebuilds a CEL expression in `customValues` into a plain object, which dropped its brand.
 
 - **ClickStack: the HyperDX Team the bootstrap creates now has a ClickHouse connection and sources,
