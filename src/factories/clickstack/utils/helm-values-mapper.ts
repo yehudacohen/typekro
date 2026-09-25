@@ -281,15 +281,9 @@ function mergeOverridesWithPinsLast(
  * `defaultConnections`/`defaultSources` pointing at the (nonexistent) bundled
  * ClickHouse Service, so both must be overridden for external mode. The
  * sources below mirror the chart defaults (values.yaml `defaultSources`,
- * chart 3.2.0) with the connection renamed and the database parameterized
- * (`%s` slots filled per mode).
+ * chart 3.2.0) with the connection renamed and the database a Helm template.
  */
-const DEFAULT_SOURCES_FORMAT = JSON.stringify(CLICKSTACK_DEFAULT_SOURCES);
-
-/** `defaultConnections` JSON with %s slots: host, httpPort, httpPort, username, password. */
-const DEFAULT_CONNECTIONS_FORMAT =
-  `[{"name":"${CLICKSTACK_CONNECTION_NAME}","host":"http://%s:%s","port":%s,` +
-  '"username":"%s","password":"%s"}]';
+// The JSON itself is a Helm template, built below (CLICKSTACK_DEFAULT_SOURCES_TEMPLATE).
 
 /**
  * The connection and database the Team bootstrap seeds, derived exactly as
@@ -339,53 +333,70 @@ export const CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE =
 export const CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY = 'values.yaml';
 
 /**
- * Where, in the HelmRelease's own `spec.values`, TypeKro puts the NON-secret
- * half of HyperDX's default connection in `secretValues` mode: host URL, port
- * and user, as ordinary typed values. The chart ignores the key; the template
- * below reads it.
+ * Where, in the HelmRelease's own `spec.values`, TypeKro puts the non-secret
+ * values HyperDX's default connection and sources are built from: host URL,
+ * port and user under `.defaultConnection`, the OTel database under
+ * `.defaultSources`. The chart ignores the key; the templates below read it.
  */
-export const CLICKSTACK_DEFAULT_CONNECTION_VALUES_PATH = 'typekro.clickstack.defaultConnection';
+export const CLICKSTACK_DEFAULTS_VALUES_PATH = 'typekro.clickstack';
+/** @deprecated Use {@link CLICKSTACK_DEFAULTS_VALUES_PATH}; kept for the `.defaultConnection` path. */
+export const CLICKSTACK_DEFAULT_CONNECTION_VALUES_PATH = `${CLICKSTACK_DEFAULTS_VALUES_PATH}.defaultConnection`;
+
+/** A Helm template that serialises one chart value as JSON. */
+const toJsonTemplate = (path: string) => `{{ .Values.${path} | toJson }}`;
 
 /**
- * The `secretValues`-mode values document that sets
- * `hyperdx.deployment.defaultConnections`: TypeKro's external ClickHouse
- * connection as a Helm template.
- *
- * WHY. TypeKro renders no `defaultConnections` in this mode, and the chart
- * then falls back to its own default, a "Local ClickHouse" at the bundled
- * ClickHouse Service TypeKro disables. HyperDX's registration (`initialUser`)
- * would provision THAT connection. The composition hands this document to
- * Flux as a ConfigMap `valuesFrom` entry BEFORE the caller's Secret, so a
- * `defaultConnections` in the caller's fragment still wins.
- *
- * WHY EVERY FIELD IS A TEMPLATE. The chart runs `tpl` over the value with the
- * release's merged values, so each field is serialised by Helm's `toJson`:
- * the password from the caller's `hyperdx.secrets`, and the host, port and
- * user from {@link CLICKSTACK_DEFAULT_CONNECTION_VALUES_PATH}. Nothing is
- * interpolated into JSON by hand, so a quote or backslash in any of them
- * stays valid JSON, in direct and KRO mode alike, and the document itself is
- * a constant.
+ * HyperDX's `defaultConnections`, in BOTH credential modes: a Helm template
+ * the chart runs `tpl` over (with the release's merged values) when it sets
+ * `DEFAULT_CONNECTIONS`. Every field is serialised by `toJson`: the host,
+ * port and user from {@link CLICKSTACK_DEFAULTS_VALUES_PATH}, the password
+ * from `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD` (rendered by TypeKro inline,
+ * supplied by the values fragment with `secretValues`). Nothing user-supplied
+ * is ever interpolated into JSON by hand, so a quote, backslash or space in
+ * any field stays valid JSON, in direct and KRO mode alike.
  */
-export const CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT = (() => {
-  const field = (path: string) => `{{ .Values.${path} | toJson }}`;
-  const connection = CLICKSTACK_DEFAULT_CONNECTION_VALUES_PATH;
-  return [
-    'hyperdx:',
-    '  deployment:',
-    '    defaultConnections: |',
-    `      [{"name":${JSON.stringify(CLICKSTACK_CONNECTION_NAME)},"host":${field(`${connection}.host`)},"port":${field(`${connection}.port`)},"username":${field(`${connection}.username`)},"password":${CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE}}]`,
-    '',
-  ].join('\n');
+export const CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE = (() => {
+  const connection = `${CLICKSTACK_DEFAULTS_VALUES_PATH}.defaultConnection`;
+  return `[{"name":${JSON.stringify(CLICKSTACK_CONNECTION_NAME)},"host":${toJsonTemplate(`${connection}.host`)},"port":${toJsonTemplate(`${connection}.port`)},"username":${toJsonTemplate(`${connection}.username`)},"password":${CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE}}]`;
 })();
 
 /**
- * The typed values {@link CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT}
- * reads: the same host, port and user the seed and inline mode use.
+ * HyperDX's `defaultSources`: {@link CLICKSTACK_DEFAULT_SOURCES} with every
+ * `databaseName` a `toJson` template of the OTel database, for the same
+ * reason as {@link CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE}.
  */
-function clickStackDefaultConnectionValues(config: ClickStackBootstrapRuntimeConfig): {
-  host: string;
-  port: number;
-  username: string;
+export const CLICKSTACK_DEFAULT_SOURCES_TEMPLATE = JSON.stringify(
+  CLICKSTACK_DEFAULT_SOURCES
+).replaceAll('"%s"', toJsonTemplate(`${CLICKSTACK_DEFAULTS_VALUES_PATH}.defaultSources.database`));
+
+/**
+ * The `secretValues`-mode values document that sets
+ * `hyperdx.deployment.defaultConnections` to
+ * {@link CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE}.
+ *
+ * WHY A SEPARATE DOCUMENT. TypeKro renders no `defaultConnections` in
+ * `spec.values` in this mode, because Flux applies `spec.values` last and it
+ * would override a `defaultConnections` in the caller's fragment. Without one
+ * the chart falls back to its own "Local ClickHouse" at the bundled ClickHouse
+ * Service TypeKro disables, which HyperDX's registration (`initialUser`) would
+ * provision. The composition hands this document to Flux as a ConfigMap
+ * `valuesFrom` entry BEFORE the caller's Secret, so the fragment still wins.
+ */
+export const CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT = [
+  'hyperdx:',
+  '  deployment:',
+  '    defaultConnections: |',
+  `      ${CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE}`,
+  '',
+].join('\n');
+
+/**
+ * The typed values the templates read (see {@link CLICKSTACK_DEFAULTS_VALUES_PATH}):
+ * the same host, port, user and database the seed uses.
+ */
+function clickStackDefaultsValues(config: ClickStackBootstrapRuntimeConfig): {
+  defaultConnection: { host: string; port: number; username: string };
+  defaultSources: { database: string };
 } {
   const target = clickStackDefaultConnectionTarget(config);
   const ch = config.clickhouse;
@@ -395,7 +406,10 @@ function clickStackDefaultConnectionValues(config: ClickStackBootstrapRuntimeCon
           `${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123`
         ) as unknown as number)
       : (ch.httpPort ?? 8123);
-  return { host: target.host, port, username: target.username };
+  return {
+    defaultConnection: { host: target.host, port, username: target.username },
+    defaultSources: { database: target.database },
+  };
 }
 
 // ============================================================================
@@ -429,9 +443,6 @@ export function mapClickStackConfigToHelmValues(
     const nativePortStr = Cel.expr<string>(
       `string(${hasSchemaPath('schema.spec.clickhouse.nativePort')} ? schema.spec.clickhouse.nativePort : 9000)`
     );
-    const httpPortStr = Cel.expr<string>(
-      `string(${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123)`
-    );
     hyperdxConfig.CLICKHOUSE_ENDPOINT = Cel.template(
       'tcp://%s:%s?dial_timeout=10s',
       ch.host,
@@ -455,10 +466,6 @@ export function mapClickStackConfigToHelmValues(
         | ClickStackBootstrapConfig
         | ClickStackExternalMongoBootstrapConfig;
       const inlineClickhouse = inlineConfig.clickhouse;
-      const appUsername = Cel.expr<string>(
-        `${hasSchemaPath('schema.spec.clickhouse.appUsername')} ? schema.spec.clickhouse.appUsername : ` +
-          `(${hasSchemaPath('schema.spec.clickhouse.username')} ? schema.spec.clickhouse.username : "default")`
-      );
       const appPassword = Cel.expr<string>(
         `${hasSchemaPath('schema.spec.clickhouse.appPassword')} ? schema.spec.clickhouse.appPassword : ` +
           `(${hasSchemaPath('schema.spec.clickhouse.password')} ? schema.spec.clickhouse.password : "")`
@@ -466,30 +473,15 @@ export function mapClickStackConfigToHelmValues(
       hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(inlineClickhouse.password, '');
       hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
       hyperdxSecrets.HYPERDX_API_KEY = inlineConfig.apiKey;
-      hyperdxDeployment.defaultConnections = Cel.template(
-        DEFAULT_CONNECTIONS_FORMAT,
-        ch.host,
-        httpPortStr,
-        httpPortStr,
-        appUsername,
-        appPassword
-      );
+      hyperdxDeployment.defaultConnections = CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE;
     }
 
     hyperdxDeployment.replicas = graphOptional('schema.spec.hyperdx.replicas');
     hyperdxDeployment.resources = graphOptional('schema.spec.hyperdx.resources');
     hyperdxDeployment.image = graphOptional('schema.spec.hyperdx.image');
-    const database = resolve(ch.database, 'default');
-    hyperdxDeployment.defaultSources = Cel.template(
-      DEFAULT_SOURCES_FORMAT,
-      database,
-      database,
-      database,
-      database
-    );
+    hyperdxDeployment.defaultSources = CLICKSTACK_DEFAULT_SOURCES_TEMPLATE;
   } else {
     const nativePort = ch.nativePort ?? 9000;
-    const httpPort = ch.httpPort ?? 8123;
     const database = ch.database ?? 'default';
     const username = ch.username ?? 'default';
     hyperdxConfig.CLICKHOUSE_ENDPOINT = `tcp://${ch.host}:${nativePort}?dial_timeout=10s`;
@@ -508,26 +500,17 @@ export function mapClickStackConfigToHelmValues(
         | ClickStackExternalMongoBootstrapConfig;
       const inlineClickhouse = inlineConfig.clickhouse;
       const password = inlineClickhouse.password ?? '';
-      const appUsername = inlineClickhouse.appUsername ?? username;
       const appPassword = inlineClickhouse.appPassword ?? password;
       hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
       hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
       hyperdxSecrets.HYPERDX_API_KEY = inlineConfig.apiKey;
-      hyperdxDeployment.defaultConnections = JSON.stringify([
-        {
-          name: CLICKSTACK_CONNECTION_NAME,
-          host: `http://${ch.host}:${httpPort}`,
-          port: httpPort,
-          username: appUsername,
-          password: appPassword,
-        },
-      ]);
+      hyperdxDeployment.defaultConnections = CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE;
     }
 
     setIfDefined(hyperdxDeployment, 'replicas', config.hyperdx?.replicas);
     setIfDefined(hyperdxDeployment, 'resources', config.hyperdx?.resources);
     setIfDefined(hyperdxDeployment, 'image', config.hyperdx?.image);
-    hyperdxDeployment.defaultSources = DEFAULT_SOURCES_FORMAT.replace(/%s/g, () => database);
+    hyperdxDeployment.defaultSources = CLICKSTACK_DEFAULT_SOURCES_TEMPLATE;
   }
 
   const values: ClickStackHelmValues = {
@@ -536,13 +519,9 @@ export function mapClickStackConfigToHelmValues(
       ...(credentialSource === 'inline' ? { secrets: hyperdxSecrets } : {}),
       deployment: hyperdxDeployment,
     },
-    // secretValues: the non-secret half of HyperDX's default connection, read
-    // by the default-connections ConfigMap's template.
-    ...(credentialSource === 'secretValues'
-      ? {
-          typekro: { clickstack: { defaultConnection: clickStackDefaultConnectionValues(config) } },
-        }
-      : {}),
+    // The non-secret values the defaultConnections / defaultSources templates
+    // read (both credential modes).
+    typekro: { clickstack: clickStackDefaultsValues(config) },
   } as ClickStackHelmValues;
 
   // Hard pins (see module doc): external-only build-around + the status

@@ -299,6 +299,26 @@ export function renderHyperdxSeedSources(
   });
 }
 
+/**
+ * The seed's RUNTIME host check, as mongosh source: given the connection URL
+ * the CronJob carries (`http://<host>:<port>`), the reason its host would
+ * break the connection, or `null`. The same rule as
+ * `validateClickStackClickhouseHost` / the CRD's host rule (a unit test holds
+ * the three to the same samples). It exists because KRO 0.9.2 never adds the
+ * CRD rule to a CRD it already created, so on an upgraded KRO deployment this
+ * is the only host check before a connection is written.
+ */
+export const CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE = String.raw`(url) => {
+  const match = /^http:\/\/(.*):([0-9]+)$/.exec(url);
+  if (match === null) return 'is not of the form http://<host>:<port>';
+  const host = match[1];
+  if (host.length === 0) return 'has an empty host';
+  if (/[\t\n\v\f\r /?#@]/.test(host)) return 'has whitespace, "/", "?", "#" or "@" in its host';
+  if (host.startsWith('[')) return /^\[[0-9A-Fa-f:.]+\]$/.test(host) ? null : 'has brackets that do not wrap one IPv6 address';
+  if (host.includes('[') || host.includes(']') || host.includes(':')) return 'has a scheme, a port or an unbracketed IPv6 address in its host';
+  return null;
+}`;
+
 /** Marker `_id` prefixes in the TypeKro-owned bootstrap collection. */
 const TEAM_DEFAULTS_MARKER_PREFIX = 'team-defaults:';
 const TEAM_NAME_MARKER_PREFIX = 'team-name:';
@@ -412,6 +432,7 @@ export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions):
     ...nameHelper,
     `const seedConnectionName = ${JSON.stringify(CLICKSTACK_CONNECTION_NAME)};`,
     `const seedSources = ${JSON.stringify(seedSources)};`,
+    `const clickhouseHostProblem = ${CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE};`,
     // Insert by a RESERVED `_id`: a retried run fills in what an interrupted
     // one did not, and never writes a document twice or over an existing one.
     'const insertIfAbsent = (collection, document, what) => {',
@@ -447,6 +468,13 @@ export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions):
     // passwordless ClickHouse user and is seeded as '', as HyperDX does.
     "  if (typeof password !== 'string') {",
     `    print('ClickStack team defaults: the ClickHouse password Secret key is missing, so TypeKro seeds nothing until it exists (${HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV} is unset).');`,
+    '    return;',
+    '  }',
+    // The host the CRD rule would have refused, on a KRO CRD that predates
+    // the rule: seed nothing, no marker. Prints the host, never the password.
+    '  const hostProblem = clickhouseHostProblem(host);',
+    '  if (hostProblem !== null) {',
+    "    print('ClickStack team defaults: the ClickHouse connection ' + JSON.stringify(host) + ' ' + hostProblem + ', so TypeKro seeds nothing. Fix spec.clickhouse.host; the seed runs once it is valid.');",
     '    return;',
     '  }',
     '  if (marker === null) {',

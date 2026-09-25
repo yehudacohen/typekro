@@ -421,10 +421,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **With `initialUser`.** The CronJob records the defaults HyperDX's registration created, after a
     60-second grace period, and fills them in only if that registration left the Team empty.
   - **Chart-version guard.** The seed writes HyperDX 2.35.0's private schema, so it carries the same
-    exact allowlist as `initialUser` (chart 3.2.0). A concrete version outside the list is refused at
-    render time, and the KRO CRD narrows `spec.version` whenever the seed is on, including for the
-    default `makeClickstackBootstrap()`. `teamDefaults: { allowUnvalidatedChartVersion: true }` lifts
-    it.
+    exact allowlist as `initialUser` (chart 3.2.0), including for the default
+    `makeClickstackBootstrap()`. There are three checks. A concrete version is refused at render time.
+    The KRO CRD narrows `spec.version`, on CRDs KRO creates fresh only. The CronJob seeds nothing on an
+    unaudited `CLICKSTACK_CHART_VERSION` at runtime, and that is the check that holds on existing KRO
+    CRDs. `teamDefaults: { allowUnvalidatedChartVersion: true }` lifts all three.
   - **Opting out.** `teamDefaults: false` turns the seed off, and its guard with it. The seed is also
     off when build-time `values` replace the chart's default connections or sources.
 - **ClickStack `secretValues` mode: HyperDX's default connection is TypeKro's external ClickHouse.**
@@ -438,7 +439,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     values TypeKro sets under `typekro.clickstack.defaultConnection`. The ConfigMap is a constant that
     carries no credential, and a quote or backslash in any field stays valid JSON (checked with
     `helm template` against chart 3.2.0).
-  - `clickhouse.host` is checked, at render time for a concrete value and by a CRD rule in KRO mode.
+  - **No user value is spliced into HyperDX's connection or sources JSON in either mode.** Inline mode
+    now uses the same Helm templates as `secretValues`: `hyperdx.deployment.defaultConnections` and
+    `defaultSources` are `toJson` templates over typed values under `typekro.clickstack` (host URL,
+    port, user, database) and `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. Before, KRO mode spliced the
+    host, user, password and database into the JSON by hand, so a quote or backslash produced
+    malformed `DEFAULT_CONNECTIONS`. Checked with `helm template` against chart 3.2.0.
+  - `clickhouse.host` is checked at render time for a concrete value, by a CRD rule in KRO mode, and
+    by the seed at runtime. The runtime check is the one that holds on existing KRO CRDs; on an
+    invalid host it seeds nothing, writes no marker, and logs the host but never the password.
     Accepted: short names, FQDNs with or without a trailing dot, IPv4, and bracketed IPv6, in any
     case. Refused: an empty value; whitespace, `/`, `?`, `#` or `@`; a scheme; a `:` outside brackets
     (a port); brackets that don't wrap a single IPv6 address; and unbracketed IPv6, with a hint to
@@ -670,7 +679,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are legal Helm ranges a prefix check would admit. It is enforced in both modes: a concrete version
   outside the list is refused at render time, and the generated CRD narrows `spec.version` with a CEL
   validation so a KRO consumer setting an unaudited version on the custom resource at apply time is
-  refused by admission. `allowUnvalidatedChartVersion` is the opt-out.
+  refused by admission. KRO 0.9.2 adds that rule only to CRDs it creates fresh, so an upgraded CRD
+  keeps only the render-time half. `allowUnvalidatedChartVersion` is the opt-out.
 
 - `createKubernetesClientProvider(config?)` initialized the provider only when a config
   object was passed, although its signature and documentation promised "create and
@@ -1190,6 +1200,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **A Team HyperDX already gave the wrong connection is never repaired.** This includes the chart's
     "Local ClickHouse", which a `secretValues` + `initialUser` registration used to get. The Team isn't
     empty, so fix the connection in HyperDX's UI.
+  - **The HelmRelease's `hyperdx.deployment.defaultConnections` / `defaultSources` are Helm templates
+    now, in both modes**, which the chart's `tpl` renders into `DEFAULT_CONNECTIONS` /
+    `DEFAULT_SOURCES`. Anything that read them from the HelmRelease as JSON must render them first.
   - **`clickhouse.host` values that break the connection URLs are now refused:** an empty value;
     whitespace, `/`, `?`, `#` or `@`; a scheme; a port; stray brackets; and unbracketed IPv6.
     Trailing-dot FQDNs and bracketed IPv6 still work.

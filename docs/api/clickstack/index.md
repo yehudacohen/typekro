@@ -123,7 +123,8 @@ host and nothing more.
   - an unbracketed IPv6 address. The error says to bracket it.
 
 A concrete host is checked at render time. The generated CRD carries the same rule for KRO mode, with
-the [KRO caveat](#chart-versions-it-is-valid-for) that it reaches new CRDs only.
+the [KRO caveat](#chart-versions-it-is-valid-for) that it reaches new CRDs only, and the Team-defaults
+seed checks it again at runtime.
 
 ## MongoDB Modes (build-time)
 
@@ -435,18 +436,27 @@ enforced in **both** modes. A concrete version outside the list is refused at re
 generated CRD narrows `spec.version` with a CEL validation, so a KRO consumer who sets an unaudited
 version on the custom resource at apply time is refused by admission.
 
-**KRO caveat: the CRD rule only reaches new CRDs.** The rule is an `x-kubernetes-validations` entry.
+**KRO caveat: the CRD rules only reach new CRDs.** The version rule and the
+[host rule](#clickhouse-host) are `x-kubernetes-validations` entries.
 KRO 0.9.2's CRD compatibility check doesn't compare those, so it treats a change that only adds or
 edits one as "no changes" and doesn't touch a CRD it already created. This was checked against its
 source (`Ensure` in `pkg/client/crd.go`, `pkg/graph/crd/compat/schema.go`) and on a real cluster.
-The rule lands on CRDs KRO creates from this release on, or on an existing one the next time a
-compared schema change, such as a new field, makes KRO patch it. For that reason:
+The rules land on CRDs KRO creates from this release on, or on an existing one the next time a compared
+schema change, such as a new field, makes KRO patch it. For that reason, the Team-defaults seed checks
+both again at runtime, whatever the CRD says, which also holds on an upgraded KRO deployment:
 
-- **The Team-defaults seed checks the chart version again at runtime.** The CronJob gets the release's
-  chart version and seeds nothing on an unaudited one, whatever the CRD says. That holds on an
-  upgraded KRO deployment too.
-- **The `initialUser` and `hyperdxOidc` rules have the same limitation**, and it predates this release:
-  on an upgraded CRD, only their build-time halves apply.
+- **The chart version.** The CronJob gets the release's chart version and seeds nothing on an
+  unaudited one.
+- **The host.** The seed validates the connection host it would write against the same rule, and seeds
+  nothing on an invalid one. It logs the host, never the password, and writes no marker, so it seeds
+  once the host is fixed.
+
+HyperDX's own default connection needs no such check: the host, user, password and database reach
+`DEFAULT_CONNECTIONS` / `DEFAULT_SOURCES` through Helm's `toJson` in both credential modes, so any value
+yields valid JSON.
+
+The `initialUser` and `hyperdxOidc` version rules have the same limitation, and it predates this
+release: on an upgraded CRD, only their build-time halves apply.
 
 Each feature has its own escape hatch, for once you have checked its contract on a newer chart yourself:
 `initialUser.allowUnvalidatedChartVersion`, `teamDefaults: { allowUnvalidatedChartVersion: true }` and
@@ -637,7 +647,8 @@ if OIDC ever breaks, since the change applies without a restart.
 - The plugin checks every HyperDX hook point at startup. If one is missing, as on a HyperDX version it wasn't
   built for, it logs why and disables itself, and password login keeps working.
 - It is enabled only on audited chart versions (`3.2.0`, HyperDX `2.35.0`), like `initialUser`: at build time
-  in direct mode, and by narrowing `spec.version` on the CRD in KRO mode. After verifying a newer chart, set
+  in direct mode, and by narrowing `spec.version` on the CRD in KRO mode, on CRDs KRO creates fresh (see
+  the [KRO caveat](#chart-versions-it-is-valid-for)). After verifying a newer chart, set
   `hyperdxOidc.allowUnvalidatedChartVersion: true`.
 - Turning `passwordLogin` off doesn't end password sessions that already exist; they expire on HyperDX's own
   30-day rolling cookie. To end them now, rotate the session secret or delete the sessions in MongoDB.

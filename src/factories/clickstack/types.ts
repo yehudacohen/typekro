@@ -737,6 +737,13 @@ export function resolveClickStackInitialUser(
  * from {@link clickStackInitialUserVersionValidationRule}, so a consumer who
  * sets an unaudited version on the custom resource at apply time is rejected by
  * ADMISSION, where there is no build to fail.
+ *
+ * KRO CAVEAT. KRO 0.9.2 compares no `x-kubernetes-validations` when it
+ * reconciles a CRD, so it adds that rule only to a CRD it creates fresh (or
+ * patches for some other, compared change), never to one that predates the
+ * rule. The Team-defaults seed therefore re-checks the chart version at
+ * runtime (`CLICKSTACK_CHART_VERSION`); `initialUser` and `hyperdxOidc` have
+ * only the build-time and CRD halves.
  */
 export const CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS = ['3.2.0'] as const;
 
@@ -762,7 +769,9 @@ export function isClickStackInitialUserValidatedChartVersion(version: string): b
  * This is the KRO-mode half of the allowlist: the rule becomes an
  * `x-kubernetes-validations` entry on the field, so the API server refuses a CR
  * carrying an unaudited version instead of admitting it and leaving the
- * CronJob to patch `teams.apiKey` on a schema nobody has read.
+ * CronJob to patch `teams.apiKey` on a schema nobody has read. Only on CRDs KRO
+ * creates fresh: see the KRO caveat on
+ * {@link CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS}.
  *
  * @returns A CEL expression over `self`, the submitted `spec.version`
  */
@@ -778,10 +787,19 @@ export interface ClickStackTeamDefaultsOptions {
   /**
    * The seed writes documents in HyperDX 2.35.0's own schema, so it is refused
    * on a chart version outside
-   * {@link CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS} (at build time in
-   * direct mode, by narrowing `spec.version` on the CRD in KRO mode). Set this
-   * once you have checked the `connections` / `sources` schema of a newer
-   * chart yourself.
+   * {@link CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS}, by three checks:
+   *
+   * - direct mode: a build-time throw for a concrete `spec.version`;
+   * - KRO mode: a CEL rule on the CRD's `spec.version`, present only on CRDs
+   *   KRO creates fresh (KRO 0.9.2 never adds a validation rule to an
+   *   existing CRD; see the KRO caveat in the docs);
+   * - both modes: a runtime check in the Team-bootstrap CronJob against the
+   *   release's chart version (`CLICKSTACK_CHART_VERSION`), which seeds
+   *   nothing on an unaudited one. This is the guard that holds on existing
+   *   KRO CRDs.
+   *
+   * `true` disables all three. Set it once you have checked the
+   * `connections` / `sources` schema of a newer chart yourself.
    */
   allowUnvalidatedChartVersion?: boolean;
 }

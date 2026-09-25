@@ -145,29 +145,45 @@ interface RenderedBootstrap {
 }
 
 /**
- * The `DEFAULT_CONNECTIONS` the chart gives HyperDX. In secretValues mode the
- * value comes from TypeKro's ConfigMap, and the chart's `tpl` fills in the
- * password template from `hyperdx.secrets` (checked with `helm template`
- * against chart 3.2.0); this does the same substitution.
+ * What the chart's `tpl` makes of one of TypeKro's templates, given the
+ * release's merged values: TypeKro's own `spec.values`, plus, in secretValues
+ * mode, the fragment's `hyperdx.secrets`. The substitution is checked against
+ * a real `helm template` render of chart 3.2.0 in the PR.
  */
-function chartDefaultConnections(rendered: RenderedBootstrap, secrets: Secrets): string {
-  if (rendered.defaultConnectionsDocument === undefined) return rendered.defaultConnections;
-  const document = loadAll(rendered.defaultConnectionsDocument)[0] as {
-    hyperdx: { deployment: { defaultConnections: string } };
-  };
-  // The release's merged values: TypeKro's own, plus the fragment's secrets.
-  const values = {
-    ...rendered.releaseValues,
-    hyperdx: {
-      ...rendered.releaseValues.hyperdx,
-      secrets: { CLICKHOUSE_APP_PASSWORD: secrets['clickstack-secret']?.CLICKHOUSE_APP_PASSWORD },
-    },
-  };
-  return document.hyperdx.deployment.defaultConnections.replace(
-    /\{\{ \.Values\.([\w.]+) \| toJson \}\}/g,
-    (_match, path: string) =>
-      JSON.stringify(path.split('.').reduce((node: any, key) => node?.[key], values))
+function chartTpl(template: string, rendered: RenderedBootstrap, secrets: Secrets): string {
+  const values =
+    rendered.defaultConnectionsDocument === undefined
+      ? rendered.releaseValues
+      : {
+          ...rendered.releaseValues,
+          hyperdx: {
+            ...rendered.releaseValues.hyperdx,
+            secrets: {
+              CLICKHOUSE_APP_PASSWORD: secrets['clickstack-secret']?.CLICKHOUSE_APP_PASSWORD,
+            },
+          },
+        };
+  return template.replace(/\{\{ \.Values\.([\w.]+) \| toJson \}\}/g, (_match, path: string) =>
+    JSON.stringify(path.split('.').reduce((node: any, key) => node?.[key], values))
   );
+}
+
+/** The `DEFAULT_CONNECTIONS` the chart gives HyperDX (from the ConfigMap in secretValues mode). */
+function chartDefaultConnections(rendered: RenderedBootstrap, secrets: Secrets): string {
+  const template =
+    rendered.defaultConnectionsDocument === undefined
+      ? rendered.defaultConnections
+      : (
+          loadAll(rendered.defaultConnectionsDocument)[0] as {
+            hyperdx: { deployment: { defaultConnections: string } };
+          }
+        ).hyperdx.deployment.defaultConnections;
+  return chartTpl(template, rendered, secrets);
+}
+
+/** The `DEFAULT_SOURCES` the chart gives HyperDX. */
+function chartDefaultSources(rendered: RenderedBootstrap, secrets: Secrets): string {
+  return chartTpl(rendered.defaultSources, rendered, secrets);
 }
 
 /** The CronJob and HelmRelease values a direct-mode render of the composition produces. */
@@ -460,9 +476,9 @@ beforeAll(async () => {
       '-e',
       'HYPERDX_APP_PORT=8080',
       '-e',
-      `DEFAULT_CONNECTIONS=${degraded.defaultConnections}`,
+      `DEFAULT_CONNECTIONS=${chartDefaultConnections(degraded, INLINE_SECRETS)}`,
       '-e',
-      `DEFAULT_SOURCES=${degraded.defaultSources}`,
+      `DEFAULT_SOURCES=${chartDefaultSources(degraded, INLINE_SECRETS)}`,
       HYPERDX_IMAGE,
     ]);
     if (!started.ok) throw new Error(`docker run hyperdx failed: ${started.stderr}`);
@@ -485,7 +501,7 @@ beforeAll(async () => {
     '-e',
     `DEFAULT_CONNECTIONS=${chartDefaultConnections(secretValuesWithInitialUser, SECRET_VALUES_SECRETS)}`,
     '-e',
-    `DEFAULT_SOURCES=${secretValuesWithInitialUser.defaultSources}`,
+    `DEFAULT_SOURCES=${chartDefaultSources(secretValuesWithInitialUser, SECRET_VALUES_SECRETS)}`,
     HYPERDX_IMAGE,
   ]);
   if (!svStarted.ok)
@@ -899,5 +915,29 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     expect(connections).toHaveLength(1);
     expect(connections[0]?.username).toBe('hyperdx');
     expect(connections[0]?.password).toBe('hyperdx');
+  });
+
+  it('refuses a host at runtime that a pre-existing KRO CRD would not have caught, then seeds once it is valid', () => {
+    const onOwnDb: RenderedBootstrap = {
+      ...degraded,
+      script: degraded.script.replace("getSiblingDB('hyperdx')", "getSiblingDB('hyperdx-badhost')"),
+    };
+    const connections = () =>
+      JSON.parse(
+        mongoEval(
+          MONGO_FRESH,
+          "print(EJSON.stringify(db.getSiblingDB('hyperdx-badhost').connections.find().toArray()))"
+        )
+      ) as Record<string, unknown>[];
+    const bad = runBootstrap(onOwnDb, MONGO_FRESH, {
+      HYPERDX_DEFAULT_CONNECTION_HOST: `http://${CLICKHOUSE} extra:8123`,
+    });
+    expect(bad.ok, bad.stderr).toBe(true);
+    expect(bad.stdout).toContain('seeds nothing');
+    expect(bad.stdout).not.toContain(CLICKHOUSE_PASSWORD);
+    expect(connections()).toHaveLength(0);
+
+    expect(runBootstrap(onOwnDb, MONGO_FRESH).ok).toBe(true);
+    expect(connections()).toHaveLength(1);
   });
 });

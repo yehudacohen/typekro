@@ -38,8 +38,13 @@ import {
   DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY,
   isClickStackInitialUserValidatedChartVersion,
 } from '../../../src/factories/clickstack/types.js';
-import { CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT } from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 import {
+  CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE,
+  CLICKSTACK_DEFAULT_SOURCES_TEMPLATE,
+  CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT,
+} from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
+import {
+  CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE,
   CLICKSTACK_LEGACY_TEAM_NAME_SHA256,
   renderHyperdxSeedSources,
 } from '../../../src/factories/clickstack/utils/team-defaults.js';
@@ -1795,16 +1800,21 @@ describe('clickstackBootstrap Team name and defaults', () => {
       .filter(Boolean);
   }
 
-  /** What chart 3.2.0's `tpl` makes of the ConfigMap's template, given the merged values. */
-  function tplDefaultConnections(document: string, values: Record<string, any>): unknown {
-    const template = (load(document) as { hyperdx: { deployment: { defaultConnections: string } } })
-      .hyperdx.deployment.defaultConnections;
+  /** What chart 3.2.0's `tpl` makes of one of TypeKro's `toJson` templates, given the merged values. */
+  function tplRender(template: string, values: Record<string, any>): unknown {
     const rendered = template.replace(
       /\{\{ \.Values\.([\w.]+) \| toJson \}\}/g,
       (_match, path: string) =>
         JSON.stringify(path.split('.').reduce((node: any, key) => node?.[key], values))
     );
     return JSON.parse(rendered);
+  }
+
+  /** The same, for the ConfigMap's values document. */
+  function tplDefaultConnections(document: string, values: Record<string, any>): unknown {
+    const template = (load(document) as { hyperdx: { deployment: { defaultConnections: string } } })
+      .hyperdx.deployment.defaultConnections;
+    return tplRender(template, values);
   }
 
   it("secretValues: gives HyperDX TypeKro's connection, every field serialised by Helm", () => {
@@ -1928,6 +1938,126 @@ describe('clickstackBootstrap Team name and defaults', () => {
     ).not.toContain('chartVersion');
   });
 
+  it('inline mode: no user-supplied field is spliced into the connection or sources JSON', () => {
+    const username = 'analytics"reader\\ops team';
+    const password = 'p"w\\x y';
+    const docs = docsOf(
+      {},
+      {
+        ...BOOTSTRAP_SPEC_FOR_VERSION_GUARD,
+        clickhouse: {
+          ...BOOTSTRAP_SPEC_FOR_VERSION_GUARD.clickhouse,
+          appUsername: username,
+          appPassword: password,
+          database: 'otel"db',
+        },
+      }
+    );
+    const release = docs.find(
+      (doc) => doc.kind === 'HelmRelease' && doc.spec?.chart?.spec?.chart === 'clickstack'
+    );
+    const values = release?.spec.values;
+    expect(values.hyperdx.deployment.defaultConnections).toBe(
+      CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE
+    );
+    expect(values.hyperdx.deployment.defaultSources).toBe(CLICKSTACK_DEFAULT_SOURCES_TEMPLATE);
+    expect(tplRender(values.hyperdx.deployment.defaultConnections, values)).toEqual([
+      {
+        name: 'External ClickHouse',
+        host: 'http://clickhouse-observability.clickhouse.svc.cluster.local:8123',
+        port: 8123,
+        username,
+        password,
+      },
+    ]);
+    const sources = tplRender(values.hyperdx.deployment.defaultSources, values) as Array<{
+      from: { databaseName: string };
+    }>;
+    expect(sources.map((source) => source.from.databaseName)).toEqual([
+      'otel"db',
+      'otel"db',
+      'otel"db',
+      'otel"db',
+    ]);
+  });
+
+  it('inline KRO mode: the JSON templates are constants, the user values CEL in typed values', () => {
+    const rgd = makeClickstackBootstrap({ name: 'cs-inline-kro', kind: 'CsInlineKro' })
+      .toYaml()
+      .split(/^---$/m)
+      .map((doc) => load(doc) as Record<string, any>)
+      .find(
+        (doc) => doc?.kind === 'ResourceGraphDefinition' && doc.metadata.name === 'cs-inline-kro'
+      );
+    const release = rgd?.spec.resources.find(
+      (resource: { id: string }) => resource.id === 'clickstackHelmRelease'
+    )?.template;
+    const deployment = release?.spec.values.hyperdx.deployment;
+    expect(deployment.defaultConnections).toBe(CLICKSTACK_DEFAULT_CONNECTIONS_TEMPLATE);
+    expect(deployment.defaultSources).toBe(CLICKSTACK_DEFAULT_SOURCES_TEMPLATE);
+    expect(deployment.defaultConnections).not.toContain('${');
+    expect(release?.spec.values.typekro.clickstack.defaultConnection.host).toContain(
+      '${schema.spec.clickhouse.host}'
+    );
+    // A host that would break the URL is refused at admission on a fresh CRD.
+    expect(rgd?.spec.schema.spec.clickhouse.host).toBe(
+      `string | validation="${CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE}"`
+    );
+  });
+
+  it('the runtime host check matches the render-time rule on every sample', () => {
+    const check = new Function(`return ${CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE};`)() as (
+      url: string
+    ) => string | null;
+    for (const host of [
+      'clickhouse',
+      'clickhouse.analytics.svc.cluster.local.',
+      '10.0.0.7',
+      '[fd00::1]',
+      'ClickHouse.Example.COM',
+      'http://clickhouse',
+      'clickhouse:8123',
+      'clickhouse/path',
+      'click house',
+      'ch"quoted',
+      'ch\\back',
+      'user@clickhouse',
+      'fd00::1',
+      '[fd00::1]:8123',
+      '',
+    ]) {
+      expect([host, check(`http://${host}:8123`) === null]).toEqual([
+        host,
+        validateClickStackClickhouseHost(host) === undefined,
+      ]);
+    }
+  });
+
+  it('refuses an invalid host at runtime without a marker, printing the host but not the password', async () => {
+    const mongo = createFakeMongo();
+    const printed: string[] = [];
+    await runBootstrapScript(
+      renderClickStackTeamBootstrapScript(),
+      {
+        ...degradedEnvironment,
+        HYPERDX_DEFAULT_CONNECTION_HOST: 'http://http://clickhouse:8123:8123',
+      },
+      mongo,
+      undefined,
+      (line) => printed.push(line)
+    );
+    expect(mongo.documentsIn('connections')).toHaveLength(0);
+    expect(markers(mongo, 'team-defaults:')).toHaveLength(0);
+    const log = printed.join('\n');
+    expect(log).toContain('"http://http://clickhouse:8123:8123"');
+    expect(log).toContain('seeds nothing');
+    expect(log).not.toContain(SEED_ENVIRONMENT.HYPERDX_DEFAULT_CONNECTION_PASSWORD);
+
+    // A valid host on the next run seeds.
+    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+    expect(mongo.documentsIn('connections')).toHaveLength(1);
+  });
+
   it('checks clickhouse.host by what breaks the URLs, accepting every host that worked before', () => {
     const withHost = (host: string) => () =>
       docsOf(
@@ -2001,9 +2131,11 @@ describe('clickstackBootstrap Team name and defaults', () => {
     );
     const chartSecret = release?.spec.values.hyperdx.secrets as Record<string, string>;
     expect(chartSecret.CLICKHOUSE_APP_PASSWORD).toBe('hyperdx');
-    expect(JSON.parse(release?.spec.values.hyperdx.deployment.defaultConnections)[0].password).toBe(
-      'hyperdx'
-    );
+    const connections = tplRender(
+      release?.spec.values.hyperdx.deployment.defaultConnections,
+      release?.spec.values
+    ) as Array<{ password: string }>;
+    expect(connections[0]?.password).toBe('hyperdx');
     const container = docs.find(
       (doc) => doc.kind === 'CronJob' && doc.metadata.name.endsWith('-team-bootstrap')
     )?.spec.jobTemplate.spec.template.spec.containers[0];

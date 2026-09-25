@@ -630,7 +630,8 @@ export function renderClickStackTeamBootstrapScript(
  * WHY IT IS NOT THE WHOLE GUARD. `version` is a RUNTIME spec field, so in KRO
  * mode it is a schema reference here and a value a consumer supplies to the CR
  * at apply time — there is no build to fail. That half is covered by narrowing
- * `spec.version` on the generated CRD; see
+ * `spec.version` on the generated CRD, on CRDs KRO creates fresh (see the KRO
+ * caveat on {@link CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS}); see
  * {@link clickStackInitialUserVersionValidationRule}. This function therefore
  * treats a non-string as "not mine to check", which is also what the analysis
  * pass hands it.
@@ -704,8 +705,10 @@ function assertClickStackClickhouseHost(host: unknown): void {
 
 /**
  * Refuse the Team-defaults seed on a chart version nobody has audited — the
- * build-time half; the KRO half is the shared `spec.version` narrowing in
- * {@link clickStackSchemaFieldValidations}.
+ * build-time check. The CRD rule ({@link clickStackSchemaFieldValidations})
+ * covers KRO mode on fresh CRDs, and the CronJob's runtime check
+ * (`CLICKSTACK_CHART_VERSION`) covers every CRD, including ones KRO created
+ * before the rule existed.
  *
  * The seed writes documents in HyperDX 2.35.0's own `connections` / `sources`
  * schema. On a chart whose HyperDX changed that schema, the CronJob would
@@ -740,7 +743,10 @@ function assertClickStackTeamDefaultsChartVersion(
  * sets an unaudited `spec.version` on the custom resource is refused by
  * ADMISSION — the path a build-time throw structurally cannot reach. It is
  * applied to the `secretValues` variants too, which previously carried no
- * validations at all and so had no KRO-side guard of any kind.
+ * validations at all and so had no KRO-side guard of any kind. KRO 0.9.2 puts
+ * these rules only on CRDs it creates fresh (it compares no validations on an
+ * update), which is why the seed also checks the chart version and the host
+ * at runtime.
  *
  * @param base - The mode's own validations (inline mode pins `apiKey`)
  * @param build - The resolved options that write into HyperDX's own schema
