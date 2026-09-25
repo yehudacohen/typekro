@@ -1827,3 +1827,92 @@ describe('makeClickstackBootstrap({ storage })', () => {
     ).toThrow(/'storage.retention.logs' must be a retention duration/);
   });
 });
+
+describe('the build-time `values` object is never mutated', () => {
+  const buildValues = () => ({
+    'otel-collector': { podAnnotations: { 'example.com/owner': 'platform' } },
+    hyperdx: { deployment: { replicas: 1 } },
+  });
+
+  it('keeps the caller object unchanged, and the RGD claim name templated, across builds', async () => {
+    const values = buildValues();
+    const snapshot = structuredClone(values);
+    const stack = makeClickstackBootstrap({
+      name: 'clickstack-values-reuse',
+      kind: 'ClickStackValuesReuse',
+      storage: {
+        mode: 's3',
+        diskType: 's3_plain_rewritable',
+        persistentQueue: { enabled: true, size: '1Gi' },
+      },
+      values,
+    });
+
+    // Build 1: the KRO RGD. Build 2: a direct-mode render, where the claim
+    // name resolves to a literal. Build 3: the KRO RGD again. The hard pins
+    // are merged over `values` on every build, and none may land in it.
+    const first = stack.toYaml();
+    expect(values).toEqual(snapshot);
+
+    const direct = stack.factory('direct', { namespace: SPEC.namespace }).toYaml(SPEC as never);
+    expect(direct).toContain('claimName: clickstack-otel-queue');
+    expect(values).toEqual(snapshot);
+
+    const kro = await stack.factory('kro', { namespace: SPEC.namespace });
+    await kro.toAlchemyResources({ ...SPEC, version: '3.2.0' } as never);
+    expect(values).toEqual(snapshot);
+
+    const second = stack.toYaml();
+    expect(values).toEqual(snapshot);
+    expect(second).toBe(first);
+    expect(second).toContain('claimName: ${string(schema.spec.name)}-otel-queue');
+    expect(second).not.toContain('claimName: clickstack-otel-queue');
+    // The caller's own keys still reach the chart.
+    expect(second).toContain('example.com/owner: platform');
+  });
+
+  it('keeps the caller object unchanged when two compositions share it', () => {
+    const values = buildValues();
+    const snapshot = structuredClone(values);
+    const withQueue = makeClickstackBootstrap({
+      name: 'clickstack-values-shared-a',
+      kind: 'ClickStackValuesSharedA',
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+      values,
+    });
+    const withoutQueue = makeClickstackBootstrap({
+      name: 'clickstack-values-shared-b',
+      kind: 'ClickStackValuesSharedB',
+      storage: { mode: 's3' },
+      values,
+    });
+
+    withQueue.toYaml();
+    const plain = withoutQueue.toYaml();
+    expect(values).toEqual(snapshot);
+    // No queue pin carried over from the other composition.
+    expect(plain).not.toContain('-otel-queue');
+    expect(plain).not.toContain('podSecurityContext');
+  });
+
+  it('does not mutate the values passed to the mapper directly', () => {
+    const values = buildValues();
+    const snapshot = structuredClone(values);
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+
+    const mapped = mapClickStackConfigToHelmValues(SPEC, { storage, values }) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    // A second call over the same object sees exactly what the first did.
+    expect(mapClickStackConfigToHelmValues(SPEC, { storage, values })).toEqual(mapped);
+
+    expect(values).toEqual(snapshot);
+    expect(mapped['otel-collector']).not.toBe(values['otel-collector']);
+    expect(mapped['otel-collector']?.podAnnotations).toEqual({ 'example.com/owner': 'platform' });
+    expect(mapped['otel-collector']?.replicaCount).toBe(1);
+  });
+});

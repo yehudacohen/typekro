@@ -186,7 +186,11 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
     if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     const targetValue = target[key];
     if (isPlainObject(targetValue) && isPlainObject(sourceValue)) {
-      deepMerge(targetValue, sourceValue);
+      // Copy before merging: the nested object can be the caller's own (a typed
+      // field mapped by reference), and merging into it in place mutated it.
+      const next = { ...targetValue };
+      deepMerge(next, sourceValue);
+      target[key] = next;
     } else {
       target[key] = sourceValue;
     }

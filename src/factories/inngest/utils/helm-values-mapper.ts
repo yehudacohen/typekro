@@ -152,7 +152,8 @@ function removeUndefinedValues<T extends Record<string, unknown>>(obj: T): T {
 }
 
 /**
- * Recursively deep merge `source` into `target` in place.
+ * Recursively deep merge `source` into `target`. Only `target` itself is
+ * written: nested objects are copied before they are merged into.
  * - Plain objects are merged key-by-key at arbitrary depth.
  * - Arrays and primitives in source replace the target value.
  * - null and undefined in source replace the target value.
@@ -172,10 +173,12 @@ function deepMerge(
       typeof targetValue === 'object' &&
       !Array.isArray(targetValue)
     ) {
-      deepMerge(
-        targetValue as Record<string, unknown>,
-        sourceValue as Record<string, unknown>
-      );
+      // Copy before merging: the nested object can be the caller's own (a typed
+      // field such as `nodeSelector` is mapped by reference), and merging into
+      // it in place mutated it.
+      const next = { ...(targetValue as Record<string, unknown>) };
+      deepMerge(next, sourceValue as Record<string, unknown>);
+      target[key] = next;
     } else {
       target[key] = sourceValue;
     }

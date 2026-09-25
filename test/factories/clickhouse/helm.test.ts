@@ -168,6 +168,15 @@ describe('ClickHouse Operator Helm Values Mapper', () => {
     expect(values.nodeSelector).toEqual({ os: 'linux' });
   });
 
+  it('merges custom values without mutating the typed config objects', () => {
+    const metrics = { enabled: true };
+    const customValues = { metrics: { enabled: false } };
+    const values = plainValues(mapClickHouseOperatorConfigToHelmValues({ metrics, customValues }));
+    expect(values.metrics).toEqual({ enabled: false });
+    expect(metrics).toEqual({ enabled: true });
+    expect(customValues).toEqual({ metrics: { enabled: false } });
+  });
+
   it('should wrap ref-shaped custom values in a graph-aware runtime merge', () => {
     // In graph mode the bootstrap receives `customValues` as a schema proxy
     // ref. The mapper must route it through mergeValuesExpression (the core

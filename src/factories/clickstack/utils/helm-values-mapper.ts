@@ -54,7 +54,12 @@ import {
 } from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
 import type { TypeKroChartValues } from '../../../core/types/common.js';
-import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import {
+  isCelExpression,
+  isKubernetesRef,
+  isMixedTemplate,
+  isResourceReference,
+} from '../../../utils/type-guards.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
 import { type CollectorConfigFragment, renderCollectorConfig } from './collector-config.js';
 import { CLICKSTACK_CONNECTION_NAME, CLICKSTACK_DEFAULT_SOURCES } from './team-defaults.js';
@@ -215,17 +220,45 @@ function isMergeObject(value: unknown): value is Record<string, unknown> {
   );
 }
 
-/** Deep merge (objects merge recursively, arrays/primitives replace, source wins). */
+/**
+ * Deep merge (objects merge recursively, arrays/primitives replace, source wins),
+ * copy-on-write.
+ *
+ * Only `target` itself is written. A nested object already in `target` is copied
+ * before anything is merged into it, and a subtree taken from `source` is cloned,
+ * so the result never shares a mutable object with either side. Both sides can
+ * belong to the caller: the build-time `values` passthrough and typed spec fields
+ * reach this merge by reference, and the hard pins are merged over them
+ * afterwards. Merging in place wrote the pins into the caller's own `values`, and
+ * the next build then read them back as if the caller had set them.
+ */
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const [key, sourceValue] of Object.entries(source)) {
     if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     const targetValue = target[key];
     if (isMergeObject(targetValue) && isMergeObject(sourceValue)) {
-      deepMerge(targetValue, sourceValue);
+      const next = { ...targetValue };
+      deepMerge(next, sourceValue);
+      target[key] = next;
     } else {
-      target[key] = sourceValue;
+      target[key] = cloneMergeValue(sourceValue);
     }
   }
+}
+
+/**
+ * Copy a values subtree: plain objects and arrays are rebuilt at every depth.
+ * References, CEL expressions, templates and merge nodes are immutable markers
+ * and stay as they are, as does any non-plain object.
+ */
+function cloneMergeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneMergeValue);
+  if (!isMergeObject(value) || isMixedTemplate(value) || isResourceReference(value)) return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const copy: Record<string, unknown> = {};
+  deepMerge(copy, value);
+  return copy;
 }
 
 /**

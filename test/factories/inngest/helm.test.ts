@@ -431,5 +431,24 @@ describe('Inngest Helm Values Mapper', () => {
       const inngest = values.inngest as Record<string, unknown>;
       expect(inngest.sdkUrl).toEqual(['http://override/api/inngest']);
     });
+
+    it('should merge customValues without mutating the typed config objects', () => {
+      const nodeSelector = { tier: 'app' };
+      const postgres = { uri: 'postgresql://user@host:5432/db' };
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        inngest: { ...minimalConfig.inngest, postgres },
+        nodeSelector,
+        customValues: {
+          nodeSelector: { zone: 'a' },
+          inngest: { postgres: { uri: 'postgresql://user@other:5432/db' } },
+        },
+      });
+
+      expect(values.nodeSelector).toEqual({ tier: 'app', zone: 'a' });
+      expect(values.inngest?.postgres).toEqual({ uri: 'postgresql://user@other:5432/db' });
+      expect(nodeSelector).toEqual({ tier: 'app' });
+      expect(postgres).toEqual({ uri: 'postgresql://user@host:5432/db' });
+    });
   });
 });

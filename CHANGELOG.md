@@ -389,6 +389,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ClickStack: building a composition no longer mutates the build-time `values` object.** The chart
+  values merge assigned the caller's subtrees into the result by reference, and then merged the hard
+  pins over them. With `storage.persistentQueue` on, the caller's `values['otel-collector']` gained
+  the queue pins (`extraVolumes`, `extraVolumeMounts`, `podSecurityContext`, `replicaCount`,
+  `rollout`). A later build that reused the object read them back as the caller's own. A direct-mode
+  render could leave a literal `claimName: <name>-otel-queue` in `values`, and a KRO RGD built
+  afterwards then carried that literal instead of `${string(schema.spec.name)}-otel-queue`, which is
+  wrong for every instance with a different `spec.name`. The merge is now copy-on-write: it copies a
+  nested object before merging into it and clones every subtree it takes from `values` or the pins.
+  The ClickHouse operator, Rook Ceph and Inngest values mappers had the same in-place merge, which
+  wrote `customValues` / `values` into typed config objects such as `metrics`, `resources` and
+  `nodeSelector`. They now copy before merging too.
+
 - **ClickStack: the HyperDX Team the bootstrap creates now has a ClickHouse connection and sources,
   so signed-in users no longer land on HyperDX's "set up your connection" onboarding modal.** Without
   `initialUser`, the team-bootstrap CronJob inserts the Team into MongoDB itself. HyperDX provisions a
