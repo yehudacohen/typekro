@@ -382,6 +382,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **HyperDX OIDC: the provider chooser works behind a reverse proxy.** `GET /api/login/oidc` redirected to
+  the single provider with a relative `Location`. HyperDX's UI proxies `/api/*` to its API server on port
+  8000, and when the request's `Host` header has no port (every request through a TLS proxy on 443) it
+  rewrites a relative `Location` to `http://<host>:8000/...`, which the browser can't reach. A downstream
+  end-to-end test behind a reverse proxy found this. Every redirect the plugin issues is now absolute, built
+  from the configured public URL: `redirectBaseUrl` or HyperDX's `FRONTEND_URL` for the plugin's own
+  routes, and HyperDX's redirect base first for the UI. The request's `Host` header is never used. With
+  no public URL configured, redirects stay relative and the plugin logs a warning. `redirectBaseUrl` with
+  credentials, a query or a fragment is now refused. The real-image suite now also runs a HyperDX behind
+  Caddy and follows the sign-in from the chooser to the provider and back.
 - A `clickHouseInstallation` change that alters the pod template (probes above all) together with
   restart-requiring configuration no longer restarts ClickHouse under the OLD pod template first
   (#238). clickhouse-operator 0.27.x restarts the server in place (`SYSTEM SHUTDOWN`) before

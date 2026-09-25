@@ -23,6 +23,7 @@ import { type OidcPluginConfig, parseOidcPluginConfig } from './config.js';
 import { evaluateClaims, type IdentityStore, LinkConflictError, resolveAccount, type VerifiedIdentity } from './identity.js';
 import { OidcFlowError, type PendingLogin, ProviderRuntime, safeReturnTo } from './oidc.js';
 import { renderChooser, renderDenied } from './pages.js';
+import { providerLoginPath, publicBase, publicUrl } from './redirects.js';
 
 // ── Minimal structural types for the parts of HyperDX and Express we touch ──
 
@@ -106,7 +107,10 @@ interface Hyperdx {
   createTeam(input: { name: string; collectorAuthenticationEnforced?: boolean }): Promise<{ _id: { toString(): string } }>;
   setupTeamDefaults(teamId: string): Promise<unknown>;
   frontendUrl: string;
+  /** HyperDX's own base for redirects to the UI: `FRONTEND_URL`, or `''` in its inline-API mode. */
   frontendRedirectBase: string;
+  /** HyperDX's inline-API mode (API served on the UI's own origin, no proxy in between). */
+  inlineApi: boolean;
 }
 
 export interface Logger {
@@ -186,6 +190,7 @@ export function resolveHyperdx(apiBuildDir: string): Hyperdx {
     setupTeamDefaults: setupDefaults.setupTeamDefaults as Hyperdx['setupTeamDefaults'],
     frontendUrl: String(config.FRONTEND_URL ?? '').replace(/\/+$/, ''),
     frontendRedirectBase: String(config.FRONTEND_REDIRECT_BASE ?? config.FRONTEND_URL ?? '').replace(/\/+$/, ''),
+    inlineApi: config.IS_INLINE_API === true,
   };
 }
 
@@ -407,7 +412,16 @@ export function installPlugin(
   const apiPrefix = () => config?.apiPathPrefix ?? '/api';
   const baseUrl = () => config?.redirectBaseUrl ?? hyperdx.frontendUrl;
   const loginPath = () => `${apiPrefix()}/login/oidc`;
-  const frontend = (path: string) => `${hyperdx.frontendRedirectBase}${path}`;
+  // Every redirect is absolute, on a configured public URL (see redirects.ts):
+  // a relative one is rewritten to the API server's port by HyperDX's UI proxy
+  // when the request came through a reverse proxy on the default port.
+  // - To the plugin's own routes: the callback's base, so the flow stays on
+  //   the origin whose session cookie the callback needs.
+  // - To the UI: HyperDX's own redirect base, as HyperDX's routes use.
+  const apiRedirectBase = () => publicBase(config?.redirectBaseUrl, hyperdx.frontendRedirectBase);
+  const uiRedirectBase = () => publicBase(hyperdx.frontendRedirectBase, config?.redirectBaseUrl);
+  const frontend = (path: string) => publicUrl(uiRedirectBase(), path);
+  let warnedRelativeRedirects = false;
 
   function strategyFor(id: string) {
     return {
@@ -490,6 +504,12 @@ export function installPlugin(
     for (const id of nextProviders.keys()) hyperdx.passport.use(`${STRATEGY_PREFIX}${id}`, strategyFor(id));
     providers = nextProviders;
     config = next;
+    if (!warnedRelativeRedirects && !hyperdx.inlineApi && (apiRedirectBase() === '' || uiRedirectBase() === '')) {
+      warnedRelativeRedirects = true;
+      log.warn(
+        "no public URL (HyperDX's FRONTEND_URL or redirectBaseUrl) is set: redirects are relative, and behind a reverse proxy HyperDX's UI rewrites them to the API server's port"
+      );
+    }
     if (next.allowInsecureHttp) {
       log.warn('allowInsecureHttp is on: issuers and callbacks may use plain http. Use this only for tests; it removes the TLS protection the ID-token checks rely on.');
     }
@@ -649,10 +669,10 @@ export function installPlugin(
 
   router.get('/login/oidc', (req, res) => {
     const returnTo = safeReturnTo(req.query.returnTo);
-    const suffix = returnTo === '/' ? '' : `?returnTo=${encodeURIComponent(returnTo)}`;
     const list = [...providers.values()];
     if (list.length === 1) {
-      res.redirect(302, `${loginPath()}/${(list[0] as ProviderRuntime).config.id}${suffix}`);
+      const path = providerLoginPath(loginPath(), (list[0] as ProviderRuntime).config.id, returnTo);
+      res.redirect(302, publicUrl(apiRedirectBase(), path));
       return;
     }
     const passwordHref = config?.passwordLogin === false ? undefined : frontend('/login');
@@ -661,7 +681,12 @@ export function installPlugin(
       .type('html')
       .send(
         renderChooser(
-          list.map((provider) => ({ label: provider.config.displayName, href: `${loginPath()}/${provider.config.id}${suffix}` })),
+          // Links in the page are resolved by the browser against the page's
+          // own (public) URL; no proxy rewrites them.
+          list.map((provider) => ({
+            label: provider.config.displayName,
+            href: providerLoginPath(loginPath(), provider.config.id, returnTo),
+          })),
           passwordHref
         )
       );

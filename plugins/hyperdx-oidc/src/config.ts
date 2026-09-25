@@ -69,7 +69,8 @@ export interface OidcPluginConfig {
   readonly maxSessionAgeMs: number;
   /**
    * External base URL the browser reaches HyperDX on, used to build callback
-   * URLs. Default: HyperDX's own `FRONTEND_URL`.
+   * URLs and the provider chooser's redirect. Default: HyperDX's own
+   * `FRONTEND_URL`.
    */
   readonly redirectBaseUrl?: string;
   /** Path prefix under which the UI proxies the API. Default `/api`. */
@@ -317,6 +318,13 @@ export function parseOidcPluginConfig(text: string): OidcPluginConfig {
     raw.redirectBaseUrl === undefined
       ? undefined
       : parseHttpsUrl(requireString(raw, 'redirectBaseUrl', 'configuration'), 'configuration.redirectBaseUrl', allowInsecure);
+  if (redirectBaseUrl !== undefined) {
+    // A base URL: redirects and callback URLs are built by appending paths to it.
+    const url = new URL(redirectBaseUrl);
+    if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
+      throw new OidcConfigError('configuration.redirectBaseUrl must not contain credentials, a query or a fragment');
+    }
+  }
 
   return {
     providers,
