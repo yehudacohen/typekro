@@ -6,6 +6,7 @@
  * @see https://github.com/inngest/inngest-helm
  */
 
+import { isMergeableValuesObject } from '../../../core/aspects/values-merge.js';
 import type { InngestBootstrapConfig } from '../types.js';
 
 /** Helm values structure for the inngest chart. */
@@ -139,8 +140,10 @@ function removeUndefinedValues<T extends Record<string, unknown>>(obj: T): T {
   const result = {} as Record<string, unknown>;
   for (const [key, value] of Object.entries(obj)) {
     if (value === undefined) continue;
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      const cleaned = removeUndefinedValues(value as Record<string, unknown>);
+    if (isMergeableValuesObject(value)) {
+      // Opaque leaves (references, CEL expressions, symbol-branded markers)
+      // are kept whole: rebuilding one from its string keys drops its brand.
+      const cleaned = removeUndefinedValues(value);
       if (Object.keys(cleaned).length > 0) {
         result[key] = cleaned;
       }
@@ -152,9 +155,11 @@ function removeUndefinedValues<T extends Record<string, unknown>>(obj: T): T {
 }
 
 /**
- * Recursively deep merge `source` into `target` in place.
+ * Recursively deep merge `source` into `target`. Only `target` itself is
+ * written: nested objects are copied before they are merged into.
  * - Plain objects are merged key-by-key at arbitrary depth.
- * - Arrays and primitives in source replace the target value.
+ * - Arrays, primitives and opaque leaves (references, CEL expressions,
+ *   symbol-branded markers) in source replace the target value.
  * - null and undefined in source replace the target value.
  */
 function deepMerge(
@@ -164,18 +169,14 @@ function deepMerge(
   for (const [key, sourceValue] of Object.entries(source)) {
     if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     const targetValue = target[key];
-    if (
-      sourceValue !== null &&
-      typeof sourceValue === 'object' &&
-      !Array.isArray(sourceValue) &&
-      targetValue !== null &&
-      typeof targetValue === 'object' &&
-      !Array.isArray(targetValue)
-    ) {
-      deepMerge(
-        targetValue as Record<string, unknown>,
-        sourceValue as Record<string, unknown>
-      );
+    if (isMergeableValuesObject(sourceValue) && isMergeableValuesObject(targetValue)) {
+      // Copy before merging: the nested object can be the caller's own (a typed
+      // field such as `nodeSelector` is mapped by reference), and merging into
+      // it in place mutated it. References, CEL expressions and other branded
+      // leaves are never merged into, so the spread never flattens one.
+      const next = { ...targetValue };
+      deepMerge(next, sourceValue);
+      target[key] = next;
     } else {
       target[key] = sourceValue;
     }

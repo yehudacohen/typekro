@@ -16,6 +16,7 @@ import {
   DNS_LABEL_MAX_LENGTH,
   deriveNameLengthLimit,
 } from '../../../src/core/kubernetes/naming.js';
+import { containsExplicitPlanValue, sensitiveValue } from '../../../src/core/planning/values.js';
 import { makeClickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import { CLICKSTACK_GATEWAY_NAME_SUFFIX } from '../../../src/factories/clickstack/resources/helm.js';
 import {
@@ -1825,5 +1826,136 @@ describe('makeClickstackBootstrap({ storage })', () => {
     expect(() =>
       makeClickstackBootstrap({ storage: { mode: 's3', retention: { logs: 'forever' } } })
     ).toThrow(/'storage.retention.logs' must be a retention duration/);
+  });
+});
+
+describe('the build-time `values` object is never mutated', () => {
+  const buildValues = () => ({
+    'otel-collector': { podAnnotations: { 'example.com/owner': 'platform' } },
+    hyperdx: { deployment: { replicas: 1 } },
+  });
+
+  it('keeps the caller object unchanged, and the RGD claim name templated, across builds', async () => {
+    const values = buildValues();
+    const snapshot = structuredClone(values);
+    const stack = makeClickstackBootstrap({
+      name: 'clickstack-values-reuse',
+      kind: 'ClickStackValuesReuse',
+      storage: {
+        mode: 's3',
+        diskType: 's3_plain_rewritable',
+        persistentQueue: { enabled: true, size: '1Gi' },
+      },
+      values,
+    });
+
+    // Build 1: the KRO RGD. Build 2: a direct-mode render, where the claim
+    // name resolves to a literal. Build 3: the KRO RGD again. The hard pins
+    // are merged over `values` on every build, and none may land in it.
+    const first = stack.toYaml();
+    expect(values).toEqual(snapshot);
+
+    const direct = stack.factory('direct', { namespace: SPEC.namespace }).toYaml(SPEC as never);
+    expect(direct).toContain('claimName: clickstack-otel-queue');
+    expect(values).toEqual(snapshot);
+
+    const kro = await stack.factory('kro', { namespace: SPEC.namespace });
+    await kro.toAlchemyResources({ ...SPEC, version: '3.2.0' } as never);
+    expect(values).toEqual(snapshot);
+
+    const second = stack.toYaml();
+    expect(values).toEqual(snapshot);
+    expect(second).toBe(first);
+    expect(second).toContain('claimName: ${string(schema.spec.name)}-otel-queue');
+    expect(second).not.toContain('claimName: clickstack-otel-queue');
+    // The caller's own keys still reach the chart.
+    expect(second).toContain('example.com/owner: platform');
+  });
+
+  it('keeps the caller object unchanged when two compositions share it', () => {
+    const values = buildValues();
+    const snapshot = structuredClone(values);
+    const withQueue = makeClickstackBootstrap({
+      name: 'clickstack-values-shared-a',
+      kind: 'ClickStackValuesSharedA',
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+      values,
+    });
+    const withoutQueue = makeClickstackBootstrap({
+      name: 'clickstack-values-shared-b',
+      kind: 'ClickStackValuesSharedB',
+      storage: { mode: 's3' },
+      values,
+    });
+
+    withQueue.toYaml();
+    const plain = withoutQueue.toYaml();
+    expect(values).toEqual(snapshot);
+    // No queue pin carried over from the other composition.
+    expect(plain).not.toContain('-otel-queue');
+    expect(plain).not.toContain('podSecurityContext');
+  });
+
+  it('does not mutate the values passed to the mapper directly', () => {
+    const values = buildValues();
+    const snapshot = structuredClone(values);
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+
+    const mapped = mapClickStackConfigToHelmValues(SPEC, { storage, values }) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    // A second call over the same object sees exactly what the first did.
+    expect(mapClickStackConfigToHelmValues(SPEC, { storage, values })).toEqual(mapped);
+
+    expect(values).toEqual(snapshot);
+    expect(mapped['otel-collector']).not.toBe(values['otel-collector']);
+    expect(mapped['otel-collector']?.podAnnotations).toEqual({ 'example.com/owner': 'platform' });
+    expect(mapped['otel-collector']?.replicaCount).toBe(1);
+  });
+
+  it('keeps symbol-branded planning markers inside values intact', () => {
+    const secret = sensitiveValue('collector-token');
+    const values = {
+      'otel-collector': { podAnnotations: { 'example.com/token': secret } },
+      hyperdx: { env: [{ name: 'TOKEN', value: secret }] },
+    };
+    expect(containsExplicitPlanValue(values)).toBe(true);
+    const storage = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true },
+    });
+
+    const mapped = mapClickStackConfigToHelmValues(SPEC, {
+      storage,
+      values: values as never,
+    }) as Record<string, Record<string, unknown>>;
+
+    expect(containsExplicitPlanValue(mapped)).toBe(true);
+    // The marker is carried over as the same frozen object, brand and all.
+    const annotations = mapped['otel-collector']?.podAnnotations as Record<string, unknown>;
+    expect(annotations['example.com/token']).toBe(secret);
+    const env = mapped.hyperdx?.env as Array<{ value: unknown }>;
+    expect(env[0]?.value).toBe(secret);
+    // The array around it is still a copy.
+    expect(env).not.toBe(values.hyperdx.env);
+  });
+
+  it('replaces, never merges into, a marker in the typed base', () => {
+    const secret = sensitiveValue('collector-token');
+    const mapped = mapClickStackConfigToHelmValues(SPEC, {
+      values: { 'otel-collector': { podAnnotations: secret } } as never,
+    }) as Record<string, Record<string, unknown>>;
+    expect(mapped['otel-collector']?.podAnnotations).toBe(secret);
+
+    const replaced = mapClickStackConfigToHelmValues(
+      { ...SPEC, customValues: { 'otel-collector': { podAnnotations: { a: 'b' } } } },
+      { values: { 'otel-collector': { podAnnotations: secret } } as never }
+    ) as Record<string, Record<string, unknown>>;
+    expect(replaced['otel-collector']?.podAnnotations).toEqual({ a: 'b' });
+    expect(Object.isFrozen(secret)).toBe(true);
   });
 });
