@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`teamName` and `teamDefaults` build options on `makeClickstackBootstrap`.** `teamName` names the
   HyperDX Team (default `ClickStack`, at most 100 characters). With `initialUser` it renames HyperDX's
   registered Team only when set. `teamDefaults` controls the one-time seed of an empty Team's
-  connection and sources. It is on by default in both credential modes, and
-  `{ allowUnvalidatedChartVersion: true }` lifts its chart-version guard. See "Team name and default
-  sources" in the ClickStack docs.
+  connection and sources. It is on by default with inline credentials and off by default with
+  `secretValues`, where `true` (or an options object) opts in. `{ allowUnvalidatedChartVersion: true }`
+  lifts its chart-version guard. See "Team name and default sources" in the ClickStack docs.
 
 - **OpenID Connect sign-in for HyperDX:** the `hyperdxOidc` option on `makeClickstackBootstrap` (#241).
   HyperDX's open-source build has only email-and-password login. TypeKro now ships a small plugin
@@ -406,7 +406,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Which password.** In both credential modes, HyperDX's default connection and the seed take the
     password from the same chart value, `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. The seed reads it,
     by `secretKeyRef`, from `clickstack-secret`, which the chart renders from that value. While the key
-    is missing the CronJob seeds nothing; a key that exists but is empty is seeded as an empty password.
+    is missing, or still holds the chart's published default (`hyperdx`, meaning the values never set
+    one), the CronJob seeds nothing and records nothing, and seeds once a real password appears. A key
+    that exists but is empty is seeded as an empty password.
+  - **Default by credential mode.** On with inline credentials, where TypeKro owns the connection. Off
+    with `secretValues`, where the values fragment may replace `defaultConnections` and the CronJob
+    can't see it: without `initialUser`, a default seed would replace the caller's connection with
+    TypeKro's. `teamDefaults: true` opts in.
   - **Seeded once.** The seed runs once per Team, and only into a Team with no connection and no source.
     The seed's ids and its progress are recorded in a `typekro_bootstrap` marker, so an interrupted run
     is finished without duplicates and without re-creating a document deleted in between. Once per run,
@@ -428,8 +434,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registration provisioned that broken connection.
   - A `<release>-default-connections` ConfigMap now sets `hyperdx.deployment.defaultConnections` to the
     spec's host, HTTP port and UI user.
-  - The password stays the chart template `{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}`,
-    which the chart's `tpl` fills in from the values fragment, so the ConfigMap carries no credential.
+  - Every field is a Helm template the chart's `tpl` serialises with `toJson`. The password comes from
+    the fragment's `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`, and the host, port and user from typed
+    values TypeKro sets under `typekro.clickstack.defaultConnection`. The ConfigMap is a constant that
+    carries no credential, and a quote or backslash in any field stays valid JSON (checked with
+    `helm template` against chart 3.2.0).
+  - A concrete `clickhouse.host` must now be a bare DNS host or IPv4 address (no scheme, port or path).
   - The ConfigMap is listed in `valuesFrom` before the caller's Secret, so a `defaultConnections` in the
     fragment still wins.
 - **ClickStack: the Team the bootstrap creates is named `ClickStack` (or `teamName`), not a hard-coded
@@ -1162,6 +1172,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct-mode status resolution.
 
 ### Changed
+
+- **⚠️ Upgrade notes for ClickStack (Team defaults and `secretValues` connections).** See "Upgrading"
+  in the ClickStack docs.
+  - **The default composition now carries a chart-version guard.** The Team-defaults seed is on by
+    default with inline credentials and writes HyperDX 2.35.0's schema, so a chart version other than
+    3.2.0 is refused at render time, and the KRO CRD narrows `spec.version`. Users pinned to another
+    chart must set `teamDefaults: false` or `teamDefaults: { allowUnvalidatedChartVersion: true }`.
+    The CRD rule is an `x-kubernetes-validations` entry, which KRO 0.9.2's compatibility check doesn't
+    treat as breaking, so the CRD updates in place.
+  - **`secretValues` deployments get a `<release>-default-connections` ConfigMap in `valuesFrom`**,
+    before the caller's Secret. The seed is opt-in there.
+  - **A Team HyperDX already gave the wrong connection is never repaired.** This includes the chart's
+    "Local ClickHouse", which a `secretValues` + `initialUser` registration used to get. The Team isn't
+    empty, so fix the connection in HyperDX's UI.
+  - A concrete `clickhouse.host` with a scheme, port or path is now refused.
 
 - **Documentation and test examples use generic names.** The NATS JetStream examples use
   `ORDERS_EVENTS` / `orders.events.>`, the Envoy AI Gateway examples use the `x-acme-principal`

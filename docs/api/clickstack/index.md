@@ -274,6 +274,16 @@ provisions them in `setupTeamDefaults`, which it calls when `POST /register/pass
 Team. A Team created any other way, like the one the degraded path inserts, stays empty. On every
 run the CronJob therefore also reconciles the Team's name and, once, its defaults.
 
+**When it seeds.**
+
+| Credentials | `teamDefaults` default | Why |
+| --- | --- | --- |
+| inline | on | TypeKro owns the whole connection: it renders `defaultConnections` from the spec. |
+| `secretValues` | **off** | Your values fragment may replace `defaultConnections`, and the CronJob can't see that. Without `initialUser` nothing runs `setupTeamDefaults`, so a default seed would put TypeKro's connection in place of yours, once and for good. Set `teamDefaults: true` (or an options object) to seed TypeKro's typed ClickHouse topology. |
+
+With `initialUser` the default barely matters: HyperDX's own registration seeds the Team from the fully
+merged values, and the CronJob then finds it configured and adds nothing.
+
 **What is seeded.** One connection named `External ClickHouse`, with host
 `http://<clickhouse.host>:<clickhouse.httpPort>`, the UI user `clickhouse.appUsername` (else
 `username`, else `default`), and that user's password. The password is read by `secretKeyRef`, so it
@@ -312,14 +322,18 @@ credential modes that password is the chart value `hyperdx.secrets.CLICKHOUSE_AP
 
 The chart renders the same value into `clickstack-secret`'s `CLICKHOUSE_APP_PASSWORD`, and the seed
 reads it from there by `secretKeyRef`. There is one connection definition, and HyperDX's registration
-and the seed both use it. If your fragment omits the key, the chart's public default `hyperdx` fills
-both, so set it. If your fragment replaces `defaultConnections` itself, the seed can't follow that;
-set `teamDefaults: false`.
+and the seed both use it. If your fragment replaces `defaultConnections` itself, the seed can't follow
+that, so leave `teamDefaults` off.
 
-The reference is `optional: true`, so a missing Secret or key can't stop the CronJob from reconciling the
-ingestion key. While the key is missing the CronJob seeds nothing, says so in its log, and seeds on the
-first run after the key appears. A key that exists but is empty is seeded as an empty password, as
-HyperDX itself does for a ClickHouse user without one.
+The seed holds off, and records nothing, in two cases. It seeds on the first run after the case clears:
+
+- **The key is missing.** The reference is `optional: true`, so a missing Secret or key can't stop the
+  CronJob from reconciling the ingestion key.
+- **The password is still the chart's published default** (`hyperdx`), meaning the values never set
+  `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. The log says so without printing the value.
+
+A key that exists but is empty is seeded as an empty password, as HyperDX itself does for a ClickHouse
+user without one.
 
 **The name.** `teamName` (default `ClickStack`, at most 100 characters) names the Team the degraded
 path creates. With `initialUser`, HyperDX names the Team at registration, and TypeKro renames it only
@@ -342,16 +356,38 @@ users. TypeKro renames a Team only while it owns the name, and records in `typek
 default name is renamed to `teamName`, and a Team someone renamed keeps its name. This includes a
 deployment that has since switched to `initialUser`. The Team is seeded if it is still empty.
 
-**Turning it off.** `teamDefaults: false` skips the seed. It is also skipped when build-time `values`
-replace `hyperdx.deployment.defaultConnections` or `defaultSources`, or set `useExistingConfigSecret`,
-because what HyperDX would seed is then yours, and so is its password.
+**Turning it on or off.** `teamDefaults: false` skips the seed, and `teamDefaults: true` asks for it
+where it is off by default. It is always skipped when build-time `values` replace
+`hyperdx.deployment.defaultConnections` or `defaultSources`, or set `useExistingConfigSecret`, because
+what HyperDX would seed is then yours, and so is its password.
 
 ```typescript
 const bootstrap = makeClickstackBootstrap({
+  credentials: { source: 'secretValues' },
   teamName: 'Observability',
-  teamDefaults: true, // the default; `{ allowUnvalidatedChartVersion: true }` past chart 3.2.0
+  teamDefaults: true, // `{ allowUnvalidatedChartVersion: true }` past chart 3.2.0
 });
 ```
+
+### Upgrading
+
+Check these when upgrading from a release without the Team-defaults seed:
+
+- **Pinned to a chart other than 3.2.0?** The seed is on by default with inline credentials, and it
+  carries the [chart-version guard](#chart-versions-it-is-valid-for), so the default composition now
+  refuses that version. Set `teamDefaults: false`, or
+  `teamDefaults: { allowUnvalidatedChartVersion: true }` once you have checked HyperDX's
+  `connections` / `sources` schema on that chart.
+- **`secretValues` credentials:**
+  - The HelmRelease gains a `<release>-default-connections` ConfigMap in `valuesFrom`, before your
+    Secret, so HyperDX's default connection is the external ClickHouse from the spec. A
+    `hyperdx.deployment.defaultConnections` in your fragment still wins.
+  - The seed is opt-in there (`teamDefaults: true`).
+- **A Team HyperDX already gave the wrong connection** is never repaired. That includes the chart's own
+  "Local ClickHouse", which a `secretValues` + `initialUser` registration used to get. The Team isn't
+  empty, so the seed leaves it alone. Fix or delete the connection in HyperDX's UI.
+- **Team names:** a Team still carrying the old hard-coded default is renamed to `teamName` on the
+  first run. Any other name is kept.
 
 ### Chart versions it is valid for
 
@@ -364,8 +400,8 @@ version allowlist:
   `teams.apiKey` half doesn't: a renamed field would leave the Job green and ingestion silently
   unauthenticated.
 - **The [Team-defaults seed](#team-name-and-default-sources)** writes `connections` and `sources`
-  documents in HyperDX 2.35.0's shape. It is on by default, so **the default composition is guarded
-  too**.
+  documents in HyperDX 2.35.0's shape. It is on by default with inline credentials, so **the default
+  composition is guarded too**.
 - **[`hyperdxOidc`](#sign-in-with-openid-connect-hyperdxoidc)** hooks HyperDX's Passport instance, root
   router and user/team models.
 
@@ -374,7 +410,11 @@ The allowlist is **exact**: chart **3.2.0** (appVersion 2.35.0). Not a series an
 and a patch bump promises nothing about the app's data contract. Whenever any of the three is on, it is
 enforced in **both** modes. A concrete version outside the list is refused at render time. The
 generated CRD narrows `spec.version` with a CEL validation, so a KRO consumer who sets an unaudited
-version on the custom resource at apply time is refused by admission.
+version on the custom resource at apply time is refused by admission. The rule is an
+`x-kubernetes-validations` entry, which KRO 0.9.2's CRD compatibility check doesn't compare, so adding
+it to an existing CRD isn't treated as a breaking change and the CRD is updated in place. Existing
+custom resources are affected only when their `spec.version` is next changed, on Kubernetes versions
+where CRD validation ratcheting is on (the default since 1.30).
 
 Each feature has its own escape hatch, for once you have checked its contract on a newer chart yourself:
 `initialUser.allowUnvalidatedChartVersion`, `teamDefaults: { allowUnvalidatedChartVersion: true }` and

@@ -36,6 +36,7 @@ import {
   DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY,
   isClickStackInitialUserValidatedChartVersion,
 } from '../../../src/factories/clickstack/types.js';
+import { CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT } from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 import {
   CLICKSTACK_LEGACY_TEAM_NAME_SHA256,
   renderHyperdxSeedSources,
@@ -1274,19 +1275,18 @@ describe('clickstackBootstrap Team-defaults chart-version allowlist', () => {
     expect(render({ teamDefaults: { allowUnvalidatedChartVersion: true } }, '4.0.0')).not.toThrow();
   });
 
-  it('guards the secretValues variants too, where the seed is on by default', () => {
+  it('guards the secretValues variants when the seed is asked for (it is off by default there)', () => {
     const { password: _password, ...clickhouse } = BOOTSTRAP_SPEC_FOR_VERSION_GUARD.clickhouse;
     const { apiKey: _apiKey, ...rest } = BOOTSTRAP_SPEC_FOR_VERSION_GUARD;
-    expect(() =>
-      makeClickstackBootstrap({ credentials: { source: 'secretValues' } })
+    const spec = { ...rest, clickhouse, credentialsSecret: { name: 'v' }, version: '4.0.0' };
+    const toYaml = (options: ClickStackBuildOptions) => () =>
+      makeClickstackBootstrap(options as never)
         .factory('direct', { namespace: 'clickstack' })
-        .toYaml({
-          ...rest,
-          clickhouse,
-          credentialsSecret: { name: 'v' },
-          version: '4.0.0',
-        } as never)
-    ).toThrow(/teamDefaults is audited only against chart version/);
+        .toYaml(spec as never);
+    expect(toYaml({ credentials: { source: 'secretValues' }, teamDefaults: true })).toThrow(
+      /teamDefaults is audited only against chart version/
+    );
+    expect(toYaml({ credentials: { source: 'secretValues' } })).not.toThrow();
   });
 
   it('narrows spec.version on the KRO CRD whenever the seed is on', () => {
@@ -1295,10 +1295,19 @@ describe('clickstackBootstrap Team-defaults chart-version allowlist', () => {
     expect(
       makeClickstackBootstrap({
         credentials: { source: 'secretValues' },
+        teamDefaults: true,
         name: 'cs-td-kro-secret',
         kind: 'CsTdKroSecret',
       }).toYaml()
     ).toContain(narrowed);
+    // secretValues without the seed (its default) carries no narrowing.
+    expect(
+      makeClickstackBootstrap({
+        credentials: { source: 'secretValues' },
+        name: 'cs-td-kro-secret-off',
+        kind: 'CsTdKroSecretOff',
+      }).toYaml()
+    ).not.toContain('self in [');
     expect(
       makeClickstackBootstrap({
         teamDefaults: { allowUnvalidatedChartVersion: true },
@@ -1783,12 +1792,25 @@ describe('clickstackBootstrap Team name and defaults', () => {
       .filter(Boolean);
   }
 
-  it("secretValues: gives HyperDX TypeKro's connection, with the password left to the chart value", () => {
+  /** What chart 3.2.0's `tpl` makes of the ConfigMap's template, given the merged values. */
+  function tplDefaultConnections(document: string, values: Record<string, any>): unknown {
+    const template = (load(document) as { hyperdx: { deployment: { defaultConnections: string } } })
+      .hyperdx.deployment.defaultConnections;
+    const rendered = template.replace(
+      /\{\{ \.Values\.([\w.]+) \| toJson \}\}/g,
+      (_match, path: string) =>
+        JSON.stringify(path.split('.').reduce((node: any, key) => node?.[key], values))
+    );
+    return JSON.parse(rendered);
+  }
+
+  it("secretValues: gives HyperDX TypeKro's connection, every field serialised by Helm", () => {
+    const username = 'analytics"reader\\ops';
     const docs = docsOf(
       { credentials: { source: 'secretValues' } },
       {
         ...secretValuesSpec(),
-        clickhouse: { ...secretValuesSpec().clickhouse, appUsername: 'ui', httpPort: 8124 },
+        clickhouse: { ...secretValuesSpec().clickhouse, appUsername: username, httpPort: 8124 },
       }
     );
     const release = docs.find(
@@ -1800,27 +1822,37 @@ describe('clickstackBootstrap Team name and defaults', () => {
       { kind: 'Secret', name: 'clickstack-values', valuesKey: 'values.yaml' },
     ]);
     expect(release?.spec.values.hyperdx.deployment).not.toHaveProperty('defaultConnections');
+    // The non-secret half as ordinary typed values.
+    expect(release?.spec.values.typekro.clickstack.defaultConnection).toEqual({
+      host: 'http://clickhouse-observability.clickhouse.svc.cluster.local:8124',
+      port: 8124,
+      username,
+    });
     const configMapDoc = docs.find(
       (doc) => doc.kind === 'ConfigMap' && doc.metadata.name === 'clickstack-default-connections'
     );
-    const values = load(configMapDoc?.data['values.yaml']) as {
-      hyperdx: { deployment: { defaultConnections: string } };
-    };
-    // What the chart's `tpl` turns it into, for a password with JSON metacharacters.
-    const rendered = values.hyperdx.deployment.defaultConnections.replace(
-      '{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}',
-      JSON.stringify('p"w\\x')
+    // A constant: no runtime value is interpolated into the JSON.
+    expect(configMapDoc?.data['values.yaml']).toBe(
+      CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT
     );
-    expect(JSON.parse(rendered)).toEqual([
+    const password = 'p"w\\x';
+    expect(
+      tplDefaultConnections(configMapDoc?.data['values.yaml'], {
+        ...release?.spec.values,
+        hyperdx: {
+          ...release?.spec.values.hyperdx,
+          secrets: { CLICKHOUSE_APP_PASSWORD: password },
+        },
+      })
+    ).toEqual([
       {
         name: 'External ClickHouse',
         host: 'http://clickhouse-observability.clickhouse.svc.cluster.local:8124',
         port: 8124,
-        username: 'ui',
-        password: 'p"w\\x',
+        username,
+        password,
       },
     ]);
-    // No credential in the ConfigMap, and none in inline mode's absence of it.
     expect(JSON.stringify(configMapDoc)).not.toContain('collector-pw');
     expect(
       docsOf({}, BOOTSTRAP_SPEC_FOR_VERSION_GUARD).some(
@@ -1829,31 +1861,84 @@ describe('clickstackBootstrap Team name and defaults', () => {
     ).toBe(false);
   });
 
-  it("secretValues: seeds from the same chart value HyperDX's connection uses", () => {
+  it('secretValues: no seed by default, since the fragment may replace defaultConnections', () => {
+    // A caller whose fragment sets its own defaultConnections, without
+    // initialUser: nothing runs setupTeamDefaults, and TypeKro cannot see the
+    // override, so the default must seed nothing at all.
     const container = cronJobOf({ credentials: { source: 'secretValues' } }, secretValuesSpec());
+    expect(container.env.map((variable) => variable.name)).not.toContain(
+      'HYPERDX_DEFAULT_CONNECTION_PASSWORD'
+    );
+    expect(container.command[4]).toContain('const seedTeamDefaults = () => {};');
+    expect(container.command[4]).not.toContain('database.connections');
+  });
+
+  it("secretValues with teamDefaults: true seeds TypeKro's topology, from the same chart value", () => {
+    const container = cronJobOf(
+      { credentials: { source: 'secretValues' }, teamDefaults: true },
+      secretValuesSpec()
+    );
     const env = Object.fromEntries(container.env.map((variable) => [variable.name, variable]));
     expect(env.HYPERDX_DEFAULT_CONNECTION_USERNAME?.value).toBe('otelcollector');
-    // `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`, which the chart renders into clickstack-secret.
     expect(env.HYPERDX_DEFAULT_CONNECTION_PASSWORD?.valueFrom.secretKeyRef).toEqual({
       name: 'clickstack-secret',
       key: 'CLICKHOUSE_APP_PASSWORD',
       optional: true,
     });
-    // `{}` is the default, spelled out.
+    // An options object asks for it too.
     expect(
       cronJobOf({ credentials: { source: 'secretValues' }, teamDefaults: {} }, secretValuesSpec())
         .env
     ).toEqual(container.env);
   });
 
-  it('secretValues in KRO mode: the ConfigMap carries CEL for the topology and the chart template for the password', () => {
+  it('refuses a concrete clickhouse.host that is not a bare DNS host', () => {
+    const withHost = (host: string) => () =>
+      docsOf(
+        {},
+        {
+          ...BOOTSTRAP_SPEC_FOR_VERSION_GUARD,
+          clickhouse: { ...BOOTSTRAP_SPEC_FOR_VERSION_GUARD.clickhouse, host },
+        }
+      );
+    for (const host of ['http://clickhouse', 'clickhouse:8123', 'click house', 'ch/path', '']) {
+      expect(withHost(host), host).toThrow(/clickhouse.host/);
+    }
+    for (const host of ['ClickHouse.Example.com', '10.0.0.7', 'ch-0.ch.svc']) {
+      expect(withHost(host), host).not.toThrow();
+    }
+  });
+
+  it("does not seed the chart's published default password, and seeds once a real one is set", async () => {
+    const mongo = createFakeMongo();
+    const printed: string[] = [];
+    await runBootstrapScript(
+      renderClickStackTeamBootstrapScript(),
+      { ...degradedEnvironment, HYPERDX_DEFAULT_CONNECTION_PASSWORD: 'hyperdx' },
+      mongo,
+      undefined,
+      (line) => printed.push(line)
+    );
+    expect(mongo.documentsIn('connections')).toHaveLength(0);
+    expect(markers(mongo, 'team-defaults:')).toHaveLength(0);
+    expect(printed.join('\n')).toContain("chart's published default");
+
+    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+    expect(mongo.documentsIn('connections')[0]?.password).toBe(
+      SEED_ENVIRONMENT.HYPERDX_DEFAULT_CONNECTION_PASSWORD
+    );
+  });
+
+  it('secretValues in KRO mode: the ConfigMap is the constant template, the topology CEL in typed values', () => {
     const yaml = makeClickstackBootstrap({
       credentials: { source: 'secretValues' },
       name: 'cs-dc-kro',
       kind: 'CsDcKro',
     }).toYaml();
     expect(yaml).toContain('{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}');
-    expect(yaml).toContain('${schema.spec.clickhouse.host}');
+    expect(yaml).toContain('{{ .Values.typekro.clickstack.defaultConnection.username | toJson }}');
+    // The topology is CEL in the typed values, never inside the JSON template.
+    expect(yaml).toContain('http://${schema.spec.clickhouse.host}:');
     expect(yaml).toContain('kind: ConfigMap');
   });
 

@@ -140,6 +140,8 @@ interface RenderedBootstrap {
   defaultSources: string;
   /** secretValues mode: the default-connections ConfigMap's values document. */
   defaultConnectionsDocument?: string;
+  /** The HelmRelease's own `spec.values`. */
+  releaseValues: Record<string, any>;
 }
 
 /**
@@ -150,12 +152,21 @@ interface RenderedBootstrap {
  */
 function chartDefaultConnections(rendered: RenderedBootstrap, secrets: Secrets): string {
   if (rendered.defaultConnectionsDocument === undefined) return rendered.defaultConnections;
-  const values = loadAll(rendered.defaultConnectionsDocument)[0] as {
+  const document = loadAll(rendered.defaultConnectionsDocument)[0] as {
     hyperdx: { deployment: { defaultConnections: string } };
   };
-  return values.hyperdx.deployment.defaultConnections.replace(
-    '{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}',
-    JSON.stringify(secrets['clickstack-secret']?.CLICKHOUSE_APP_PASSWORD)
+  // The release's merged values: TypeKro's own, plus the fragment's secrets.
+  const values = {
+    ...rendered.releaseValues,
+    hyperdx: {
+      ...rendered.releaseValues.hyperdx,
+      secrets: { CLICKHOUSE_APP_PASSWORD: secrets['clickstack-secret']?.CLICKHOUSE_APP_PASSWORD },
+    },
+  };
+  return document.hyperdx.deployment.defaultConnections.replace(
+    /\{\{ \.Values\.([\w.]+) \| toJson \}\}/g,
+    (_match, path: string) =>
+      JSON.stringify(path.split('.').reduce((node: any, key) => node?.[key], values))
   );
 }
 
@@ -180,6 +191,7 @@ function render(options: ClickStackBuildOptions, spec: object = SPEC): RenderedB
     env: container.env,
     defaultConnections: release?.spec.values.hyperdx.deployment.defaultConnections,
     defaultSources: release?.spec.values.hyperdx.deployment.defaultSources,
+    releaseValues: release?.spec.values,
     ...(defaultConnectionsMap !== undefined && {
       defaultConnectionsDocument: defaultConnectionsMap.data['values.yaml'],
     }),
@@ -796,8 +808,33 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     expect(after.sources).toEqual(state.sources);
   });
 
-  it('secretValues without initialUser: seeds that same connection, and nothing while the password key is missing', () => {
+  it('secretValues without initialUser: seeds nothing by default, even with an empty Team', () => {
+    // The caller's fragment may set its own defaultConnections, which the
+    // CronJob cannot see; without initialUser nothing runs setupTeamDefaults,
+    // so a default seed would put TypeKro's connection in place of theirs.
     const rendered = render({ credentials: { source: 'secretValues' } }, SECRET_VALUES_SPEC);
+    const onOwnDb: RenderedBootstrap = {
+      ...rendered,
+      script: rendered.script.replace(
+        "getSiblingDB('hyperdx')",
+        "getSiblingDB('hyperdx-override')"
+      ),
+    };
+    expect(runBootstrap(onOwnDb, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);
+    const state = JSON.parse(
+      mongoEval(
+        MONGO_SECRET_VALUES,
+        "const d = db.getSiblingDB('hyperdx-override'); print(EJSON.stringify({ teams: d.teams.countDocuments(), connections: d.connections.countDocuments(), sources: d.sources.countDocuments() }))"
+      )
+    );
+    expect(state).toEqual({ teams: 1, connections: 0, sources: 0 });
+  });
+
+  it('secretValues + teamDefaults: true: seeds the same connection HyperDX registers, never a placeholder, and nothing while the key is missing', () => {
+    const rendered = render(
+      { credentials: { source: 'secretValues' }, teamDefaults: true },
+      SECRET_VALUES_SPEC
+    );
     const onOwnDb: RenderedBootstrap = {
       ...rendered,
       script: rendered.script.replace(
@@ -806,6 +843,14 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
       ),
     };
     const clickstackSecret = SECRET_VALUES_SECRETS['clickstack-secret'] as Record<string, string>;
+    const connections = () =>
+      JSON.parse(
+        mongoEval(
+          MONGO_SECRET_VALUES,
+          "print(EJSON.stringify(db.getSiblingDB('hyperdx-degraded').connections.find().toArray()))"
+        )
+      ) as Record<string, unknown>[];
+
     const { CLICKHOUSE_APP_PASSWORD: _missing, ...withoutAppPassword } = clickstackSecret;
     const missing = runBootstrap(
       onOwnDb,
@@ -815,13 +860,19 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     );
     expect(missing.ok).toBe(true);
     expect(missing.stdout).toContain('password Secret key is missing');
-    const connections = () =>
-      JSON.parse(
-        mongoEval(
-          MONGO_SECRET_VALUES,
-          "print(EJSON.stringify(db.getSiblingDB('hyperdx-degraded').connections.find().toArray()))"
-        )
-      ) as Record<string, unknown>[];
+    expect(connections()).toHaveLength(0);
+
+    // The fragment never set CLICKHOUSE_APP_PASSWORD: the chart's public default.
+    const placeholder = runBootstrap(
+      onOwnDb,
+      MONGO_SECRET_VALUES,
+      {},
+      {
+        'clickstack-secret': { ...clickstackSecret, CLICKHOUSE_APP_PASSWORD: 'hyperdx' },
+      }
+    );
+    expect(placeholder.ok).toBe(true);
+    expect(placeholder.stdout).toContain("chart's published default");
     expect(connections()).toHaveLength(0);
 
     expect(runBootstrap(onOwnDb, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);

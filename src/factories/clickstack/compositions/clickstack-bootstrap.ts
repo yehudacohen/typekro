@@ -79,6 +79,7 @@
 import type { V1CronJob, V1PersistentVolumeClaim } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { validateDnsSubdomainName } from '../../../core/kubernetes/naming.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/portable-strategies.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
@@ -140,7 +141,7 @@ import {
 import {
   CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY,
   clickStackDefaultConnectionTarget,
-  clickStackSecretValuesDefaultConnectionsDocument,
+  CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT,
   DEFAULT_CLICKSTACK_NAMESPACE,
   mapClickStackConfigToHelmValues,
 } from '../utils/helm-values-mapper.js';
@@ -667,6 +668,23 @@ function assertClickStackHyperdxOidcChartVersion(
 }
 
 /**
+ * Refuse a concrete `clickhouse.host` that is not a bare DNS host: no scheme,
+ * port, path or whitespace (the schema documents it as exactly that).
+ * Hostnames are case-insensitive, so the RFC 1123 check runs on lower case;
+ * an IPv4 address passes it too.
+ *
+ * @throws Error naming the offending value and the rule it breaks
+ */
+function assertClickStackClickhouseHost(host: unknown): void {
+  const reason = validateDnsSubdomainName(typeof host === 'string' ? host.toLowerCase() : host);
+  if (reason !== undefined) {
+    throw new Error(
+      `ClickStack clickhouse.host ${JSON.stringify(host)} is not a DNS host (no scheme, port or path): it ${reason}.`
+    );
+  }
+}
+
+/**
  * Refuse the Team-defaults seed on a chart version nobody has audited — the
  * build-time half; the KRO half is the shared `spec.version` narrowing in
  * {@link clickStackSchemaFieldValidations}.
@@ -778,6 +796,11 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // plus status endpoints naming a gateway Service the chart truncated away.
     // The guard runs the SAME schema, so the message cannot drift from it.
     if (!isKubernetesRef(spec.name)) assertClickStackReleaseName(spec.name);
+    // The host becomes `http://<host>:<port>` in HyperDX's connection and the
+    // seed, so a concrete one must be a bare DNS host (or IPv4 address).
+    if (!isKubernetesRef(spec.clickhouse) && !isKubernetesRef(spec.clickhouse.host)) {
+      assertClickStackClickhouseHost(spec.clickhouse.host);
+    }
 
     if (build.credentialSource === 'inline') {
       const inlineApiKey = (
@@ -982,7 +1005,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         },
         data: {
           [CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY]:
-            clickStackSecretValuesDefaultConnectionsDocument(spec),
+            CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT,
         },
       });
       _clickstackHelmRelease.dependsOn(defaultConnections);
@@ -1428,9 +1451,18 @@ function withTeamDefaults(
  * modes HyperDX's `DEFAULT_CONNECTIONS` password is the chart value
  * `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`: inline mode renders it into
  * `defaultConnections` directly, and `secretValues` mode templates it there
- * (see `clickStackSecretValuesDefaultConnectionsDocument`). The chart renders
+ * (see `CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT`). The chart renders
  * that same value into `clickstack-secret.CLICKHOUSE_APP_PASSWORD`, which is
  * what the seed reads. One value, one connection definition.
+ *
+ * DEFAULT: ON WITH INLINE CREDENTIALS, OFF WITH `secretValues`. Inline, TypeKro
+ * owns the whole connection. With `secretValues`, the caller's values fragment
+ * may replace `defaultConnections`, and the CronJob cannot see that: without
+ * `initialUser` nothing runs `setupTeamDefaults`, so a default-on seed would
+ * put TypeKro's connection into the empty Team instead of the caller's, once
+ * and for good. There, `teamDefaults: true` (or an options object) asks for
+ * TypeKro's typed topology explicitly. (With `initialUser`, HyperDX's own
+ * registration seeds the Team from the fully merged values either way.)
  *
  * Off when build-time values replace the chart defaults (or point HyperDX at
  * an existing config Secret): what HyperDX would seed is the caller's then.
@@ -1440,6 +1472,7 @@ function resolveTeamDefaults(
 ): ResolvedBuildConfig['teamDefaults'] {
   const requested = options.teamDefaults;
   if (requested === false) return undefined;
+  if (requested === undefined && options.credentials?.source === 'secretValues') return undefined;
   const hyperdx = (options.values as Record<string, unknown> | undefined)?.hyperdx;
   const deployment =
     typeof hyperdx === 'object' && hyperdx !== null

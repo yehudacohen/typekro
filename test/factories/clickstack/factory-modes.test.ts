@@ -558,22 +558,15 @@ describe('clickstackBootstrap factory modes', () => {
       expect(serialized).toContain(
         'has(schema.spec.credentialsSecret) && has(schema.spec.credentialsSecret.valuesKey)'
       );
-      // The UI password is named in exactly two places, neither a value: the
-      // chart template in HyperDX's default connection, and the Team-defaults
-      // seed's reference to the Secret the chart renders from that value.
+      // The UI password is named in exactly one place, and not as a value: the
+      // chart template in HyperDX's default connection. The Team-defaults seed
+      // is off by default in secretValues mode, so it references nothing.
       const passwordTemplate = '{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}';
-      const seedPasswordRef =
-        '{"name":"HYPERDX_DEFAULT_CONNECTION_PASSWORD","valueFrom":{"secretKeyRef":' +
-        '{"key":"CLICKHOUSE_APP_PASSWORD","name":"clickstack-secret","optional":true}}}';
       expect(serialized).toContain(passwordTemplate);
-      expect(serialized).toContain(seedPasswordRef);
-      const withoutKnownRefs = serialized
-        .split(passwordTemplate)
-        .join('')
-        .split(seedPasswordRef)
-        .join('');
-      expect(withoutKnownRefs).not.toContain('CLICKHOUSE_PASSWORD');
-      expect(withoutKnownRefs).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      expect(serialized).not.toContain('HYPERDX_DEFAULT_CONNECTION_PASSWORD');
+      const withoutTemplate = serialized.split(passwordTemplate).join('');
+      expect(withoutTemplate).not.toContain('CLICKHOUSE_PASSWORD');
+      expect(withoutTemplate).not.toContain('CLICKHOUSE_APP_PASSWORD');
       expect(serialized).not.toContain('schema.spec.apiKey');
       expect(yaml).toContain('key: HYPERDX_API_KEY');
       expect(yaml).toContain('name: clickstack-secret');

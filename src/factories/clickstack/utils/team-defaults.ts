@@ -145,6 +145,12 @@ export const HYPERDX_DEFAULT_CONNECTION_HOST_ENV = 'HYPERDX_DEFAULT_CONNECTION_H
 export const HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV = 'HYPERDX_DEFAULT_CONNECTION_USERNAME';
 export const HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV = 'HYPERDX_DEFAULT_CONNECTION_PASSWORD';
 export const HYPERDX_DEFAULT_SOURCES_DATABASE_ENV = 'HYPERDX_DEFAULT_SOURCES_DATABASE';
+/**
+ * Chart 3.2.0's published default for `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`
+ * (values.yaml). It reaches `clickstack-secret` whenever the values never set
+ * the key, so the seed treats it as "no password configured".
+ */
+export const CLICKSTACK_CHART_PLACEHOLDER_APP_PASSWORD = 'hyperdx';
 /** Key of the chart-owned `clickstack-secret` holding the HyperDX UI user's ClickHouse password. */
 export const CLICKSTACK_APP_PASSWORD_SECRET_KEY = 'CLICKHOUSE_APP_PASSWORD';
 
@@ -421,12 +427,20 @@ export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions):
     `  const sourceDatabase = process.env.${HYPERDX_DEFAULT_SOURCES_DATABASE_ENV};`,
     `  const password = process.env.${HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV};`,
     `  if (typeof host !== 'string' || host.length === 0 || typeof username !== 'string' || typeof sourceDatabase !== 'string') throw new Error('${HYPERDX_DEFAULT_CONNECTION_HOST_ENV}, ${HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV} and ${HYPERDX_DEFAULT_SOURCES_DATABASE_ENV} are required to seed the HyperDX Team defaults.');`,
-    // The Secret key is referenced `optional: true`, so a missing key arrives
-    // as an unset variable. Seeding '' would leave a Team that looks set up
-    // with a connection that cannot log in; seed nothing and say why. No
-    // marker, so the seed happens once the key exists.
+    // The Secret key is referenced `optional: true`, so a MISSING key arrives
+    // as an unset variable: seed nothing and say why, with no marker, so the
+    // seed happens once the key exists. A key that exists but is EMPTY is a
+    // passwordless ClickHouse user and is seeded as '', as HyperDX does.
     "  if (typeof password !== 'string') {",
     `    print('ClickStack team defaults: the ClickHouse password Secret key is missing, so TypeKro seeds nothing until it exists (${HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV} is unset).');`,
+    '    return;',
+    '  }',
+    // The chart's published default for CLICKHOUSE_APP_PASSWORD means the
+    // values never set one: seeding it would leave a Team that looks set up
+    // with a connection that cannot log in, for good. Nothing, no marker, and
+    // no echo of the value; a later run seeds once a real password is set.
+    `  if (password === ${JSON.stringify(CLICKSTACK_CHART_PLACEHOLDER_APP_PASSWORD)}) {`,
+    "    print('ClickStack team defaults: the ClickHouse UI password is still the chart\\'s published default (hyperdx.secrets.CLICKHOUSE_APP_PASSWORD was never set), so TypeKro seeds nothing until a real one is set.');",
     '    return;',
     '  }',
     '  if (marker === null) {',
