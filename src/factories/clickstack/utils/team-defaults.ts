@@ -44,6 +44,8 @@
 // integration test compares the two field by field), and `HYPERDX_SOURCE_FIELDS`
 // below records the 2.35.0 schema it mirrors.
 
+import { CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE } from '../types.js';
+
 /** Name of the HyperDX connection emitted into `defaultConnections`/`defaultSources`. */
 export const CLICKSTACK_CONNECTION_NAME = 'External ClickHouse';
 
@@ -298,26 +300,6 @@ export function renderHyperdxSeedSources(
     return { name: String(source.name), document, references };
   });
 }
-
-/**
- * The seed's RUNTIME host check, as mongosh source: given the connection URL
- * the CronJob carries (`http://<host>:<port>`), the reason its host would
- * break the connection, or `null`. The same rule as
- * `validateClickStackClickhouseHost` / the CRD's host rule (a unit test holds
- * the three to the same samples). It exists because KRO 0.9.2 never adds the
- * CRD rule to a CRD it already created, so on an upgraded KRO deployment this
- * is the only host check before a connection is written.
- */
-export const CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE = String.raw`(url) => {
-  const match = /^http:\/\/(.*):([0-9]+)$/.exec(url);
-  if (match === null) return 'is not of the form http://<host>:<port>';
-  const host = match[1];
-  if (host.length === 0) return 'has an empty host';
-  if (/[\t\n\v\f\r /?#@]/.test(host)) return 'has whitespace, "/", "?", "#" or "@" in its host';
-  if (host.startsWith('[')) return /^\[[0-9A-Fa-f:.]+\]$/.test(host) ? null : 'has brackets that do not wrap one IPv6 address';
-  if (host.includes('[') || host.includes(']') || host.includes(':')) return 'has a scheme, a port or an unbracketed IPv6 address in its host';
-  return null;
-}`;
 
 /** Marker `_id` prefixes in the TypeKro-owned bootstrap collection. */
 const TEAM_DEFAULTS_MARKER_PREFIX = 'team-defaults:';

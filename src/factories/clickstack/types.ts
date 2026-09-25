@@ -41,6 +41,7 @@
  */
 
 import type { ClickStackHyperdxOidcOptions } from './hyperdx-oidc/index.js';
+import { isIPv6 } from 'node:net';
 import { type } from 'arktype';
 import type { ValuesMergeExpression } from '../../core/aspects/values-merge.js';
 import {
@@ -401,50 +402,101 @@ export const DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY = 'HYPERDX_INITIAL_USE
 export const CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION = 'typekro_bootstrap';
 
 /**
- * The CEL rule the generated CRD carries on `spec.clickhouse.host`, the KRO
- * twin of {@link validateClickStackClickhouseHost}. It refuses exactly what
- * breaks the `http://<host>:<port>` / `tcp://<host>:<port>` URLs the host is
- * built into, and nothing else: whitespace, `/`, `?`, `#`, `@`, and a `:` or
- * bracket outside one bracketed IPv6 literal (so a scheme or a port).
- * Written without backslashes (RE2 POSIX classes and bracket literals), so it
- * survives the KRO marker's quoting unchanged. `x-kubernetes-validations`
- * is not compared by KRO's CRD compatibility check, so adding it is not a
- * breaking CRD change.
+ * The CEL rule the generated CRD carries on `spec.clickhouse.host`: a
+ * SYNTACTIC pre-check. A bracketed host may hold only hex digits, `.` and at
+ * least one `:`; any other host only ASCII letters, digits, `.`, `-` and `_`.
+ * That refuses every scheme, port, path, userinfo, whitespace, backslash,
+ * percent-encoding and non-ASCII host. It does not parse IPv6 or normalise
+ * IPv4 (Kubernetes' CEL IP library needs a newer API server than TypeKro
+ * requires), so `[:::]` and `127.1` pass admission.
+ * {@link validateClickStackClickhouseHost} (render time) and the seed's runtime
+ * check are the authoritative ones.
+ *
+ * KRO carries it into the CRD only when it creates the CRD fresh (see the KRO
+ * caveat in the docs).
  */
 export const CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE =
-  "size(self) > 0 && !self.matches('[[:space:]/?#@]') && " +
-  "(self.startsWith('[') ? self.matches('^[[][0-9A-Fa-f:.]+[]]$') : " +
-  "!self.contains(':') && !self.contains('[') && !self.contains(']'))";
+  "self.startsWith('[') ? self.matches('^[[][0-9A-Fa-f.]*:[0-9A-Fa-f:.]*[]]$') : " +
+  "self.matches('^[A-Za-z0-9._-]+$')";
 
 /**
- * Check a concrete `clickhouse.host`: the same rule as
- * {@link CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE}, with a reason a person
- * can act on. Accepts a short name, an FQDN (with or without a trailing dot),
- * an IPv4 address and a bracketed IPv6 address, in any case.
+ * Check a concrete `clickhouse.host` by what breaks the `http://` / `tcp://`
+ * URLs it is built into, with a reason a person can act on. Accepts a short
+ * name, an FQDN (with or without a trailing dot), an IPv4 address and a
+ * bracketed IPv6 address, in any case.
+ *
+ * A bracketed host must be an IPv6 address by `net.isIPv6`. Any other host
+ * must be ASCII letters, digits, `.`, `-` and `_` only (so no `\`, which URL
+ * parsers read as a path separator, no percent-encoding and no non-ASCII),
+ * and must survive WHATWG URL parsing unchanged
+ * (`new URL('http://<host>/').hostname` equals the host, lower-cased), which
+ * refuses shorthand IPv4 such as `127.1`. Each of those would make consumers
+ * reach a different host from the one checked.
+ * The seed runs the same checks at runtime ({@link CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE}).
  *
  * @returns A reason the host is unusable, or `undefined` when it is valid
  */
 export function validateClickStackClickhouseHost(host: unknown): string | undefined {
   if (typeof host !== 'string' || host.length === 0) return 'must be a non-empty string';
   if (host.includes('://')) return 'must not include a scheme (drop the "http://" or "tcp://")';
-  // RE2's [[:space:]] is exactly [\t\n\v\f\r ].
-  if (/[\t\n\v\f\r /?#@]/.test(host)) {
-    return 'must not contain whitespace, "/", "?", "#" or "@" (no path, query or userinfo)';
+  if (/[\t\n\v\f\r /?#@\\]/.test(host)) {
+    return 'must not contain whitespace, "/", "\\", "?", "#" or "@" (no path, query or userinfo)';
   }
   if (host.startsWith('[')) {
-    return /^\[[0-9A-Fa-f:.]+\]$/.test(host)
+    return host.endsWith(']') && isIPv6(host.slice(1, -1))
       ? undefined
-      : 'must be a single bracketed IPv6 address when it starts with "["';
+      : 'must be a valid IPv6 address when it is in brackets, e.g. "[fd00::1]"';
   }
-  if (host.includes('[') || host.includes(']'))
+  if (host.includes('[') || host.includes(']')) {
     return 'must not contain "[" or "]" except around an IPv6 address';
+  }
   if (host.includes(':')) {
     return (host.match(/:/g) ?? []).length > 1
       ? 'looks like an IPv6 address: write it in brackets, e.g. "[fd00::1]"'
       : 'must not include a port (set clickhouse.httpPort / clickhouse.nativePort instead)';
   }
+  if (!/^[A-Za-z0-9._-]+$/.test(host)) {
+    return 'must contain only ASCII letters, digits, ".", "-" and "_" (or be a bracketed IPv6 address)';
+  }
+  let parsed: string;
+  try {
+    parsed = new URL(`http://${host}/`).hostname;
+  } catch {
+    return 'is not a valid URL host';
+  }
+  if (parsed !== host.toLowerCase()) {
+    return `is not a plain host name: URL parsing reads it as ${JSON.stringify(parsed)}`;
+  }
   return undefined;
 }
+
+/**
+ * The seed's runtime host check, as mongosh source: given the connection URL
+ * the CronJob carries (`http://<host>:<port>`), the reason its host would
+ * break the connection, or `null`. The same checks as
+ * {@link validateClickStackClickhouseHost}, with mongosh's Node `net` and
+ * `URL` (a unit test holds the two to one sample set). It exists because KRO
+ * 0.9.2 never adds the CRD rule to a CRD it already created, and the CRD rule
+ * is only syntactic anyway.
+ */
+export const CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE = String.raw`(url) => {
+  const match = /^http:\/\/(.*):([0-9]+)$/.exec(url);
+  if (match === null) return 'is not of the form http://<host>:<port>';
+  const host = match[1];
+  if (host.length === 0) return 'has an empty host';
+  if (/[\t\n\v\f\r /?#@\\]/.test(host)) return 'has whitespace, "/", "\\", "?", "#" or "@" in its host';
+  if (host.startsWith('[')) return host.endsWith(']') && require('net').isIPv6(host.slice(1, -1)) ? null : 'has a bracketed host that is not a valid IPv6 address';
+  if (host.includes('[') || host.includes(']') || host.includes(':')) return 'has a scheme, a port or an unbracketed IPv6 address in its host';
+  if (!/^[A-Za-z0-9._-]+$/.test(host)) return 'has characters other than ASCII letters, digits, ".", "-" and "_" in its host';
+  let parsed;
+  try {
+    parsed = new URL('http://' + host + '/').hostname;
+  } catch (error) {
+    return 'has a host that is not a valid URL host';
+  }
+  if (parsed !== host.toLowerCase()) return 'has a host that URL parsing reads as ' + JSON.stringify(parsed);
+  return null;
+}`;
 
 /** Name of the HyperDX Team the bootstrap creates when `teamName` is not set. */
 export const DEFAULT_CLICKSTACK_TEAM_NAME = 'ClickStack';

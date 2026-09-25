@@ -14,6 +14,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as nodeCrypto from 'node:crypto';
+import * as nodeNet from 'node:net';
 import { load } from 'js-yaml';
 
 import {
@@ -28,6 +29,7 @@ import {
 import {
   type ClickStackBuildOptions,
   type ResolvedClickStackInitialUser,
+  CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE,
   CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE,
   validateClickStackClickhouseHost,
   CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION,
@@ -44,7 +46,6 @@ import {
   CLICKSTACK_SECRET_VALUES_DEFAULT_CONNECTIONS_DOCUMENT,
 } from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 import {
-  CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE,
   CLICKSTACK_LEGACY_TEAM_NAME_SHA256,
   renderHyperdxSeedSources,
 } from '../../../src/factories/clickstack/utils/team-defaults.js';
@@ -480,6 +481,7 @@ function runBootstrapScript(
     (module: string) => {
       // The degraded script hashes a Team name with mongosh's Node `crypto`.
       if (module === 'crypto') return nodeCrypto;
+      if (module === 'net') return nodeNet;
       throw new Error(`unexpected require(${module})`);
     },
     fetchImpl,
@@ -498,6 +500,9 @@ class FakeObjectId {
     return this.hex;
   }
 }
+
+/** How TypeKro quotes a rule into a KRO `validation="..."` marker (KRO unquotes it). */
+const kroMarkerEscape = (rule: string) => rule.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
 
 const VALID_API_KEY = '11111111-2222-3333-4444-555555555555';
 
@@ -2001,14 +2006,14 @@ describe('clickstackBootstrap Team name and defaults', () => {
     );
     // A host that would break the URL is refused at admission on a fresh CRD.
     expect(rgd?.spec.schema.spec.clickhouse.host).toBe(
-      `string | validation="${CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE}"`
+      `string | validation="${kroMarkerEscape(CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE)}"`
     );
   });
 
   it('the runtime host check matches the render-time rule on every sample', () => {
-    const check = new Function(`return ${CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE};`)() as (
-      url: string
-    ) => string | null;
+    const check = new Function('require', `return ${CLICKSTACK_CLICKHOUSE_HOST_URL_CHECK_SOURCE};`)(
+      (module: string) => (module === 'net' ? nodeNet : undefined)
+    ) as (url: string) => string | null;
     for (const host of [
       'clickhouse',
       'clickhouse.analytics.svc.cluster.local.',
@@ -2021,6 +2026,13 @@ describe('clickstackBootstrap Team name and defaults', () => {
       'click house',
       'ch"quoted',
       'ch\\back',
+      '[abc]',
+      '[:::]',
+      '[::ffff:10.0.0.7]',
+      'ch%41',
+      'caf\u00e9',
+      '127.1',
+      'ch^x',
       'user@clickhouse',
       'fd00::1',
       '[fd00::1]:8123',
@@ -2086,7 +2098,15 @@ describe('clickstackBootstrap Team name and defaults', () => {
       ['click house', /whitespace/],
       ['user@clickhouse', /userinfo/],
       ['fd00::1', /brackets, e\.g\. "\[fd00::1\]"/],
-      ['[fd00::1]:8123', /bracketed IPv6/],
+      ['[fd00::1]:8123', /valid IPv6 address when it is in brackets/],
+      ['ch\\back', /"\\"/],
+      ['[abc]', /valid IPv6 address when it is in brackets/],
+      ['[:::]', /valid IPv6 address when it is in brackets/],
+      ['ch%41', /only ASCII letters, digits/],
+      ['caf\u00e9', /only ASCII letters, digits/],
+      ['ch"quoted', /only ASCII letters, digits/],
+      ['127.1', /URL parsing reads it as "127.0.0.1"/],
+      ['ch^x', /only ASCII letters, digits/],
       ['', /non-empty/],
     ];
     for (const [host, reason] of refused) {
@@ -2107,7 +2127,7 @@ describe('clickstackBootstrap Team name and defaults', () => {
           (doc) => doc?.kind === 'ResourceGraphDefinition' && doc.metadata.name === options.name
         );
       expect(rgd?.spec.schema.spec.clickhouse.host).toBe(
-        `string | validation="${CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE}"`
+        `string | validation="${kroMarkerEscape(CLICKSTACK_CLICKHOUSE_HOST_VALIDATION_RULE)}"`
       );
     }
   });

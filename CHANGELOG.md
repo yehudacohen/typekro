@@ -448,10 +448,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `clickhouse.host` is checked at render time for a concrete value, by a CRD rule in KRO mode, and
     by the seed at runtime. The runtime check is the one that holds on existing KRO CRDs; on an
     invalid host it seeds nothing, writes no marker, and logs the host but never the password.
-    Accepted: short names, FQDNs with or without a trailing dot, IPv4, and bracketed IPv6, in any
-    case. Refused: an empty value; whitespace, `/`, `?`, `#` or `@`; a scheme; a `:` outside brackets
-    (a port); brackets that don't wrap a single IPv6 address; and unbracketed IPv6, with a hint to
-    bracket it.
+    Accepted: short names and FQDNs (with or without a trailing dot) of ASCII letters, digits, `.`,
+    `-` and `_`, in any case; dotted-quad IPv4; and bracketed IPv6, validated as IPv6 by `net.isIPv6`.
+    Refused: an empty value; whitespace, `/`, `\`, `?`, `#` or `@`; a scheme; a `:` outside brackets
+    (a port); a bracketed value that isn't IPv6 (`[abc]`, `[:::]`); unbracketed IPv6, with a hint to
+    bracket it; any other character; and a host WHATWG URL parsing would rewrite (`127.1`). The render
+    time and runtime checks are identical, and the CRD rule is a syntactic pre-check that lets
+    `[:::]` and `127.1` through to them.
   - The ConfigMap is listed in `valuesFrom` before the caller's Secret, so a `defaultConnections` in the
     fragment still wins.
 - **ClickStack: the Team the bootstrap creates is named `ClickStack` (or `teamName`), not a hard-coded
@@ -1204,8 +1207,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     now, in both modes**, which the chart's `tpl` renders into `DEFAULT_CONNECTIONS` /
     `DEFAULT_SOURCES`. Anything that read them from the HelmRelease as JSON must render them first.
   - **`clickhouse.host` values that break the connection URLs are now refused:** an empty value;
-    whitespace, `/`, `?`, `#` or `@`; a scheme; a port; stray brackets; and unbracketed IPv6.
-    Trailing-dot FQDNs and bracketed IPv6 still work.
+    whitespace, `/`, `\`, `?`, `#` or `@`; a scheme; a port; a bracketed value that isn't IPv6;
+    unbracketed IPv6; non-ASCII or other characters outside letters, digits, `.`, `-` and `_`; and
+    shorthand IPv4. Trailing-dot FQDNs and bracketed IPv6 still work.
 
 - **Documentation and test examples use generic names.** The NATS JetStream examples use
   `ORDERS_EVENTS` / `orders.events.>`, the Envoy AI Gateway examples use the `x-acme-principal`

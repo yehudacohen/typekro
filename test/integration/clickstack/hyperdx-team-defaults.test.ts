@@ -929,13 +929,17 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
           "print(EJSON.stringify(db.getSiblingDB('hyperdx-badhost').connections.find().toArray()))"
         )
       ) as Record<string, unknown>[];
-    const bad = runBootstrap(onOwnDb, MONGO_FRESH, {
-      HYPERDX_DEFAULT_CONNECTION_HOST: `http://${CLICKHOUSE} extra:8123`,
-    });
-    expect(bad.ok, bad.stderr).toBe(true);
-    expect(bad.stdout).toContain('seeds nothing');
-    expect(bad.stdout).not.toContain(CLICKHOUSE_PASSWORD);
-    expect(connections()).toHaveLength(0);
+    // mongosh's own Node `net` and `URL` decide: a space, a backslash (a path
+    // separator to URL parsers), and brackets that do not hold an IPv6 address.
+    for (const host of [`${CLICKHOUSE} extra`, `${CLICKHOUSE}\\back`, '[abc]', '[:::]']) {
+      const bad = runBootstrap(onOwnDb, MONGO_FRESH, {
+        HYPERDX_DEFAULT_CONNECTION_HOST: `http://${host}:8123`,
+      });
+      expect(bad.ok, bad.stderr).toBe(true);
+      expect([host, bad.stdout.includes('seeds nothing')]).toEqual([host, true]);
+      expect(bad.stdout).not.toContain(CLICKHOUSE_PASSWORD);
+      expect(connections()).toHaveLength(0);
+    }
 
     expect(runBootstrap(onOwnDb, MONGO_FRESH).ok).toBe(true);
     expect(connections()).toHaveLength(1);

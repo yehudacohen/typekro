@@ -109,22 +109,33 @@ service names.
 
 ### ClickHouse host
 
-`clickhouse.host` goes into `http://<host>:<httpPort>` and `tcp://<host>:<nativePort>` as it is, so it must be a
-host and nothing more.
+`clickhouse.host` goes into `http://<host>:<httpPort>` and `tcp://<host>:<nativePort>` as it is, so it
+must be a host that every URL parser reads as that same host, and nothing more.
 
-- **Accepted:** a short name, an FQDN with or without a trailing dot, an IPv4 address, or a bracketed
-  IPv6 address (`[fd00::1]`), in any case.
+- **Accepted:**
+  - a short name, or an FQDN with or without a trailing dot, made of ASCII letters, digits, `.`, `-` and
+    `_`, in any case;
+  - an IPv4 address in dotted-quad form;
+  - a bracketed IPv6 address, validated as IPv6 (`[fd00::1]`, `[::ffff:10.0.0.7]`).
 - **Refused:**
   - an empty value;
-  - whitespace, `/`, `?`, `#` or `@` (a path, query, fragment or userinfo);
-  - a scheme (`http://…`);
-  - a `:` outside brackets (a port; use `httpPort` / `nativePort`);
-  - brackets that don't wrap a single IPv6 address (e.g. `[fd00::1]:8123`);
-  - an unbracketed IPv6 address. The error says to bracket it.
+  - whitespace, `/`, `\`, `?`, `#` or `@` (a path, query, fragment or userinfo). URL parsers read `\` as
+    a path separator;
+  - a scheme (`http://…`) or a `:` outside brackets (a port; use `httpPort` / `nativePort`);
+  - a bracketed value that isn't a valid IPv6 address (`[abc]`, `[:::]`, `[fd00::1]:8123`);
+  - an unbracketed IPv6 address. The error says to bracket it;
+  - any other character, including percent-encoding and non-ASCII;
+  - a host URL parsing would rewrite, such as shorthand IPv4 `127.1`.
 
-A concrete host is checked at render time. The generated CRD carries the same rule for KRO mode, with
-the [KRO caveat](#chart-versions-it-is-valid-for) that it reaches new CRDs only, and the Team-defaults
-seed checks it again at runtime.
+**Where it is checked.**
+
+- **Render time, for a concrete host:** the full check, with Node's `net.isIPv6` and WHATWG URL parsing.
+- **Runtime, in the Team-defaults seed:** the same full check, in mongosh. It holds on every CRD.
+- **At admission:** the generated CRD carries a **syntactic** pre-check. A bracketed value may hold only
+  hex digits, `.` and at least one `:`, and anything else only ASCII letters, digits, `.`, `-` and `_`.
+  It doesn't parse IPv6 or normalise IPv4, because Kubernetes' CEL IP library needs a newer API server,
+  so `[:::]` and `127.1` pass admission and are refused by the other two checks. It also reaches new
+  CRDs only (see the [KRO caveat](#chart-versions-it-is-valid-for)).
 
 ## MongoDB Modes (build-time)
 
@@ -407,8 +418,9 @@ Check these when upgrading from a release without the Team-defaults seed:
   empty, so the seed leaves it alone. Fix or delete the connection in HyperDX's UI.
 - **Team names:** a Team still carrying the old hard-coded default is renamed to `teamName` on the
   first run. Any other name is kept.
-- **`clickhouse.host`:** a value with a scheme, port, path, userinfo or whitespace, or an unbracketed
-  IPv6 address, is now refused. [The rules](#clickhouse-host) list exactly what's accepted.
+- **`clickhouse.host`:** a value with a scheme, port, path, backslash, userinfo, whitespace or
+  non-ASCII characters is now refused, as are an unbracketed IPv6 address and a bracketed value that
+  isn't IPv6. [The rules](#clickhouse-host) list exactly what's accepted.
 - **KRO CRDs you already have** don't get the new admission rules, because KRO 0.9.2 doesn't apply a
   validation-only change to an existing CRD (see the [KRO caveat](#chart-versions-it-is-valid-for)).
   The render-time checks and the seed's runtime version check still apply.
@@ -447,8 +459,8 @@ both again at runtime, whatever the CRD says, which also holds on an upgraded KR
 
 - **The chart version.** The CronJob gets the release's chart version and seeds nothing on an
   unaudited one.
-- **The host.** The seed validates the connection host it would write against the same rule, and seeds
-  nothing on an invalid one. It logs the host, never the password, and writes no marker, so it seeds
+- **The host.** The seed runs the full [host check](#clickhouse-host) (IPv6 and URL parsing, not just
+  the CRD's syntactic rule) on the connection host it would write, and seeds nothing on an invalid one. It logs the host, never the password, and writes no marker, so it seeds
   once the host is fixed.
 
 HyperDX's own default connection needs no such check: the host, user, password and database reach
