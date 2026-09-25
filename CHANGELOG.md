@@ -387,11 +387,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   8000, and when the request's `Host` header has no port (every request through a TLS proxy on 443) it
   rewrites a relative `Location` to `http://<host>:8000/...`, which the browser can't reach. A downstream
   end-to-end test behind a reverse proxy found this. Every redirect the plugin issues is now absolute, built
-  from the configured public URL: `redirectBaseUrl` or HyperDX's `FRONTEND_URL` for the plugin's own
-  routes, and HyperDX's redirect base first for the UI. The request's `Host` header is never used. With
-  no public URL configured, redirects stay relative and the plugin logs a warning. `redirectBaseUrl` with
-  credentials, a query or a fragment is now refused. The real-image suite now also runs a HyperDX behind
-  Caddy and follows the sign-in from the chooser to the provider and back.
+  from the configured public URL. The callback URL and the chooser share one base (`redirectBaseUrl`, else
+  `FRONTEND_URL`), and redirects to the UI use HyperDX's own redirect base. The request's `Host` header is
+  never used. If `FRONTEND_URL` is missing or malformed and there is no `redirectBaseUrl`, redirects stay
+  relative and the plugin logs a warning that says which. It also warns when `redirectBaseUrl` and
+  `FRONTEND_URL` have different origins. `redirectBaseUrl` with credentials, a query or a fragment (even an
+  empty `?` or `#`) is now refused, and a `returnTo` containing whitespace or control characters falls back
+  to `/`. The real-image suite now also runs a HyperDX behind Caddy and follows the sign-in from the
+  chooser to the provider and back.
 - A `clickHouseInstallation` change that alters the pod template (probes above all) together with
   restart-requiring configuration no longer restarts ClickHouse under the OLD pod template first
   (#238). clickhouse-operator 0.27.x restarts the server in place (`SYSTEM SHUTDOWN`) before

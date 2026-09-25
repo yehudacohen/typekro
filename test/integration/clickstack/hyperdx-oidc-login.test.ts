@@ -274,7 +274,7 @@ beforeAll(async () => {
   mockExternal = `http://localhost:${mockPort}`;
   proxyExternal = `http://localhost:${proxyPort}`;
 
-  for (const name of CONTAINERS) docker(['rm', '-f', name]);
+  for (const name of CONTAINERS) docker(['rm', '-f', '-v', name]);
   docker(['network', 'rm', NETWORK]);
   expect(docker(['network', 'create', NETWORK]).ok).toBe(true);
   expect(docker(['run', '-d', '--name', MONGO, '--network', NETWORK, MONGO_IMAGE]).ok).toBe(true);
@@ -382,7 +382,8 @@ beforeAll(async () => {
 
 afterAll(() => {
   if (!dockerAvailable) return;
-  for (const name of CONTAINERS) docker(['rm', '-f', name]);
+  // -v: MongoDB's image declares volumes; without it every run leaks them.
+  for (const name of CONTAINERS) docker(['rm', '-f', '-v', name]);
   docker(['network', 'rm', NETWORK]);
   if (workDir) rmSync(workDir, { recursive: true, force: true });
 });
@@ -720,6 +721,8 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
       expect(response.status).toBe(302);
       expect(response.headers.get('location')).toBe(expected);
     }
+    // FRONTEND_URL is a valid public URL: no fallback to relative redirects.
+    expect(countLogMatches(/FRONTEND_URL (is not set|is not a valid)/, HYPERDX_PROXIED)).toBe(0);
   });
 
   it('signs in from the chooser: provider route, issuer, callback, then the public UI', async () => {

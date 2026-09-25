@@ -11,6 +11,7 @@
 
 import * as oauth from 'oauth4webapi';
 import type { OidcProviderConfig } from './config.js';
+import { isSameOriginPath } from './redirects.js';
 
 /** Flow state kept in the HyperDX session between the redirect and the callback. */
 export interface PendingLogin {
@@ -164,10 +165,10 @@ export class ProviderRuntime {
   }
 }
 
-/** Only same-origin relative paths are accepted as post-login destinations. */
+/**
+ * Only same-origin relative paths are accepted as post-login destinations
+ * (no `//`, backslash, whitespace or control character); anything else is `/`.
+ */
 export function safeReturnTo(value: unknown): string {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) {
-    return '/';
-  }
-  return value;
+  return typeof value === 'string' && isSameOriginPath(value) ? value : '/';
 }

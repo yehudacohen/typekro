@@ -109,8 +109,6 @@ interface Hyperdx {
   frontendUrl: string;
   /** HyperDX's own base for redirects to the UI: `FRONTEND_URL`, or `''` in its inline-API mode. */
   frontendRedirectBase: string;
-  /** HyperDX's inline-API mode (API served on the UI's own origin, no proxy in between). */
-  inlineApi: boolean;
 }
 
 export interface Logger {
@@ -190,7 +188,6 @@ export function resolveHyperdx(apiBuildDir: string): Hyperdx {
     setupTeamDefaults: setupDefaults.setupTeamDefaults as Hyperdx['setupTeamDefaults'],
     frontendUrl: String(config.FRONTEND_URL ?? '').replace(/\/+$/, ''),
     frontendRedirectBase: String(config.FRONTEND_REDIRECT_BASE ?? config.FRONTEND_URL ?? '').replace(/\/+$/, ''),
-    inlineApi: config.IS_INLINE_API === true,
   };
 }
 
@@ -410,18 +407,22 @@ export function installPlugin(
   }
 
   const apiPrefix = () => config?.apiPathPrefix ?? '/api';
-  const baseUrl = () => config?.redirectBaseUrl ?? hyperdx.frontendUrl;
   const loginPath = () => `${apiPrefix()}/login/oidc`;
   // Every redirect is absolute, on a configured public URL (see redirects.ts):
   // a relative one is rewritten to the API server's port by HyperDX's UI proxy
   // when the request came through a reverse proxy on the default port.
-  // - To the plugin's own routes: the callback's base, so the flow stays on
-  //   the origin whose session cookie the callback needs.
-  // - To the UI: HyperDX's own redirect base, as HyperDX's routes use.
-  const apiRedirectBase = () => publicBase(config?.redirectBaseUrl, hyperdx.frontendRedirectBase);
+  //
+  // - The plugin's own routes (callback URL, chooser redirect): one base, so
+  //   the pending login stored in the session when the flow starts is on the
+  //   origin the callback lands on. It must be absolute for the provider, so
+  //   it is FRONTEND_URL even in HyperDX's inline-API mode (where HyperDX's
+  //   own redirect base is '').
+  // - The UI (after sign-in, `?err=`): HyperDX's own redirect base, as
+  //   HyperDX's routes use.
+  const apiBaseOf = (next: OidcPluginConfig | undefined) => publicBase(next?.redirectBaseUrl, hyperdx.frontendUrl);
+  const apiRedirectBase = () => apiBaseOf(config);
   const uiRedirectBase = () => publicBase(hyperdx.frontendRedirectBase, config?.redirectBaseUrl);
   const frontend = (path: string) => publicUrl(uiRedirectBase(), path);
-  let warnedRelativeRedirects = false;
 
   function strategyFor(id: string) {
     return {
@@ -447,7 +448,10 @@ export function installPlugin(
             this.fail({ reason: 'loginExpired' }, 400);
             return;
           }
-          const claims = await provider.complete(new URL(req.originalUrl, baseUrl()), pending);
+          // Only the query is read; the placeholder base keeps a misconfigured
+          // (relative) public URL from turning a callback into a 500.
+          const callbackUrl = new URL(req.originalUrl, apiRedirectBase() || 'http://placeholder.invalid');
+          const claims = await provider.complete(callbackUrl, pending);
           const decision = evaluateClaims(provider.config, claims);
           if (!decision.allowed) {
             log.warn('OIDC login denied', { provider: id, reason: decision.reason });
@@ -484,9 +488,9 @@ export function installPlugin(
 
   function apply(next: OidcPluginConfig) {
     const nextProviders = new Map<string, ProviderRuntime>();
-    const callbackBase = next.redirectBaseUrl ?? hyperdx.frontendUrl;
+    const callbackBase = apiBaseOf(next);
     for (const provider of next.providers) {
-      const redirectUri = `${callbackBase}${next.apiPathPrefix}/login/oidc/${provider.id}/callback`;
+      const redirectUri = publicUrl(callbackBase, `${next.apiPathPrefix}/login/oidc/${provider.id}/callback`);
       const existing = providers.get(provider.id);
       // Keep discovered metadata when nothing that affects it changed.
       nextProviders.set(
@@ -504,12 +508,7 @@ export function installPlugin(
     for (const id of nextProviders.keys()) hyperdx.passport.use(`${STRATEGY_PREFIX}${id}`, strategyFor(id));
     providers = nextProviders;
     config = next;
-    if (!warnedRelativeRedirects && !hyperdx.inlineApi && (apiRedirectBase() === '' || uiRedirectBase() === '')) {
-      warnedRelativeRedirects = true;
-      log.warn(
-        "no public URL (HyperDX's FRONTEND_URL or redirectBaseUrl) is set: redirects are relative, and behind a reverse proxy HyperDX's UI rewrites them to the API server's port"
-      );
-    }
+    warnAboutPublicUrl(next);
     if (next.allowInsecureHttp) {
       log.warn('allowInsecureHttp is on: issuers and callbacks may use plain http. Use this only for tests; it removes the TLS protection the ID-token checks rely on.');
     }
@@ -518,6 +517,29 @@ export function installPlugin(
       provider.authorizationServer().catch((error: unknown) =>
         log.warn('OIDC discovery failed; will retry on demand', { provider: provider.config.id, error: String(error) })
       );
+    }
+  }
+
+  /** Report a public URL that cannot work. Runs on every configuration applied. */
+  function warnAboutPublicUrl(next: OidcPluginConfig) {
+    const frontendBase = publicBase(hyperdx.frontendUrl);
+    if (apiBaseOf(next) === '') {
+      // HyperDX's image always sets FRONTEND_URL, so this is usually a malformed one.
+      const problem = hyperdx.frontendUrl === '' ? 'is not set' : 'is not a valid http(s) base URL (absolute, without credentials, query or fragment)';
+      log.warn(
+        `HyperDX's FRONTEND_URL ${problem} and redirectBaseUrl is not set: callback URLs and redirects are relative. Providers refuse a relative callback, and behind a reverse proxy HyperDX's UI rewrites relative redirects to the API server's port.`
+      );
+      return;
+    }
+    if (next.redirectBaseUrl !== undefined && frontendBase !== '') {
+      const callbackOrigin = new URL(next.redirectBaseUrl).origin;
+      const frontendOrigin = new URL(frontendBase).origin;
+      if (callbackOrigin !== frontendOrigin) {
+        log.warn(
+          "redirectBaseUrl and HyperDX's FRONTEND_URL have different origins: sign-in completes, and sets its session cookie, on redirectBaseUrl's origin, then sends the browser to FRONTEND_URL's, where that session is not sent. They must share an origin.",
+          { redirectBaseOrigin: callbackOrigin, frontendOrigin }
+        );
+      }
     }
   }
 

@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import {
+  isSameOriginPath,
   providerLoginPath,
   publicBase,
   publicUrl,
@@ -75,13 +76,46 @@ describe('publicUrl', () => {
       expect([bad, publicUrl('', bad)]).toEqual([bad, '/']);
     }
   });
+
+  it('refuses whitespace and control characters (a browser drops "\\t" from "/\\t/evil", leaving "//evil")', () => {
+    for (const bad of [
+      '/\t/evil.example',
+      '/\n/evil.example',
+      '/ /evil.example',
+      '/a\u0000b',
+      '/a\u001fb',
+      '/a\u007fb',
+    ]) {
+      expect([JSON.stringify(bad), publicUrl('https://hyperdx.example.com', bad)]).toEqual([
+        JSON.stringify(bad),
+        'https://hyperdx.example.com/',
+      ]);
+    }
+  });
+});
+
+describe('isSameOriginPath', () => {
+  it('accepts plain paths, with encoded characters', () => {
+    for (const good of ['/', '/search', '/search?q=a%20b&x=1', '/a/b#c', '/%2F%2Fevil']) {
+      expect([good, isSameOriginPath(good)]).toEqual([good, true]);
+    }
+  });
+
+  it('refuses anything a browser could resolve off the origin', () => {
+    for (let code = 0; code <= 0x20; code++) {
+      expect([code, isSameOriginPath(`/a${String.fromCharCode(code)}b`)]).toEqual([code, false]);
+    }
+    for (const bad of ['/a\u007fb', '//evil', '/\\evil', 'evil', '', 'https://evil.example']) {
+      expect([JSON.stringify(bad), isSameOriginPath(bad)]).toEqual([JSON.stringify(bad), false]);
+    }
+  });
 });
 
 describe('providerLoginPath', () => {
   it('omits the default returnTo and encodes any other', () => {
     expect(providerLoginPath('/api/login/oidc', 'sso', '/')).toBe('/api/login/oidc/sso');
-    expect(providerLoginPath('/api/login/oidc', 'sso', '/search?q=a b&x=1')).toBe(
-      '/api/login/oidc/sso?returnTo=%2Fsearch%3Fq%3Da%20b%26x%3D1'
+    expect(providerLoginPath('/api/login/oidc', 'sso', '/search?q=a%20b&x=1')).toBe(
+      '/api/login/oidc/sso?returnTo=%2Fsearch%3Fq%3Da%2520b%26x%3D1'
     );
   });
 

@@ -41,19 +41,41 @@ export function publicBase(...candidates: ReadonlyArray<string | undefined>): st
   return '';
 }
 
+/** Whether `value` holds an ASCII control character, space or DEL (0x00-0x20, 0x7f). */
+function hasControlOrSpace(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `value` is a same-origin path: it starts with a single `/` (not
+ * `//`) and contains no backslash, whitespace or control character. Browsers
+ * strip or reinterpret those, which is how a "relative" path escapes to
+ * another host.
+ */
+export function isSameOriginPath(value: string): boolean {
+  return (
+    value.startsWith('/') &&
+    !value.startsWith('//') &&
+    !value.includes('\\') &&
+    !hasControlOrSpace(value)
+  );
+}
+
 /**
  * `path` under `base`. With no base (`''`), the relative path: correct when
  * the browser talks to the API's origin directly (HyperDX's inline-API mode),
  * and never an open redirect.
  *
- * `path` must be a same-origin path (`/...`, not `//...` or containing a
- * backslash); anything else becomes `/`, so a caller cannot turn this into a
- * redirect off the public origin.
+ * `path` must be a same-origin path (see `isSameOriginPath`); anything else
+ * becomes `/`, so a caller cannot turn this into a redirect off the public
+ * origin.
  */
 export function publicUrl(base: string, path: string): string {
-  const safePath =
-    path.startsWith('/') && !path.startsWith('//') && !path.includes('\\') ? path : '/';
-  return `${base}${safePath}`;
+  return `${base}${isSameOriginPath(path) ? path : '/'}`;
 }
 
 /** A provider's login route, carrying `returnTo` unless it is the default `/`. */
