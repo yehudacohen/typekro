@@ -245,8 +245,6 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 function cloneMergeValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(cloneMergeValue);
   if (!isMergeObject(value) || Object.isFrozen(value)) return value;
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return value;
   const copy: Record<string, unknown> = {};
   deepMerge(copy, value);
   return copy;

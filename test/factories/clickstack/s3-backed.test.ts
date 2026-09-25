@@ -54,7 +54,7 @@ import {
   resolveClickStackStorage,
   ttlAlreadyApplied,
 } from '../../../src/factories/clickstack/utils/storage.js';
-import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
+import { KUBERNETES_REF_BRAND, MIXED_TEMPLATE_BRAND } from '../../../src/shared/brands.js';
 
 const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
 
@@ -1957,5 +1957,30 @@ describe('the build-time `values` object is never mutated', () => {
     ) as Record<string, Record<string, unknown>>;
     expect(replaced['otel-collector']?.podAnnotations).toEqual({ a: 'b' });
     expect(Object.isFrozen(secret)).toBe(true);
+  });
+
+  it('replaces, never recurses into, a resource reference, a mixed template or a class instance', () => {
+    class Annotations {
+      owner = 'platform';
+    }
+    const leaves: Record<string, unknown> = {
+      'resource reference': {
+        __type: 'ResourceReference',
+        resourceId: 'config',
+        fieldPath: 'data.annotations',
+      },
+      'mixed template': { [MIXED_TEMPLATE_BRAND]: true, expression: 'team-${schema.spec.name}' },
+      'class instance': new Annotations(),
+    };
+    for (const [label, leaf] of Object.entries(leaves)) {
+      // `values` puts a plain object at the key; the later `customValues`
+      // layer puts the leaf there. Both used to count as mergeable, so the
+      // leaf's string keys were merged into a plain copy and the leaf was lost.
+      const mapped = mapClickStackConfigToHelmValues(
+        { ...SPEC, customValues: { 'otel-collector': { podAnnotations: leaf } } } as never,
+        { values: { 'otel-collector': { podAnnotations: { 'example.com/a': 'b' } } } }
+      ) as Record<string, Record<string, unknown>>;
+      expect(mapped['otel-collector']?.podAnnotations, label).toBe(leaf);
+    }
   });
 });
