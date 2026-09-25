@@ -74,11 +74,13 @@ const MONGO_REGISTERED = `typekro-td-mongo-registered-${suffix}`;
 const HYPERDX_REGISTERED = `typekro-td-hdx-registered-${suffix}`;
 /** The degraded path on a fresh instance: the bootstrap creates the Team. No HyperDX needed. */
 const MONGO_FRESH = `typekro-td-mongo-fresh-${suffix}`;
-/** secretValues credentials, where the chart Secret may carry the chart's placeholder password. */
+/** secretValues credentials with initialUser: HyperDX configured exactly as the chart configures it. */
 const MONGO_SECRET_VALUES = `typekro-td-mongo-secret-values-${suffix}`;
+const HYPERDX_SECRET_VALUES = `typekro-td-hdx-secret-values-${suffix}`;
 const CONTAINERS = [
   HYPERDX_LEGACY,
   HYPERDX_REGISTERED,
+  HYPERDX_SECRET_VALUES,
   MONGO_LEGACY,
   MONGO_REGISTERED,
   MONGO_FRESH,
@@ -106,17 +108,16 @@ const INLINE_SECRETS: Secrets = {
   },
 };
 /**
- * secretValues mode whose values fragment omits `CLICKHOUSE_APP_PASSWORD`: the
- * chart fills in its public default, while the real password lives in the
- * caller's own Secret.
+ * secretValues mode: the caller's values fragment sets `hyperdx.secrets`, and
+ * the chart renders `clickstack-secret` from it.
  */
 const SECRET_VALUES_SECRETS: Secrets = {
   'clickstack-secret': {
     HYPERDX_API_KEY: API_KEY,
     CLICKHOUSE_PASSWORD: CLICKHOUSE_PASSWORD,
-    CLICKHOUSE_APP_PASSWORD: 'hyperdx',
+    CLICKHOUSE_APP_PASSWORD: CLICKHOUSE_PASSWORD,
+    HYPERDX_INITIAL_USER_PASSWORD: ADMIN.password,
   },
-  'clickhouse-ui': { password: CLICKHOUSE_PASSWORD },
 };
 
 const SPEC = {
@@ -137,6 +138,25 @@ interface RenderedBootstrap {
   /** `DEFAULT_CONNECTIONS` / `DEFAULT_SOURCES` exactly as the HelmRelease hands them to HyperDX. */
   defaultConnections: string;
   defaultSources: string;
+  /** secretValues mode: the default-connections ConfigMap's values document. */
+  defaultConnectionsDocument?: string;
+}
+
+/**
+ * The `DEFAULT_CONNECTIONS` the chart gives HyperDX. In secretValues mode the
+ * value comes from TypeKro's ConfigMap, and the chart's `tpl` fills in the
+ * password template from `hyperdx.secrets` (checked with `helm template`
+ * against chart 3.2.0); this does the same substitution.
+ */
+function chartDefaultConnections(rendered: RenderedBootstrap, secrets: Secrets): string {
+  if (rendered.defaultConnectionsDocument === undefined) return rendered.defaultConnections;
+  const values = loadAll(rendered.defaultConnectionsDocument)[0] as {
+    hyperdx: { deployment: { defaultConnections: string } };
+  };
+  return values.hyperdx.deployment.defaultConnections.replace(
+    '{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}',
+    JSON.stringify(secrets['clickstack-secret']?.CLICKHOUSE_APP_PASSWORD)
+  );
 }
 
 /** The CronJob and HelmRelease values a direct-mode render of the composition produces. */
@@ -152,11 +172,17 @@ function render(options: ClickStackBuildOptions, spec: object = SPEC): RenderedB
     (doc) => doc?.kind === 'HelmRelease' && doc.spec?.chart?.spec?.chart === 'clickstack'
   );
   const container = cronJob?.spec.jobTemplate.spec.template.spec.containers[0];
+  const defaultConnectionsMap = docs.find(
+    (doc) => doc?.kind === 'ConfigMap' && doc.metadata.name.endsWith('-default-connections')
+  );
   return {
     script: container.command[4],
     env: container.env,
     defaultConnections: release?.spec.values.hyperdx.deployment.defaultConnections,
     defaultSources: release?.spec.values.hyperdx.deployment.defaultSources,
+    ...(defaultConnectionsMap !== undefined && {
+      defaultConnectionsDocument: defaultConnectionsMap.data['values.yaml'],
+    }),
   };
 }
 
@@ -343,6 +369,7 @@ const REGISTERED_API = { HYPERDX_API_BASE_URL: `http://${HYPERDX_REGISTERED}:800
 
 let legacyUrl = '';
 let registeredUrl = '';
+let secretValuesUrl = '';
 const degraded = render({});
 const withInitialUser = render({ initialUser: { email: ADMIN.email } });
 /**
@@ -362,6 +389,10 @@ const SECRET_VALUES_SPEC = {
   clickhouse: { host: CLICKHOUSE, username: CLICKHOUSE_USER },
   credentialsSecret: { name: 'clickstack-values' },
 };
+const secretValuesWithInitialUser = render(
+  { credentials: { source: 'secretValues' }, initialUser: { email: ADMIN.email } },
+  SECRET_VALUES_SPEC
+);
 
 beforeAll(async () => {
   if (!dockerAvailable) return;
@@ -369,6 +400,8 @@ beforeAll(async () => {
   const registeredPort = await freePort();
   legacyUrl = `http://localhost:${legacyPort}`;
   registeredUrl = `http://localhost:${registeredPort}`;
+  const secretValuesPort = await freePort();
+  secretValuesUrl = `http://localhost:${secretValuesPort}`;
 
   for (const name of CONTAINERS) docker(['rm', '-f', '-v', name]);
   docker(['network', 'rm', NETWORK]);
@@ -422,8 +455,32 @@ beforeAll(async () => {
     ]);
     if (!started.ok) throw new Error(`docker run hyperdx failed: ${started.stderr}`);
   }
+  const svStarted = docker([
+    'run',
+    '-d',
+    '--name',
+    HYPERDX_SECRET_VALUES,
+    '--network',
+    NETWORK,
+    '-p',
+    `${secretValuesPort}:8080`,
+    '-e',
+    `MONGO_URI=mongodb://${MONGO_SECRET_VALUES}:27017/hyperdx`,
+    '-e',
+    `FRONTEND_URL=${secretValuesUrl}`,
+    '-e',
+    'HYPERDX_APP_PORT=8080',
+    '-e',
+    `DEFAULT_CONNECTIONS=${chartDefaultConnections(secretValuesWithInitialUser, SECRET_VALUES_SECRETS)}`,
+    '-e',
+    `DEFAULT_SOURCES=${secretValuesWithInitialUser.defaultSources}`,
+    HYPERDX_IMAGE,
+  ]);
+  if (!svStarted.ok)
+    throw new Error(`docker run hyperdx (secretValues) failed: ${svStarted.stderr}`);
   await waitFor(`${legacyUrl}/api/installation`);
   await waitFor(`${registeredUrl}/api/installation`);
+  await waitFor(`${secretValuesUrl}/api/installation`);
 
   // A log line to search for, in the table the Logs source points at.
   for (let attempt = 0; attempt < 60; attempt++) {
@@ -660,11 +717,16 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
 
   it('applies a changed teamName, but not over a rename made in HyperDX', () => {
     const renamed = render({ teamName: 'Observability' });
-    // The Team is 'Platform Team' from the UI, not the 'ClickStack' TypeKro last applied.
+    // The Team was renamed to 'Platform Team' in the UI, and the previous run
+    // recorded that a person owns the name now.
     const run = runBootstrap(renamed, MONGO_LEGACY);
     expect(run.ok).toBe(true);
-    expect(run.stdout).toContain('named "Platform Team" by someone else');
-    expect(dump(MONGO_LEGACY).teams[0]?.name).toBe('Platform Team');
+    const legacy = dump(MONGO_LEGACY);
+    expect(legacy.teams[0]?.name).toBe('Platform Team');
+    expect(
+      legacy.typekro_bootstrap.find((marker) => String(marker._id).startsWith('team-name:'))
+        ?.appliedName
+    ).toBeNull();
 
     // On the fresh instance nobody renamed it, so the new option applies.
     expect(runBootstrap(renamed, MONGO_FRESH).ok).toBe(true);
@@ -687,45 +749,87 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     expect(dump(MONGO_FRESH).teams[0]?.name).toBe('Hand Picked');
   });
 
-  it('secretValues: seeds nothing without the password key, then seeds the real password, never the placeholder', () => {
-    // No clickhousePasswordSecretRef: clickstack-secret's UI password may be
-    // the chart's placeholder, so there is no seed at all.
-    const withoutRef = render({ credentials: { source: 'secretValues' } }, SECRET_VALUES_SPEC);
-    expect(withoutRef.env.map((variable) => variable.name)).not.toContain(
-      'HYPERDX_DEFAULT_CONNECTION_PASSWORD'
+  it("secretValues + initialUser: HyperDX registers TypeKro's external ClickHouse, not the chart's Local ClickHouse", async () => {
+    const registered = runBootstrap(
+      secretValuesWithInitialUser,
+      MONGO_SECRET_VALUES,
+      { HYPERDX_API_BASE_URL: `http://${HYPERDX_SECRET_VALUES}:8000` },
+      SECRET_VALUES_SECRETS
     );
-    expect(runBootstrap(withoutRef, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);
-    let state = dump(MONGO_SECRET_VALUES);
-    expect(state.teams).toHaveLength(1);
-    expect(state.connections).toHaveLength(0);
-    expect(
-      state.typekro_bootstrap.some((marker) => String(marker._id).startsWith('team-defaults:'))
-    ).toBe(false);
+    expect(registered.ok, registered.stderr).toBe(true);
+    const state = dump(MONGO_SECRET_VALUES);
+    expect(state.connections).toHaveLength(1);
+    expect(state.connections[0]?.name).toBe('External ClickHouse');
+    expect(state.connections[0]?.host).toBe(`http://${CLICKHOUSE}:8123`);
+    expect(state.connections[0]?.username).toBe(CLICKHOUSE_USER);
+    expect(state.connections[0]?.password).toBe(CLICKHOUSE_PASSWORD);
+    expect(state.sources).toHaveLength(4);
 
-    const withRef = render(
-      {
-        credentials: { source: 'secretValues' },
-        teamDefaults: { clickhousePasswordSecretRef: { name: 'clickhouse-ui', key: 'password' } },
+    // And it works: search through HyperDX's proxy with that connection.
+    const cookie = await signIn(secretValuesUrl, ADMIN);
+    const search = await fetch(`${secretValuesUrl}/api/clickhouse-proxy/?default_format=JSON`, {
+      method: 'POST',
+      headers: {
+        cookie,
+        'content-type': 'text/plain',
+        'x-hyperdx-connection-id': String(state.connections[0]?._id.$oid),
       },
-      SECRET_VALUES_SPEC
+      body: "SELECT Body FROM default.otel_logs WHERE ServiceName = 'checkout'",
+    });
+    expect(search.status).toBe(200);
+
+    // The seed, past the grace period, finds HyperDX's defaults and adds nothing.
+    mongoEval(
+      MONGO_SECRET_VALUES,
+      'db.teams.updateMany({}, { $set: { createdAt: new Date(Date.now() - 600000) } });'
     );
-    // The key is missing (the caller's Secret is not there yet): still nothing.
+    expect(
+      runBootstrap(
+        secretValuesWithInitialUser,
+        MONGO_SECRET_VALUES,
+        { HYPERDX_API_BASE_URL: `http://${HYPERDX_SECRET_VALUES}:8000` },
+        SECRET_VALUES_SECRETS
+      ).ok
+    ).toBe(true);
+    const after = dump(MONGO_SECRET_VALUES);
+    expect(after.connections).toEqual(state.connections);
+    expect(after.sources).toEqual(state.sources);
+  });
+
+  it('secretValues without initialUser: seeds that same connection, and nothing while the password key is missing', () => {
+    const rendered = render({ credentials: { source: 'secretValues' } }, SECRET_VALUES_SPEC);
+    const onOwnDb: RenderedBootstrap = {
+      ...rendered,
+      script: rendered.script.replace(
+        "getSiblingDB('hyperdx')",
+        "getSiblingDB('hyperdx-degraded')"
+      ),
+    };
+    const clickstackSecret = SECRET_VALUES_SECRETS['clickstack-secret'] as Record<string, string>;
+    const { CLICKHOUSE_APP_PASSWORD: _missing, ...withoutAppPassword } = clickstackSecret;
     const missing = runBootstrap(
-      withRef,
+      onOwnDb,
       MONGO_SECRET_VALUES,
       {},
-      { 'clickstack-secret': SECRET_VALUES_SECRETS['clickstack-secret'] as Record<string, string> }
+      { 'clickstack-secret': withoutAppPassword }
     );
     expect(missing.ok).toBe(true);
     expect(missing.stdout).toContain('password Secret key is missing');
-    expect(dump(MONGO_SECRET_VALUES).connections).toHaveLength(0);
+    const connections = () =>
+      JSON.parse(
+        mongoEval(
+          MONGO_SECRET_VALUES,
+          "print(EJSON.stringify(db.getSiblingDB('hyperdx-degraded').connections.find().toArray()))"
+        )
+      ) as Record<string, unknown>[];
+    expect(connections()).toHaveLength(0);
 
-    // With it: the real password, not clickstack-secret's placeholder.
-    expect(runBootstrap(withRef, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);
-    state = dump(MONGO_SECRET_VALUES);
-    expect(state.connections).toHaveLength(1);
-    expect(state.connections[0]?.password).toBe(CLICKHOUSE_PASSWORD);
-    expect(state.connections[0]?.username).toBe(CLICKHOUSE_USER);
-    expect(state.sources).toHaveLength(4);
+    expect(runBootstrap(onOwnDb, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);
+    const [seeded] = connections();
+    const [registered] = dump(MONGO_SECRET_VALUES).connections;
+    // One connection definition: what HyperDX registered, and what TypeKro seeds.
+    for (const field of ['name', 'host', 'username', 'password']) {
+      expect([field, seeded?.[field]]).toEqual([field, registered?.[field]]);
+    }
   });
 });

@@ -138,11 +138,12 @@ import {
   resolveClickStackInitialUser,
 } from '../types.js';
 import {
+  CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY,
   clickStackDefaultConnectionTarget,
+  clickStackSecretValuesDefaultConnectionsDocument,
   DEFAULT_CLICKSTACK_NAMESPACE,
   mapClickStackConfigToHelmValues,
 } from '../utils/helm-values-mapper.js';
-import { getComponentLogger } from '../../../core/logging/index.js';
 import {
   CLICKSTACK_APP_PASSWORD_SECRET_KEY,
   HYPERDX_DEFAULT_CONNECTION_HOST_ENV,
@@ -206,10 +207,19 @@ interface ResolvedBuildConfig {
    * Where the seed reads the ClickHouse UI password from, when the bootstrap
    * seeds an empty Team's connection and sources; `undefined` means no seed.
    */
-  teamDefaults?: { passwordSecretRef: { name: string; key: string } };
+  teamDefaults?: {
+    passwordSecretRef: { name: string; key: string };
+    allowUnvalidatedChartVersion: boolean;
+  };
 }
 
 const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+
+/**
+ * Suffix of the `secretValues`-mode ConfigMap carrying HyperDX's default
+ * connection values (`<release>-default-connections`).
+ */
+export const CLICKSTACK_DEFAULT_CONNECTIONS_CONFIGMAP_SUFFIX = '-default-connections';
 
 /**
  * Readiness for the collector queue's PersistentVolumeClaim.
@@ -353,7 +363,7 @@ function renderDegradedTeamBootstrapScript(
     `if (apiKey === '${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}') throw new Error('HYPERDX_API_KEY must override the published ClickStack chart placeholder.');`,
     ...renderTeamBootstrapHelpers({
       seed: teamDefaults,
-      untouchedName: { kind: 'sha256', hashes: legacyTeamNameHashes },
+      untouchedName: { sha256: legacyTeamNameHashes },
     }),
     `const hookId = '${CLICKSTACK_MANAGED_TEAM_HOOK_ID}';`,
     `const teamName = ${JSON.stringify(teamName)};`,
@@ -361,7 +371,13 @@ function renderDegradedTeamBootstrapScript(
     "if (teams.length > 1) throw new Error('Multiple TypeKro-managed ClickStack Teams exist.');",
     'if (teams.length === 0) {',
     '  const now = new Date();',
+    // Ownership of the name is recorded BEFORE the Team exists, under the id
+    // it is about to get, never inferred later from the name. A crash in
+    // between leaves an orphan record for an id nothing uses.
+    '  const teamId = new ObjectId();',
+    '  recordTeamName(teamId, teamName);',
     '  database.teams.insertOne({',
+    '    _id: teamId,',
     '    name: teamName,',
     '    allowedAuthMethods: [],',
     '    hookId,',
@@ -484,10 +500,15 @@ export function renderClickStackTeamBootstrapScript(
     // an upstream-owned team or user document.
     `  const bootstrapMarkers = database.${CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION};`,
     // A Team HyperDX's registration created is named `<email>'s Team`, and
-    // one that still is has never been renamed by a human.
+    // one that still is has never been renamed by a human. So has a Team
+    // still carrying the legacy default, from a deployment that ran the
+    // degraded path before initialUser was configured.
     ...renderTeamBootstrapHelpers({
       seed: teamDefaults,
-      untouchedName: { kind: 'exact', name: `${initialUser.email}'s Team` },
+      untouchedName: {
+        exact: `${initialUser.email}'s Team`,
+        sha256: options.legacyTeamNameHashes ?? [CLICKSTACK_LEGACY_TEAM_NAME_SHA256],
+      },
     }).map((line) => `  ${line}`),
     `  const initialUserMarkerId = ${JSON.stringify(CLICKSTACK_INITIAL_USER_MARKER_ID)};`,
     // Marker present => the instance was claimed under TypeKro's watch. Short
@@ -646,8 +667,37 @@ function assertClickStackHyperdxOidcChartVersion(
 }
 
 /**
+ * Refuse the Team-defaults seed on a chart version nobody has audited — the
+ * build-time half; the KRO half is the shared `spec.version` narrowing in
+ * {@link clickStackSchemaFieldValidations}.
+ *
+ * The seed writes documents in HyperDX 2.35.0's own `connections` / `sources`
+ * schema. On a chart whose HyperDX changed that schema, the CronJob would
+ * still succeed and the Team would look configured with documents HyperDX may
+ * misread, and the seed never runs twice.
+ */
+function assertClickStackTeamDefaultsChartVersion(
+  version: unknown,
+  teamDefaults?: ResolvedBuildConfig['teamDefaults']
+): void {
+  if (teamDefaults === undefined || teamDefaults.allowUnvalidatedChartVersion) return;
+  if (typeof version !== 'string') return;
+  if (!isClickStackInitialUserValidatedChartVersion(version)) {
+    throw new Error(
+      'ClickStack teamDefaults is audited only against chart version(s) ' +
+        `${CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS.join(', ')} (appVersion ` +
+        `${CLICKSTACK_INITIAL_USER_VALIDATED_APP_VERSION}), but version ${JSON.stringify(version)} ` +
+        "was requested. The Team-bootstrap CronJob seeds an empty Team's ClickHouse connection " +
+        "and sources in HyperDX's own MongoDB schema. Verify the connections and sources schema " +
+        'on that chart, then set teamDefaults: { allowUnvalidatedChartVersion: true }, or turn ' +
+        'the seed off with teamDefaults: false.'
+    );
+  }
+}
+
+/**
  * Schema field validations for a composition, with the chart-version narrowing
- * added when `initialUser` is configured.
+ * added when `initialUser`, `hyperdxOidc` or the Team-defaults seed is on.
  *
  * This is the KRO-mode half of the version allowlist. `schemaFieldValidations`
  * becomes `x-kubernetes-validations` on the generated CRD, so a consumer who
@@ -657,20 +707,21 @@ function assertClickStackHyperdxOidcChartVersion(
  * validations at all and so had no KRO-side guard of any kind.
  *
  * @param base - The mode's own validations (inline mode pins `apiKey`)
- * @param initialUser - The resolved option; `undefined` adds nothing
+ * @param build - The resolved options that write into HyperDX's own schema
  * @returns Composition options carrying the merged map, or `{}` when empty
  */
 function clickStackSchemaFieldValidations(
   base: Readonly<Record<string, string>>,
-  initialUser?: ResolvedClickStackInitialUser,
-  hyperdxOidc?: ResolvedClickStackHyperdxOidc
+  build: Pick<ResolvedBuildConfig, 'initialUser' | 'hyperdxOidc' | 'teamDefaults'>
 ): { schemaFieldValidations?: Readonly<Record<string, string>> } {
+  const { initialUser, hyperdxOidc, teamDefaults } = build;
   const merged: Record<string, string> = { ...base };
-  // Both features are audited against the same chart series, so one rule
-  // covers either (see CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS).
+  // All three are audited against the same chart series, so one rule covers
+  // any of them (see CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS).
   if (
     (initialUser !== undefined && !initialUser.allowUnvalidatedChartVersion) ||
-    (hyperdxOidc !== undefined && !hyperdxOidc.allowUnvalidatedChartVersion)
+    (hyperdxOidc !== undefined && !hyperdxOidc.allowUnvalidatedChartVersion) ||
+    (teamDefaults !== undefined && !teamDefaults.allowUnvalidatedChartVersion)
   ) {
     merged.version = clickStackInitialUserVersionValidationRule();
   }
@@ -713,6 +764,11 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     assertClickStackHyperdxOidcChartVersion(
       isKubernetesRef(spec.version) ? undefined : (spec.version ?? DEFAULT_CLICKSTACK_VERSION),
       build.hyperdxOidc
+    );
+    // The Team-defaults seed writes HyperDX's `connections` / `sources` schema.
+    assertClickStackTeamDefaultsChartVersion(
+      isKubernetesRef(spec.version) ? undefined : (spec.version ?? DEFAULT_CLICKSTACK_VERSION),
+      build.teamDefaults
     );
 
     // The schema constrains `name` — DNS-label syntax and the derived length
@@ -885,6 +941,13 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       ...(build.credentialSource === 'secretValues'
         ? {
             valuesFrom: [
+              // TypeKro's external ClickHouse connection FIRST, so the
+              // caller's fragment below can still override it.
+              {
+                kind: 'ConfigMap' as const,
+                name: `${spec.name}${CLICKSTACK_DEFAULT_CONNECTIONS_CONFIGMAP_SUFFIX}`,
+                valuesKey: CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY,
+              },
               {
                 kind: 'Secret' as const,
                 // biome-ignore lint/style/noNonNullAssertion: the secretValues schema requires credentialsSecret
@@ -898,6 +961,33 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         : {}),
       id: CLICKSTACK_HELM_RELEASE_RESOURCE_ID,
     });
+    // ── secretValues: HyperDX's default connection ───────────────────────
+    // Without it the chart falls back to its own "Local ClickHouse" at the
+    // bundled Service TypeKro disables, and HyperDX's registration provisions
+    // that. The password stays a chart template (see the mapper), so the
+    // ConfigMap carries no credential. The HelmRelease reads it through
+    // valuesFrom, so it has to exist first.
+    if (build.credentialSource === 'secretValues') {
+      const defaultConnections = configMap({
+        id: 'clickstackDefaultConnections',
+        metadata: {
+          name: `${spec.name}${CLICKSTACK_DEFAULT_CONNECTIONS_CONFIGMAP_SUFFIX}`,
+          namespace: resolvedNamespace as string,
+          labels: {
+            'app.kubernetes.io/name': 'clickstack',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/component': 'default-connections',
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+        data: {
+          [CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY]:
+            clickStackSecretValuesDefaultConnectionsDocument(spec),
+        },
+      });
+      _clickstackHelmRelease.dependsOn(defaultConnections);
+    }
+
     // The collector Pod mounts the queue claim by name, so the claim has to
     // exist before helm-controller creates the Deployment.
     if (queueClaim !== undefined) {
@@ -1323,8 +1413,6 @@ function resolveClickHouseStorageForBuild(
   return resolved;
 }
 
-const bootstrapLogger = getComponentLogger('clickstack-bootstrap');
-
 function withTeamDefaults(
   teamDefaults: ResolvedBuildConfig['teamDefaults']
 ): Pick<ResolvedBuildConfig, 'teamDefaults'> {
@@ -1332,45 +1420,26 @@ function withTeamDefaults(
 }
 
 /**
- * Whether, and with which password, the bootstrap seeds Team defaults.
+ * Whether, and how, the bootstrap seeds Team defaults.
  *
- * The seed has to use the password HyperDX's own connection uses, or the Team
- * ends up looking configured with a connection that cannot log in, and the
- * seed never runs again. Inline mode knows it: TypeKro rendered
- * `clickstack-secret.CLICKHOUSE_APP_PASSWORD` from the spec. `secretValues`
- * mode does not: the caller's values fragment decides both that key (the chart
- * falls back to a public placeholder when the fragment omits it) and
- * `defaultConnections`. So there the caller names the key, or there is no seed.
+ * The seed must create the same connection HyperDX's own registration would,
+ * with the same password, or the Team ends up looking configured with a
+ * connection that cannot log in and is never seeded again. In both credential
+ * modes HyperDX's `DEFAULT_CONNECTIONS` password is the chart value
+ * `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`: inline mode renders it into
+ * `defaultConnections` directly, and `secretValues` mode templates it there
+ * (see `clickStackSecretValuesDefaultConnectionsDocument`). The chart renders
+ * that same value into `clickstack-secret.CLICKHOUSE_APP_PASSWORD`, which is
+ * what the seed reads. One value, one connection definition.
  *
- * It is also off when build-time values replace the chart defaults (or point
- * HyperDX at an existing config Secret): what HyperDX would seed is the
- * caller's then.
+ * Off when build-time values replace the chart defaults (or point HyperDX at
+ * an existing config Secret): what HyperDX would seed is the caller's then.
  */
 function resolveTeamDefaults(
   options: ClickStackInternalMongoBuildOptions | ClickStackExternalMongoBuildOptions
 ): ResolvedBuildConfig['teamDefaults'] {
   const requested = options.teamDefaults;
   if (requested === false) return undefined;
-  const passwordSecretRef =
-    typeof requested === 'object' ? requested.clickhousePasswordSecretRef : undefined;
-  const secretValues = options.credentials?.source === 'secretValues';
-  if (passwordSecretRef !== undefined) {
-    if (!secretValues) {
-      throw new Error(
-        'makeClickstackBootstrap: teamDefaults.clickhousePasswordSecretRef is for secretValues credential mode. With inline credentials the seed already uses the password TypeKro rendered into clickstack-secret.'
-      );
-    }
-    if (
-      typeof passwordSecretRef.name !== 'string' ||
-      passwordSecretRef.name.length === 0 ||
-      typeof passwordSecretRef.key !== 'string' ||
-      passwordSecretRef.key.length === 0
-    ) {
-      throw new Error(
-        'makeClickstackBootstrap: teamDefaults.clickhousePasswordSecretRef needs a non-empty name and key.'
-      );
-    }
-  }
   const hyperdx = (options.values as Record<string, unknown> | undefined)?.hyperdx;
   const deployment =
     typeof hyperdx === 'object' && hyperdx !== null
@@ -1387,23 +1456,11 @@ function resolveTeamDefaults(
       return undefined;
     }
   }
-  if (!secretValues) {
-    return {
-      passwordSecretRef: { name: CLICKSTACK_SECRET_NAME, key: CLICKSTACK_APP_PASSWORD_SECRET_KEY },
-    };
-  }
-  if (passwordSecretRef !== undefined) {
-    return { passwordSecretRef: { name: passwordSecretRef.name, key: passwordSecretRef.key } };
-  }
-  if (requested === true) {
-    throw new Error(
-      'makeClickstackBootstrap: teamDefaults in secretValues credential mode needs teamDefaults.clickhousePasswordSecretRef, the Secret key holding the ClickHouse UI password HyperDX uses. TypeKro cannot tell which key that is, and seeding the wrong one would leave the Team with a connection that cannot log in.'
-    );
-  }
-  bootstrapLogger.warn(
-    'ClickStack secretValues mode: not seeding the HyperDX Team connection and sources. Set teamDefaults.clickhousePasswordSecretRef to the Secret key holding the ClickHouse UI password to seed them, or teamDefaults: false to silence this.'
-  );
-  return undefined;
+  return {
+    passwordSecretRef: { name: CLICKSTACK_SECRET_NAME, key: CLICKSTACK_APP_PASSWORD_SECRET_KEY },
+    allowUnvalidatedChartVersion:
+      typeof requested === 'object' && requested.allowUnvalidatedChartVersion === true,
+  };
 }
 
 function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): ResolvedBuildConfig {
@@ -1467,11 +1524,7 @@ function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(
-      inlineSchemaFieldValidations,
-      build.initialUser,
-      build.hyperdxOidc
-    )
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build)
   );
 }
 
@@ -1490,7 +1543,7 @@ function buildInternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build.initialUser, build.hyperdxOidc)
+    clickStackSchemaFieldValidations({}, build)
   );
 }
 
@@ -1504,11 +1557,7 @@ function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBu
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations(
-      inlineSchemaFieldValidations,
-      build.initialUser,
-      build.hyperdxOidc
-    )
+    clickStackSchemaFieldValidations(inlineSchemaFieldValidations, build)
   );
 }
 
@@ -1527,7 +1576,7 @@ function buildExternalSecretValuesComposition(
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackSecretValuesExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
-    clickStackSchemaFieldValidations({}, build.initialUser, build.hyperdxOidc)
+    clickStackSchemaFieldValidations({}, build)
   );
 }
 

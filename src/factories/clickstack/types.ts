@@ -730,14 +730,14 @@ export function clickStackInitialUserVersionValidationRule(): string {
 /** Options for the one-time seed of a HyperDX Team's connection and sources. */
 export interface ClickStackTeamDefaultsOptions {
   /**
-   * `secretValues` mode only (and required there to seed): the Secret key, in
-   * the ClickStack namespace, holding the password of the ClickHouse UI user
-   * (`clickhouse.appUsername`, else `username`). Point it at the same value
-   * your values fragment gives HyperDX, typically the key behind
-   * `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. Inline mode needs none: the
-   * password is the one TypeKro rendered, and setting this there is refused.
+   * The seed writes documents in HyperDX 2.35.0's own schema, so it is refused
+   * on a chart version outside
+   * {@link CLICKSTACK_INITIAL_USER_VALIDATED_CHART_VERSIONS} (at build time in
+   * direct mode, by narrowing `spec.version` on the CRD in KRO mode). Set this
+   * once you have checked the `connections` / `sources` schema of a newer
+   * chart yourself.
    */
-  clickhousePasswordSecretRef?: { name: string; key: string };
+  allowUnvalidatedChartVersion?: boolean;
 }
 
 /** Shared build-time options for both bootstrap variants. */
@@ -799,12 +799,12 @@ interface ClickStackBuildOptionsBase {
   teamName?: string;
   /**
    * Seed an empty Team's ClickHouse connection and log/trace/metric/session
-   * sources, once. Inline credentials: on by default, with the UI password
-   * TypeKro itself rendered. `secretValues`: off unless
-   * `clickhousePasswordSecretRef` names the Secret key holding that password,
-   * since TypeKro cannot see which one HyperDX uses. `false` turns it off; so
-   * do build-time `values` that replace the chart's `defaultConnections`,
-   * `defaultSources` or `useExistingConfigSecret`.
+   * sources, once (default on; pass options to adjust it). The connection is
+   * the same one HyperDX's own registration creates, from the same values and
+   * the same password. `false` turns it off; so do build-time `values` that
+   * replace the chart's `defaultConnections`, `defaultSources` or
+   * `useExistingConfigSecret`. Only on audited chart versions, like
+   * `initialUser` (see {@link ClickStackTeamDefaultsOptions}).
    */
   teamDefaults?: boolean | ClickStackTeamDefaultsOptions;
 }

@@ -324,6 +324,63 @@ export function clickStackDefaultConnectionTarget(config: ClickStackBootstrapRun
   };
 }
 
+/**
+ * The chart value HyperDX's `DEFAULT_CONNECTIONS` password is read from in
+ * `secretValues` mode, as a Helm template. The chart runs `tpl` over
+ * `hyperdx.deployment.defaultConnections` with the release's merged values
+ * (its own default uses `{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD }}`),
+ * so the caller's `valuesFrom` fragment supplies the password while TypeKro
+ * supplies the topology. `toJson` quotes and escapes it as a JSON string.
+ */
+export const CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE =
+  '{{ .Values.hyperdx.secrets.CLICKHOUSE_APP_PASSWORD | toJson }}';
+
+/** Key of the values document in the `secretValues` default-connections ConfigMap. */
+export const CLICKSTACK_DEFAULT_CONNECTIONS_VALUES_KEY = 'values.yaml';
+
+/**
+ * The `secretValues`-mode values document that sets
+ * `hyperdx.deployment.defaultConnections`: TypeKro's external ClickHouse
+ * connection, with the password left to the chart (see
+ * {@link CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE}).
+ *
+ * WHY. TypeKro renders no `defaultConnections` in this mode, and the chart
+ * then falls back to its own default, a "Local ClickHouse" at the bundled
+ * ClickHouse Service TypeKro disables. HyperDX's registration (`initialUser`)
+ * would provision THAT connection. The composition hands this document to
+ * Flux as a ConfigMap `valuesFrom` entry BEFORE the caller's Secret, so a
+ * `defaultConnections` in the caller's fragment still wins.
+ */
+export function clickStackSecretValuesDefaultConnectionsDocument(
+  config: ClickStackBootstrapRuntimeConfig
+): string {
+  const ch = config.clickhouse;
+  const lines = (host: string, port: string, username: string) =>
+    [
+      'hyperdx:',
+      '  deployment:',
+      '    defaultConnections: |',
+      `      [{"name":"${CLICKSTACK_CONNECTION_NAME}","host":"http://${host}:${port}","port":${port},"username":"${username}","password":${CLICKSTACK_APP_PASSWORD_VALUE_TEMPLATE}}]`,
+      '',
+    ].join('\n');
+  if (isKubernetesRef(config.name) || isKubernetesRef(ch)) {
+    const template = lines('%s', '%s', '%s');
+    return Cel.template(
+      template,
+      ch.host,
+      Cel.expr<string>(
+        `string(${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123)`
+      ),
+      Cel.expr<string>(
+        `string(${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123)`
+      ),
+      clickStackDefaultConnectionTarget(config).username
+    ) as unknown as string;
+  }
+  const target = clickStackDefaultConnectionTarget(config);
+  return lines(ch.host, String(ch.httpPort ?? 8123), target.username);
+}
+
 // ============================================================================
 // clickstackBootstrap values
 // ============================================================================

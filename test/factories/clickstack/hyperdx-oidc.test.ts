@@ -423,7 +423,8 @@ describe('hyperdxOidc validation', () => {
     );
     expect(() =>
       directDocs(
-        { hyperdxOidc: { ...OIDC, allowUnvalidatedChartVersion: true } },
+        // The Team-defaults seed carries its own guard; turned off here.
+        { hyperdxOidc: { ...OIDC, allowUnvalidatedChartVersion: true }, teamDefaults: false },
         { ...SPEC, version: '4.0.0' }
       )
     ).not.toThrow();

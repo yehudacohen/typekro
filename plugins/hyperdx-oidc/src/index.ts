@@ -64,8 +64,10 @@ function activate(configPath: string, entry: string) {
         // Only meaningful when something else claims the instance. Never log the password.
         const bootstrap = createTeam ? undefined : bootstrapCredentialsFromEnv(process.env);
         if (!createTeam && bootstrap === undefined) {
-          log.warn(
-            'no initial-user bootstrap credentials; with passwordLogin: false, first-run registration is refused'
+          // Expected when something else creates the team, as TypeKro's
+          // team-bootstrap CronJob does without initialUser.
+          log.info(
+            'this plugin does not create the HyperDX team: OIDC sign-in waits until the team exists, and with passwordLogin: false first-run registration is refused'
           );
         } else if (bootstrap !== undefined && readBootstrapPassword(bootstrap.passwordFile) === undefined) {
           // Armed anyway: the file is re-read on every registration attempt, so

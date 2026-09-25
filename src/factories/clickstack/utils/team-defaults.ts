@@ -321,11 +321,12 @@ export const CLICKSTACK_LEGACY_TEAM_NAME_SHA256 =
  * Which name counts as "never renamed by a human" on a Team TypeKro has no
  * name record for, and so may be renamed to `teamName`.
  */
-export type UntouchedTeamName =
-  /** The degraded path: a legacy default, by hash (needs `require('crypto')`). */
-  | { kind: 'sha256'; hashes: readonly string[] }
-  /** The initialUser path: HyperDX's registration default, `<email>'s Team`. */
-  | { kind: 'exact'; name: string };
+export interface UntouchedTeamName {
+  /** A default matched by SHA-256, e.g. the legacy name (needs `require('crypto')`). */
+  sha256: readonly string[];
+  /** A default matched as-is, e.g. HyperDX's registration name `<email>'s Team`. */
+  exact?: string;
+}
 
 /** Options for {@link renderTeamBootstrapHelpers}. */
 export interface TeamBootstrapHelperOptions {
@@ -339,45 +340,57 @@ export interface TeamBootstrapHelperOptions {
  * and `seedTeamDefaults`. Expects `database` (the HyperDX db) and
  * `bootstrapMarkers` (the TypeKro-owned collection) in scope.
  *
- * - `reconcileTeamName(team, name)` renames the Team only when its current
- *   name is one TypeKro set (a last-applied marker per Team), or, with no
- *   marker yet, the untouched default. Anything else is a human's name. The
- *   update is conditional on the name it read, so a concurrent rename in the UI
- *   wins.
+ * - `recordTeamName(teamId, name)` records that TypeKro set (and owns) the
+ *   name; the degraded path calls it BEFORE inserting a Team it creates.
+ * - `reconcileTeamName(team, name)` renames the Team only while TypeKro owns
+ *   its name: the recorded name, or, with no record, the untouched default.
+ *   Anything else is recorded as a person's name (`null`), and stays theirs.
+ *   The update is conditional on the name it read, so a concurrent rename in
+ *   the UI wins.
  * - `seedTeamDefaults(team, createdByTypekro)` seeds the connection and the
  *   sources ONCE per Team, and only into a Team that has neither.
  */
 export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions): string[] {
-  const untouched =
-    options.untouchedName.kind === 'exact'
-      ? `const isUntouchedTeamName = (name) => name === ${JSON.stringify(options.untouchedName.name)};`
-      : `const isUntouchedTeamName = (name) => typeof name === 'string' && ${JSON.stringify(options.untouchedName.hashes)}.indexOf(require('crypto').createHash('sha256').update(name).digest('hex')) !== -1;`;
+  const { exact, sha256 } = options.untouchedName;
+  const untouched = `const isUntouchedTeamName = (name) => typeof name === 'string' && (${
+    exact === undefined ? '' : `name === ${JSON.stringify(exact)} || `
+  }${JSON.stringify(sha256)}.indexOf(require('crypto').createHash('sha256').update(name).digest('hex')) !== -1);`;
   const nameHelper = [
     untouched,
+    `const teamNameMarkerId = (teamId) => ${JSON.stringify(TEAM_NAME_MARKER_PREFIX)} + String(teamId);`,
+    // `appliedName` is the name TypeKro set and still owns; `null` means a
+    // person owns the name, for good.
+    'const recordTeamName = (teamId, appliedName) => bootstrapMarkers.updateOne({ _id: teamNameMarkerId(teamId) }, { $set: { appliedName, appliedAt: new Date() } }, { upsert: true });',
     'const reconcileTeamName = (team, desiredName) => {',
-    `  const markerId = ${JSON.stringify(TEAM_NAME_MARKER_PREFIX)} + String(team._id);`,
-    '  const marker = bootstrapMarkers.findOne({ _id: markerId });',
-    '  const recordName = (appliedName) => bootstrapMarkers.updateOne({ _id: markerId }, { $set: { appliedName, appliedAt: new Date() } }, { upsert: true });',
-    '  if (team.name === desiredName) {',
-    '    if (marker === null || marker.appliedName !== desiredName) recordName(desiredName);',
+    '  const marker = bootstrapMarkers.findOne({ _id: teamNameMarkerId(team._id) });',
+    '  if (marker !== null && marker.appliedName === null) return;',
+    '  if (marker === null) {',
+    // No record: TypeKro owns the name only if it is still the default the
+    // Team was created with. Anything else, even today's `teamName`, is a
+    // person's choice.
+    '    if (!isUntouchedTeamName(team.name)) {',
+    '      recordTeamName(team._id, null);',
+    "      print('ClickStack team name: the Team is named ' + JSON.stringify(team.name) + ' by someone else, so TypeKro leaves it.');",
+    '      return;',
+    '    }',
+    '  } else if (marker.appliedName !== team.name) {',
+    '    recordTeamName(team._id, null);',
+    "    print('ClickStack team name: the Team was renamed to ' + JSON.stringify(team.name) + ' in HyperDX, so TypeKro leaves it from now on.');",
     '    return;',
     '  }',
-    // TypeKro's name is the one it last applied, or with no record, the default.
-    '  const typekroOwnsName = marker === null ? isUntouchedTeamName(team.name) : marker.appliedName === team.name;',
-    '  if (!typekroOwnsName) {',
-    // Recorded as "applied nothing", so a later teamName change leaves it too.
-    '    if (marker === null) recordName(null);',
-    "    print('ClickStack team name: the Team is named ' + JSON.stringify(team.name) + ' by someone else, so TypeKro leaves it.');",
+    '  if (team.name === desiredName) {',
+    '    if (marker === null) recordTeamName(team._id, desiredName);',
     '    return;',
     '  }',
     // Only the name changes: `_id`, the apiKey and the users' `team` refs stay.
-    // Filtered on the name read above: a rename in the UI since then wins.
+    // Filtered on the name read above: a rename in the UI since then wins, and
+    // the next run records it as a person's.
     '  const result = database.teams.updateOne({ _id: team._id, name: team.name }, { $set: { name: desiredName, updatedAt: new Date() } });',
     '  if (result.matchedCount !== 1) {',
     "    print('ClickStack team name: the Team was renamed while TypeKro was renaming it, so TypeKro leaves it.');",
     '    return;',
     '  }',
-    '  recordName(desiredName);',
+    '  recordTeamName(team._id, desiredName);',
     "  print('ClickStack team name: renamed the Team from ' + JSON.stringify(team.name) + ' to ' + JSON.stringify(desiredName) + '.');",
     '};',
   ];
@@ -433,9 +446,11 @@ export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions):
     '    marker = bootstrapMarkers.findOne({ _id: markerId });',
     "    if (marker.state === 'complete') return;",
     '  }',
-    // Before every write, and again on a resume after a crash: a connection or
-    // source that is not one of ours means someone else is configuring the
-    // Team, so stop and keep what exists.
+    // Once per run, just before this run's writes (so also when a run resumes
+    // an interrupted seed): a connection or source that is not one of ours
+    // means someone else is configuring the Team, so stop and keep what exists.
+    // One added during this run's own writes is caught by the next run only
+    // if the seed is still incomplete; a completed seed leaves it untouched.
     '  const planned = [String(marker.connectionId)].concat(Object.keys(marker.sourceIds).map((name) => String(marker.sourceIds[name])));',
     '  const foreign = database.connections.find({ team: team._id }).toArray().concat(database.sources.find({ team: team._id }).toArray()).filter((document) => planned.indexOf(String(document._id)) === -1);',
     '  if (foreign.length > 0) {',
