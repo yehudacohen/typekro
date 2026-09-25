@@ -35,8 +35,7 @@ import { HYPERDX_OIDC_PLUGIN_BASE64 } from '../../../src/factories/clickstack/hy
 
 setDefaultTimeout(300_000);
 
-const HYPERDX_IMAGE =
-  process.env.HYPERDX_OIDC_TEST_IMAGE ?? 'docker.hyperdx.io/hyperdx/hyperdx:2.35.0';
+const HYPERDX_IMAGE = process.env.HYPERDX_OIDC_TEST_IMAGE ?? 'docker.hyperdx.io/hyperdx/hyperdx:2.35.0';
 const MONGO_IMAGE = 'mongo:7.0';
 const MOCK_IMAGE = 'ghcr.io/navikt/mock-oauth2-server:2.1.10';
 const CADDY_IMAGE = 'caddy:2.11.2';
@@ -52,11 +51,7 @@ const PUBLIC_ORIGIN = `http://${PUBLIC_HOST}`;
 
 function docker(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const result = Bun.spawnSync(['docker', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  return {
-    ok: result.exitCode === 0,
-    stdout: result.stdout.toString().trim(),
-    stderr: result.stderr.toString().trim(),
-  };
+  return { ok: result.exitCode === 0, stdout: result.stdout.toString().trim(), stderr: result.stderr.toString().trim() };
 }
 
 const dockerAvailable = (() => {
@@ -126,9 +121,7 @@ const PROVIDER = {
 };
 
 function writeConfig(config: Record<string, unknown>, dir = workDir) {
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ allowInsecureHttp: true, ...config }), {
-    mode: 0o644,
-  });
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ allowInsecureHttp: true, ...config }), { mode: 0o644 });
 }
 
 /**
@@ -177,8 +170,7 @@ class Browser {
   private rewrite(url: string): string {
     const parsed = new URL(url);
     // Exact origin match: `http://hyperdx.example.test:8000` is NOT the public origin.
-    if (parsed.origin === PUBLIC_ORIGIN)
-      return `${proxyExternal}${parsed.pathname}${parsed.search}`;
+    if (parsed.origin === PUBLIC_ORIGIN) return `${proxyExternal}${parsed.pathname}${parsed.search}`;
     return url.replace(MOCK_INTERNAL, mockExternal);
   }
 
@@ -231,17 +223,12 @@ class Browser {
     return this.go(form.url, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        username: String(claims.sub ?? 'user'),
-        claims: JSON.stringify(claims),
-      }).toString(),
+      body: new URLSearchParams({ username: String(claims.sub ?? 'user'), claims: JSON.stringify(claims) }).toString(),
     });
   }
 
   async me(base = hdxUrl): Promise<{ status: number; body?: { id: string; email: string } }> {
-    const response = await fetch(`${this.rewrite(base)}/api/me`, {
-      headers: { cookie: this.cookies(this.rewrite(base)) },
-    });
+    const response = await fetch(`${this.rewrite(base)}/api/me`, { headers: { cookie: this.cookies(this.rewrite(base)) } });
     return response.status === 200
       ? { status: 200, body: (await response.json()) as { id: string; email: string } }
       : { status: response.status };
@@ -250,9 +237,7 @@ class Browser {
 
 /** The composition without initialUser, with hyperdxOidc: its HyperDX values and bootstrap CronJob. */
 function renderDegraded() {
-  const yaml = makeClickstackBootstrap({
-    hyperdxOidc: { configSecretRef: { name: 'hyperdx-oidc' } },
-  })
+  const yaml = makeClickstackBootstrap({ hyperdxOidc: { configSecretRef: { name: 'hyperdx-oidc' } } })
     .factory('direct', { namespace: 'clickstack' })
     .toYaml({
       name: 'clickstack',
@@ -263,9 +248,7 @@ function renderDegraded() {
   return (loadAll(yaml) as Record<string, any>[]).filter(Boolean);
 }
 function degradedDeployment(): Record<string, unknown> {
-  const release = renderDegraded().find(
-    (doc) => doc.kind === 'HelmRelease' && doc.spec?.chart?.spec?.chart === 'clickstack'
-  );
+  const release = renderDegraded().find((doc) => doc.kind === 'HelmRelease' && doc.spec?.chart?.spec?.chart === 'clickstack');
   return release?.spec.values.hyperdx.deployment;
 }
 
@@ -287,9 +270,7 @@ beforeAll(async () => {
   // another user inside the container and must be able to read it (Docker
   // Desktop hides this; Linux CI does not).
   chmodSync(workDir, 0o755);
-  writeFileSync(join(workDir, 'plugin.js'), Buffer.from(HYPERDX_OIDC_PLUGIN_BASE64, 'base64'), {
-    mode: 0o644,
-  });
+  writeFileSync(join(workDir, 'plugin.js'), Buffer.from(HYPERDX_OIDC_PLUGIN_BASE64, 'base64'), { mode: 0o644 });
   // OIDC-only from the very first start: initialUser must still bootstrap.
   writeConfig({ providers: [PROVIDER], passwordLogin: false });
   // The initialUser password key is NOT in the Secret yet when HyperDX starts:
@@ -337,164 +318,83 @@ beforeAll(async () => {
   expect(docker(['run', '-d', '--name', MONGO, '--network', NETWORK, MONGO_IMAGE]).ok).toBe(true);
   expect(
     docker([
-      'run',
-      '-d',
-      '--name',
-      MOCK,
-      '--network',
-      NETWORK,
-      '--network-alias',
-      'mockoidc',
-      '-p',
-      `${mockPort}:8080`,
-      '-e',
-      'JSON_CONFIG={"interactiveLogin":true}',
-      MOCK_IMAGE,
+      'run', '-d', '--name', MOCK, '--network', NETWORK, '--network-alias', 'mockoidc',
+      '-p', `${mockPort}:8080`, '-e', 'JSON_CONFIG={"interactiveLogin":true}', MOCK_IMAGE,
     ]).ok
   ).toBe(true);
   const started = docker([
-    'run',
-    '-d',
-    '--name',
-    HYPERDX,
-    '--network',
-    NETWORK,
-    '-p',
-    `${hdxPort}:8080`,
-    '-e',
-    `MONGO_URI=mongodb://${MONGO}:27017/hyperdx`,
-    '-e',
-    `FRONTEND_URL=${hdxUrl}`,
-    '-e',
-    'HYPERDX_APP_PORT=8080',
+    'run', '-d', '--name', HYPERDX, '--network', NETWORK, '-p', `${hdxPort}:8080`,
+    '-e', `MONGO_URI=mongodb://${MONGO}:27017/hyperdx`,
+    '-e', `FRONTEND_URL=${hdxUrl}`,
+    '-e', 'HYPERDX_APP_PORT=8080',
     // Exactly the wiring TypeKro renders (hyperdx-oidc/index.ts).
-    '-e',
-    'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
-    '-e',
-    'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
-    '-e',
-    'TYPEKRO_HDX_OIDC_RELOAD_SECONDS=1',
+    '-e', 'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
+    '-e', 'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
+    '-e', 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS=1',
     // As with initialUser: the team is claimed by a password registration,
     // never by a first OIDC login.
-    '-e',
-    'TYPEKRO_HDX_OIDC_CREATE_TEAM=false',
+    '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=false',
     // ...and only the initialUser's own registration passes passwordLogin: false,
     // its password read from the projected Secret file on every attempt.
-    '-e',
-    `TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL=${ADMIN.email}`,
-    '-e',
-    'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE=/etc/typekro/hyperdx-bootstrap/password',
-    '-v',
-    `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
-    '-v',
-    `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
+    '-e', `TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL=${ADMIN.email}`,
+    '-e', 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE=/etc/typekro/hyperdx-bootstrap/password',
+    '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
+    '-v', `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
     // A whole directory, like the Secret volume (no subPath), so changes show through.
-    '-v',
-    `${bootstrapDir}:/etc/typekro/hyperdx-bootstrap:ro`,
+    '-v', `${bootstrapDir}:/etc/typekro/hyperdx-bootstrap:ro`,
     HYPERDX_IMAGE,
   ]);
   if (!started.ok) throw new Error(`docker run hyperdx failed: ${started.stderr}`);
   const openStarted = docker([
-    'run',
-    '-d',
-    '--name',
-    HYPERDX_OPEN,
-    '--network',
-    NETWORK,
-    '-p',
-    `${openPort}:8080`,
-    '-e',
-    `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-open`,
-    '-e',
-    `FRONTEND_URL=${openUrl}`,
-    '-e',
-    'HYPERDX_APP_PORT=8080',
-    '-e',
-    'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
-    '-e',
-    'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
-    '-e',
-    'TYPEKRO_HDX_OIDC_CREATE_TEAM=true',
-    '-v',
-    `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
-    '-v',
-    `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
+    'run', '-d', '--name', HYPERDX_OPEN, '--network', NETWORK, '-p', `${openPort}:8080`,
+    '-e', `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-open`,
+    '-e', `FRONTEND_URL=${openUrl}`,
+    '-e', 'HYPERDX_APP_PORT=8080',
+    '-e', 'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
+    '-e', 'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
+    '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=true',
+    '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
+    '-v', `${workDir}:/etc/typekro/hyperdx-oidc:ro`,
     HYPERDX_IMAGE,
   ]);
   if (!openStarted.ok) throw new Error(`docker run hyperdx (open) failed: ${openStarted.stderr}`);
   const proxiedStarted = docker([
-    'run',
-    '-d',
-    '--name',
-    HYPERDX_PROXIED,
-    '--network',
-    NETWORK,
-    '-e',
-    `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-proxied`,
+    'run', '-d', '--name', HYPERDX_PROXIED, '--network', NETWORK,
+    '-e', `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-proxied`,
     // The public URL, as a deployment behind a reverse proxy sets it.
-    '-e',
-    `FRONTEND_URL=${PUBLIC_ORIGIN}`,
-    '-e',
-    'HYPERDX_APP_PORT=8080',
-    '-e',
-    'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
-    '-e',
-    'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
-    '-e',
-    'TYPEKRO_HDX_OIDC_RELOAD_SECONDS=1',
-    '-e',
-    'TYPEKRO_HDX_OIDC_CREATE_TEAM=true',
+    '-e', `FRONTEND_URL=${PUBLIC_ORIGIN}`,
+    '-e', 'HYPERDX_APP_PORT=8080',
+    '-e', 'NODE_OPTIONS=--require=/opt/typekro/hyperdx-oidc/plugin.js',
+    '-e', 'TYPEKRO_HDX_OIDC_CONFIG=/etc/typekro/hyperdx-oidc/config.json',
+    '-e', 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS=1',
+    '-e', 'TYPEKRO_HDX_OIDC_CREATE_TEAM=true',
     // As `hyperdxOidc.passwordLoginPath` renders it: this proxy's bare
     // `/login` would start SSO, so the chooser links the password form here.
-    '-e',
-    'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH=/login?password',
-    '-v',
-    `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
-    '-v',
-    `${proxiedConfigDir}:/etc/typekro/hyperdx-oidc:ro`,
+    '-e', 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH=/login?password',
+    '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
+    '-v', `${proxiedConfigDir}:/etc/typekro/hyperdx-oidc:ro`,
     HYPERDX_IMAGE,
   ]);
-  if (!proxiedStarted.ok)
-    throw new Error(`docker run hyperdx (proxied) failed: ${proxiedStarted.stderr}`);
+  if (!proxiedStarted.ok) throw new Error(`docker run hyperdx (proxied) failed: ${proxiedStarted.stderr}`);
   // The plugin env exactly as the composition renders it without initialUser.
-  const degradedEnv = (degradedDeployment().env as Array<{ name: string; value: string }>).flatMap(
-    ({ name, value }) => ['-e', `${name}=${value}`]
-  );
+  const degradedEnv = (degradedDeployment().env as Array<{ name: string; value: string }>).flatMap(({ name, value }) => [
+    '-e',
+    `${name}=${value}`,
+  ]);
   const degradedStarted = docker([
-    'run',
-    '-d',
-    '--name',
-    HYPERDX_DEGRADED,
-    '--network',
-    NETWORK,
-    '-p',
-    `${degradedPort}:8080`,
-    '-e',
-    `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-degraded`,
-    '-e',
-    `FRONTEND_URL=${degradedUrl}`,
-    '-e',
-    'HYPERDX_APP_PORT=8080',
+    'run', '-d', '--name', HYPERDX_DEGRADED, '--network', NETWORK, '-p', `${degradedPort}:8080`,
+    '-e', `MONGO_URI=mongodb://${MONGO}:27017/hyperdx-degraded`,
+    '-e', `FRONTEND_URL=${degradedUrl}`,
+    '-e', 'HYPERDX_APP_PORT=8080',
     ...degradedEnv,
-    '-v',
-    `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
-    '-v',
-    `${degradedConfigDir}:/etc/typekro/hyperdx-oidc:ro`,
+    '-v', `${join(workDir, 'plugin.js')}:/opt/typekro/hyperdx-oidc/plugin.js:ro`,
+    '-v', `${degradedConfigDir}:/etc/typekro/hyperdx-oidc:ro`,
     HYPERDX_IMAGE,
   ]);
-  if (!degradedStarted.ok)
-    throw new Error(`docker run hyperdx (degraded) failed: ${degradedStarted.stderr}`);
+  if (!degradedStarted.ok) throw new Error(`docker run hyperdx (degraded) failed: ${degradedStarted.stderr}`);
   const proxyStarted = docker([
-    'run',
-    '-d',
-    '--name',
-    PROXY,
-    '--network',
-    NETWORK,
-    '-p',
-    `${proxyPort}:80`,
-    '-v',
-    `${caddyDir}:/etc/caddy:ro`,
+    'run', '-d', '--name', PROXY, '--network', NETWORK, '-p', `${proxyPort}:80`,
+    '-v', `${caddyDir}:/etc/caddy:ro`,
     CADDY_IMAGE,
   ]);
   if (!proxyStarted.ok) throw new Error(`docker run caddy failed: ${proxyStarted.stderr}`);
@@ -503,8 +403,7 @@ beforeAll(async () => {
   // the browser) use it.
   for (let attempt = 0; attempt < 120; attempt++) {
     try {
-      if ((await fetch(`${mockExternal}/default/.well-known/openid-configuration`)).status === 200)
-        break;
+      if ((await fetch(`${mockExternal}/default/.well-known/openid-configuration`)).status === 200) break;
     } catch {}
     await Bun.sleep(1000);
   }
@@ -526,12 +425,7 @@ beforeAll(async () => {
   }
   for (let attempt = 0; attempt < 60; attempt++) {
     const logs = docker(['logs', HYPERDX_OPEN]);
-    if (
-      `${logs.stdout}\n${logs.stderr}`.includes(
-        '"message":"OIDC configuration applied","providers":["mock"]'
-      )
-    )
-      break;
+    if (`${logs.stdout}\n${logs.stderr}`.includes('"message":"OIDC configuration applied","providers":["mock"]')) break;
     await Bun.sleep(1000);
   }
   for (let attempt = 0; attempt < 120; attempt++) {
@@ -540,22 +434,14 @@ beforeAll(async () => {
     } catch {}
     await Bun.sleep(1000);
   }
-  await waitForLog(
-    /"message":"OIDC configuration applied","providers":\["mock"\]/,
-    0,
-    HYPERDX_PROXIED
-  );
+  await waitForLog(/"message":"OIDC configuration applied","providers":\["mock"\]/, 0, HYPERDX_PROXIED);
   for (let attempt = 0; attempt < 120; attempt++) {
     try {
       if ((await fetch(`${degradedUrl}/api/installation`)).status === 200) break;
     } catch {}
     await Bun.sleep(1000);
   }
-  await waitForLog(
-    /"message":"OIDC configuration applied","providers":\["mock"\]/,
-    0,
-    HYPERDX_DEGRADED
-  );
+  await waitForLog(/"message":"OIDC configuration applied","providers":\["mock"\]/, 0, HYPERDX_DEGRADED);
 });
 
 afterAll(() => {
@@ -575,30 +461,17 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     const signIn = async (n: number): Promise<number> => {
       let status = 0;
       for (let attempt = 0; attempt < 3; attempt++) {
-        const landed = await new Browser().signIn(
-          allowedClaims(`racer-${n}`, `racer-${n}@example.com`),
-          'mock',
-          openUrl
-        );
+        const landed = await new Browser().signIn(allowedClaims(`racer-${n}`, `racer-${n}@example.com`), 'mock', openUrl);
         status = landed.response.status;
         if (status !== 403) break;
       }
       return status;
     };
     const statuses = await Promise.all([1, 2, 3, 4, 5].map(signIn));
-    expect(
-      statuses.every((status) => status === 200 || status === 503),
-      `statuses: ${statuses.join(',')}`
-    ).toBe(true);
+    expect(statuses.every((status) => status === 200 || status === 503), `statuses: ${statuses.join(',')}`).toBe(true);
     expect(statuses.filter((status) => status === 200).length).toBeGreaterThanOrEqual(1);
     const teams = docker([
-      'exec',
-      MONGO,
-      'mongosh',
-      '--quiet',
-      'mongodb://localhost:27017/hyperdx-open',
-      '--eval',
-      'db.teams.countDocuments()',
+      'exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx-open', '--eval', 'db.teams.countDocuments()',
     ]);
     expect(teams.stdout.trim()).toBe('1');
   });
@@ -608,9 +481,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     const landed = await browser.signIn(allowedClaims('early', 'early@example.com'));
     expect(landed.response.status).toBe(503);
     expect(await landed.response.text()).toContain('still being set up');
-    expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({
-      isTeamExisting: false,
-    });
+    expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({ isTeamExisting: false });
   });
 
   const register = (account: { email: string; password: string }) =>
@@ -621,15 +492,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       body: JSON.stringify({ ...account, confirmPassword: account.password }),
     });
   const hyperdxDb = (query: string) =>
-    docker([
-      'exec',
-      MONGO,
-      'mongosh',
-      '--quiet',
-      'mongodb://localhost:27017/hyperdx',
-      '--eval',
-      query,
-    ]).stdout.trim();
+    docker(['exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx', '--eval', query]).stdout.trim();
 
   it('refuses a first-run registration that is not the initialUser under passwordLogin: false', async () => {
     // Until a team exists, anyone who reaches the API could otherwise claim
@@ -643,9 +506,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       expect([intruder, response.status]).toEqual([intruder, 303]);
       expect(response.headers.get('location')).toBe(`${hdxUrl}/login?err=passwordAuthNotAllowed`);
     }
-    expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({
-      isTeamExisting: false,
-    });
+    expect((await fetch(`${hdxUrl}/api/installation`).then((r) => r.json())) as object).toEqual({ isTeamExisting: false });
     expect(hyperdxDb('db.teams.countDocuments()')).toBe('0');
     expect(hyperdxDb('db.users.countDocuments()')).toBe('0');
   });
@@ -722,11 +583,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     // (upstream would answer 409 to the first and the plugin 303 to the
     // second): once a team exists, the plugin compares nothing.
     const answers: [number, string | null][] = [];
-    for (const account of [
-      ADMIN,
-      { email: ADMIN.email, password: 'Wrong-Passw0rd!1' },
-      { email: 'other@example.com', password: ADMIN.password },
-    ]) {
+    for (const account of [ADMIN, { email: ADMIN.email, password: 'Wrong-Passw0rd!1' }, { email: 'other@example.com', password: ADMIN.password }]) {
       const response = await register(account);
       answers.push([response.status, response.headers.get('location')]);
     }
@@ -765,10 +622,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       browser.go(formUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          username: 'tabs',
-          claims: JSON.stringify(allowedClaims('tabs', 'tabs@example.com')),
-        }).toString(),
+        body: new URLSearchParams({ username: 'tabs', claims: JSON.stringify(allowedClaims('tabs', 'tabs@example.com')) }).toString(),
       });
     for (const order of [
       ['first', 'second'],
@@ -784,12 +638,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       const expected = { first: `${hdxUrl}/`, second: `${hdxUrl}/search` };
       for (const tab of order) {
         const landed = await submit(browser, forms[tab].url);
-        expect([order, tab, landed.response.status, landed.url]).toEqual([
-          order,
-          tab,
-          200,
-          expected[tab],
-        ]);
+        expect([order, tab, landed.response.status, landed.url]).toEqual([order, tab, 200, expected[tab]]);
         expect((await browser.me()).body?.email).toBe('tabs@example.com');
       }
     }
@@ -800,10 +649,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     browser.go(formUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        username: sub,
-        claims: JSON.stringify(allowedClaims(sub, `${sub}@example.com`)),
-      }).toString(),
+      body: new URLSearchParams({ username: sub, claims: JSON.stringify(allowedClaims(sub, `${sub}@example.com`)) }).toString(),
     });
   /** Start two sign-ins in one browser at the same moment, as restored tabs do. */
   const startTogether = async (browser: Browser) => {
@@ -811,10 +657,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2F`),
       browser.go(`${hdxUrl}/api/login/oidc/mock?returnTo=%2Fsearch`),
     ]);
-    expect(
-      [first.response.status, second.response.status],
-      `login forms at ${first.url} and ${second.url}`
-    ).toEqual([200, 200]);
+    expect([first.response.status, second.response.status], `login forms at ${first.url} and ${second.url}`).toEqual([200, 200]);
     return { first, second };
   };
   const RACE_RUNS = 5;
@@ -828,11 +671,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       const landedFirst = await completeFlow(browser, first.url, 'racetabs');
       const landedSecond = await completeFlow(browser, second.url, 'racetabs');
       expect([run, landedFirst.response.status, landedFirst.url]).toEqual([run, 200, `${hdxUrl}/`]);
-      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([
-        run,
-        200,
-        `${hdxUrl}/search`,
-      ]);
+      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([run, 200, `${hdxUrl}/search`]);
       expect((await browser.me()).body?.email).toBe('racetabs@example.com');
     }
   });
@@ -848,11 +687,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       const landedFirst = await completeFlow(browser, first.url, 'racetabs');
       const landedSecond = await completeFlow(browser, second.url, 'racetabs');
       expect([run, landedFirst.response.status, landedFirst.url]).toEqual([run, 200, `${hdxUrl}/`]);
-      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([
-        run,
-        200,
-        `${hdxUrl}/search`,
-      ]);
+      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([run, 200, `${hdxUrl}/search`]);
     }
   });
 
@@ -871,48 +706,25 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
         completeFlow(browser, second.url, 'racetabs'),
       ]);
       expect([run, landedFirst.response.status, landedFirst.url]).toEqual([run, 200, `${hdxUrl}/`]);
-      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([
-        run,
-        200,
-        `${hdxUrl}/search`,
-      ]);
+      expect([run, landedSecond.response.status, landedSecond.url]).toEqual([run, 200, `${hdxUrl}/search`]);
       expect((await browser.me()).body?.email).toBe('racetabs@example.com');
 
       // Each callback URL, used once, is refused at the pending-login lookup:
       // a used one never reaches the provider's token endpoint again.
-      const callbacks = browser.locations.filter((location) =>
-        location.includes('/api/login/oidc/mock/callback?')
-      );
+      const callbacks = browser.locations.filter((location) => location.includes('/api/login/oidc/mock/callback?'));
       expect(callbacks).toHaveLength(2);
-      const replays: Array<{
-        refused: number;
-        pastLookup: number;
-        status: number;
-        expired: boolean;
-      }> = [];
+      const replays: Array<{ refused: number; pastLookup: number; status: number; expired: boolean }> = [];
       for (const callback of callbacks) {
-        const before = {
-          refused: countLogMatches(noPending),
-          pastLookup: countLogMatches(pastLookup),
-        };
+        const before = { refused: countLogMatches(noPending), pastLookup: countLogMatches(pastLookup) };
         const replayed = await browser.go(callback);
         const counts = () => ({
           refused: countLogMatches(noPending) - before.refused,
           pastLookup: countLogMatches(pastLookup) - before.pastLookup,
         });
         // Wait for the plugin to log the outcome, whichever it is.
-        for (
-          let attempt = 0;
-          attempt < 15 && counts().refused + counts().pastLookup === 0;
-          attempt++
-        )
-          await Bun.sleep(1000);
+        for (let attempt = 0; attempt < 15 && counts().refused + counts().pastLookup === 0; attempt++) await Bun.sleep(1000);
         const text = await replayed.response.text();
-        replays.push({
-          ...counts(),
-          status: replayed.response.status,
-          expired: text.includes('The sign-in took too long'),
-        });
+        replays.push({ ...counts(), status: replayed.response.status, expired: text.includes('The sign-in took too long') });
       }
       const refusedAtLookup = { refused: 1, pastLookup: 0, status: 403, expired: true };
       expect({ run, replays }).toEqual({ run, replays: [refusedAtLookup, refusedAtLookup] });
@@ -929,10 +741,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
 
   it('refuses a user outside the allowed groups, with no session', async () => {
     const browser = new Browser();
-    const landed = await browser.signIn({
-      ...allowedClaims('bob', 'bob@example.com'),
-      groups: ['other'],
-    });
+    const landed = await browser.signIn({ ...allowedClaims('bob', 'bob@example.com'), groups: ['other'] });
     expect(landed.response.status).toBe(403);
     expect(await landed.response.text()).toContain('not in a group');
     expect((await browser.me()).status).toBe(401);
@@ -940,10 +749,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
 
   it('refuses an unverified email', async () => {
     const browser = new Browser();
-    const landed = await browser.signIn({
-      ...allowedClaims('carol', 'carol@example.com'),
-      email_verified: false,
-    });
+    const landed = await browser.signIn({ ...allowedClaims('carol', 'carol@example.com'), email_verified: false });
     expect(landed.response.status).toBe(403);
     expect((await browser.me()).status).toBe(401);
   });
@@ -952,9 +758,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     // The unique userId index, not the read-then-write, is what guarantees this.
     const racer = async (n: number) => {
       for (let attempt = 0; attempt < 3; attempt++) {
-        const landed = await new Browser().signIn(
-          allowedClaims(`shared-${n}`, 'shared@example.com')
-        );
+        const landed = await new Browser().signIn(allowedClaims(`shared-${n}`, 'shared@example.com'));
         const body = await landed.response.text();
         // Retry only the mock provider's occasional dropped nonce.
         if (landed.response.status !== 403 || body.includes('already belongs to another sign-in')) {
@@ -964,25 +768,12 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
       return 0;
     };
     const statuses = await Promise.all([1, 2, 3, 4].map(racer));
-    expect(
-      statuses.filter((status) => status === 200),
-      `statuses: ${statuses.join(',')}`
-    ).toHaveLength(1);
+    expect(statuses.filter((status) => status === 200), `statuses: ${statuses.join(',')}`).toHaveLength(1);
     expect(statuses.filter((status) => status === 403)).toHaveLength(3);
     const mongo = (query: string) =>
-      docker([
-        'exec',
-        MONGO,
-        'mongosh',
-        '--quiet',
-        'mongodb://localhost:27017/hyperdx',
-        '--eval',
-        query,
-      ]).stdout.trim();
+      docker(['exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx', '--eval', query]).stdout.trim();
     expect(mongo("db.users.countDocuments({ email: 'shared@example.com' })")).toBe('1');
-    expect(
-      mongo("db.typekro_oidc_identities.countDocuments({ email: 'shared@example.com' })")
-    ).toBe('1');
+    expect(mongo("db.typekro_oidc_identities.countDocuments({ email: 'shared@example.com' })")).toBe('1');
   });
 
   it('refuses a Unicode look-alike of an existing email (Kelvin sign)', async () => {
@@ -1007,21 +798,13 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
   it("revokes a linked user's API access key when the provider stops admitting them", async () => {
     const browser = new Browser();
     await browser.signIn(allowedClaims('gina', 'gina@example.com'));
-    const key = (
-      (await fetch(`${hdxUrl}/api/me`, { headers: { cookie: browser.cookies(hdxUrl) } }).then((r) =>
-        r.json()
-      )) as {
-        accessKey: string;
-      }
-    ).accessKey;
-    const v2 = (accessKey: string) =>
-      fetch(`${hdxUrl}/api/api/v2/`, { headers: { authorization: `Bearer ${accessKey}` } });
+    const key = ((await fetch(`${hdxUrl}/api/me`, { headers: { cookie: browser.cookies(hdxUrl) } }).then((r) => r.json())) as {
+      accessKey: string;
+    }).accessKey;
+    const v2 = (accessKey: string) => fetch(`${hdxUrl}/api/api/v2/`, { headers: { authorization: `Bearer ${accessKey}` } });
     expect((await v2(key)).status).toBe(200);
     // Removed from the allowed group at the provider:
-    const denied = await new Browser().signIn({
-      ...allowedClaims('gina', 'gina@example.com'),
-      groups: ['former'],
-    });
+    const denied = await new Browser().signIn({ ...allowedClaims('gina', 'gina@example.com'), groups: ['former'] });
     expect(denied.response.status).toBe(403);
     expect((await v2(key)).status).toBe(401);
   });
@@ -1029,10 +812,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
   it('applies a configuration change without a restart: second provider, password login off', async () => {
     const applied = /"message":"OIDC configuration applied".*"second"/;
     const before = countLogMatches(applied);
-    writeConfig({
-      providers: [PROVIDER, { ...PROVIDER, id: 'second', displayName: 'Second IdP' }],
-      passwordLogin: false,
-    });
+    writeConfig({ providers: [PROVIDER, { ...PROVIDER, id: 'second', displayName: 'Second IdP' }], passwordLogin: false });
     await waitForLog(applied, before);
 
     const chooser = await fetch(`${hdxUrl}/api/login/oidc`);
@@ -1058,10 +838,7 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ email: ADMIN.email, password: ADMIN.password }).toString(),
       });
-      const cookie = response.headers
-        .getSetCookie()
-        .map((header) => header.split(';')[0])
-        .join('; ');
+      const cookie = response.headers.getSetCookie().map((header) => header.split(';')[0]).join('; ');
       const me = await fetch(`${hdxUrl}/api/me`, { headers: { cookie } });
       expect([path, me.status]).toEqual([path, 401]);
     }
@@ -1123,9 +900,7 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
       ['', `${PUBLIC_ORIGIN}/api/login/oidc/mock`],
       ['?returnTo=%2Fsearch', `${PUBLIC_ORIGIN}/api/login/oidc/mock?returnTo=%2Fsearch`],
     ] as const) {
-      const response = await fetch(`${proxyExternal}/api/login/oidc${query}`, {
-        redirect: 'manual',
-      });
+      const response = await fetch(`${proxyExternal}/api/login/oidc${query}`, { redirect: 'manual' });
       expect(response.status).toBe(302);
       expect(response.headers.get('location')).toBe(expected);
     }
@@ -1138,14 +913,9 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
     const form = await browser.go(`${PUBLIC_ORIGIN}/api/login/oidc?returnTo=%2Fsearch`);
     expect(form.response.status, `login form at ${form.url}`).toBe(200);
     expect(browser.locations[0]).toBe(`${PUBLIC_ORIGIN}/api/login/oidc/mock?returnTo=%2Fsearch`);
-    expect(
-      browser.locations[1]?.startsWith(`${MOCK_INTERNAL}/default/authorize?`),
-      browser.locations[1]
-    ).toBe(true);
+    expect(browser.locations[1]?.startsWith(`${MOCK_INTERNAL}/default/authorize?`), browser.locations[1]).toBe(true);
     const authorize = new URL(browser.locations[1] as string);
-    expect(authorize.searchParams.get('redirect_uri')).toBe(
-      `${PUBLIC_ORIGIN}/api/login/oidc/mock/callback`
-    );
+    expect(authorize.searchParams.get('redirect_uri')).toBe(`${PUBLIC_ORIGIN}/api/login/oidc/mock/callback`);
 
     const landed = await browser.go(form.url, {
       method: 'POST',
@@ -1156,9 +926,7 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
       }).toString(),
     });
     const [callback, postLogin] = browser.locations.slice(2);
-    expect(callback?.startsWith(`${PUBLIC_ORIGIN}/api/login/oidc/mock/callback?`), callback).toBe(
-      true
-    );
+    expect(callback?.startsWith(`${PUBLIC_ORIGIN}/api/login/oidc/mock/callback?`), callback).toBe(true);
     expect(postLogin).toBe(`${PUBLIC_ORIGIN}/search`);
     expect(landed.response.status).toBe(200);
     expect(landed.url).toBe(`${proxyExternal}/search`);
@@ -1174,19 +942,14 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
       body: new URLSearchParams({ email: 'proxied@example.com', password: 'whatever' }).toString(),
     });
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(
-      `${PUBLIC_ORIGIN}/login?err=passwordAuthNotAllowed`
-    );
+    expect(response.headers.get('location')).toBe(`${PUBLIC_ORIGIN}/login?err=passwordAuthNotAllowed`);
   });
 
   it("serves the multi-provider chooser whose links resolve against the page's public URL", async () => {
     const applied = /"message":"OIDC configuration applied".*"second"/;
     const before = countLogMatches(applied, HYPERDX_PROXIED);
     writeConfig(
-      {
-        providers: [PROVIDER, { ...PROVIDER, id: 'second', displayName: 'Second IdP' }],
-        passwordLogin: false,
-      },
+      { providers: [PROVIDER, { ...PROVIDER, id: 'second', displayName: 'Second IdP' }], passwordLogin: false },
       proxiedConfigDir
     );
     await waitForLog(applied, before, HYPERDX_PROXIED);
@@ -1199,10 +962,7 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
     expect(href).toBeDefined();
     const form = await browser.go(new URL(href as string, chooserUrl).href);
     expect(form.response.status, `login form at ${form.url}`).toBe(200);
-    expect(
-      browser.locations[0]?.startsWith(`${MOCK_INTERNAL}/default/authorize?`),
-      browser.locations[0]
-    ).toBe(true);
+    expect(browser.locations[0]?.startsWith(`${MOCK_INTERNAL}/default/authorize?`), browser.locations[0]).toBe(true);
   });
 
   it("links the chooser's password form at the configured path, on the public URL", async () => {
@@ -1212,8 +972,7 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
     };
     const providers = [PROVIDER, { ...PROVIDER, id: 'second', displayName: 'Second IdP' }];
     // The deployment's path (the env var above), with password login on.
-    let applied =
-      /"message":"OIDC configuration applied".*"passwordLogin":true,"passwordLoginPath":"\/login\?password"/;
+    let applied = /"message":"OIDC configuration applied".*"passwordLogin":true,"passwordLoginPath":"\/login\?password"/;
     let before = countLogMatches(applied, HYPERDX_PROXIED);
     writeConfig({ providers, passwordLogin: true }, proxiedConfigDir);
     await waitForLog(applied, before, HYPERDX_PROXIED);
@@ -1221,10 +980,7 @@ describeOrSkip('HyperDX OIDC plugin behind a reverse proxy (no port in the Host 
     // The configuration document's own path takes precedence.
     applied = /"message":"OIDC configuration applied".*"passwordLoginPath":"\/login\?via=config"/;
     before = countLogMatches(applied, HYPERDX_PROXIED);
-    writeConfig(
-      { providers, passwordLogin: true, passwordLoginPath: '/login?via=config' },
-      proxiedConfigDir
-    );
+    writeConfig({ providers, passwordLogin: true, passwordLoginPath: '/login?via=config' }, proxiedConfigDir);
     await waitForLog(applied, before, HYPERDX_PROXIED);
     expect(await chooserLink()).toBe(`${PUBLIC_ORIGIN}/login?via=config`);
   });
@@ -1234,69 +990,36 @@ describeOrSkip('HyperDX OIDC without initialUser: the bootstrap owns the Team', 
   it('answers "still being set up" until the bootstrap creates the one Team, then signs users into it', async () => {
     // Before the CronJob's first run: the plugin does not create a Team, so
     // there can never be a second one next to the CronJob's.
-    const early = await new Browser().signIn(
-      allowedClaims('early-bird', 'early-bird@example.com'),
-      'mock',
-      degradedUrl
-    );
+    const early = await new Browser().signIn(allowedClaims('early-bird', 'early-bird@example.com'), 'mock', degradedUrl);
     expect(early.response.status).toBe(503);
-    expect(await early.response.text()).toContain(
-      'HyperDX is still being set up. Try again in a minute.'
-    );
+    expect(await early.response.text()).toContain('HyperDX is still being set up. Try again in a minute.');
     const count = (query: string) =>
-      docker([
-        'exec',
-        MONGO,
-        'mongosh',
-        '--quiet',
-        'mongodb://localhost:27017/hyperdx-degraded',
-        '--eval',
-        query,
-      ]).stdout.trim();
+      docker(['exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx-degraded', '--eval', query]).stdout.trim();
     expect(count('db.teams.countDocuments()')).toBe('0');
 
     // The team-bootstrap CronJob as rendered, its Secret references resolved.
-    const cronJob = renderDegraded().find(
-      (doc) => doc.kind === 'CronJob' && doc.metadata.name.endsWith('-team-bootstrap')
-    );
+    const cronJob = renderDegraded().find((doc) => doc.kind === 'CronJob' && doc.metadata.name.endsWith('-team-bootstrap'));
     const container = cronJob?.spec.jobTemplate.spec.template.spec.containers[0];
     const secret: Record<string, string> = {
       HYPERDX_API_KEY: '6f1c1d2e-3a4b-4c5d-8e9f-0a1b2c3d4e5f',
       CLICKHOUSE_APP_PASSWORD: 'ch-secret',
     };
-    const env = (
-      container.env as Array<{
-        name: string;
-        value?: string;
-        valueFrom?: { secretKeyRef: { key: string } };
-      }>
-    ).flatMap((variable) => [
+    type EnvVar = { name: string; value?: string; valueFrom?: { secretKeyRef: { key: string } } };
+    const env = (container.env as EnvVar[]).flatMap((variable) => [
       '-e',
       `${variable.name}=${variable.value ?? secret[variable.valueFrom?.secretKeyRef.key ?? '']}`,
     ]);
+    const script = (container.command[4] as string).replace("getSiblingDB('hyperdx')", "getSiblingDB('hyperdx-degraded')");
     const bootstrap = docker([
-      'run',
-      '--rm',
-      '--network',
-      NETWORK,
-      ...env,
-      MONGO_IMAGE,
-      'mongosh',
-      '--quiet',
-      `mongodb://${MONGO}:27017/hyperdx`,
-      '--eval',
-      container.command[4].replace("getSiblingDB('hyperdx')", "getSiblingDB('hyperdx-degraded')"),
+      'run', '--rm', '--network', NETWORK, ...env, MONGO_IMAGE,
+      'mongosh', '--quiet', `mongodb://${MONGO}:27017/hyperdx`, '--eval', script,
     ]);
     expect(bootstrap.ok, bootstrap.stderr).toBe(true);
 
     // Now OIDC users join that one Team, which has a connection and sources.
     for (const who of ['early-bird', 'second']) {
       const browser = new Browser();
-      const landed = await browser.signIn(
-        allowedClaims(who, `${who}@example.com`),
-        'mock',
-        degradedUrl
-      );
+      const landed = await browser.signIn(allowedClaims(who, `${who}@example.com`), 'mock', degradedUrl);
       expect(landed.response.status).toBe(200);
       expect((await browser.me(degradedUrl)).status).toBe(200);
       const connections = (await fetch(`${degradedUrl}/api/connections`, {
