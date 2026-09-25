@@ -13,7 +13,7 @@ import * as oauth from 'oauth4webapi';
 import type { OidcProviderConfig } from './config.js';
 import { isSameOriginPath } from './redirects.js';
 
-/** Flow state kept in the HyperDX session between the redirect and the callback. */
+/** Flow state kept between the redirect and the callback (see pending.ts). */
 export interface PendingLogin {
   readonly provider: string;
   readonly state: string;
@@ -165,10 +165,14 @@ export class ProviderRuntime {
   }
 }
 
+/** Longest post-login destination kept; a longer one becomes `/`. */
+export const MAX_RETURN_TO_LENGTH = 2048;
+
 /**
  * Only same-origin relative paths are accepted as post-login destinations
- * (no `//`, backslash, whitespace or control character); anything else is `/`.
+ * (no `//`, backslash, whitespace or control character), up to
+ * {@link MAX_RETURN_TO_LENGTH} characters; anything else is `/`.
  */
 export function safeReturnTo(value: unknown): string {
-  return typeof value === 'string' && isSameOriginPath(value) ? value : '/';
+  return typeof value === 'string' && value.length <= MAX_RETURN_TO_LENGTH && isSameOriginPath(value) ? value : '/';
 }

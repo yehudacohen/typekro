@@ -348,6 +348,23 @@ activates only in the API process. There it:
 The flow is the authorization-code flow with PKCE, `state` and `nonce`. Issuer metadata is discovered and
 refreshed.
 
+Each sign-in in flight is a document in the `typekro_oidc_pending_logins` collection, keyed by `state`,
+not an entry in the HyperDX session. That's why several sign-ins can start and complete at once in one
+browser, for example when a reverse proxy starts sign-in for every signed-out tab a browser restores.
+Each sign-in:
+
+- **Is bound to the browser.** It sets its own random cookie (`typekro_oidc_…`: HttpOnly, SameSite=Lax,
+  Secure on https, path limited to the login routes). The document stores only a SHA-256 of that cookie, and
+  a callback must present the cookie for its own `state`. One cookie per sign-in, rather than one shared
+  cookie, lets two sign-ins started at the same moment by a browser that has no cookie yet both succeed.
+- **Is used exactly once.** The callback takes its document in one atomic `findOneAndDelete` before any
+  token exchange, so a replayed callback URL is refused even when callbacks run concurrently.
+- **Expires after 10 minutes.** A TTL index removes the document, and the cookie expires with it.
+- **Counts towards a cap.** A browser keeps at most 10 sign-ins in flight; starting more evicts the oldest.
+
+Sign-in is refused until the collection's indexes exist. A `returnTo` longer than 2,048 characters, or
+not a same-origin path, becomes `/`.
+
 The Secret is mounted as a directory (never `subPath`). The plugin re-reads it every `reloadSeconds`
 (default 15), so **providers can be added, changed or removed without a restart**. An invalid document is
 rejected, and the last good configuration keeps serving. A new plugin build changes the pod annotation

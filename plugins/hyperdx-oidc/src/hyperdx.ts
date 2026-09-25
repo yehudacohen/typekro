@@ -21,18 +21,27 @@ import { join } from 'node:path';
 import { authorizeBootstrapRegistration, type BootstrapCredentials, normalizeRoutePath } from './bootstrap.js';
 import { chooserPasswordLoginPath, type OidcPluginConfig, parseOidcPluginConfig } from './config.js';
 import { evaluateClaims, type IdentityStore, LinkConflictError, resolveAccount, type VerifiedIdentity } from './identity.js';
-import { OidcFlowError, type PendingLogin, ProviderRuntime, safeReturnTo } from './oidc.js';
+import { OidcFlowError, ProviderRuntime, safeReturnTo } from './oidc.js';
 import { renderChooser, renderDenied } from './pages.js';
-import { addPendingLogin, takePendingLogin } from './pending.js';
+import {
+  beginPendingLogin,
+  bindingCookieOptions,
+  type PendingLoginRecord,
+  type PendingLoginStore,
+  takePendingLogin,
+} from './pending.js';
 import { providerLoginPath, publicBase, publicUrl } from './redirects.js';
 
 // ── Minimal structural types for the parts of HyperDX and Express we touch ──
 
 interface Session {
-  /** Sign-ins in flight, one per `state` (see pending.ts). */
-  typekroOidcPendingLogins?: PendingLogin[];
-  /** The single pending sign-in earlier plugin builds kept; read by nothing, removed on sight. */
+  /**
+   * Pending sign-ins that earlier plugin builds kept in the session (one, or
+   * a list). Pending sign-ins now live in their own collection (see
+   * pending.ts); these are read by nothing and removed on sight.
+   */
   typekroOidcPending?: unknown;
+  typekroOidcPendingLogins?: unknown;
   typekroOidcAuth?: { provider: string; at: number };
   messages?: string[];
 }
@@ -45,6 +54,9 @@ interface Request {
   query: Record<string, unknown>;
   /** Parsed by HyperDX's app-level express.json/urlencoded, before the root router. */
   body?: unknown;
+  headers: Record<string, string | string[] | undefined>;
+  /** Express's response for this request. */
+  res?: { append(field: string, value: string[]): unknown };
   session?: Session;
   user?: unknown;
   logIn(user: unknown, done: (error?: unknown) => void): void;
@@ -99,6 +111,12 @@ interface Collection {
   createIndex(spec: Record<string, number>, options: Record<string, unknown>): Promise<unknown>;
   insertOne(doc: Record<string, unknown>): Promise<unknown>;
   findOne(filter: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  findOneAndDelete(filter: Record<string, unknown>, options: Record<string, unknown>): Promise<unknown>;
+  find(
+    filter: Record<string, unknown>,
+    options: Record<string, unknown>
+  ): { toArray(): Promise<Record<string, unknown>[]> };
+  deleteMany(filter: Record<string, unknown>): Promise<unknown>;
   updateOne(filter: Record<string, unknown>, update: Record<string, unknown>, options?: Record<string, unknown>): Promise<unknown>;
   deleteOne(filter: Record<string, unknown>): Promise<unknown>;
 }
@@ -123,6 +141,8 @@ export interface Logger {
 
 const STRATEGY_PREFIX = 'typekro-oidc:';
 const IDENTITY_COLLECTION = 'typekro_oidc_identities';
+/** Pending sign-ins, between the redirect to the provider and the callback (see pending.ts). */
+const PENDING_COLLECTION = 'typekro_oidc_pending_logins';
 /** Plugin-owned coordination documents (the team-claim lock). */
 const STATE_COLLECTION = 'typekro_oidc_state';
 const TEAM_CLAIM_ID = 'team-claim';
@@ -192,6 +212,74 @@ export function resolveHyperdx(apiBuildDir: string): Hyperdx {
     setupTeamDefaults: setupDefaults.setupTeamDefaults as Hyperdx['setupTeamDefaults'],
     frontendUrl: String(config.FRONTEND_URL ?? '').replace(/\/+$/, ''),
     frontendRedirectBase: String(config.FRONTEND_REDIRECT_BASE ?? config.FRONTEND_URL ?? '').replace(/\/+$/, ''),
+  };
+}
+
+// ── Pending sign-ins in HyperDX's MongoDB ─────────────────────────────────
+
+/**
+ * Pending sign-ins in their own collection: unique by `state`, removed by a
+ * TTL index once expired, looked up by binding hash for the per-browser cap.
+ * Sign-in waits for the indexes and fails CLOSED without them (a unique
+ * `state` and expiry are part of what makes an entry single-use and
+ * time-limited); a failed attempt is retried by the next sign-in.
+ */
+function mongoPendingLoginStore(hyperdx: Hyperdx, log: Logger): PendingLoginStore {
+  const pending = hyperdx.User.db.collection(PENDING_COLLECTION);
+  let indexes: Promise<void> | undefined;
+  const ensureIndexes = (): Promise<void> => {
+    if (indexes === undefined) {
+      indexes = Promise.all([
+        pending.createIndex({ state: 1 }, { unique: true, name: 'state' }),
+        pending.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'expiry' }),
+        pending.createIndex({ bindingHash: 1 }, { name: 'binding' }),
+      ]).then(
+        () => undefined,
+        (error: unknown) => {
+          indexes = undefined;
+          log.error('could not create the pending sign-in indexes; OIDC sign-in is refused until they exist', {
+            error: String(error),
+          });
+          throw new OidcFlowError('storeUnavailable', 'pending sign-in indexes are not in place');
+        }
+      );
+    }
+    return indexes;
+  };
+  ensureIndexes().catch(() => {
+    /* logged in ensureIndexes */
+  });
+  return {
+    async insert(record: PendingLoginRecord) {
+      await ensureIndexes();
+      await pending.insertOne({ ...record });
+    },
+    async take(state, bindingHash, provider, now) {
+      await ensureIndexes();
+      // One atomic operation: of any number of concurrent callbacks carrying
+      // this state, at most one gets the document.
+      const result = (await pending.findOneAndDelete(
+        { state, bindingHash, provider, expiresAt: { $gt: now } },
+        { includeResultMetadata: true }
+      )) as { value?: unknown } | null;
+      return result?.value ?? null;
+    },
+    async listByBinding(bindingHashes, now) {
+      const records = await pending
+        .find(
+          { bindingHash: { $in: [...bindingHashes] }, expiresAt: { $gt: now } },
+          { projection: { _id: 0, bindingHash: 1, createdAt: 1 } }
+        )
+        .toArray();
+      return records.flatMap((record) =>
+        typeof record.bindingHash === 'string' && typeof record.createdAt === 'number'
+          ? [{ bindingHash: record.bindingHash, createdAt: record.createdAt }]
+          : []
+      );
+    },
+    async removeByBinding(bindingHashes) {
+      await pending.deleteMany({ bindingHash: { $in: [...bindingHashes] } });
+    },
   };
 }
 
@@ -401,6 +489,7 @@ export function installPlugin(
     options,
     log
   );
+  const pendingLogins = mongoPendingLoginStore(hyperdx, log);
 
   /**
    * Revoke API access (external API v2, MCP) for a linked user whom the
@@ -445,20 +534,32 @@ export function installPlugin(
         const run = async () => {
           const session = req.session;
           if (session === undefined) throw new Error('HyperDX session middleware is not active');
-          delete session.typekroOidcPending;
+          if (req.res === undefined) throw new Error('the request has no response to set cookies on');
+          // Pending sign-ins no longer live in the session: drop what earlier
+          // builds left there (only when present, so an untouched session is
+          // not rewritten).
+          if ('typekroOidcPending' in session) delete session.typekroOidcPending;
+          if ('typekroOidcPendingLogins' in session) delete session.typekroOidcPendingLogins;
+          const cookie = bindingCookieOptions(provider.redirectUri);
           if (req.query.code === undefined && req.query.error === undefined) {
             const { url, pending } = await provider.begin(safeReturnTo(req.query.returnTo));
-            // Added alongside any other sign-in this browser has in flight,
-            // never in place of it.
-            session.typekroOidcPendingLogins = addPendingLogin(session.typekroOidcPendingLogins, pending, Date.now());
+            req.res.append('Set-Cookie', await beginPendingLogin(pendingLogins, req.headers.cookie, pending, cookie, Date.now()));
             this.redirect(url);
             return;
           }
-          // Only the entry this callback's `state` names, and only once.
-          const { pending, remaining } = takePendingLogin(session.typekroOidcPendingLogins, req.query.state, Date.now());
-          if (remaining.length > 0) session.typekroOidcPendingLogins = remaining;
-          else delete session.typekroOidcPendingLogins;
+          // Only the entry this callback's `state` names, bound to this
+          // browser, taken once, before any token exchange.
+          const { pending, setCookies } = await takePendingLogin(
+            pendingLogins,
+            req.headers.cookie,
+            req.query.state,
+            id,
+            cookie,
+            Date.now()
+          );
+          if (setCookies.length > 0) req.res.append('Set-Cookie', setCookies);
           if (pending === undefined) {
+            log.warn('OIDC callback matched no pending sign-in', { provider: id });
             this.fail({ reason: 'loginExpired' }, 400);
             return;
           }
@@ -752,22 +853,13 @@ export function installPlugin(
         res.status(status).type('html').send(renderDenied(details.reason ?? 'unknown', loginPath()));
         return;
       }
-      // Passport regenerates the session on login, dropping everything in it.
-      // Sign-ins this browser still has in flight (other tabs) move to the
-      // new session, or their callbacks would find nothing. They were started
-      // in this same session, and each stays bound to its own state, nonce
-      // and PKCE verifier.
-      const inFlight = req.session?.typekroOidcPendingLogins;
       req.logIn(user, (loginError) => {
         if (loginError) {
           next(loginError);
           return;
         }
         // Set after logIn: Passport regenerates the session on login.
-        if (req.session !== undefined) {
-          req.session.typekroOidcAuth = { provider: id, at: Date.now() };
-          if (inFlight !== undefined && inFlight.length > 0) req.session.typekroOidcPendingLogins = inFlight;
-        }
+        if (req.session !== undefined) req.session.typekroOidcAuth = { provider: id, at: Date.now() };
         res.redirect(302, frontend(safeReturnTo(details.returnTo)));
       });
     })(req, res, next);
