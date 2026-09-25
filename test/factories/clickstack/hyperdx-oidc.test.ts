@@ -23,11 +23,20 @@ import {
 const SPEC = {
   name: 'clickstack',
   namespace: 'clickstack',
-  clickhouse: { host: 'clickhouse.clickhouse.svc.cluster.local', username: 'otelcollector', password: 'pw' },
+  clickhouse: {
+    host: 'clickhouse.clickhouse.svc.cluster.local',
+    username: 'otelcollector',
+    password: 'pw',
+  },
   apiKey: 'test-ingestion-api-key',
 } as const;
 
-type Doc = { kind?: string; metadata?: { name?: string }; spec?: Record<string, unknown>; binaryData?: Record<string, string> };
+type Doc = {
+  kind?: string;
+  metadata?: { name?: string };
+  spec?: Record<string, unknown>;
+  binaryData?: Record<string, string>;
+};
 
 function directDocs(options: Record<string, unknown>, spec: object = SPEC): Doc[] {
   const yaml = makeClickstackBootstrap(options as never)
@@ -37,8 +46,12 @@ function directDocs(options: Record<string, unknown>, spec: object = SPEC): Doc[
 }
 
 function hyperdxDeploymentValues(docs: Doc[]): Record<string, unknown> {
-  const release = docs.find((doc) => doc.kind === 'HelmRelease' && doc.metadata?.name === 'clickstack');
-  const values = (release?.spec?.values ?? {}) as { hyperdx?: { deployment?: Record<string, unknown> } };
+  const release = docs.find(
+    (doc) => doc.kind === 'HelmRelease' && doc.metadata?.name === 'clickstack'
+  );
+  const values = (release?.spec?.values ?? {}) as {
+    hyperdx?: { deployment?: Record<string, unknown> };
+  };
   return values.hyperdx?.deployment ?? {};
 }
 
@@ -47,19 +60,23 @@ const OIDC = { configSecretRef: { name: 'hyperdx-oidc' } };
 describe('hyperdxOidc wiring', () => {
   it('ships the plugin ConfigMap, byte-identical to the bundle', () => {
     const docs = directDocs({ hyperdxOidc: OIDC });
-    const plugin = docs.find((doc) => doc.kind === 'ConfigMap' && doc.metadata?.name === 'clickstack-hyperdx-oidc-plugin');
+    const plugin = docs.find(
+      (doc) => doc.kind === 'ConfigMap' && doc.metadata?.name === 'clickstack-hyperdx-oidc-plugin'
+    );
     expect(plugin).toBeDefined();
     const bundle = Buffer.from(plugin?.binaryData?.['plugin.js'] ?? '', 'base64');
     expect(createHash('sha256').update(bundle).digest('hex')).toBe(HYPERDX_OIDC_PLUGIN_SHA256);
   });
 
   it('loads the plugin through NODE_OPTIONS and points it at the mounted configuration', () => {
-    const env = hyperdxDeploymentValues(directDocs({ hyperdxOidc: { ...OIDC, reloadSeconds: 30 } })).env;
+    const env = hyperdxDeploymentValues(
+      directDocs({ hyperdxOidc: { ...OIDC, reloadSeconds: 30 } })
+    ).env;
     expect(env).toEqual([
       { name: 'NODE_OPTIONS', value: '--require=/opt/typekro/hyperdx-oidc/plugin.js' },
       { name: 'TYPEKRO_HDX_OIDC_CONFIG', value: '/etc/typekro/hyperdx-oidc/config.json' },
       { name: 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS', value: '30' },
-      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: 'true' },
+      { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: 'false' },
     ]);
   });
 
@@ -67,30 +84,71 @@ describe('hyperdxOidc wiring', () => {
     const env = hyperdxDeploymentValues(
       directDocs({ hyperdxOidc: { ...OIDC, passwordLoginPath: '/login?password' } })
     ).env as { name: string; value: string }[];
-    expect(env.find((entry) => entry.name === 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH')?.value).toBe('/login?password');
-    const defaults = hyperdxDeploymentValues(directDocs({ hyperdxOidc: OIDC })).env as { name: string }[];
-    expect(defaults.some((entry) => entry.name === 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH')).toBe(false);
+    expect(env.find((entry) => entry.name === 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH')?.value).toBe(
+      '/login?password'
+    );
+    const defaults = hyperdxDeploymentValues(directDocs({ hyperdxOidc: OIDC })).env as {
+      name: string;
+    }[];
+    expect(defaults.some((entry) => entry.name === 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH')).toBe(
+      false
+    );
   });
 
-  it('stops a first OIDC login from creating the team when initialUser claims the instance', () => {
-    const env = hyperdxDeploymentValues(
-      directDocs({ hyperdxOidc: OIDC, initialUser: { email: 'ops@example.com' } })
-    ).env as { name: string; value: string }[];
-    expect(env.find((entry) => entry.name === 'TYPEKRO_HDX_OIDC_CREATE_TEAM')?.value).toBe('false');
+  it('stops a first OIDC login from creating the team on both paths, since the bootstrap owns it', () => {
+    // Without initialUser the CronJob creates the Team itself; a first OIDC
+    // login that created one first would leave two.
+    for (const options of [
+      { hyperdxOidc: OIDC },
+      { hyperdxOidc: OIDC, initialUser: { email: 'ops@example.com' } },
+    ]) {
+      const env = hyperdxDeploymentValues(directDocs(options)).env as {
+        name: string;
+        value: string;
+      }[];
+      expect(env.find((entry) => entry.name === 'TYPEKRO_HDX_OIDC_CREATE_TEAM')?.value).toBe(
+        'false'
+      );
+    }
   });
 
   type Env = Array<{ name: string; value?: string; valueFrom?: unknown }>;
-  type SecretVolume = { name: string; secret?: { secretName: string; optional?: boolean; items?: Array<{ key: string; path: string }> } };
+  type SecretVolume = {
+    name: string;
+    secret?: {
+      secretName: string;
+      optional?: boolean;
+      items?: Array<{ key: string; path: string }>;
+    };
+  };
   type Mount = { name: string; mountPath: string; readOnly?: boolean; subPath?: string };
 
   /** Every (Secret, key) the initialUser CronJob's containers read through a secretKeyRef. */
   function cronJobSecretRefs(docs: Doc[]): Array<{ name: string; key: string }> {
-    const cronJob = docs.find((doc) => doc.kind === 'CronJob' && doc.metadata?.name === 'clickstack-team-bootstrap') as {
-      spec: { jobTemplate: { spec: { template: { spec: { containers: Array<{ env: Array<{ valueFrom?: { secretKeyRef?: { name: string; key: string } } }> }> } } } } };
+    const cronJob = docs.find(
+      (doc) => doc.kind === 'CronJob' && doc.metadata?.name === 'clickstack-team-bootstrap'
+    ) as {
+      spec: {
+        jobTemplate: {
+          spec: {
+            template: {
+              spec: {
+                containers: Array<{
+                  env: Array<{ valueFrom?: { secretKeyRef?: { name: string; key: string } } }>;
+                }>;
+              };
+            };
+          };
+        };
+      };
     };
     return cronJob.spec.jobTemplate.spec.template.spec.containers
       .flatMap((container) => container.env)
-      .flatMap((entry) => (entry.valueFrom?.secretKeyRef ? [{ name: entry.valueFrom.secretKeyRef.name, key: entry.valueFrom.secretKeyRef.key }] : []));
+      .flatMap((entry) =>
+        entry.valueFrom?.secretKeyRef
+          ? [{ name: entry.valueFrom.secretKeyRef.name, key: entry.valueFrom.secretKeyRef.key }]
+          : []
+      );
   }
 
   it("projects the CronJob's own password Secret key into HyperDX as a file, with the initial user's email", () => {
@@ -99,12 +157,17 @@ describe('hyperdxOidc wiring', () => {
     const env = deployment.env as Env;
     expect(env.filter((entry) => entry.name.startsWith('TYPEKRO_HDX_OIDC_BOOTSTRAP'))).toEqual([
       { name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL', value: 'ops@example.com' },
-      { name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE', value: '/etc/typekro/hyperdx-bootstrap/password' },
+      {
+        name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE',
+        value: '/etc/typekro/hyperdx-bootstrap/password',
+      },
     ]);
     // Never a Secret-backed env var: that would be frozen for the pod's lifetime.
     expect(env.some((entry) => entry.valueFrom !== undefined)).toBe(false);
 
-    const volume = (deployment.volumes as SecretVolume[]).find((entry) => entry.name === 'typekro-hyperdx-oidc-bootstrap');
+    const volume = (deployment.volumes as SecretVolume[]).find(
+      (entry) => entry.name === 'typekro-hyperdx-oidc-bootstrap'
+    );
     expect(volume).toEqual({
       name: 'typekro-hyperdx-oidc-bootstrap',
       secret: {
@@ -114,8 +177,16 @@ describe('hyperdxOidc wiring', () => {
       },
     });
     // A whole-directory mount, never subPath, so the kubelet refreshes the file.
-    expect((deployment.volumeMounts as Mount[]).filter((mount) => mount.name === 'typekro-hyperdx-oidc-bootstrap')).toEqual([
-      { name: 'typekro-hyperdx-oidc-bootstrap', mountPath: '/etc/typekro/hyperdx-bootstrap', readOnly: true },
+    expect(
+      (deployment.volumeMounts as Mount[]).filter(
+        (mount) => mount.name === 'typekro-hyperdx-oidc-bootstrap'
+      )
+    ).toEqual([
+      {
+        name: 'typekro-hyperdx-oidc-bootstrap',
+        mountPath: '/etc/typekro/hyperdx-bootstrap',
+        readOnly: true,
+      },
     ]);
     // The same Secret and key the initialUser CronJob reads.
     expect(cronJobSecretRefs(docs)).toContainEqual({
@@ -127,7 +198,10 @@ describe('hyperdxOidc wiring', () => {
   it('projects an external password Secret when initialUser.passwordSecretRef is set', () => {
     const docs = directDocs({
       hyperdxOidc: OIDC,
-      initialUser: { email: 'ops@example.com', passwordSecretRef: { name: 'hyperdx-bootstrap', key: 'initial.password' } },
+      initialUser: {
+        email: 'ops@example.com',
+        passwordSecretRef: { name: 'hyperdx-bootstrap', key: 'initial.password' },
+      },
     });
     const volume = (hyperdxDeploymentValues(docs).volumes as SecretVolume[]).find(
       (entry) => entry.name === 'typekro-hyperdx-oidc-bootstrap'
@@ -137,29 +211,45 @@ describe('hyperdxOidc wiring', () => {
       optional: true,
       items: [{ key: 'initial.password', path: 'password' }],
     });
-    expect(cronJobSecretRefs(docs)).toContainEqual({ name: 'hyperdx-bootstrap', key: 'initial.password' });
+    expect(cronJobSecretRefs(docs)).toContainEqual({
+      name: 'hyperdx-bootstrap',
+      key: 'initial.password',
+    });
   });
 
   it('adds no bootstrap env, volume or mount without initialUser', () => {
     const deployment = hyperdxDeploymentValues(directDocs({ hyperdxOidc: OIDC }));
-    expect((deployment.env as Env).some((entry) => entry.name.startsWith('TYPEKRO_HDX_OIDC_BOOTSTRAP'))).toBe(false);
-    expect((deployment.volumes as SecretVolume[]).map((entry) => entry.name)).not.toContain('typekro-hyperdx-oidc-bootstrap');
-    expect((deployment.volumeMounts as Mount[]).map((entry) => entry.name)).not.toContain('typekro-hyperdx-oidc-bootstrap');
+    expect(
+      (deployment.env as Env).some((entry) => entry.name.startsWith('TYPEKRO_HDX_OIDC_BOOTSTRAP'))
+    ).toBe(false);
+    expect((deployment.volumes as SecretVolume[]).map((entry) => entry.name)).not.toContain(
+      'typekro-hyperdx-oidc-bootstrap'
+    );
+    expect((deployment.volumeMounts as Mount[]).map((entry) => entry.name)).not.toContain(
+      'typekro-hyperdx-oidc-bootstrap'
+    );
   });
 
   it('mounts the configuration Secret as a directory, never with subPath (hot reload)', () => {
-    const deployment = hyperdxDeploymentValues(directDocs({ hyperdxOidc: { configSecretRef: { name: 'sso', key: 'providers.json' } } }));
+    const deployment = hyperdxDeploymentValues(
+      directDocs({ hyperdxOidc: { configSecretRef: { name: 'sso', key: 'providers.json' } } })
+    );
     expect(deployment.volumes).toContainEqual({
       name: 'typekro-hyperdx-oidc-config',
       secret: { secretName: 'sso', items: [{ key: 'providers.json', path: 'config.json' }] },
     });
     const mounts = deployment.volumeMounts as Record<string, unknown>[];
     expect(mounts.every((mount) => mount.subPath === undefined)).toBe(true);
-    expect(mounts).toContainEqual({ name: 'typekro-hyperdx-oidc-config', mountPath: '/etc/typekro/hyperdx-oidc', readOnly: true });
+    expect(mounts).toContainEqual({
+      name: 'typekro-hyperdx-oidc-config',
+      mountPath: '/etc/typekro/hyperdx-oidc',
+      readOnly: true,
+    });
   });
 
   it('stamps the plugin hash on the pod, so a new plugin build rolls it', () => {
-    const annotations = hyperdxDeploymentValues(directDocs({ hyperdxOidc: OIDC })).podAnnotations as Record<string, string>;
+    const annotations = hyperdxDeploymentValues(directDocs({ hyperdxOidc: OIDC }))
+      .podAnnotations as Record<string, string>;
     expect(annotations[HYPERDX_OIDC_PLUGIN_HASH_ANNOTATION]).toBe(HYPERDX_OIDC_PLUGIN_SHA256);
   });
 
@@ -191,7 +281,10 @@ describe('hyperdxOidc wiring', () => {
       'typekro-hyperdx-oidc-plugin',
       'typekro-hyperdx-oidc-config',
     ]);
-    expect((deployment.volumeMounts as Record<string, unknown>[])[0]).toEqual({ name: 'certs', mountPath: '/certs' });
+    expect((deployment.volumeMounts as Record<string, unknown>[])[0]).toEqual({
+      name: 'certs',
+      mountPath: '/certs',
+    });
     expect(deployment.podAnnotations).toMatchObject({ 'example.com/keep': 'me' });
   });
 
@@ -202,7 +295,11 @@ describe('hyperdxOidc wiring', () => {
   });
 
   it('makes the HelmRelease wait for the plugin ConfigMap in KRO mode', () => {
-    const yaml = makeClickstackBootstrap({ hyperdxOidc: OIDC, name: 'cs-oidc-kro', kind: 'CsOidcKro' }).toYaml();
+    const yaml = makeClickstackBootstrap({
+      hyperdxOidc: OIDC,
+      name: 'cs-oidc-kro',
+      kind: 'CsOidcKro',
+    }).toYaml();
     expect(yaml).toContain('id: clickstackHyperdxOidcPlugin');
     expect(yaml).toContain('${string(schema.spec.name)}-hyperdx-oidc-plugin');
   });
@@ -210,45 +307,102 @@ describe('hyperdxOidc wiring', () => {
 
 describe('hyperdxOidc validation', () => {
   it('refuses invalid Secret coordinates and reload intervals', () => {
-    expect(() => resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'Bad_Name' } })).toThrow(/not a valid Secret name/);
-    expect(() => resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'ok', key: 'a/b' } })).toThrow(/not a valid Secret key/);
-    expect(() => resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'ok' }, reloadSeconds: 0 })).toThrow(/reloadSeconds/);
+    expect(() =>
+      resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'Bad_Name' } })
+    ).toThrow(/not a valid Secret name/);
+    expect(() =>
+      resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'ok', key: 'a/b' } })
+    ).toThrow(/not a valid Secret key/);
+    expect(() =>
+      resolveClickStackHyperdxOidc('t', { configSecretRef: { name: 'ok' }, reloadSeconds: 0 })
+    ).toThrow(/reloadSeconds/);
   });
 
   it("refuses a passwordLoginPath that could leave HyperDX's origin", () => {
-    for (const passwordLoginPath of ['login', '//evil.example/login', 'https://evil.example/', '/a\\b', '/a b', '/a\nb', '']) {
-      expect(() => resolveClickStackHyperdxOidc('t', { ...OIDC, passwordLoginPath })).toThrow(/passwordLoginPath/);
+    for (const passwordLoginPath of [
+      'login',
+      '//evil.example/login',
+      'https://evil.example/',
+      '/a\\b',
+      '/a b',
+      '/a\nb',
+      '',
+    ]) {
+      expect(() => resolveClickStackHyperdxOidc('t', { ...OIDC, passwordLoginPath })).toThrow(
+        /passwordLoginPath/
+      );
     }
-    expect(resolveClickStackHyperdxOidc('t', { ...OIDC, passwordLoginPath: '/login?password' })?.passwordLoginPath).toBe('/login?password');
+    expect(
+      resolveClickStackHyperdxOidc('t', { ...OIDC, passwordLoginPath: '/login?password' })
+        ?.passwordLoginPath
+    ).toBe('/login?password');
   });
 
   it('refuses caller values that already set the env or volumes it owns', () => {
     const oidc = resolveClickStackHyperdxOidc('t', OIDC);
     if (oidc === undefined) throw new Error('unreachable');
     expect(() =>
-      applyHyperdxOidcValues('t', { hyperdx: { deployment: { env: [{ name: 'NODE_OPTIONS', value: '--x' }] } } }, oidc, 'r')
+      applyHyperdxOidcValues(
+        't',
+        { hyperdx: { deployment: { env: [{ name: 'NODE_OPTIONS', value: '--x' }] } } },
+        oidc,
+        'r'
+      )
     ).toThrow(/already sets NODE_OPTIONS/);
-    expect(() =>
-      applyHyperdxOidcValues('t', { hyperdx: { deployment: { volumes: [{ name: 'typekro-hyperdx-oidc-plugin' }] } } }, oidc, 'r')
-    ).toThrow(/already uses volume name/);
-    expect(() => applyHyperdxOidcValues('t', { hyperdx: { deployment: { env: 'nope' } } }, oidc, 'r')).toThrow(/must be a list/);
     expect(() =>
       applyHyperdxOidcValues(
         't',
-        { hyperdx: { deployment: { env: [{ name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE', value: '/x' }] } } },
+        { hyperdx: { deployment: { volumes: [{ name: 'typekro-hyperdx-oidc-plugin' }] } } },
+        oidc,
+        'r'
+      )
+    ).toThrow(/already uses volume name/);
+    expect(() =>
+      applyHyperdxOidcValues('t', { hyperdx: { deployment: { env: 'nope' } } }, oidc, 'r')
+    ).toThrow(/must be a list/);
+    expect(() =>
+      applyHyperdxOidcValues(
+        't',
+        {
+          hyperdx: {
+            deployment: {
+              env: [{ name: 'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE', value: '/x' }],
+            },
+          },
+        },
         oidc,
         'r'
       )
     ).toThrow(/TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE, which hyperdxOidc owns/);
     // The bootstrap password volume's name is owned too, as a volume and as a mount.
-    const initialUser = { email: 'ops@example.com', passwordSecretName: 's', passwordSecretKey: 'k' };
+    const initialUser = {
+      email: 'ops@example.com',
+      passwordSecretName: 's',
+      passwordSecretKey: 'k',
+    };
     expect(() =>
-      applyHyperdxOidcValues('t', { hyperdx: { deployment: { volumes: [{ name: 'typekro-hyperdx-oidc-bootstrap', emptyDir: {} }] } } }, oidc, 'r', initialUser)
+      applyHyperdxOidcValues(
+        't',
+        {
+          hyperdx: {
+            deployment: { volumes: [{ name: 'typekro-hyperdx-oidc-bootstrap', emptyDir: {} }] },
+          },
+        },
+        oidc,
+        'r',
+        initialUser
+      )
     ).toThrow(/already uses volume name\(s\) typekro-hyperdx-oidc-bootstrap/);
     expect(() =>
       applyHyperdxOidcValues(
         't',
-        { hyperdx: { deployment: { volumeMounts: [{ name: 'typekro-hyperdx-oidc-bootstrap', mountPath: '/x' }] } } },
+        {
+          hyperdx: {
+            deployment: {
+              volumeMounts: [{ name: 'typekro-hyperdx-oidc-bootstrap', mountPath: '/x' }],
+            },
+          },
+        },
         oidc,
         'r'
       )
@@ -268,12 +422,19 @@ describe('hyperdxOidc validation', () => {
       /hyperdxOidc is audited only against chart version/
     );
     expect(() =>
-      directDocs({ hyperdxOidc: { ...OIDC, allowUnvalidatedChartVersion: true } }, { ...SPEC, version: '4.0.0' })
+      directDocs(
+        { hyperdxOidc: { ...OIDC, allowUnvalidatedChartVersion: true } },
+        { ...SPEC, version: '4.0.0' }
+      )
     ).not.toThrow();
   });
 
   it('narrows spec.version on the generated CRD in KRO mode', () => {
-    const yaml = makeClickstackBootstrap({ hyperdxOidc: OIDC, name: 'cs-oidc-version', kind: 'CsOidcVersion' }).toYaml();
+    const yaml = makeClickstackBootstrap({
+      hyperdxOidc: OIDC,
+      name: 'cs-oidc-version',
+      kind: 'CsOidcVersion',
+    }).toYaml();
     expect(yaml).toContain('version: string | validation="self in [\\"3.2.0\\"]"');
   });
 

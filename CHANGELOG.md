@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`teamName` and `teamDefaults` build options on `makeClickstackBootstrap`.** `teamName` names the
   HyperDX Team (default `ClickStack`, at most 100 characters). With `initialUser` it renames HyperDX's
-  registered Team only when set. `teamDefaults` (default `true`) controls the one-time seed of an empty
-  Team's connection and sources. See "Team name and default sources" in the ClickStack docs.
+  registered Team only when set. `teamDefaults` controls the one-time seed of an empty Team's
+  connection and sources: on by default with inline credentials. In `secretValues` mode it needs
+  `{ clickhousePasswordSecretRef: { name, key } }`. See "Team name and default sources" in the
+  ClickStack docs.
 
 - **OpenID Connect sign-in for HyperDX:** the `hyperdxOidc` option on `makeClickstackBootstrap` (#241).
   HyperDX's open-source build has only email-and-password login. TypeKro now ships a small plugin
@@ -394,23 +396,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creates a Team (read from the HyperDX 2.35.0 image: `setupDefaults.js`, called from
   `routers/api/root.js`). The CronJob's Team never got them, and neither did any Team created before
   this fix. Found on a downstream deployment, it affected every deployment without `initialUser`, with
-  or without OIDC. The CronJob now seeds the `External ClickHouse` connection (host, UI user, and the
-  UI password by `secretKeyRef` to `clickstack-secret`'s `CLICKHOUSE_APP_PASSWORD` in both credential
-  modes) and the `Logs`, `Traces`, `Metrics` and `Sessions` sources, from the same values TypeKro
-  renders into the chart's `defaultConnections` / `defaultSources`. The documents are written in
-  exactly the shape `setupTeamDefaults` stores in HyperDX 2.35.0, and a new real-image test compares
-  them field by field. The seed runs once per Team, and only into a Team with no connection and no
-  source. Its ids are reserved in a `typekro_bootstrap` marker first, so an interrupted run is finished
-  without duplicates. After that the Team is never seeded again, so connections and sources edited or
-  deleted in the UI are never overwritten or recreated. The `initialUser` path records the defaults
-  HyperDX's registration created, after a 60-second grace period so it never writes while HyperDX is
-  still setting up a new Team, and fills them in only if that registration left the Team empty.
-  `teamDefaults: false` turns the seed off, and it is off when build-time `values` replace the chart's
-  default connections or sources.
+  or without OIDC.
+  - **What is seeded.** The CronJob seeds the `External ClickHouse` connection and the `Logs`, `Traces`,
+    `Metrics` and `Sessions` sources, from the same values TypeKro renders into the chart's
+    `defaultConnections` / `defaultSources`.
+  - **Exact HyperDX shape.** The documents are written exactly as `setupTeamDefaults` stores them in
+    HyperDX 2.35.0, and a new real-image test compares them field by field. As in HyperDX, the
+    connection password is stored in plain text in the `connections` collection.
+  - **Which password.** The password is always read by `secretKeyRef`. With inline credentials it is
+    `clickstack-secret`'s `CLICKHOUSE_APP_PASSWORD`, which TypeKro renders. In `secretValues` mode that
+    key can be the chart's public placeholder, so the seed is off unless
+    `teamDefaults.clickhousePasswordSecretRef` names the key holding the real password. Without it,
+    construction warns, and `teamDefaults: true` alone is an error. While the referenced key is missing,
+    the CronJob seeds nothing, rather than an empty password.
+  - **Seeded once.** The seed runs once per Team, and only into a Team with no connection and no source.
+    The seed's ids and its progress are recorded in a `typekro_bootstrap` marker, so an interrupted run
+    is finished without duplicates and without re-creating a document deleted in between. It stops if
+    anyone else adds a connection or source while it seeds.
+  - **Never overwrites.** After that the Team is never seeded again, so connections and sources edited
+    or deleted in the UI are never overwritten or recreated.
+  - **With `initialUser`.** The CronJob records the defaults HyperDX's registration created, after a
+    60-second grace period, and fills them in only if that registration left the Team empty.
+  - **Opting out.** `teamDefaults: false` turns the seed off. It is also off when build-time `values`
+    replace the chart's default connections or sources.
 - **ClickStack: the Team the bootstrap creates is named `ClickStack` (or `teamName`), not a hard-coded
-  product name.** Existing Teams are renamed on the next run. Only `name` changes, so the Team keeps its
-  `_id`, its `apiKey` and its users. TypeKro records the name it applied, and a rename made in HyperDX
-  afterwards (`PATCH /api/team/name`) is kept.
+  product name.**
+  - **Only TypeKro's own names are renamed.** An existing Team is renamed on the next run only while it
+    still carries the name earlier releases hard-coded, matched by SHA-256, so the old name doesn't
+    reappear in the source. With `initialUser` and `teamName`, the Team is renamed only while it has
+    HyperDX's registration name, `<email>'s Team`. A name a person set, before or after upgrading, is
+    kept.
+  - **Nothing else changes.** Only `name` is updated, so the Team keeps its `_id`, its `apiKey` and its
+    users.
+  - **Concurrent renames.** TypeKro records the name it applied, and the rename is conditional on the
+    name it read, so a rename in HyperDX (`PATCH /api/team/name`) wins, even one made at the same moment.
+- **ClickStack + HyperDX OIDC without `initialUser`: a first OIDC sign-in can no longer create a second
+  Team.** The plugin was allowed to create the Team there, so a sign-in before the team-bootstrap
+  CronJob's first run left two Teams, and the plugin then refused every new user. The CronJob owns the
+  Team on both paths now: the plugin gets `TYPEKRO_HDX_OIDC_CREATE_TEAM=false`. Until the Team exists,
+  sign-in answers "HyperDX is still being set up. Try again in a minute."
 
 - **HyperDX OIDC: sign-ins started or completed at the same moment in one browser all complete, each
   exactly once.** The plugin kept the pending sign-in (state, nonce, PKCE verifier, `returnTo`) in the

@@ -13,6 +13,7 @@
  *  - the typed status service contract (ui/gateway/app endpoints).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import * as nodeCrypto from 'node:crypto';
 import { load } from 'js-yaml';
 
 import {
@@ -35,7 +36,10 @@ import {
   DEFAULT_CLICKSTACK_INITIAL_USER_PASSWORD_KEY,
   isClickStackInitialUserValidatedChartVersion,
 } from '../../../src/factories/clickstack/types.js';
-import { renderHyperdxSeedSources } from '../../../src/factories/clickstack/utils/team-defaults.js';
+import {
+  CLICKSTACK_LEGACY_TEAM_NAME_SHA256,
+  renderHyperdxSeedSources,
+} from '../../../src/factories/clickstack/utils/team-defaults.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
 /** Concrete direct-mode spec used by the chart-version guard tests. */
@@ -292,11 +296,16 @@ function createFakeMongo() {
     return {
       find(query: Record<string, unknown> = {}) {
         collection.reads += 1;
-        return { toArray: () => collection.documents.filter((doc) => matches(doc, query)) };
+        // Copies, as a driver returns: a later write does not change what was read.
+        return {
+          toArray: () =>
+            collection.documents.filter((doc) => matches(doc, query)).map((doc) => ({ ...doc })),
+        };
       },
       findOne(query: Record<string, unknown> = {}) {
         collection.reads += 1;
-        return collection.documents.find((doc) => matches(doc, query)) ?? null;
+        const found = collection.documents.find((doc) => matches(doc, query));
+        return found === undefined ? null : { ...found };
       },
       countDocuments(query: Record<string, unknown> = {}) {
         collection.reads += 1;
@@ -325,16 +334,26 @@ function createFakeMongo() {
         if (existing !== undefined) {
           if (update.$set !== undefined) {
             collection.writes += 1;
-            Object.assign(existing, update.$set);
+            // Dotted keys set a nested field, as in MongoDB.
+            for (const [path, value] of Object.entries(update.$set)) {
+              const keys = path.split('.');
+              let target = existing as Record<string, unknown>;
+              for (const key of keys.slice(0, -1)) {
+                if (typeof target[key] !== 'object' || target[key] === null) target[key] = {};
+                target = target[key] as Record<string, unknown>;
+              }
+              target[keys[keys.length - 1] as string] = value;
+            }
           }
           // `$setOnInsert` on an existing document is deliberately a no-op —
           // that is exactly why the marker is never restamped.
-          return;
+          return { matchedCount: 1 };
         }
         if (options?.upsert === true) {
           collection.writes += 1;
           collection.documents.push({ ...filter, ...update.$setOnInsert, ...update.$set });
         }
+        return { matchedCount: 0 };
       },
     };
   };
@@ -451,6 +470,8 @@ function runBootstrapScript(
     mongo.db,
     { env: environment },
     (module: string) => {
+      // The degraded script hashes a Team name with mongosh's Node `crypto`.
+      if (module === 'crypto') return nodeCrypto;
       throw new Error(`unexpected require(${module})`);
     },
     fetchImpl,
@@ -573,7 +594,7 @@ describe('clickstackBootstrap initialUser (#227)', () => {
     // and the name (reconcileTeamName, which sets nothing else).
     expect(script).toContain('database.teams.updateOne({ _id: teams[0]._id }, {');
     expect(script).toContain(
-      'database.teams.updateOne({ _id: team._id }, { $set: { name: desiredName, updatedAt: new Date() } });'
+      'database.teams.updateOne({ _id: team._id, name: team.name }, { $set: { name: desiredName, updatedAt: new Date() } });'
     );
     expect(script.match(/database\.teams\.updateOne/g)).toHaveLength(2);
   });
@@ -1448,7 +1469,16 @@ describe('clickstackBootstrap Team name and defaults', () => {
     expect(mongo.documentsIn('teams')[0]?.name).toBe("ops@example.com's Team");
   });
 
-  it('renames a Team from before teamName existed, keeping its _id and apiKey', async () => {
+  const sha256 = (text: string) => nodeCrypto.createHash('sha256').update(text).digest('hex');
+
+  it('names Teams by a hash of the legacy default, never by the name itself', () => {
+    const script = renderClickStackTeamBootstrapScript();
+    expect(script).toContain(CLICKSTACK_LEGACY_TEAM_NAME_SHA256);
+    expect(CLICKSTACK_LEGACY_TEAM_NAME_SHA256).toMatch(/^[0-9a-f]{64}$/);
+    expect(script).toContain("require('crypto').createHash('sha256')");
+  });
+
+  it('renames a Team still carrying the legacy default, keeping its _id and apiKey', async () => {
     const mongo = createFakeMongo();
     mongo.collection('teams').documents.push({
       _id: 'team-1',
@@ -1457,8 +1487,12 @@ describe('clickstackBootstrap Team name and defaults', () => {
       collectorAuthenticationEnforced: true,
       name: 'An Older Default',
     });
+    // The legacy default, by hash, as the real script carries it.
+    const script = renderClickStackTeamBootstrapScript(undefined, {
+      legacyTeamNameHashes: [sha256('An Older Default')],
+    });
 
-    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+    await runBootstrapScript(script, degradedEnvironment, mongo);
 
     expect(mongo.documentsIn('teams')).toHaveLength(1);
     expect(mongo.documentsIn('teams')[0]).toMatchObject({
@@ -1467,6 +1501,27 @@ describe('clickstackBootstrap Team name and defaults', () => {
       name: 'ClickStack',
     });
     expect(markers(mongo, 'team-name:')[0]?.appliedName).toBe('ClickStack');
+  });
+
+  it('keeps a name a human set before upgrading, now and after teamName changes', async () => {
+    const mongo = createFakeMongo();
+    mongo.collection('teams').documents.push({
+      _id: 'team-1',
+      hookId: MANAGED,
+      apiKey: VALID_API_KEY,
+      collectorAuthenticationEnforced: true,
+      name: 'Our Observability',
+    });
+    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+    expect(mongo.documentsIn('teams')[0]?.name).toBe('Our Observability');
+    expect(markers(mongo, 'team-name:')[0]?.appliedName).toBeNull();
+
+    await runBootstrapScript(
+      renderClickStackTeamBootstrapScript(undefined, { teamName: 'Observability' }),
+      degradedEnvironment,
+      mongo
+    );
+    expect(mongo.documentsIn('teams')[0]?.name).toBe('Our Observability');
   });
 
   it('applies a changed teamName, but keeps a rename made in HyperDX', async () => {
@@ -1488,6 +1543,48 @@ describe('clickstackBootstrap Team name and defaults', () => {
       mongo
     );
     expect(mongo.documentsIn('teams')[0]?.name).toBe('Platform Team');
+  });
+
+  it('never overwrites a rename that lands while it is renaming', async () => {
+    const mongo = createFakeMongo();
+    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+    // The UI renames the Team between the script's read of it and its write.
+    const script = renderClickStackTeamBootstrapScript(undefined, {
+      teamName: 'Observability',
+    }).replace(
+      'const team = database.teams.findOne({ hookId });',
+      "const team = database.teams.findOne({ hookId }); database.teams.updateOne({ _id: team._id }, { $set: { name: 'Renamed In UI' } });"
+    );
+    const staleRead = { ...mongo.documentsIn('teams')[0] };
+
+    await runBootstrapScript(script, degradedEnvironment, mongo);
+
+    expect(staleRead.name).toBe('ClickStack');
+    expect(mongo.documentsIn('teams')[0]?.name).toBe('Renamed In UI');
+    expect(markers(mongo, 'team-name:')[0]?.appliedName).toBe('ClickStack');
+  });
+
+  it("renames the initialUser Team only while it still has HyperDX's registration name", async () => {
+    const initialUserScript = renderClickStackTeamBootstrapScript(resolvedInitialUser(), {
+      teamName: 'Observability',
+    });
+    const registered = createFakeMongo();
+    registered
+      .collection('teams')
+      .documents.push({ _id: 'team-1', name: "ops@example.com's Team" });
+    registered
+      .collection(CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION)
+      .documents.push({ _id: CLICKSTACK_INITIAL_USER_MARKER_ID, completed: true });
+    await runBootstrapScript(initialUserScript, CONFIGURED_ENVIRONMENT, registered);
+    expect(registered.documentsIn('teams')[0]?.name).toBe('Observability');
+
+    const renamedByHuman = createFakeMongo();
+    renamedByHuman.collection('teams').documents.push({ _id: 'team-1', name: 'Platform Team' });
+    renamedByHuman
+      .collection(CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION)
+      .documents.push({ _id: CLICKSTACK_INITIAL_USER_MARKER_ID, completed: true });
+    await runBootstrapScript(initialUserScript, CONFIGURED_ENVIRONMENT, renamedByHuman);
+    expect(renamedByHuman.documentsIn('teams')[0]?.name).toBe('Platform Team');
   });
 
   it('renames the initialUser Team only when teamName is set', () => {
@@ -1529,24 +1626,145 @@ describe('clickstackBootstrap Team name and defaults', () => {
     );
   });
 
-  it('carries the same Secret reference in secretValues mode', () => {
+  const secretValuesSpec = () => {
     const { password: _password, ...clickhouse } = BOOTSTRAP_SPEC_FOR_VERSION_GUARD.clickhouse;
     const { apiKey: _apiKey, ...rest } = BOOTSTRAP_SPEC_FOR_VERSION_GUARD;
+    return { ...rest, clickhouse, credentialsSecret: { name: 'clickstack-values' } };
+  };
+
+  it('seeds in secretValues mode only from the password Secret key the caller names', () => {
     const container = cronJobOf(
-      { credentials: { source: 'secretValues' } },
       {
-        ...rest,
-        clickhouse,
-        credentialsSecret: { name: 'clickstack-values' },
-      }
+        credentials: { source: 'secretValues' },
+        teamDefaults: { clickhousePasswordSecretRef: { name: 'clickhouse-ui', key: 'password' } },
+      },
+      secretValuesSpec()
     );
     const env = Object.fromEntries(container.env.map((variable) => [variable.name, variable]));
     expect(env.HYPERDX_DEFAULT_CONNECTION_USERNAME?.value).toBe('otelcollector');
     expect(env.HYPERDX_DEFAULT_CONNECTION_PASSWORD?.valueFrom.secretKeyRef).toEqual({
-      name: 'clickstack-secret',
-      key: 'CLICKHOUSE_APP_PASSWORD',
+      name: 'clickhouse-ui',
+      key: 'password',
       optional: true,
     });
+  });
+
+  it('does not seed in secretValues mode without that key, since the chart would hand it a placeholder', () => {
+    // clickstack-secret.CLICKHOUSE_APP_PASSWORD always exists there: when the
+    // caller's fragment omits it, the chart's public default fills it in.
+    const container = cronJobOf({ credentials: { source: 'secretValues' } }, secretValuesSpec());
+    expect(container.env.map((variable) => variable.name)).not.toContain(
+      'HYPERDX_DEFAULT_CONNECTION_PASSWORD'
+    );
+    expect(container.command[4]).toContain('const seedTeamDefaults = () => {};');
+    // Asking for it explicitly without the key is an error, not a silent no-op.
+    expect(() =>
+      makeClickstackBootstrap({ credentials: { source: 'secretValues' }, teamDefaults: true })
+    ).toThrow(/clickhousePasswordSecretRef/);
+    // And the key is refused in inline mode, where TypeKro rendered the password itself.
+    expect(() =>
+      makeClickstackBootstrap({
+        teamDefaults: { clickhousePasswordSecretRef: { name: 'x', key: 'y' } },
+      })
+    ).toThrow(/secretValues/);
+  });
+
+  it('seeds nothing, and records nothing, while the password Secret key is missing', async () => {
+    const mongo = createFakeMongo();
+    const { HYPERDX_DEFAULT_CONNECTION_PASSWORD: _missing, ...withoutPassword } =
+      degradedEnvironment;
+    const printed: string[] = [];
+    await runBootstrapScript(
+      renderClickStackTeamBootstrapScript(),
+      withoutPassword,
+      mongo,
+      undefined,
+      (line) => printed.push(line)
+    );
+    expect(mongo.documentsIn('teams')).toHaveLength(1);
+    expect(mongo.documentsIn('connections')).toHaveLength(0);
+    expect(markers(mongo, 'team-defaults:')).toHaveLength(0);
+    expect(printed.join('\n')).toContain('password Secret key is missing');
+
+    // Once the key exists, the next run seeds, with that password.
+    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+    expect(mongo.documentsIn('connections')[0]?.password).toBe(
+      SEED_ENVIRONMENT.HYPERDX_DEFAULT_CONNECTION_PASSWORD
+    );
+  });
+
+  it('stops, keeping what exists, when someone else adds configuration mid-seed', async () => {
+    const mongo = createFakeMongo();
+    mongo.collection('teams').documents.push({
+      _id: 'team-1',
+      hookId: MANAGED,
+      apiKey: VALID_API_KEY,
+      collectorAuthenticationEnforced: true,
+      name: 'ClickStack',
+    });
+    const connectionId = new FakeObjectId();
+    const sourceIds = {
+      Logs: new FakeObjectId(),
+      Traces: new FakeObjectId(),
+      Metrics: new FakeObjectId(),
+      Sessions: new FakeObjectId(),
+    };
+    mongo.collection(CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION).documents.push({
+      _id: 'team-defaults:team-1',
+      state: 'seeding',
+      connectionId,
+      sourceIds,
+      inserted: {},
+    });
+    mongo
+      .collection('connections')
+      .documents.push({ _id: 'theirs', team: 'team-1', name: 'Theirs' });
+
+    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+
+    expect(mongo.documentsIn('connections')).toEqual([
+      { _id: 'theirs', team: 'team-1', name: 'Theirs' },
+    ]);
+    expect(mongo.documentsIn('sources')).toHaveLength(0);
+    expect(markers(mongo, 'team-defaults:')[0]).toMatchObject({ state: 'complete', seeded: false });
+  });
+
+  it('does not re-create a planned document a user deleted before a crash-resume', async () => {
+    const mongo = createFakeMongo();
+    mongo.collection('teams').documents.push({
+      _id: 'team-1',
+      hookId: MANAGED,
+      apiKey: VALID_API_KEY,
+      collectorAuthenticationEnforced: true,
+      name: 'ClickStack',
+    });
+    const connectionId = new FakeObjectId();
+    const sourceIds = {
+      Logs: new FakeObjectId(),
+      Traces: new FakeObjectId(),
+      Metrics: new FakeObjectId(),
+      Sessions: new FakeObjectId(),
+    };
+    // The crashed run inserted the connection and Logs; the user then deleted Logs.
+    mongo.collection(CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION).documents.push({
+      _id: 'team-defaults:team-1',
+      state: 'seeding',
+      connectionId,
+      sourceIds,
+      inserted: { connection: true, 'source:Logs': true },
+    });
+    mongo
+      .collection('connections')
+      .documents.push({ _id: connectionId, team: 'team-1', name: 'External ClickHouse' });
+
+    await runBootstrapScript(renderClickStackTeamBootstrapScript(), degradedEnvironment, mongo);
+
+    expect(mongo.documentsIn('sources').map((source) => source.name)).toEqual([
+      'Traces',
+      'Metrics',
+      'Sessions',
+    ]);
+    expect(markers(mongo, 'team-defaults:')[0]?.state).toBe('complete');
   });
 
   it('turns the seed off with teamDefaults: false, or when build-time values replace the chart defaults', () => {

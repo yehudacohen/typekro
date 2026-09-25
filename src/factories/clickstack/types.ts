@@ -727,6 +727,19 @@ export function clickStackInitialUserVersionValidationRule(): string {
   return `self in [${allowed}]`;
 }
 
+/** Options for the one-time seed of a HyperDX Team's connection and sources. */
+export interface ClickStackTeamDefaultsOptions {
+  /**
+   * `secretValues` mode only (and required there to seed): the Secret key, in
+   * the ClickStack namespace, holding the password of the ClickHouse UI user
+   * (`clickhouse.appUsername`, else `username`). Point it at the same value
+   * your values fragment gives HyperDX, typically the key behind
+   * `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD`. Inline mode needs none: the
+   * password is the one TypeKro rendered, and setting this there is refused.
+   */
+  clickhousePasswordSecretRef?: { name: string; key: string };
+}
+
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
@@ -786,10 +799,14 @@ interface ClickStackBuildOptionsBase {
   teamName?: string;
   /**
    * Seed an empty Team's ClickHouse connection and log/trace/metric/session
-   * sources, once (default `true`). Off when build-time `values` override the
-   * chart's `defaultConnections`, `defaultSources` or `useExistingConfigSecret`.
+   * sources, once. Inline credentials: on by default, with the UI password
+   * TypeKro itself rendered. `secretValues`: off unless
+   * `clickhousePasswordSecretRef` names the Secret key holding that password,
+   * since TypeKro cannot see which one HyperDX uses. `false` turns it off; so
+   * do build-time `values` that replace the chart's `defaultConnections`,
+   * `defaultSources` or `useExistingConfigSecret`.
    */
-  teamDefaults?: boolean;
+  teamDefaults?: boolean | ClickStackTeamDefaultsOptions;
 }
 
 /** Build-time options for inline credentials with internal Mongo. */

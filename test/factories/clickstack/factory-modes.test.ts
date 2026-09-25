@@ -558,15 +558,11 @@ describe('clickstackBootstrap factory modes', () => {
       expect(serialized).toContain(
         'has(schema.spec.credentialsSecret) && has(schema.spec.credentialsSecret.valuesKey)'
       );
-      // The Team-defaults seed names the chart Secret's UI password key, by
-      // reference only; no other mention of a ClickHouse password may appear.
-      const seedPasswordRef =
-        '{"name":"HYPERDX_DEFAULT_CONNECTION_PASSWORD","valueFrom":{"secretKeyRef":' +
-        '{"key":"CLICKHOUSE_APP_PASSWORD","name":"clickstack-secret","optional":true}}}';
-      expect(serialized).toContain(seedPasswordRef);
-      const withoutSeedRef = serialized.split(seedPasswordRef).join('');
-      expect(withoutSeedRef).not.toContain('CLICKHOUSE_PASSWORD');
-      expect(withoutSeedRef).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      expect(serialized).not.toContain('CLICKHOUSE_PASSWORD');
+      expect(serialized).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      // No Team-defaults seed without teamDefaults.clickhousePasswordSecretRef:
+      // the chart Secret's UI password may be the chart's placeholder here.
+      expect(serialized).not.toContain('HYPERDX_DEFAULT_CONNECTION_PASSWORD');
       expect(serialized).not.toContain('schema.spec.apiKey');
       expect(yaml).toContain('key: HYPERDX_API_KEY');
       expect(yaml).toContain('name: clickstack-secret');

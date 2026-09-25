@@ -15,11 +15,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { loadAll } from 'js-yaml';
 import {
   type ClickStackBuildOptions,
   makeClickstackBootstrap,
+  renderClickStackTeamBootstrapScript,
 } from '../../../src/factories/clickstack/index.js';
 
 setDefaultTimeout(300_000);
@@ -72,12 +74,15 @@ const MONGO_REGISTERED = `typekro-td-mongo-registered-${suffix}`;
 const HYPERDX_REGISTERED = `typekro-td-hdx-registered-${suffix}`;
 /** The degraded path on a fresh instance: the bootstrap creates the Team. No HyperDX needed. */
 const MONGO_FRESH = `typekro-td-mongo-fresh-${suffix}`;
+/** secretValues credentials, where the chart Secret may carry the chart's placeholder password. */
+const MONGO_SECRET_VALUES = `typekro-td-mongo-secret-values-${suffix}`;
 const CONTAINERS = [
   HYPERDX_LEGACY,
   HYPERDX_REGISTERED,
   MONGO_LEGACY,
   MONGO_REGISTERED,
   MONGO_FRESH,
+  MONGO_SECRET_VALUES,
   CLICKHOUSE,
 ];
 
@@ -89,12 +94,29 @@ const LEGACY_USER = { email: 'legacy@example.com', password: 'Legacy1!secret' };
 /** A Team name from before `teamName` existed, as a deployment might still carry it. */
 const LEGACY_TEAM_NAME = 'Observability (old default)';
 
-/** What the chart-owned `clickstack-secret` holds, for the CronJob's `secretKeyRef`s. */
-const CHART_SECRET: Record<string, string> = {
-  HYPERDX_API_KEY: API_KEY,
-  CLICKHOUSE_PASSWORD: CLICKHOUSE_PASSWORD,
-  CLICKHOUSE_APP_PASSWORD: CLICKHOUSE_PASSWORD,
-  HYPERDX_INITIAL_USER_PASSWORD: ADMIN.password,
+/** The Secrets the CronJob's `secretKeyRef`s read, by name then key. */
+type Secrets = Record<string, Record<string, string>>;
+/** Inline mode: TypeKro renders the chart-owned `clickstack-secret` from the spec. */
+const INLINE_SECRETS: Secrets = {
+  'clickstack-secret': {
+    HYPERDX_API_KEY: API_KEY,
+    CLICKHOUSE_PASSWORD: CLICKHOUSE_PASSWORD,
+    CLICKHOUSE_APP_PASSWORD: CLICKHOUSE_PASSWORD,
+    HYPERDX_INITIAL_USER_PASSWORD: ADMIN.password,
+  },
+};
+/**
+ * secretValues mode whose values fragment omits `CLICKHOUSE_APP_PASSWORD`: the
+ * chart fills in its public default, while the real password lives in the
+ * caller's own Secret.
+ */
+const SECRET_VALUES_SECRETS: Secrets = {
+  'clickstack-secret': {
+    HYPERDX_API_KEY: API_KEY,
+    CLICKHOUSE_PASSWORD: CLICKHOUSE_PASSWORD,
+    CLICKHOUSE_APP_PASSWORD: 'hyperdx',
+  },
+  'clickhouse-ui': { password: CLICKHOUSE_PASSWORD },
 };
 
 const SPEC = {
@@ -118,10 +140,10 @@ interface RenderedBootstrap {
 }
 
 /** The CronJob and HelmRelease values a direct-mode render of the composition produces. */
-function render(options: ClickStackBuildOptions): RenderedBootstrap {
+function render(options: ClickStackBuildOptions, spec: object = SPEC): RenderedBootstrap {
   const yaml = makeClickstackBootstrap(options as never)
     .factory('direct', { namespace: 'clickstack' })
-    .toYaml(SPEC as never);
+    .toYaml(spec as never);
   const docs = loadAll(yaml) as Record<string, any>[];
   const cronJob = docs.find(
     (doc) => doc?.kind === 'CronJob' && doc.metadata.name.endsWith('-team-bootstrap')
@@ -141,13 +163,14 @@ function render(options: ClickStackBuildOptions): RenderedBootstrap {
 /**
  * Run a rendered bootstrap the way its CronJob does: `mongosh` from the
  * CronJob's image, the rendered environment, Secret references resolved from
- * {@link CHART_SECRET}. Only the Mongo address differs (a Service DNS name in
+ * `secrets`. Only the Mongo address differs (a Service DNS name in
  * the cluster, a container name here).
  */
 function runBootstrap(
   rendered: RenderedBootstrap,
   mongo: string,
-  overrides: Record<string, string> = {}
+  overrides: Record<string, string> = {},
+  secrets: Secrets = INLINE_SECRETS
 ) {
   const env: string[] = [];
   for (const variable of rendered.env) {
@@ -155,7 +178,7 @@ function runBootstrap(
       overrides[variable.name] ??
       (variable.valueFrom === undefined
         ? variable.value
-        : CHART_SECRET[variable.valueFrom.secretKeyRef.key]);
+        : secrets[variable.valueFrom.secretKeyRef.name]?.[variable.valueFrom.secretKeyRef.key]);
     if (value !== undefined) env.push('-e', `${variable.name}=${value}`);
   }
   return docker([
@@ -322,6 +345,23 @@ let legacyUrl = '';
 let registeredUrl = '';
 const degraded = render({});
 const withInitialUser = render({ initialUser: { email: ADMIN.email } });
+/**
+ * The degraded script renames a Team with no name record only while it still
+ * carries the one name earlier releases hard-coded, matched by hash. The test
+ * stands in its own legacy name through the same mechanism.
+ */
+const degradedWithTestLegacyName: RenderedBootstrap = {
+  ...degraded,
+  script: renderClickStackTeamBootstrapScript(undefined, {
+    legacyTeamNameHashes: [createHash('sha256').update(LEGACY_TEAM_NAME).digest('hex')],
+  }),
+};
+const SECRET_VALUES_SPEC = {
+  name: 'clickstack',
+  namespace: 'clickstack',
+  clickhouse: { host: CLICKHOUSE, username: CLICKHOUSE_USER },
+  credentialsSecret: { name: 'clickstack-values' },
+};
 
 beforeAll(async () => {
   if (!dockerAvailable) return;
@@ -333,7 +373,7 @@ beforeAll(async () => {
   for (const name of CONTAINERS) docker(['rm', '-f', '-v', name]);
   docker(['network', 'rm', NETWORK]);
   expect(docker(['network', 'create', NETWORK]).ok).toBe(true);
-  for (const mongo of [MONGO_LEGACY, MONGO_REGISTERED, MONGO_FRESH]) {
+  for (const mongo of [MONGO_LEGACY, MONGO_REGISTERED, MONGO_FRESH, MONGO_SECRET_VALUES]) {
     expect(docker(['run', '-d', '--name', mongo, '--network', NETWORK, MONGO_IMAGE]).ok).toBe(true);
   }
   expect(
@@ -484,7 +524,7 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     expect(before.connections).toHaveLength(0);
     expect(before.sources).toHaveLength(0);
 
-    const run = runBootstrap(degraded, MONGO_LEGACY);
+    const run = runBootstrap(degradedWithTestLegacyName, MONGO_LEGACY);
     expect(run.ok).toBe(true);
     expect(run.stdout).toContain(`renamed the Team from "${LEGACY_TEAM_NAME}" to "ClickStack"`);
 
@@ -623,7 +663,7 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     // The Team is 'Platform Team' from the UI, not the 'ClickStack' TypeKro last applied.
     const run = runBootstrap(renamed, MONGO_LEGACY);
     expect(run.ok).toBe(true);
-    expect(run.stdout).toContain('renamed in HyperDX to "Platform Team" after TypeKro named it');
+    expect(run.stdout).toContain('named "Platform Team" by someone else');
     expect(dump(MONGO_LEGACY).teams[0]?.name).toBe('Platform Team');
 
     // On the fresh instance nobody renamed it, so the new option applies.
@@ -632,5 +672,60 @@ describeOrSkip('HyperDX Team defaults on the real HyperDX image', () => {
     expect(fresh.teams[0]?.name).toBe('Observability');
     expect(fresh.connections).toHaveLength(1);
     expect(fresh.sources).toHaveLength(4);
+  });
+
+  it('keeps a Team name a human set before upgrading', () => {
+    // The fresh instance's Team, renamed by hand and its name record gone, as
+    // on a deployment from before TypeKro kept one.
+    mongoEval(
+      MONGO_FRESH,
+      "db.teams.updateOne({}, { $set: { name: 'Hand Picked' } }); db.typekro_bootstrap.deleteMany({ _id: /^team-name:/ });"
+    );
+    const run = runBootstrap(degraded, MONGO_FRESH);
+    expect(run.ok).toBe(true);
+    expect(run.stdout).toContain('named "Hand Picked" by someone else');
+    expect(dump(MONGO_FRESH).teams[0]?.name).toBe('Hand Picked');
+  });
+
+  it('secretValues: seeds nothing without the password key, then seeds the real password, never the placeholder', () => {
+    // No clickhousePasswordSecretRef: clickstack-secret's UI password may be
+    // the chart's placeholder, so there is no seed at all.
+    const withoutRef = render({ credentials: { source: 'secretValues' } }, SECRET_VALUES_SPEC);
+    expect(withoutRef.env.map((variable) => variable.name)).not.toContain(
+      'HYPERDX_DEFAULT_CONNECTION_PASSWORD'
+    );
+    expect(runBootstrap(withoutRef, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);
+    let state = dump(MONGO_SECRET_VALUES);
+    expect(state.teams).toHaveLength(1);
+    expect(state.connections).toHaveLength(0);
+    expect(
+      state.typekro_bootstrap.some((marker) => String(marker._id).startsWith('team-defaults:'))
+    ).toBe(false);
+
+    const withRef = render(
+      {
+        credentials: { source: 'secretValues' },
+        teamDefaults: { clickhousePasswordSecretRef: { name: 'clickhouse-ui', key: 'password' } },
+      },
+      SECRET_VALUES_SPEC
+    );
+    // The key is missing (the caller's Secret is not there yet): still nothing.
+    const missing = runBootstrap(
+      withRef,
+      MONGO_SECRET_VALUES,
+      {},
+      { 'clickstack-secret': SECRET_VALUES_SECRETS['clickstack-secret'] as Record<string, string> }
+    );
+    expect(missing.ok).toBe(true);
+    expect(missing.stdout).toContain('password Secret key is missing');
+    expect(dump(MONGO_SECRET_VALUES).connections).toHaveLength(0);
+
+    // With it: the real password, not clickstack-secret's placeholder.
+    expect(runBootstrap(withRef, MONGO_SECRET_VALUES, {}, SECRET_VALUES_SECRETS).ok).toBe(true);
+    state = dump(MONGO_SECRET_VALUES);
+    expect(state.connections).toHaveLength(1);
+    expect(state.connections[0]?.password).toBe(CLICKHOUSE_PASSWORD);
+    expect(state.connections[0]?.username).toBe(CLICKHOUSE_USER);
+    expect(state.sources).toHaveLength(4);
   });
 });

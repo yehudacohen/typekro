@@ -142,12 +142,14 @@ import {
   DEFAULT_CLICKSTACK_NAMESPACE,
   mapClickStackConfigToHelmValues,
 } from '../utils/helm-values-mapper.js';
+import { getComponentLogger } from '../../../core/logging/index.js';
 import {
   CLICKSTACK_APP_PASSWORD_SECRET_KEY,
   HYPERDX_DEFAULT_CONNECTION_HOST_ENV,
   HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV,
   HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV,
   HYPERDX_DEFAULT_SOURCES_DATABASE_ENV,
+  CLICKSTACK_LEGACY_TEAM_NAME_SHA256,
   renderTeamBootstrapHelpers,
 } from '../utils/team-defaults.js';
 import {
@@ -200,8 +202,11 @@ interface ResolvedBuildConfig {
   initialUser?: ResolvedClickStackInitialUser;
   /** Team name the bootstrap reconciles; `undefined` leaves HyperDX's name. */
   teamName?: string;
-  /** Whether the bootstrap seeds an empty Team's connection and sources. */
-  teamDefaults: boolean;
+  /**
+   * Where the seed reads the ClickHouse UI password from, when the bootstrap
+   * seeds an empty Team's connection and sources; `undefined` means no seed.
+   */
+  teamDefaults?: { passwordSecretRef: { name: string; key: string } };
 }
 
 const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
@@ -311,6 +316,11 @@ export interface ClickStackTeamBootstrapScriptOptions {
   teamName?: string;
   /** Seed an empty Team's connection and sources (default `true`). */
   teamDefaults?: boolean;
+  /**
+   * @internal Hashes of legacy default names the degraded path may rename
+   * (default {@link CLICKSTACK_LEGACY_TEAM_NAME_SHA256}); for tests.
+   */
+  legacyTeamNameHashes?: readonly string[];
 }
 
 /**
@@ -330,14 +340,21 @@ export interface ClickStackTeamBootstrapScriptOptions {
  * A Team inserted here also skips HyperDX's `setupTeamDefaults`, so the script
  * seeds its connection and sources itself (see `utils/team-defaults.ts`).
  */
-function renderDegradedTeamBootstrapScript(teamName: string, teamDefaults: boolean): string {
+function renderDegradedTeamBootstrapScript(
+  teamName: string,
+  teamDefaults: boolean,
+  legacyTeamNameHashes: readonly string[]
+): string {
   return [
     "const database = db.getSiblingDB('hyperdx');",
     `const bootstrapMarkers = database.${CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION};`,
     'const apiKey = process.env.HYPERDX_API_KEY;',
     "if (typeof apiKey !== 'string' || apiKey.trim().length === 0) throw new Error('HYPERDX_API_KEY is required.');",
     `if (apiKey === '${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}') throw new Error('HYPERDX_API_KEY must override the published ClickStack chart placeholder.');`,
-    ...renderTeamBootstrapHelpers(teamDefaults),
+    ...renderTeamBootstrapHelpers({
+      seed: teamDefaults,
+      untouchedName: { kind: 'sha256', hashes: legacyTeamNameHashes },
+    }),
     `const hookId = '${CLICKSTACK_MANAGED_TEAM_HOOK_ID}';`,
     `const teamName = ${JSON.stringify(teamName)};`,
     'const teams = database.teams.find({ hookId }).toArray();',
@@ -442,7 +459,8 @@ export function renderClickStackTeamBootstrapScript(
   if (initialUser === undefined) {
     return renderDegradedTeamBootstrapScript(
       options.teamName ?? DEFAULT_CLICKSTACK_TEAM_NAME,
-      teamDefaults
+      teamDefaults,
+      options.legacyTeamNameHashes ?? [CLICKSTACK_LEGACY_TEAM_NAME_SHA256]
     );
   }
 
@@ -465,7 +483,12 @@ export function renderClickStackTeamBootstrapScript(
     // TypeKro's OWN state, in TypeKro's OWN collection — not an extra field on
     // an upstream-owned team or user document.
     `  const bootstrapMarkers = database.${CLICKSTACK_BOOTSTRAP_MARKER_COLLECTION};`,
-    ...renderTeamBootstrapHelpers(teamDefaults).map((line) => `  ${line}`),
+    // A Team HyperDX's registration created is named `<email>'s Team`, and
+    // one that still is has never been renamed by a human.
+    ...renderTeamBootstrapHelpers({
+      seed: teamDefaults,
+      untouchedName: { kind: 'exact', name: `${initialUser.email}'s Team` },
+    }).map((line) => `  ${line}`),
     `  const initialUserMarkerId = ${JSON.stringify(CLICKSTACK_INITIAL_USER_MARKER_ID)};`,
     // Marker present => the instance was claimed under TypeKro's watch. Short
     // -circuit BEFORE looking at teams, the password, or the network at all.
@@ -963,7 +986,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                       '--eval',
                       renderClickStackTeamBootstrapScript(build.initialUser, {
                         ...(build.teamName !== undefined && { teamName: build.teamName }),
-                        teamDefaults: build.teamDefaults,
+                        teamDefaults: build.teamDefaults !== undefined,
                       }),
                     ],
                     env: [
@@ -1024,11 +1047,10 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                       // The connection an empty Team is seeded with: the same
                       // host, user and database `defaultConnections` /
                       // `defaultSources` render, and the UI user's password by
-                      // reference to the chart-owned Secret, never by value.
-                      // `optional: true` because HyperDX itself seeds '' for
-                      // an absent password, and a missing key must not stop
-                      // ingestion-key reconciliation.
-                      ...(build.teamDefaults
+                      // reference, never by value. `optional: true` so a
+                      // missing key cannot stop ingestion-key reconciliation;
+                      // the script then seeds nothing rather than ''.
+                      ...(build.teamDefaults !== undefined
                         ? [
                             { name: HYPERDX_DEFAULT_CONNECTION_HOST_ENV, value: seedTarget.host },
                             {
@@ -1039,8 +1061,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
                               name: HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV,
                               valueFrom: {
                                 secretKeyRef: {
-                                  name: CLICKSTACK_SECRET_NAME,
-                                  key: CLICKSTACK_APP_PASSWORD_SECRET_KEY,
+                                  ...build.teamDefaults.passwordSecretRef,
                                   optional: true,
                                 },
                               },
@@ -1302,29 +1323,87 @@ function resolveClickHouseStorageForBuild(
   return resolved;
 }
 
+const bootstrapLogger = getComponentLogger('clickstack-bootstrap');
+
+function withTeamDefaults(
+  teamDefaults: ResolvedBuildConfig['teamDefaults']
+): Pick<ResolvedBuildConfig, 'teamDefaults'> {
+  return teamDefaults === undefined ? {} : { teamDefaults };
+}
+
 /**
- * Whether the bootstrap seeds Team defaults. The seed is TypeKro's own
- * `defaultConnections` / `defaultSources`, so it is off when build-time values
- * replace either one (or point HyperDX at an existing config Secret): what
- * HyperDX would seed is then the caller's, and its password is not TypeKro's
- * to read.
+ * Whether, and with which password, the bootstrap seeds Team defaults.
+ *
+ * The seed has to use the password HyperDX's own connection uses, or the Team
+ * ends up looking configured with a connection that cannot log in, and the
+ * seed never runs again. Inline mode knows it: TypeKro rendered
+ * `clickstack-secret.CLICKHOUSE_APP_PASSWORD` from the spec. `secretValues`
+ * mode does not: the caller's values fragment decides both that key (the chart
+ * falls back to a public placeholder when the fragment omits it) and
+ * `defaultConnections`. So there the caller names the key, or there is no seed.
+ *
+ * It is also off when build-time values replace the chart defaults (or point
+ * HyperDX at an existing config Secret): what HyperDX would seed is the
+ * caller's then.
  */
 function resolveTeamDefaults(
   options: ClickStackInternalMongoBuildOptions | ClickStackExternalMongoBuildOptions
-): boolean {
-  if (options.teamDefaults === false) return false;
+): ResolvedBuildConfig['teamDefaults'] {
+  const requested = options.teamDefaults;
+  if (requested === false) return undefined;
+  const passwordSecretRef =
+    typeof requested === 'object' ? requested.clickhousePasswordSecretRef : undefined;
+  const secretValues = options.credentials?.source === 'secretValues';
+  if (passwordSecretRef !== undefined) {
+    if (!secretValues) {
+      throw new Error(
+        'makeClickstackBootstrap: teamDefaults.clickhousePasswordSecretRef is for secretValues credential mode. With inline credentials the seed already uses the password TypeKro rendered into clickstack-secret.'
+      );
+    }
+    if (
+      typeof passwordSecretRef.name !== 'string' ||
+      passwordSecretRef.name.length === 0 ||
+      typeof passwordSecretRef.key !== 'string' ||
+      passwordSecretRef.key.length === 0
+    ) {
+      throw new Error(
+        'makeClickstackBootstrap: teamDefaults.clickhousePasswordSecretRef needs a non-empty name and key.'
+      );
+    }
+  }
   const hyperdx = (options.values as Record<string, unknown> | undefined)?.hyperdx;
   const deployment =
     typeof hyperdx === 'object' && hyperdx !== null
       ? (hyperdx as { deployment?: unknown }).deployment
       : undefined;
-  if (typeof deployment !== 'object' || deployment === null) return true;
-  const overrides = deployment as Record<string, unknown>;
-  return (
-    overrides.defaultConnections === undefined &&
-    overrides.defaultSources === undefined &&
-    (overrides.useExistingConfigSecret === undefined || overrides.useExistingConfigSecret === false)
+  if (typeof deployment === 'object' && deployment !== null) {
+    const overrides = deployment as Record<string, unknown>;
+    if (
+      overrides.defaultConnections !== undefined ||
+      overrides.defaultSources !== undefined ||
+      (overrides.useExistingConfigSecret !== undefined &&
+        overrides.useExistingConfigSecret !== false)
+    ) {
+      return undefined;
+    }
+  }
+  if (!secretValues) {
+    return {
+      passwordSecretRef: { name: CLICKSTACK_SECRET_NAME, key: CLICKSTACK_APP_PASSWORD_SECRET_KEY },
+    };
+  }
+  if (passwordSecretRef !== undefined) {
+    return { passwordSecretRef: { name: passwordSecretRef.name, key: passwordSecretRef.key } };
+  }
+  if (requested === true) {
+    throw new Error(
+      'makeClickstackBootstrap: teamDefaults in secretValues credential mode needs teamDefaults.clickhousePasswordSecretRef, the Secret key holding the ClickHouse UI password HyperDX uses. TypeKro cannot tell which key that is, and seeding the wrong one would leave the Team with a connection that cannot log in.'
+    );
+  }
+  bootstrapLogger.warn(
+    'ClickStack secretValues mode: not seeding the HyperDX Team connection and sources. Set teamDefaults.clickhousePasswordSecretRef to the Secret key holding the ClickHouse UI password to seed them, or teamDefaults: false to silence this.'
   );
+  return undefined;
 }
 
 function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): ResolvedBuildConfig {
@@ -1342,7 +1421,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
   return {
     mongoMode: 'internal',
     ...(teamName !== undefined && { teamName }),
-    teamDefaults: resolveTeamDefaults(options),
+    ...withTeamDefaults(resolveTeamDefaults(options)),
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
@@ -1368,7 +1447,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
   return {
     mongoMode: 'external',
     ...(teamName !== undefined && { teamName }),
-    teamDefaults: resolveTeamDefaults(options),
+    ...withTeamDefaults(resolveTeamDefaults(options)),
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
     ...(options.postRenderers !== undefined && { postRenderers: options.postRenderers }),

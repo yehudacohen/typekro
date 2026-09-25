@@ -308,39 +308,80 @@ const TEAM_NAME_MARKER_PREFIX = 'team-name:';
 export const CLICKSTACK_TEAM_DEFAULTS_GRACE_SECONDS = 60;
 
 /**
+ * SHA-256 of the one Team name earlier releases hard-coded into the degraded
+ * script, which never renamed a Team afterwards. A Team TypeKro has no name
+ * record for is therefore renamed only when it still carries THAT name: any
+ * other name was set by a human. Kept as a hash so the old name itself does not
+ * reappear in the source.
+ */
+export const CLICKSTACK_LEGACY_TEAM_NAME_SHA256 =
+  'ab4a37c600c179cb4094b35819aa5cd4eedb50ee36ff0ddbbf2bccb3061a767d';
+
+/**
+ * Which name counts as "never renamed by a human" on a Team TypeKro has no
+ * name record for, and so may be renamed to `teamName`.
+ */
+export type UntouchedTeamName =
+  /** The degraded path: a legacy default, by hash (needs `require('crypto')`). */
+  | { kind: 'sha256'; hashes: readonly string[] }
+  /** The initialUser path: HyperDX's registration default, `<email>'s Team`. */
+  | { kind: 'exact'; name: string };
+
+/** Options for {@link renderTeamBootstrapHelpers}. */
+export interface TeamBootstrapHelperOptions {
+  /** `false` renders a `seedTeamDefaults` that does nothing. */
+  seed: boolean;
+  untouchedName: UntouchedTeamName;
+}
+
+/**
  * The mongosh helpers both Team-bootstrap scripts share: `reconcileTeamName`
  * and `seedTeamDefaults`. Expects `database` (the HyperDX db) and
  * `bootstrapMarkers` (the TypeKro-owned collection) in scope.
  *
- * - `reconcileTeamName(team, name)` renames the Team unless someone renamed it
- *   in HyperDX after TypeKro last named it (a last-applied marker per Team).
+ * - `reconcileTeamName(team, name)` renames the Team only when its current
+ *   name is one TypeKro set (a last-applied marker per Team), or, with no
+ *   marker yet, the untouched default. Anything else is a human's name. The
+ *   update is conditional on the name it read, so a concurrent rename in the UI
+ *   wins.
  * - `seedTeamDefaults(team, createdByTypekro)` seeds the connection and the
  *   sources ONCE per Team, and only into a Team that has neither.
- *
- * @param seed - `false` renders a `seedTeamDefaults` that does nothing
  */
-export function renderTeamBootstrapHelpers(seed: boolean): string[] {
+export function renderTeamBootstrapHelpers(options: TeamBootstrapHelperOptions): string[] {
+  const untouched =
+    options.untouchedName.kind === 'exact'
+      ? `const isUntouchedTeamName = (name) => name === ${JSON.stringify(options.untouchedName.name)};`
+      : `const isUntouchedTeamName = (name) => typeof name === 'string' && ${JSON.stringify(options.untouchedName.hashes)}.indexOf(require('crypto').createHash('sha256').update(name).digest('hex')) !== -1;`;
   const nameHelper = [
+    untouched,
     'const reconcileTeamName = (team, desiredName) => {',
     `  const markerId = ${JSON.stringify(TEAM_NAME_MARKER_PREFIX)} + String(team._id);`,
     '  const marker = bootstrapMarkers.findOne({ _id: markerId });',
-    '  const recordName = () => bootstrapMarkers.updateOne({ _id: markerId }, { $set: { appliedName: desiredName, appliedAt: new Date() } }, { upsert: true });',
+    '  const recordName = (appliedName) => bootstrapMarkers.updateOne({ _id: markerId }, { $set: { appliedName, appliedAt: new Date() } }, { upsert: true });',
     '  if (team.name === desiredName) {',
-    '    if (marker === null || marker.appliedName !== desiredName) recordName();',
+    '    if (marker === null || marker.appliedName !== desiredName) recordName(desiredName);',
     '    return;',
     '  }',
-    // Someone renamed the Team in HyperDX after TypeKro last named it: theirs.
-    '  if (marker !== null && marker.appliedName !== team.name) {',
-    "    print('ClickStack team name: the Team was renamed in HyperDX to ' + JSON.stringify(team.name) + ' after TypeKro named it, so TypeKro leaves it.');",
+    // TypeKro's name is the one it last applied, or with no record, the default.
+    '  const typekroOwnsName = marker === null ? isUntouchedTeamName(team.name) : marker.appliedName === team.name;',
+    '  if (!typekroOwnsName) {',
+    // Recorded as "applied nothing", so a later teamName change leaves it too.
+    '    if (marker === null) recordName(null);',
+    "    print('ClickStack team name: the Team is named ' + JSON.stringify(team.name) + ' by someone else, so TypeKro leaves it.');",
     '    return;',
     '  }',
     // Only the name changes: `_id`, the apiKey and the users' `team` refs stay.
-    '  database.teams.updateOne({ _id: team._id }, { $set: { name: desiredName, updatedAt: new Date() } });',
-    '  recordName();',
+    // Filtered on the name read above: a rename in the UI since then wins.
+    '  const result = database.teams.updateOne({ _id: team._id, name: team.name }, { $set: { name: desiredName, updatedAt: new Date() } });',
+    '  if (result.matchedCount !== 1) {',
+    "    print('ClickStack team name: the Team was renamed while TypeKro was renaming it, so TypeKro leaves it.');",
+    '    return;',
+    '  }',
+    '  recordName(desiredName);',
     "  print('ClickStack team name: renamed the Team from ' + JSON.stringify(team.name) + ' to ' + JSON.stringify(desiredName) + '.');",
     '};',
   ];
-  if (!seed) return [...nameHelper, 'const seedTeamDefaults = () => {};'];
+  if (!options.seed) return [...nameHelper, 'const seedTeamDefaults = () => {};'];
 
   const seedSources = renderHyperdxSeedSources();
   return [
@@ -362,6 +403,19 @@ export function renderTeamBootstrapHelpers(seed: boolean): string[] {
     `  const markerId = ${JSON.stringify(TEAM_DEFAULTS_MARKER_PREFIX)} + String(team._id);`,
     '  let marker = bootstrapMarkers.findOne({ _id: markerId });',
     "  if (marker !== null && marker.state === 'complete') return;",
+    `  const host = process.env.${HYPERDX_DEFAULT_CONNECTION_HOST_ENV};`,
+    `  const username = process.env.${HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV};`,
+    `  const sourceDatabase = process.env.${HYPERDX_DEFAULT_SOURCES_DATABASE_ENV};`,
+    `  const password = process.env.${HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV};`,
+    `  if (typeof host !== 'string' || host.length === 0 || typeof username !== 'string' || typeof sourceDatabase !== 'string') throw new Error('${HYPERDX_DEFAULT_CONNECTION_HOST_ENV}, ${HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV} and ${HYPERDX_DEFAULT_SOURCES_DATABASE_ENV} are required to seed the HyperDX Team defaults.');`,
+    // The Secret key is referenced `optional: true`, so a missing key arrives
+    // as an unset variable. Seeding '' would leave a Team that looks set up
+    // with a connection that cannot log in; seed nothing and say why. No
+    // marker, so the seed happens once the key exists.
+    "  if (typeof password !== 'string') {",
+    `    print('ClickStack team defaults: the ClickHouse password Secret key is missing, so TypeKro seeds nothing until it exists (${HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV} is unset).');`,
+    '    return;',
+    '  }',
     '  if (marker === null) {',
     `    if (!createdByTypekro && team.createdAt instanceof Date && Date.now() - team.createdAt.getTime() < ${CLICKSTACK_TEAM_DEFAULTS_GRACE_SECONDS * 1000}) {`,
     "      print('ClickStack team defaults: the Team is new and HyperDX may still be setting it up; checking again next run.');",
@@ -375,22 +429,36 @@ export function renderTeamBootstrapHelpers(seed: boolean): string[] {
     '    }',
     '    const sourceIds = {};',
     '    for (const source of seedSources) sourceIds[source.name] = new ObjectId();',
-    "    insertIfAbsent(bootstrapMarkers, { _id: markerId, state: 'seeding', connectionId: new ObjectId(), sourceIds, startedAt: new Date() }, 'seed plan');",
+    "    insertIfAbsent(bootstrapMarkers, { _id: markerId, state: 'seeding', connectionId: new ObjectId(), sourceIds, inserted: {}, startedAt: new Date() }, 'seed plan');",
     '    marker = bootstrapMarkers.findOne({ _id: markerId });',
     "    if (marker.state === 'complete') return;",
     '  }',
-    `  const host = process.env.${HYPERDX_DEFAULT_CONNECTION_HOST_ENV};`,
-    `  const username = process.env.${HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV};`,
-    `  const sourceDatabase = process.env.${HYPERDX_DEFAULT_SOURCES_DATABASE_ENV};`,
-    `  if (typeof host !== 'string' || host.length === 0 || typeof username !== 'string' || typeof sourceDatabase !== 'string') throw new Error('${HYPERDX_DEFAULT_CONNECTION_HOST_ENV}, ${HYPERDX_DEFAULT_CONNECTION_USERNAME_ENV} and ${HYPERDX_DEFAULT_SOURCES_DATABASE_ENV} are required to seed the HyperDX Team defaults.');`,
+    // Before every write, and again on a resume after a crash: a connection or
+    // source that is not one of ours means someone else is configuring the
+    // Team, so stop and keep what exists.
+    '  const planned = [String(marker.connectionId)].concat(Object.keys(marker.sourceIds).map((name) => String(marker.sourceIds[name])));',
+    '  const foreign = database.connections.find({ team: team._id }).toArray().concat(database.sources.find({ team: team._id }).toArray()).filter((document) => planned.indexOf(String(document._id)) === -1);',
+    '  if (foreign.length > 0) {',
+    "    bootstrapMarkers.updateOne({ _id: markerId }, { $set: { state: 'complete', seeded: false, stoppedBecause: 'foreign-configuration', completedAt: new Date() } });",
+    "    print('ClickStack team defaults: someone else added a connection or a source while TypeKro was seeding, so TypeKro stops and keeps what exists.');",
+    '    return;',
+    '  }',
+    // Each document is recorded once inserted, so a resume never re-creates a
+    // planned document that a user deleted after it was written.
+    '  const inserted = marker.inserted || {};',
+    '  const insertPlanned = (key, collection, document, what) => {',
+    '    if (inserted[key] === true) return;',
+    '    insertIfAbsent(collection, document, what);',
+    "    bootstrapMarkers.updateOne({ _id: markerId }, { $set: { ['inserted.' + key]: true } });",
+    '  };',
     '  const now = new Date();',
     // Exactly what `createConnection` stores for a DEFAULT_CONNECTIONS entry:
-    // no `port` (not in the schema), the password as given, '' when unset.
-    `  insertIfAbsent(database.connections, { _id: marker.connectionId, team: team._id, name: seedConnectionName, host, username, password: process.env.${HYPERDX_DEFAULT_CONNECTION_PASSWORD_ENV} || '', createdAt: now, updatedAt: now, __v: 0 }, 'connection');`,
+    // no `port` (not in the schema), the password as given.
+    "  insertPlanned('connection', database.connections, { _id: marker.connectionId, team: team._id, name: seedConnectionName, host, username, password, createdAt: now, updatedAt: now, __v: 0 }, 'connection');",
     '  for (const source of seedSources) {',
     '    const document = Object.assign({}, source.document, { _id: marker.sourceIds[source.name], team: team._id, connection: marker.connectionId, from: { databaseName: sourceDatabase, tableName: source.document.from.tableName }, createdAt: now, updatedAt: now, __v: 0 });',
     '    for (const field of Object.keys(source.references)) document[field] = String(marker.sourceIds[source.references[field]]);',
-    "    insertIfAbsent(database.sources, document, 'source ' + JSON.stringify(source.name));",
+    "    insertPlanned('source:' + source.name, database.sources, document, 'source ' + JSON.stringify(source.name));",
     '  }',
     "  bootstrapMarkers.updateOne({ _id: markerId }, { $set: { state: 'complete', seeded: true, completedAt: new Date() } });",
     "  print('ClickStack team defaults: seeded the ' + JSON.stringify(seedConnectionName) + ' connection and ' + seedSources.length + ' sources.');",
