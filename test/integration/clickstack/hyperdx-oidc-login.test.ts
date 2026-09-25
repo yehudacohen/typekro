@@ -37,7 +37,16 @@ setDefaultTimeout(300_000);
 
 const HYPERDX_IMAGE = process.env.HYPERDX_OIDC_TEST_IMAGE ?? 'docker.hyperdx.io/hyperdx/hyperdx:2.35.0';
 const MONGO_IMAGE = 'mongo:7.0';
-const MOCK_IMAGE = 'ghcr.io/navikt/mock-oauth2-server:2.1.10';
+/**
+ * 4.0.0 or later: before it, the mock kept each authorization code's login
+ * (the submitted claims) and authentication request (the nonce) in plain
+ * `HashMap`s, written and removed by concurrent request threads, so under
+ * concurrent sign-ins it occasionally lost one and issued an ID token without
+ * the submitted claims or without the nonce. The plugin rightly refused those
+ * tokens (`emailMissing`, `tokenExchangeFailed`), which surfaced as rare 403s
+ * in the concurrent tests below. 4.0.0 made both maps `ConcurrentHashMap`s.
+ */
+const MOCK_IMAGE = 'ghcr.io/navikt/mock-oauth2-server:6.0.2';
 const CADDY_IMAGE = 'caddy:2.11.2';
 const MOCK_INTERNAL = 'http://mockoidc:8080';
 /**
@@ -456,17 +465,8 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
   it('creates exactly one team when several first logins race on a fresh instance', async () => {
     // Without initialUser, the first OIDC login claims the instance. HyperDX's
     // own check-then-create is not atomic; the plugin's claim lock must be.
-    // The mock provider occasionally drops the nonce under concurrency; the
-    // plugin rightly refuses that token (403), so a racer retries a 403.
-    const signIn = async (n: number): Promise<number> => {
-      let status = 0;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const landed = await new Browser().signIn(allowedClaims(`racer-${n}`, `racer-${n}@example.com`), 'mock', openUrl);
-        status = landed.response.status;
-        if (status !== 403) break;
-      }
-      return status;
-    };
+    const signIn = async (n: number): Promise<number> =>
+      (await new Browser().signIn(allowedClaims(`racer-${n}`, `racer-${n}@example.com`), 'mock', openUrl)).response.status;
     const statuses = await Promise.all([1, 2, 3, 4, 5].map(signIn));
     expect(statuses.every((status) => status === 200 || status === 503), `statuses: ${statuses.join(',')}`).toBe(true);
     expect(statuses.filter((status) => status === 200).length).toBeGreaterThanOrEqual(1);
@@ -660,7 +660,8 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
     expect([first.response.status, second.response.status], `login forms at ${first.url} and ${second.url}`).toEqual([200, 200]);
     return { first, second };
   };
-  const RACE_RUNS = 5;
+  /** Runs per concurrency test; raise it (e.g. `HYPERDX_OIDC_RACE_RUNS=50`) to hunt a rare interleaving. */
+  const RACE_RUNS = Number(process.env.HYPERDX_OIDC_RACE_RUNS ?? '5');
 
   it('completes sign-ins started at the same moment in a browser with no HyperDX session yet', async () => {
     // Each start used to create its own session; the browser kept only the
@@ -757,19 +758,13 @@ describeOrSkip('HyperDX OIDC plugin on the real HyperDX image', () => {
   it('gives an email to exactly one subject when several race to claim it', async () => {
     // The unique userId index, not the read-then-write, is what guarantees this.
     const racer = async (n: number) => {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const landed = await new Browser().signIn(allowedClaims(`shared-${n}`, 'shared@example.com'));
-        const body = await landed.response.text();
-        // Retry only the mock provider's occasional dropped nonce.
-        if (landed.response.status !== 403 || body.includes('already belongs to another sign-in')) {
-          return landed.response.status;
-        }
-      }
-      return 0;
+      const landed = await new Browser().signIn(allowedClaims(`shared-${n}`, 'shared@example.com'));
+      const body = await landed.response.text();
+      return landed.response.status === 403 && body.includes('already belongs to another sign-in') ? 'refused' : landed.response.status;
     };
-    const statuses = await Promise.all([1, 2, 3, 4].map(racer));
-    expect(statuses.filter((status) => status === 200), `statuses: ${statuses.join(',')}`).toHaveLength(1);
-    expect(statuses.filter((status) => status === 403)).toHaveLength(3);
+    const outcomes = await Promise.all([1, 2, 3, 4].map(racer));
+    // One subject gets the email; every other one is refused for exactly that reason.
+    expect([...outcomes].map(String).sort(), `outcomes: ${outcomes.join(',')}`).toEqual(['200', 'refused', 'refused', 'refused']);
     const mongo = (query: string) =>
       docker(['exec', MONGO, 'mongosh', '--quiet', 'mongodb://localhost:27017/hyperdx', '--eval', query]).stdout.trim();
     expect(mongo("db.users.countDocuments({ email: 'shared@example.com' })")).toBe('1');
