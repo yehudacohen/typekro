@@ -365,6 +365,7 @@ rejected, and the last good configuration keeps serving. A new plugin build chan
 | `tokenEndpointAuthMethod` | `client_secret_basic` | Or `client_secret_post`. |
 | `scopes` | `openid email profile` | Must include `openid`. |
 | `passwordLogin` | `true` | `false` refuses HyperDX's own password login and first-run registration. With `initialUser`, the one exception is that account's own registration while no team exists (see below). |
+| `passwordLoginPath` | `hyperdxOidc.passwordLoginPath`, else `/login` | Where the multi-provider chooser links HyperDX's password form. Set it, e.g. to `/login?password`, when your reverse proxy sends a bare `/login` to SSO. It must be a path on HyperDX's own origin. The build option `hyperdxOidc.passwordLoginPath` sets the default for every configuration; this key wins when set. With `passwordLogin: false` there's no link. |
 | `maxSessionAge` | `12h` | OIDC sessions older than this, or from a provider that was removed, are logged out. `0` never expires them. |
 | `redirectBaseUrl` | HyperDX's `FRONTEND_URL` | External URL used to build callback URLs and the chooser's redirect. Must share `FRONTEND_URL`'s origin (see [Public URL](#public-url)). |
 

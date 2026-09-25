@@ -382,6 +382,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **HyperDX OIDC: sign-ins started together in one browser all complete.** The plugin kept one pending
+  sign-in (state, nonce, PKCE verifier, `returnTo`) per HyperDX session. When a browser started a second
+  sign-in before the first returned, the second overwrote the first, and the first callback then consumed
+  the entry the second needed, so both callbacks got the 403 denial page. A downstream end-to-end test with a
+  reverse proxy that starts sign-in automatically for every signed-out page load found this: a browser
+  restoring several tabs, or several links opened from chat, starts several at once. Pending sign-ins are
+  now kept per `state`, at most 10 per session with the oldest evicted first. Each callback takes only the
+  entry its `state` names (compared in constant time), once, and expired entries are dropped. Each entry
+  keeps its own nonce and PKCE verifier and the 10-minute limit. Sign-ins still in flight move to the new
+  session when one of them completes (Passport regenerates the session on login). The real-image suite now
+  runs two interleaved sign-ins in one cookie jar, in both callback orders.
+- **HyperDX OIDC: the chooser's password link can be configured.** With several providers the chooser
+  linked HyperDX's password form at `/login`, which a deployment's reverse proxy may send to SSO. The new
+  `passwordLoginPath` setting in the configuration document, or the `hyperdxOidc.passwordLoginPath` build
+  option, sets the link (e.g. `/login?password`). The document's setting wins, and the default is still
+  `/login`. It must be a same-origin path.
 - **HyperDX OIDC: the provider chooser works behind a reverse proxy.** `GET /api/login/oidc` redirected to
   the single provider with a relative `Location`. HyperDX's UI proxies `/api/*` to its API server on port
   8000, and when the request's `Host` header has no port (every request through a TLS proxy on 443) it

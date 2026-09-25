@@ -19,16 +19,20 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { authorizeBootstrapRegistration, type BootstrapCredentials, normalizeRoutePath } from './bootstrap.js';
-import { type OidcPluginConfig, parseOidcPluginConfig } from './config.js';
+import { chooserPasswordLoginPath, type OidcPluginConfig, parseOidcPluginConfig } from './config.js';
 import { evaluateClaims, type IdentityStore, LinkConflictError, resolveAccount, type VerifiedIdentity } from './identity.js';
 import { OidcFlowError, type PendingLogin, ProviderRuntime, safeReturnTo } from './oidc.js';
 import { renderChooser, renderDenied } from './pages.js';
+import { addPendingLogin, takePendingLogin } from './pending.js';
 import { providerLoginPath, publicBase, publicUrl } from './redirects.js';
 
 // ── Minimal structural types for the parts of HyperDX and Express we touch ──
 
 interface Session {
-  typekroOidcPending?: PendingLogin;
+  /** Sign-ins in flight, one per `state` (see pending.ts). */
+  typekroOidcPendingLogins?: PendingLogin[];
+  /** The single pending sign-in earlier plugin builds kept; read by nothing, removed on sight. */
+  typekroOidcPending?: unknown;
   typekroOidcAuth?: { provider: string; at: number };
   messages?: string[];
 }
@@ -363,6 +367,11 @@ export interface PluginOptions {
    * absent, the exemption is off.
    */
   readonly bootstrap?: BootstrapCredentials;
+  /**
+   * Where the provider chooser links HyperDX's password form, unless the
+   * configuration document sets `passwordLoginPath`. Default `/login`.
+   */
+  readonly passwordLoginPath?: string;
 }
 
 export interface InstalledPlugin {
@@ -436,14 +445,19 @@ export function installPlugin(
         const run = async () => {
           const session = req.session;
           if (session === undefined) throw new Error('HyperDX session middleware is not active');
+          delete session.typekroOidcPending;
           if (req.query.code === undefined && req.query.error === undefined) {
             const { url, pending } = await provider.begin(safeReturnTo(req.query.returnTo));
-            session.typekroOidcPending = pending;
+            // Added alongside any other sign-in this browser has in flight,
+            // never in place of it.
+            session.typekroOidcPendingLogins = addPendingLogin(session.typekroOidcPendingLogins, pending, Date.now());
             this.redirect(url);
             return;
           }
-          const pending = session.typekroOidcPending;
-          delete session.typekroOidcPending;
+          // Only the entry this callback's `state` names, and only once.
+          const { pending, remaining } = takePendingLogin(session.typekroOidcPendingLogins, req.query.state, Date.now());
+          if (remaining.length > 0) session.typekroOidcPendingLogins = remaining;
+          else delete session.typekroOidcPendingLogins;
           if (pending === undefined) {
             this.fail({ reason: 'loginExpired' }, 400);
             return;
@@ -582,6 +596,7 @@ export function installPlugin(
     log.info('OIDC configuration applied', {
       providers: [...providers.keys()],
       passwordLogin: config?.passwordLogin,
+      passwordLoginPath: chooserPasswordLoginPath(config, options.passwordLoginPath),
       maxSessionAgeMs: config?.maxSessionAgeMs,
     });
     return true;
@@ -697,7 +712,8 @@ export function installPlugin(
       res.redirect(302, publicUrl(apiRedirectBase(), path));
       return;
     }
-    const passwordHref = config?.passwordLogin === false ? undefined : frontend('/login');
+    const passwordPath = chooserPasswordLoginPath(config, options.passwordLoginPath);
+    const passwordHref = passwordPath === undefined ? undefined : frontend(passwordPath);
     res
       .status(list.length === 0 ? 503 : 200)
       .type('html')
@@ -736,13 +752,22 @@ export function installPlugin(
         res.status(status).type('html').send(renderDenied(details.reason ?? 'unknown', loginPath()));
         return;
       }
+      // Passport regenerates the session on login, dropping everything in it.
+      // Sign-ins this browser still has in flight (other tabs) move to the
+      // new session, or their callbacks would find nothing. They were started
+      // in this same session, and each stays bound to its own state, nonce
+      // and PKCE verifier.
+      const inFlight = req.session?.typekroOidcPendingLogins;
       req.logIn(user, (loginError) => {
         if (loginError) {
           next(loginError);
           return;
         }
         // Set after logIn: Passport regenerates the session on login.
-        if (req.session !== undefined) req.session.typekroOidcAuth = { provider: id, at: Date.now() };
+        if (req.session !== undefined) {
+          req.session.typekroOidcAuth = { provider: id, at: Date.now() };
+          if (inFlight !== undefined && inFlight.length > 0) req.session.typekroOidcPendingLogins = inFlight;
+        }
         res.redirect(302, frontend(safeReturnTo(details.returnTo)));
       });
     })(req, res, next);

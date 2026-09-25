@@ -61,6 +61,13 @@ export interface ClickStackHyperdxOidcOptions {
   /** How often the plugin re-reads the configuration, in seconds. Default 15. */
   reloadSeconds?: number;
   /**
+   * Where the provider chooser links HyperDX's password form. Default
+   * `/login`; set e.g. `/login?password` when a reverse proxy sends a bare
+   * `/login` to SSO. The configuration document's `passwordLoginPath`, when
+   * set, takes precedence.
+   */
+  passwordLoginPath?: string;
+  /**
    * The plugin hooks HyperDX internals (its Passport instance, root router and
    * user/team models), so it is enabled only on audited chart versions (see
    * {@link CLICKSTACK_HYPERDX_OIDC_VALIDATED_CHART_VERSIONS}). The plugin also
@@ -106,6 +113,7 @@ const OWNED_ENV = [
   'TYPEKRO_HDX_OIDC_CONFIG',
   'TYPEKRO_HDX_OIDC_RELOAD_SECONDS',
   'TYPEKRO_HDX_OIDC_CREATE_TEAM',
+  'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH',
   'TYPEKRO_HDX_OIDC_BOOTSTRAP_EMAIL',
   'TYPEKRO_HDX_OIDC_BOOTSTRAP_PASSWORD_FILE',
 ] as const;
@@ -114,12 +122,16 @@ const OWNED_ENV = [
 const SECRET_NAME = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 /** A Secret data key. */
 const SECRET_KEY = /^[-._a-zA-Z0-9]+$/;
+/** A same-origin path, as the plugin accepts one (see its redirects.ts). */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it refuses
+const SAME_ORIGIN_PATH = /^\/(?!\/)[^\\\x00-\x20\x7f]*$/;
 
 /** The option with defaults applied and validated. */
 export interface ResolvedClickStackHyperdxOidc {
   readonly configSecretName: string;
   readonly configSecretKey: string;
   readonly reloadSeconds: number;
+  readonly passwordLoginPath?: string;
   readonly allowUnvalidatedChartVersion: boolean;
 }
 
@@ -152,10 +164,18 @@ export function resolveClickStackHyperdxOidc(
       `${context}: hyperdxOidc.reloadSeconds must be an integer between 1 and 3600 (got ${String(reloadSeconds)}).`
     );
   }
+  const passwordLoginPath = options.passwordLoginPath;
+  if (passwordLoginPath !== undefined && (typeof passwordLoginPath !== 'string' || !SAME_ORIGIN_PATH.test(passwordLoginPath))) {
+    throw new Error(
+      `${context}: hyperdxOidc.passwordLoginPath ${JSON.stringify(passwordLoginPath)} must be a path on ` +
+        'HyperDX\'s own origin, starting with a single "/" (no "//", backslash, whitespace or control character).'
+    );
+  }
   return {
     configSecretName: name,
     configSecretKey: key,
     reloadSeconds,
+    ...(passwordLoginPath !== undefined && { passwordLoginPath }),
     allowUnvalidatedChartVersion: options.allowUnvalidatedChartVersion === true,
   };
 }
@@ -248,6 +268,9 @@ export function applyHyperdxOidcValues(
       { name: 'TYPEKRO_HDX_OIDC_CONFIG', value: `${HYPERDX_OIDC_CONFIG_DIR}/${HYPERDX_OIDC_CONFIG_FILE}` },
       { name: 'TYPEKRO_HDX_OIDC_RELOAD_SECONDS', value: String(oidc.reloadSeconds) },
       { name: 'TYPEKRO_HDX_OIDC_CREATE_TEAM', value: String(initialUser === undefined) },
+      ...(oidc.passwordLoginPath === undefined
+        ? []
+        : [{ name: 'TYPEKRO_HDX_OIDC_PASSWORD_LOGIN_PATH', value: oidc.passwordLoginPath }]),
       ...(initialUser === undefined
         ? []
         : [
