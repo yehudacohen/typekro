@@ -24,6 +24,7 @@ import {
   CLICKSTACK_NAME_PATTERN,
   CLICKSTACK_TEAM_BOOTSTRAP_NAME_SUFFIX,
   ClickStackBootstrapConfigSchema,
+  type ClickStackPersistentQueueBatchOptions,
   type ClickStackPersistentQueueOptions,
   ClickStackReleaseNameSchema,
 } from '../../../src/factories/clickstack/types.js';
@@ -39,6 +40,7 @@ import {
 } from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 import {
   CLICKSTACK_RETENTION_TABLES,
+  COLLECTOR_DEFAULT_QUEUE_CAPACITY,
   DEFAULT_QUEUE_EXPORTER_NAMES,
   DEFAULT_QUEUE_FS_GROUP,
   clickStackQueueClaimName,
@@ -1825,5 +1827,204 @@ describe('makeClickstackBootstrap({ storage })', () => {
     expect(() =>
       makeClickstackBootstrap({ storage: { mode: 's3', retention: { logs: 'forever' } } })
     ).toThrow(/'storage.retention.logs' must be a retention duration/);
+  });
+});
+
+describe('persistentQueue.batch: batching inside the persistent queue', () => {
+  type Overlay = {
+    exporters?: Record<string, { sending_queue?: Record<string, unknown> }>;
+    processors?: Record<string, Record<string, unknown>>;
+  };
+
+  function queueWith(options: Partial<ClickStackPersistentQueueOptions>) {
+    const resolved = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true, ...options },
+    });
+    if (resolved.persistentQueue === undefined) throw new Error('expected a queue');
+    return resolved.persistentQueue;
+  }
+
+  function overlayWith(options: Partial<ClickStackPersistentQueueOptions>): Overlay {
+    const rendered = renderCollectorConfig([
+      CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+      persistentQueueConfigFragment(queueWith(options)),
+    ]);
+    return yaml.load(rendered) as Overlay;
+  }
+
+  function resolveBatch(batch: Partial<ClickStackPersistentQueueBatchOptions>, queueSize?: number) {
+    return () =>
+      resolveClickStackStorage('t', {
+        mode: 's3',
+        persistentQueue: {
+          enabled: true,
+          ...(queueSize !== undefined && { queueSize }),
+          batch: batch as ClickStackPersistentQueueBatchOptions,
+        },
+      });
+  }
+
+  it('renders the batch into sending_queue and lowers the processor timeout', () => {
+    const overlay = overlayWith({ batch: { flushTimeout: '30s' } });
+
+    expect(overlay.exporters?.clickhouse?.sending_queue).toEqual({
+      enabled: true,
+      storage: 'file_storage/hyperdx',
+      batch: { flush_timeout: '30s', min_size: 8192, sizer: 'items' },
+    });
+    expect(overlay.processors).toEqual({ batch: { timeout: '200ms' } });
+  });
+
+  it('renders every batch option, on every queued exporter', () => {
+    const overlay = overlayWith({
+      exporterNames: ['clickhouse', 'clickhouse/rrweb'],
+      queueSize: 5000,
+      batch: {
+        flushTimeout: '1m',
+        minSize: 20_000_000,
+        maxSize: 50_000_000,
+        sizer: 'bytes',
+        processorTimeout: '1s',
+      },
+    });
+
+    for (const name of ['clickhouse', 'clickhouse/rrweb']) {
+      expect(overlay.exporters?.[name]?.sending_queue).toEqual({
+        enabled: true,
+        storage: 'file_storage/hyperdx',
+        queue_size: 5000,
+        batch: { flush_timeout: '1m', min_size: 20_000_000, max_size: 50_000_000, sizer: 'bytes' },
+      });
+    }
+    expect(overlay.processors).toEqual({ batch: { timeout: '1s' } });
+  });
+
+  it('leaves the queue exactly as before when no batch is set', () => {
+    const overlay = overlayWith({});
+    expect(overlay.exporters?.clickhouse?.sending_queue).toEqual({
+      enabled: true,
+      storage: 'file_storage/hyperdx',
+    });
+    expect(overlay.processors).toBeUndefined();
+  });
+
+  it('renders queue_size on its own, without touching the processor', () => {
+    const overlay = overlayWith({ queueSize: 2500 });
+    expect(overlay.exporters?.clickhouse?.sending_queue).toEqual({
+      enabled: true,
+      storage: 'file_storage/hyperdx',
+      queue_size: 2500,
+    });
+    expect(overlay.processors).toBeUndefined();
+  });
+
+  it('ignores the batch when the queue is disabled', () => {
+    const resolved = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: false, batch: { flushTimeout: 'never' } },
+    });
+    expect(resolved.persistentQueue).toBeUndefined();
+  });
+
+  it('rejects a malformed or out-of-range flushTimeout', () => {
+    for (const flushTimeout of ['30', '30 s', '1h', '1.5s', '-1s', '0s', '']) {
+      expect(resolveBatch({ flushTimeout }), flushTimeout).toThrow(
+        /'storage\.persistentQueue\.batch\.flushTimeout' must be a whole number of milliseconds, seconds or minutes/
+      );
+    }
+    expect(resolveBatch({ flushTimeout: '999ms' })).toThrow(/must be between 1s and 10m/);
+    expect(resolveBatch({ flushTimeout: '11m' }, 100_000)).toThrow(/must be between 1s and 10m/);
+    expect(resolveBatch({ flushTimeout: '1s' })).not.toThrow();
+    expect(resolveBatch({ flushTimeout: '10m' }, 6000)).not.toThrow();
+  });
+
+  it('keeps processorTimeout within 10ms..5s and shorter than flushTimeout', () => {
+    expect(resolveBatch({ flushTimeout: '30s', processorTimeout: '5ms' })).toThrow(
+      /'storage\.persistentQueue\.batch\.processorTimeout' must be between 10ms and 5s/
+    );
+    expect(resolveBatch({ flushTimeout: '30s', processorTimeout: '6s' })).toThrow(
+      /must be between 10ms and 5s/
+    );
+    expect(resolveBatch({ flushTimeout: '2s', processorTimeout: '2s' })).toThrow(
+      /processorTimeout' \(2s\) must be shorter than 'storage\.persistentQueue\.batch\.flushTimeout' \(2s\)/
+    );
+    expect(resolveBatch({ flushTimeout: '30s', processorTimeout: '5s' })).not.toThrow();
+  });
+
+  it('accepts only the sizers the queue batch supports', () => {
+    expect(resolveBatch({ flushTimeout: '30s', sizer: 'requests' as never })).toThrow(
+      /'storage\.persistentQueue\.batch\.sizer' must be 'items' or 'bytes'/
+    );
+  });
+
+  it('requires positive integer sizes, with maxSize no smaller than minSize', () => {
+    for (const minSize of [0, -1, 1.5, Number.NaN]) {
+      expect(resolveBatch({ flushTimeout: '30s', minSize }), String(minSize)).toThrow(
+        /'storage\.persistentQueue\.batch\.minSize' must be a positive integer/
+      );
+    }
+    expect(resolveBatch({ flushTimeout: '30s', maxSize: 8191 })).toThrow(
+      /'storage\.persistentQueue\.batch\.maxSize' must be a positive integer no smaller than minSize \(8192\)/
+    );
+    expect(resolveBatch({ flushTimeout: '30s', minSize: 100, maxSize: 100 })).not.toThrow();
+  });
+
+  it('requires a positive integer queueSize', () => {
+    for (const queueSize of [0, -5, 2.5]) {
+      expect(
+        () =>
+          resolveClickStackStorage('t', {
+            mode: 's3',
+            persistentQueue: { enabled: true, queueSize },
+          }),
+        String(queueSize)
+      ).toThrow(/'storage\.persistentQueue\.queueSize' must be a positive integer/);
+    }
+  });
+
+  it('refuses a batch that could take more than half of the queue', () => {
+    // 100s / 200ms = 500 requests: exactly half of the default 1000.
+    expect(COLLECTOR_DEFAULT_QUEUE_CAPACITY).toBe(1000);
+    expect(resolveBatch({ flushTimeout: '100s' })).not.toThrow();
+    expect(resolveBatch({ flushTimeout: '101s' })).toThrow(
+      /a batch holds up to 505 requests.*Raise 'storage\.persistentQueue\.queueSize' to at least 1010/
+    );
+    // Either remedy the message names works.
+    expect(resolveBatch({ flushTimeout: '101s' }, 1010)).not.toThrow();
+    expect(resolveBatch({ flushTimeout: '101s', processorTimeout: '250ms' })).not.toThrow();
+  });
+
+  it('carries the batch into the KRO RGD and the direct-mode HelmRelease', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-batch',
+      kind: 'ClickStackS3QueueBatch',
+      storage: {
+        mode: 's3',
+        persistentQueue: { enabled: true, batch: { flushTimeout: '45s', minSize: 100_000 } },
+      },
+    });
+
+    const customConfigOf = (values: Record<string, unknown> | undefined): Overlay => {
+      const global = values?.global as { otelCollector?: { customConfig?: string } } | undefined;
+      const text = global?.otelCollector?.customConfig;
+      if (typeof text !== 'string') throw new Error('expected a customConfig string');
+      return yaml.load(text) as Overlay;
+    };
+
+    const fromRgd = customConfigOf(helmReleaseSpec(bootstrap.toYaml()).values);
+    expect(fromRgd.exporters?.clickhouse?.sending_queue?.batch).toEqual({
+      flush_timeout: '45s',
+      min_size: 100_000,
+      sizer: 'items',
+    });
+    expect(fromRgd.processors).toEqual({ batch: { timeout: '200ms' } });
+
+    const direct = bootstrap.factory('direct', { namespace: SPEC.namespace }).toYaml(SPEC as never);
+    const release = (
+      yaml.loadAll(direct) as Array<{ kind?: string; spec?: { values?: Record<string, unknown> } }>
+    ).find((document) => document?.kind === 'HelmRelease');
+    const fromDirect = customConfigOf(release?.spec?.values);
+    expect(fromDirect).toEqual(fromRgd);
   });
 });

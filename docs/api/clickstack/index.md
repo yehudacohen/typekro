@@ -1011,6 +1011,75 @@ miss. Build-time `postRenderers` you pass to `makeClickstackBootstrap` are still
 the HelmRelease unchanged — the composition just no longer appends any of its own.
 :::
 
+#### Batching inside the queue
+
+The ClickStack collector batches in its `batch` processor, which runs **ahead of** the exporter's
+queue. The image's default timeout is 5s (`HYPERDX_OTEL_BATCH_TIMEOUT`). Data waiting in the
+processor has already been acknowledged to the sender, but it is not on disk yet, so a collector
+crash loses up to one timeout of it. On an S3-backed ClickHouse you want long batches, because each
+insert costs object-store PUTs. With the processor doing the batching, a 60s batch means a 60s loss
+window.
+
+`persistentQueue.batch` moves the long wait into the persistent queue:
+
+```typescript
+makeClickstackBootstrap({
+  storage: {
+    mode: 's3',
+    persistentQueue: {
+      enabled: true,
+      batch: { flushTimeout: '30s', minSize: 50_000 },
+    },
+  },
+});
+```
+
+TypeKro renders the batch into every queued exporter's `sending_queue` and lowers the processor's
+timeout to `processorTimeout`:
+
+```yaml
+processors:
+  batch:
+    timeout: 200ms
+exporters:
+  clickhouse:
+    sending_queue:
+      enabled: true
+      storage: file_storage/hyperdx
+      batch: {flush_timeout: 30s, min_size: 50000, sizer: items}
+```
+
+| Option | Default | Range |
+| --- | --- | --- |
+| `flushTimeout` | required | `1s`–`10m` (`ms`, `s` or `m`) |
+| `minSize` | `8192` | positive integer, in units of `sizer` |
+| `maxSize` | unset (no split) | positive integer, at least `minSize` |
+| `sizer` | `'items'` | `'items'` or `'bytes'` |
+| `processorTimeout` | `'200ms'` | `10ms`–`5s`, shorter than `flushTimeout` |
+
+**Crash safety.** This was checked against the exporter helper in collector v0.155.0, the version
+`clickstack-otel-collector` 2.35.0 is built from. The queue writes each request to the
+`file_storage` database before accepting it. The batcher reads requests from there, and the queue
+deletes a request only after the batch holding it has been exported. On restart, requests that
+were read but not exported go back on the queue. Delivery is at-least-once: a crash after ClickHouse
+accepted a batch, but before the queue deleted it, sends that batch again. The `file_storage`
+extension does not fsync by default. That is safe against a collector or Pod crash, but not against
+losing the node.
+
+**The trade-offs:**
+
+- **The processor timeout is collector-wide.** Pipelines whose exporter is not in `exporterNames`,
+  such as session replay's `clickhouse/rrweb`, now get 200ms batches instead of 5s. Add them to
+  `exporterNames` to batch them in the queue too.
+- **The queue holds the batch.** A request keeps its queue slot until its batch is exported. While
+  data flows, the processor sends a request every `processorTimeout`, so one batch holds about
+  `flushTimeout / processorTimeout` requests. TypeKro refuses a batch that could take more than half
+  of the queue, so the other half stays free for a backlog while ClickHouse is down. A full queue
+  refuses new data. With the default `queueSize` (1000, the collector's default) and the default
+  `processorTimeout`, `flushTimeout` can be up to 100s. For longer batches, raise
+  `persistentQueue.queueSize` (rendered as `sending_queue.queue_size`) or `processorTimeout`.
+- **The batch is also held in memory** while it fills. Set `maxSize` to cap it under heavy load.
+
 #### Release-name length
 
 The runtime `name` is a Kubernetes DNS label — lowercase alphanumerics and `-`, starting and ending

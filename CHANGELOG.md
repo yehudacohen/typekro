@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Batching inside the ClickStack persistent queue: `storage.persistentQueue.batch`.** The gateway
+  collector batches in its `batch` processor, ahead of the exporter's queue, so acknowledged data
+  waits in memory for up to the processor timeout (5s in the ClickStack image) before it reaches the
+  disk-backed queue. Long batches, which cut object-store PUTs on an S3-backed ClickHouse, therefore
+  meant a long loss window on a crash. `batch: { flushTimeout, minSize?, maxSize?, sizer?,
+  processorTimeout? }` renders the exporter's `sending_queue.batch` on every queued exporter, so the
+  batch fills from the persistent queue. It also lowers the `batch` processor's timeout to
+  `processorTimeout` (default `200ms`). Verified against the exporter helper in collector v0.155.0,
+  the version `clickstack-otel-collector` 2.35.0 is built from: requests are persisted before they
+  are batched and deleted only after their batch is exported, and in-flight requests are replayed
+  after a restart. Ranges are validated at construction, including a check that one batch cannot
+  take more than half of the queue. The new `persistentQueue.queueSize` option sets
+  `sending_queue.queue_size`. See "Batching inside the queue" in the ClickStack docs.
+
 - **`teamName` and `teamDefaults` build options on `makeClickstackBootstrap`.** `teamName` names the
   HyperDX Team (default `ClickStack`, at most 100 characters). With `initialUser` it renames HyperDX's
   registered Team only when set. `teamDefaults` controls the one-time seed of an empty Team's

@@ -37,7 +37,11 @@
  * materialization pass is the only thing worth skipping.
  */
 
-import type { ClickStackPersistentQueueOptions, ClickStackStorageOptions } from '../types.js';
+import type {
+  ClickStackPersistentQueueBatchOptions,
+  ClickStackPersistentQueueOptions,
+  ClickStackStorageOptions,
+} from '../types.js';
 import { assertSafeCollectorConfigKey, type CollectorConfigFragment } from './collector-config.js';
 
 /** Default cron schedule for the retention DDL CronJob. */
@@ -168,6 +172,78 @@ export const QUEUE_FS_GROUP_CHANGE_POLICY = 'OnRootMismatch';
  * always `ReadWriteOnce`.
  */
 export const QUEUE_ACCESS_MODES = ['ReadWriteOnce'] as const;
+
+/**
+ * The exporter's `sending_queue.queue_size` default, in requests. TypeKro
+ * renders `queue_size` only when `persistentQueue.queueSize` is set; this is
+ * the value the collector applies otherwise, and the one the batch capacity
+ * check assumes.
+ */
+export const COLLECTOR_DEFAULT_QUEUE_CAPACITY = 1000;
+
+/** Default `sending_queue.batch.min_size`: the collector's own default. */
+export const DEFAULT_QUEUE_BATCH_MIN_SIZE = 8192;
+
+/** Default `sending_queue.batch.sizer`. */
+export const DEFAULT_QUEUE_BATCH_SIZER = 'items';
+
+/**
+ * Default `batch` processor timeout while exporter-side batching is on: the
+ * upstream collector default, down from the ClickStack image's 5s.
+ */
+export const DEFAULT_QUEUE_BATCH_PROCESSOR_TIMEOUT = '200ms';
+
+/** Bounds of `persistentQueue.batch.flushTimeout`, in milliseconds. */
+export const QUEUE_BATCH_FLUSH_TIMEOUT_RANGE_MS = { min: 1_000, max: 600_000 } as const;
+
+/** Bounds of `persistentQueue.batch.processorTimeout`, in milliseconds. */
+export const QUEUE_BATCH_PROCESSOR_TIMEOUT_RANGE_MS = { min: 10, max: 5_000 } as const;
+
+/**
+ * Parse a collector duration limited to whole milliseconds, seconds or minutes
+ * (`'500ms'`, `'30s'`, `'2m'`). Every accepted spelling is also a valid Go
+ * duration, so the string is rendered as given.
+ *
+ * @param context - Entry point name for the error message
+ * @param field - Option path named in the error message
+ * @param value - The caller's value
+ * @param range - Inclusive bounds, in milliseconds
+ * @returns The duration in milliseconds
+ * @throws Error when the value is not such a duration, or is out of range
+ */
+export function parseQueueBatchDuration(
+  context: string,
+  field: string,
+  value: unknown,
+  range: { readonly min: number; readonly max: number }
+): number {
+  const match = typeof value === 'string' ? /^([1-9][0-9]{0,6})(ms|s|m)$/.exec(value) : null;
+  if (match === null) {
+    throw new Error(
+      `${context}: '${field}' must be a whole number of milliseconds, seconds or minutes ` +
+        `such as '500ms', '30s' or '2m'. Got ${JSON.stringify(value)}.`
+    );
+  }
+  const unitMs = { ms: 1, s: 1_000, m: 60_000 }[match[2] as 'ms' | 's' | 'm'];
+  const milliseconds = Number(match[1]) * unitMs;
+  if (milliseconds < range.min || milliseconds > range.max) {
+    throw new Error(
+      `${context}: '${field}' must be between ${formatMs(range.min)} and ` +
+        `${formatMs(range.max)}. Got '${value as string}'.`
+    );
+  }
+  return milliseconds;
+}
+
+function formatMs(milliseconds: number): string {
+  if (milliseconds % 60_000 === 0) return `${milliseconds / 60_000}m`;
+  if (milliseconds % 1_000 === 0) return `${milliseconds / 1_000}s`;
+  return `${milliseconds}ms`;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
 
 /** Name suffix of the queue PersistentVolumeClaim (and its resource id). */
 export const QUEUE_CLAIM_NAME_SUFFIX = '-otel-queue';
@@ -362,7 +438,20 @@ export interface ResolvedClickStackStorage {
     /** Always non-empty — `resolveClickStackStorage` rejects an empty list. */
     readonly exporterNames: readonly string[];
     readonly extensions: readonly string[];
+    /** `sending_queue.queue_size`, rendered only when the caller set it. */
+    readonly queueSize?: number;
+    /** Exporter-side batching, when requested. Defaults already applied. */
+    readonly batch?: ResolvedQueueBatch;
   };
+}
+
+/** Resolved `persistentQueue.batch`: validated, with every default applied. */
+export interface ResolvedQueueBatch {
+  readonly flushTimeout: string;
+  readonly minSize: number;
+  readonly maxSize?: number;
+  readonly sizer: 'items' | 'bytes';
+  readonly processorTimeout: string;
 }
 
 /**
@@ -530,6 +619,18 @@ export function resolveClickStackStorage(
     assertQueueComponentNames(context, 'exporterNames', exporterNames);
     assertQueueComponentNames(context, 'extensions', queueExtensions);
   }
+  const queueSize = queue?.queueSize;
+  if (queue?.enabled === true && queueSize !== undefined && !isPositiveSafeInteger(queueSize)) {
+    throw new Error(
+      `${context}: 'storage.persistentQueue.queueSize' must be a positive integer (the most ` +
+        `requests the exporter's sending_queue holds). Got ${JSON.stringify(queueSize)}. Omit ` +
+        `the option to keep the collector's default of ${COLLECTOR_DEFAULT_QUEUE_CAPACITY}.`
+    );
+  }
+  const batch =
+    queue?.enabled === true && queue.batch !== undefined
+      ? resolveQueueBatch(context, queue.batch, queueSize ?? COLLECTOR_DEFAULT_QUEUE_CAPACITY)
+      : undefined;
 
   return {
     mode,
@@ -552,8 +653,97 @@ export function resolveClickStackStorage(
         accessModes: [...QUEUE_ACCESS_MODES],
         exporterNames,
         extensions: queueExtensions,
+        ...(queueSize !== undefined && { queueSize }),
+        ...(batch !== undefined && { batch }),
       },
     }),
+  };
+}
+
+/**
+ * Validate `persistentQueue.batch` and apply its defaults.
+ *
+ * Every bound mirrors a rule the collector enforces when it loads the config,
+ * or a queue that would fill up: see {@link ClickStackPersistentQueueBatchOptions}.
+ *
+ * @param context - Entry point name for every error message
+ * @param batch - The caller's batch options
+ * @param queueCapacity - The queue's `queue_size`, rendered or default
+ * @returns The resolved batch options
+ * @throws Error when a value is malformed or out of range, or when one batch
+ *   could take more than half of the queue
+ */
+function resolveQueueBatch(
+  context: string,
+  batch: ClickStackPersistentQueueBatchOptions,
+  queueCapacity: number
+): ResolvedQueueBatch {
+  const path = 'storage.persistentQueue.batch';
+  const flushMs = parseQueueBatchDuration(
+    context,
+    `${path}.flushTimeout`,
+    batch.flushTimeout,
+    QUEUE_BATCH_FLUSH_TIMEOUT_RANGE_MS
+  );
+  const processorTimeout = batch.processorTimeout ?? DEFAULT_QUEUE_BATCH_PROCESSOR_TIMEOUT;
+  const processorMs = parseQueueBatchDuration(
+    context,
+    `${path}.processorTimeout`,
+    processorTimeout,
+    QUEUE_BATCH_PROCESSOR_TIMEOUT_RANGE_MS
+  );
+  if (processorMs >= flushMs) {
+    throw new Error(
+      `${context}: '${path}.processorTimeout' (${processorTimeout}) must be shorter than ` +
+        `'${path}.flushTimeout' (${batch.flushTimeout}). The processor's timeout is the window ` +
+        `in which accepted data is only in memory, and the point of batching in the queue is ` +
+        `to keep that window short.`
+    );
+  }
+
+  const sizer = batch.sizer ?? DEFAULT_QUEUE_BATCH_SIZER;
+  if (sizer !== 'items' && sizer !== 'bytes') {
+    throw new Error(
+      `${context}: '${path}.sizer' must be 'items' or 'bytes' (the only sizers the exporter's ` +
+        `queue batch accepts). Got ${JSON.stringify(sizer)}.`
+    );
+  }
+  const minSize = batch.minSize ?? DEFAULT_QUEUE_BATCH_MIN_SIZE;
+  if (!isPositiveSafeInteger(minSize)) {
+    throw new Error(
+      `${context}: '${path}.minSize' must be a positive integer (in ${sizer}). ` +
+        `Got ${JSON.stringify(minSize)}.`
+    );
+  }
+  const maxSize = batch.maxSize;
+  if (maxSize !== undefined && !(isPositiveSafeInteger(maxSize) && maxSize >= minSize)) {
+    throw new Error(
+      `${context}: '${path}.maxSize' must be a positive integer no smaller than minSize ` +
+        `(${minSize}). Got ${JSON.stringify(maxSize)}. Omit it to leave batches unsplit.`
+    );
+  }
+
+  // A request keeps its queue slot until the batch holding it is exported, and
+  // the processor sends one request per `processorTimeout` while data flows.
+  const requestsPerBatch = Math.ceil(flushMs / processorMs);
+  if (requestsPerBatch > queueCapacity / 2) {
+    throw new Error(
+      `${context}: one batch could take more than half of the persistent queue. With ` +
+        `'${path}.flushTimeout' ${batch.flushTimeout} and processorTimeout ` +
+        `${processorTimeout}, a batch holds up to ${requestsPerBatch} requests, and each keeps ` +
+        `its queue slot until the batch is exported. The queue holds ${queueCapacity} ` +
+        `requests, and half of it must stay free for a backlog while ClickHouse is unavailable; ` +
+        `a full queue refuses new data. Raise 'storage.persistentQueue.queueSize' to at least ` +
+        `${requestsPerBatch * 2}, raise processorTimeout, or shorten flushTimeout.`
+    );
+  }
+
+  return {
+    flushTimeout: batch.flushTimeout,
+    minSize,
+    ...(maxSize !== undefined && { maxSize }),
+    sizer,
+    processorTimeout,
   };
 }
 
@@ -753,7 +943,7 @@ export function persistentQueueConfigFragment(
     // are equivalent, and spelling it out keeps the guarantee local — this line
     // cannot become a setter call however the dictionary above is later built.
     Object.defineProperty(exporters, exporterName, {
-      value: { sending_queue: { enabled: true, storage: QUEUE_EXTENSION_NAME } },
+      value: { sending_queue: renderSendingQueue(queue) },
       enumerable: true,
       writable: true,
       configurable: true,
@@ -774,6 +964,34 @@ export function persistentQueueConfigFragment(
     },
     exporters,
     service: { extensions: [...queue.extensions] },
+    // The long wait moves into the queue, so the processor ahead of it only
+    // holds acknowledged, not-yet-persisted data for `processorTimeout`.
+    ...(queue.batch !== undefined && {
+      processors: { batch: { timeout: queue.batch.processorTimeout } },
+    }),
+  };
+}
+
+/**
+ * One exporter's `sending_queue`: the persistent storage, plus the queue size
+ * and the batch when the caller set them. A fresh object per exporter.
+ */
+function renderSendingQueue(
+  queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>
+): Record<string, unknown> {
+  const batch = queue.batch;
+  return {
+    enabled: true,
+    storage: QUEUE_EXTENSION_NAME,
+    ...(queue.queueSize !== undefined && { queue_size: queue.queueSize }),
+    ...(batch !== undefined && {
+      batch: {
+        flush_timeout: batch.flushTimeout,
+        min_size: batch.minSize,
+        ...(batch.maxSize !== undefined && { max_size: batch.maxSize }),
+        sizer: batch.sizer,
+      },
+    }),
   };
 }
 
