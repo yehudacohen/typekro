@@ -241,6 +241,117 @@ describe('direct toAlchemyResources with forEach', () => {
     }
   });
 
+  describe('nested forEach', () => {
+    const NestedSpec = type({
+      name: 'string',
+      regions: type({
+        name: 'string',
+        zones: type({ name: 'string', replicas: 'number' }).array(),
+      }).array(),
+    });
+    const nestedComposition = () =>
+      kubernetesComposition(
+        {
+          name: 'zonal-app',
+          apiVersion: 'v1alpha1',
+          kind: 'ZonalApp',
+          spec: NestedSpec,
+          status: type({ total: 'number' }),
+        },
+        (spec) => {
+          for (const region of spec.regions) {
+            for (const zone of region.zones) {
+              Deployment({
+                id: 'zoneDeployment',
+                name: `${spec.name}-${region.name}-${zone.name}`,
+                image: 'nginx:1.27',
+                replicas: zone.replicas,
+                env: { REGION: region.name, ZONE: zone.name },
+              });
+            }
+          }
+          return { total: spec.regions.length };
+        }
+      );
+    const cases = {
+      'one region with one zone': {
+        name: 'shop',
+        regions: [{ name: 'us', zones: [{ name: 'a', replicas: 1 }] }],
+      },
+      'one region with several zones': {
+        name: 'shop',
+        regions: [
+          {
+            name: 'us',
+            zones: [
+              { name: 'a', replicas: 1 },
+              { name: 'b', replicas: 2 },
+            ],
+          },
+        ],
+      },
+      'several regions and zones': {
+        name: 'shop',
+        regions: [
+          {
+            name: 'us',
+            zones: [
+              { name: 'a', replicas: 1 },
+              { name: 'b', replicas: 2 },
+            ],
+          },
+          { name: 'eu', zones: [{ name: 'c', replicas: 3 }] },
+        ],
+      },
+    };
+
+    it.each(Object.entries(cases))('matches direct toYaml() for %s', async (_label, input) => {
+      const factory = nestedComposition().factory('direct', { namespace: 'apps' });
+      const rendered = yaml
+        .loadAll(factory.toYaml(input))
+        .filter((document): document is Record<string, unknown> => !!document)
+        .map(plain);
+      const declarations = await factory.toAlchemyResources(input);
+
+      const expected = input.regions.flatMap((region) =>
+        region.zones.map((zone) => ({ region: region.name, zone }))
+      );
+      expect(declarations).toHaveLength(expected.length);
+      for (const { region, zone } of expected) {
+        const declaration = declarations.find(
+          (candidate) => candidate.props.resource.metadata.name === `shop-${region}-${zone.name}`
+        );
+        const manifest = plain(declaration?.props.resource) as {
+          metadata: Record<string, unknown>;
+          spec: {
+            replicas: number;
+            template: { spec: { containers: Array<{ env: Array<{ name: string }> }> } };
+          };
+        };
+        expect(manifest.spec.replicas).toBe(zone.replicas);
+        expect(manifest.spec.template.spec.containers[0]?.env).toEqual(
+          expect.arrayContaining([
+            { name: 'REGION', value: region },
+            { name: 'ZONE', value: zone.name },
+          ])
+        );
+        const declared: Record<string, unknown> = {
+          ...manifest,
+          metadata: { ...manifest.metadata, namespace: declaration?.props.namespace },
+        };
+        expect(declared).toEqual(
+          rendered.find(
+            (document) => manifestKey(document) === `Deployment/shop-${region}-${zone.name}`
+          ) as Record<string, unknown>
+        );
+        const rehydrated = resourceFromDirectArtifactRecordForTest(
+          restoredProps(declaration as AlchemyResourceDeclaration)
+        );
+        expect(plain(rehydrated)).toEqual(plain(declaration?.props.resource));
+      }
+    });
+  });
+
   it('leaves KRO-mode forEach output symbolic', () => {
     const rendered = regionalComposition().factory('kro', { namespace: 'apps' }).toYaml();
 
