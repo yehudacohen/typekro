@@ -250,10 +250,18 @@ export const QUEUE_BATCH_PROCESSOR_TIMEOUT_RANGE_MS = { min: 10, max: 5_000 } as
  * collector-contrib v0.155.0 (the version `clickstack-otel-collector` 2.35.0
  * is built from; upstream defaults: both modes off, 100 MiB / 10 MiB, 5s):
  *
- * - `on_start` compacts every file as the exporter opens it. It copies the
- *   file's LIVE data, so it is fast for a drained queue and slow for a large
- *   backlog (about 1.4s for 300 MiB on a local Docker run). A failure is logged
- *   (`compaction on start failed`) and is not fatal.
+ * - `on_start` is OFF by default, and only an explicit opt-in. It compacts
+ *   every file as the exporter opens it, copying the file's LIVE data — after
+ *   an outage, the whole backlog. That needs free space on the claim of about
+ *   the backlog's size, delays exporter start (about 6s for 1.2 GiB), and in
+ *   v0.155.0 a compaction that runs out of space LEAKS its temporary file:
+ *   `fileStorageClient.Compact` returns on a `bbolt.Compact` error without
+ *   closing the temporary database, so the unlinked `tempdb` stays open and
+ *   mmapped, and its space is not returned until the process exits. A restart
+ *   that runs the same compaction again leaks it again. Reproduced on a
+ *   tmpfs claim: the volume reached 100% with a `(deleted)` tempdb mapped,
+ *   and the other signals' writes failed — the failure this block exists to
+ *   prevent.
  * - `on_rebound` compacts online when the file is at least
  *   `rebound_needed_threshold_mib` AND its live data is at most
  *   `rebound_trigger_threshold_mib`, sampled every `check_interval`. The check
@@ -261,14 +269,16 @@ export const QUEUE_BATCH_PROCESSOR_TIMEOUT_RANGE_MS = { min: 10, max: 5_000 } as
  *   database's write lock while it copies the live data, which is why the
  *   trigger bounds the copy: 32 MiB rather than upstream's 10 so a busy
  *   gateway with a few batches in flight still qualifies, while the copy
- *   stays well under a second. The needed threshold, 256 MiB, sits above the
+ *   stays well under a second. It also bounds the leak above: a rebound
+ *   compaction that runs out of space can strand at most about the trigger's
+ *   worth of space until the next restart. The needed threshold, 256 MiB, sits above the
  *   working set of a healthy queue (a handful of in-flight batches of the
  *   image's 10000-item `send_batch_size`), so a healthy queue does not compact
  *   on a loop, and it bounds the space a drained file may keep to 256 MiB per
  *   signal queue.
  */
 const DEFAULT_QUEUE_COMPACTION: Required<ClickStackQueueCompactionOptions> = {
-  onStart: true,
+  onStart: false,
   onRebound: true,
   reboundNeededMiB: 256,
   reboundTriggerMiB: 32,
@@ -290,8 +300,9 @@ const QUEUES_PER_EXPORTER = 3;
 /**
  * Share of the claim the byte-sized queues may hold between them. The rest is
  * headroom that the queues themselves need: bbolt keeps more on disk than the
- * byte sizer counts (about 1.2× on a local Docker run), and `on_start`
- * compaction writes a temporary copy of one file's live data next to it.
+ * byte sizer counts (about 1.2× on a local Docker run), and an opted-in
+ * `on_start` compaction writes a temporary copy of one file's live data next
+ * to it.
  */
 const QUEUE_BYTES_CLAIM_SHARE = 0.5;
 
@@ -753,9 +764,10 @@ export function resolveClickStackStorage(
     requestedQueueSize !== undefined &&
     !isPositiveSafeInteger(requestedQueueSize)
   ) {
+    const unit = queue.sizer === 'bytes' ? 'bytes' : 'requests';
     throw new Error(
       `${context}: 'storage.persistentQueue.queueSize' must be a positive integer (the most ` +
-        `requests each of the exporter's queues holds). Got ${JSON.stringify(requestedQueueSize)}.`
+        `${unit} each of the exporter's queues holds). Got ${JSON.stringify(requestedQueueSize)}.`
     );
   }
   const batched =
@@ -829,8 +841,17 @@ function resolveQueueSizer(context: string, sizer: unknown): 'bytes' | undefined
  * keeps a running byte total in the queue's metadata), and a byte bound per
  * queue that sums to less than the claim means one signal refusing data
  * cannot stop another from enqueueing. VERIFIED in the Docker suite: with the
- * logs queue at its bound, the logs receiver answers 503 and metrics are still
- * accepted.
+ * logs queue at its bound, logs are refused and metrics are still accepted.
+ *
+ * ⚠️ A REFUSAL AT THE BOUND IS A DROP, NOT BACKPRESSURE, in the ClickStack
+ * pipelines. The image puts its `batch` processor ahead of the exporter in
+ * every pipeline, and the processor acknowledges data before it exports it,
+ * so the enqueue failure lands in the processor, is counted in
+ * `otelcol_exporter_enqueue_failed_*`, and the sender still got a success.
+ * That holds with `persistentQueue.batch` too, which keeps the processor
+ * (with a shorter timeout). Only a pipeline with no asynchronous processor
+ * ahead of the exporter turns the refusal into a retryable error for the
+ * sender — the Docker suite's harness is one.
  *
  * An explicit value is checked against the claim when the claim's size can be
  * read: bounds that add up to more than the claim protect nothing.

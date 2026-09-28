@@ -363,7 +363,7 @@ export interface ClickStackPersistentQueueOptions {
 
 /** `file_storage` compaction. See "Queue storage and compaction" in the ClickStack docs. */
 export interface ClickStackQueueCompactionOptions {
-  /** Compact each file when the collector starts (default: true). */
+  /** Compact each file on start (default: false). Needs free space ≈ live data; see docs. */
   onStart?: boolean;
   /** Compact a drained, bloated file online (default: true). */
   onRebound?: boolean;

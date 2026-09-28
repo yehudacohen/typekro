@@ -16,10 +16,15 @@
  *    drains, and:
  *    - with compaction turned off, the drained file keeps its high-water mark
  *      (the failure mode this exists for);
- *    - restarting with the default rendering compacts it on start;
- *    - filling and draining again compacts it online, without a restart.
+ *    - restarting with the default rendering compacts it online (rebound
+ *      compaction; on-start compaction is off by default);
+ *    - filling and draining again compacts it online, without a restart;
+ *    - the explicit `onStart: true` opt-in compacts it as the file opens.
  * 3. **Per-signal byte bounds.** With `sizer: 'bytes'`, the logs queue stops
- *    accepting at its bound while metrics are still accepted.
+ *    accepting at its bound while metrics are still accepted. The harness has
+ *    no `batch` processor, so the refusal reaches the sender as a 503; in the
+ *    ClickStack pipelines the processor absorbs it and the data is dropped
+ *    (see the docs).
  *
  * The harness swaps only the exporter: `otlphttp` instead of `clickhouse`, so
  * the backend can be taken down and brought back with one container. The
@@ -458,14 +463,15 @@ describeOrSkip('ClickStack queue storage against the collector binary', () => {
     expect(broken.output).toContain("'compaction' has invalid keys: rebound_needed_threshold_mb");
   });
 
-  it('compacts a drained queue file on start and online; without compaction it keeps its size', async () => {
+  it('compacts a drained queue file online, and on start only when opted in; without compaction it keeps its size', async () => {
     const volume = createVolume();
+    const offConfig = gatewayConfig(
+      renderedQueue({ compaction: { onStart: false, onRebound: false } }),
+      ['logs']
+    );
 
     // 1. Control: compaction off. The drained file keeps its high-water mark.
-    writeFile(
-      'gateway-off.yaml',
-      gatewayConfig(renderedQueue({ compaction: { onStart: false, onRebound: false } }), ['logs'])
-    );
+    writeFile('gateway-off.yaml', offConfig);
     const off = startGateway('gateway', volume, 'gateway-off.yaml');
     await waitForGateway(off);
     const highWater = await fillWhileBackendDown(off);
@@ -473,13 +479,16 @@ describeOrSkip('ClickStack queue storage against the collector binary', () => {
     await Bun.sleep(12_000); // more than two default check intervals
     expect(fileSize(off, 'logs')).toBe(highWater);
 
-    // 2. The default rendering compacts the drained file on start.
+    // 2. The default rendering (rebound only) compacts the bloated, drained
+    //    file online within a few checks of starting.
     writeFile('gateway-default.yaml', gatewayConfig(renderedQueue(), ['logs']));
     const on = startGateway('gateway', volume, 'gateway-default.yaml');
     await waitForGateway(on);
-    expect(fileSize(on, 'logs')).toBeLessThan(32 * MIB);
+    await waitFor('rebound compaction after a restart', () =>
+      fileSize(on, 'logs') < 32 * MIB ? true : undefined
+    );
 
-    // 3. …and online, after the next outage drains, with no restart.
+    // 3. …and after the next outage drains, with no restart.
     await fillWhileBackendDown(on);
     await drain(on);
     await waitFor('online (rebound) compaction', () =>
@@ -487,6 +496,20 @@ describeOrSkip('ClickStack queue storage against the collector binary', () => {
     );
     const logs = docker(['logs', on.name]);
     expect(`${logs.stdout}\n${logs.stderr}`).toContain('finished compaction');
+
+    // 4. The explicit on-start opt-in compacts a bloated file as it opens it
+    //    (rebound off, so nothing else can have shrunk it).
+    const bloated = startGateway('gateway', volume, 'gateway-off.yaml');
+    await waitForGateway(bloated);
+    await fillWhileBackendDown(bloated);
+    await drain(bloated);
+    writeFile(
+      'gateway-on-start.yaml',
+      gatewayConfig(renderedQueue({ compaction: { onStart: true, onRebound: false } }), ['logs'])
+    );
+    const onStart = startGateway('gateway', volume, 'gateway-on-start.yaml');
+    await waitForGateway(onStart);
+    expect(fileSize(onStart, 'logs')).toBeLessThan(32 * MIB);
   });
 
   it('with sizer bytes, one signal at its bound does not stop another', async () => {

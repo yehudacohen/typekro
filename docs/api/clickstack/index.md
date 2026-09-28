@@ -1117,7 +1117,7 @@ it, while `otelcol_exporter_queue_size` for that signal reads 0: the queue is em
 can be written to it. The signal whose file already has free pages inside it keeps flowing, so the
 outage looks partial.
 
-**Compaction is on by default.** TypeKro renders the extension's `compaction` block:
+**Rebound compaction is on by default.** TypeKro renders the extension's `compaction` block:
 
 ```yaml
 extensions:
@@ -1125,7 +1125,7 @@ extensions:
     directory: /var/lib/otelcol/file_storage
     create_directory: true
     compaction:
-      on_start: true
+      on_start: false
       on_rebound: true
       directory: /var/lib/otelcol/file_storage
       rebound_needed_threshold_mib: 256
@@ -1136,7 +1136,7 @@ extensions:
 
 These keys and their behavior were checked against `extension/storage/filestorage` in
 collector-contrib v0.155.0, the version `clickstack-otel-collector` 2.35.0 is built from. Upstream
-leaves both modes off.
+leaves both modes off; TypeKro turns on rebound compaction only.
 
 - **Rebound (online) compaction.** Every `check_interval`, a file that is at least
   `rebound_needed_threshold_mib` MiB with at most `rebound_trigger_threshold_mib` MiB of live data
@@ -1146,12 +1146,18 @@ leaves both modes off.
   gateway with a few batches in flight still qualifies. The 256 MiB threshold (upstream: 100) sits
   above a healthy queue's working set, so a healthy queue does not compact in a loop, and it caps
   the space a drained file can keep at 256 MiB per signal.
-- **Compaction on start.** Each file is compacted when the collector opens it. This covers a
-  collector that restarts after the backlog has drained. It also covers a file that never gets a
-  quiet sample. The cost is proportional to the live data: a drained queue compacts instantly, and
-  a large backlog takes a while (about 1.4s per 300 MiB on a local Docker run) and needs that much
-  free space on the claim. A failed compaction is logged (`compaction on start failed`) and the
-  collector carries on.
+- **Compaction on start is off by default** (`compaction.onStart: true` opts in). It compacts each
+  file as the collector opens it, which covers a file that never gets a quiet sample. It copies the
+  file's live data, which after an outage is the whole backlog. So it needs about that much free
+  space on the claim, and it delays exporter start (about 6s for 1.2 GiB of live data; longer on
+  slow disks). In collector v0.155.0, a compaction that runs out of space also **leaks** its
+  temporary file: the error path does not close the temporary database, so the deleted `tempdb`
+  stays mapped by the collector and its space is not returned until the process exits. A restart
+  that runs the same compaction leaks it again. On a nearly full claim, that turns the failure mode
+  above into a full volume. Opt in only when the claim keeps at least as much free space as the
+  largest backlog, for example with the byte bounds below. Rebound compaction goes through the
+  same code, but it only runs once live data is at most `reboundTriggerMiB`, so a failed rebound
+  compaction strands at most about that much until the next restart.
 - **Same volume.** `compaction.directory` is the queue directory. Compaction writes a temporary copy
   there and renames it over the original, which is atomic on one filesystem. On a different
   filesystem, such as an `emptyDir`, the extension falls back to reading the whole compacted file
@@ -1164,7 +1170,7 @@ Override any of it under `persistentQueue.compaction`:
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `compaction.onStart` | `true` | |
+| `compaction.onStart` | `false` | opt-in; needs free space of about the live data (see above) |
 | `compaction.onRebound` | `true` | both `false` renders no `compaction` block at all |
 | `compaction.reboundNeededMiB` | `256` | positive integer, larger than `reboundTriggerMiB` |
 | `compaction.reboundTriggerMiB` | `32` | positive integer |
@@ -1186,13 +1192,33 @@ persistentQueue: { enabled: true, size: '10Gi', sizer: 'bytes' }
 ```
 
 The other half is headroom the queues need. bbolt keeps more on disk than the sizer counts (about
-1.2× on a local Docker run), and compaction on start writes a temporary copy of one file's live data
-next to it. When a queue reaches its bound, the collector refuses new data for that signal
-(the OTLP receiver answers 503, so senders retry) and every other signal keeps enqueueing. An
+1.2× on a local Docker run), and an opted-in compaction on start writes a temporary copy of one
+file's live data next to it. When a queue reaches its bound, the collector refuses new data for that
+signal, and every other signal keeps enqueueing. An
 explicit `queueSize` is checked against the claim: bounds that add up to more than `size` are
 rejected, since they cannot keep one signal from filling it. A `size` TypeKro cannot parse (for
 example an exponent) needs an explicit `queueSize`. An exporter that serves fewer than three signals
 is counted as three, which only makes the derived bound smaller.
+
+::: warning At a bound, the data is dropped, not pushed back to the sender
+In the ClickStack pipelines the image's `batch` processor runs ahead of the exporter, in every
+pipeline. The processor acknowledges data to the receiver before it exports it, so when the queue
+refuses a batch at its bound, the processor gets the error and drops the batch. The sender got a
+success and does not retry. The only trace is `otelcol_exporter_enqueue_failed_log_records` (or
+`…_metric_points`, `…_spans`). `persistentQueue.batch` does not change this: it moves the long wait
+into the queue, but TypeKro keeps the processor, with a shorter timeout (see
+[Batching inside the queue](#batching-inside-the-queue)).
+
+In practice, the byte bound protects the *other* signals. When one signal's backlog reaches its
+bound, that signal's newest data is lost at the gateway, while the other signals keep their room
+on the claim. Senders do not buffer it for you. Alert on the enqueue-failure counters, and size the
+bound for the outage you need to ride out.
+
+A refusal only reaches senders as a retryable error (HTTP 503 or gRPC `UNAVAILABLE`) when nothing
+asynchronous sits between the receiver and the exporter. That means taking `batch` out of the
+pipelines' `processors` lists and batching only inside the queue. Those lists come from the image's
+own configuration, which the OpAMP supervisor manages, so TypeKro does not rewrite them.
+:::
 
 The byte sizer is opt-in because it changes what `queueSize` means and bounds each signal to a
 share of the claim, so a long outage on one signal is buffered for less time than with the whole

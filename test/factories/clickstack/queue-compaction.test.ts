@@ -60,7 +60,7 @@ extensions:
     directory: /var/lib/otelcol/file_storage
     create_directory: true
     compaction:
-      on_start: true
+      on_start: false
       on_rebound: true
       directory: /var/lib/otelcol/file_storage
       rebound_needed_threshold_mib: 256
@@ -77,7 +77,7 @@ exporters:
 /** The eight lines compaction adds — and the only lines it adds. */
 const COMPACTION_LINES = [
   '    compaction:',
-  '      on_start: true',
+  '      on_start: false',
   '      on_rebound: true',
   '      directory: /var/lib/otelcol/file_storage',
   '      rebound_needed_threshold_mib: 256',
@@ -154,8 +154,23 @@ describe('persistent queue compaction', () => {
     });
   });
 
+  it('does NOT compact on start by default', () => {
+    // v0.155.0 leaks the temporary file of a compaction that runs out of space
+    // (the error path never closes it), and on start the copy is the whole
+    // backlog, so on-start compaction is an explicit opt-in only.
+    const compaction = parsed().extensions['file_storage/hyperdx']?.compaction as Record<
+      string,
+      unknown
+    >;
+    expect(compaction.on_start).toBe(false);
+    expect(compaction.on_rebound).toBe(true);
+    expect(parsed({ sizer: 'bytes' }).extensions['file_storage/hyperdx']?.compaction).toEqual(
+      compaction
+    );
+  });
+
   it('keeps the block when only one mode is on', () => {
-    const compaction = parsed({ compaction: { onRebound: false } }).extensions[
+    const compaction = parsed({ compaction: { onStart: true, onRebound: false } }).extensions[
       'file_storage/hyperdx'
     ]?.compaction as Record<string, unknown>;
     expect(compaction.on_start).toBe(true);
@@ -178,6 +193,13 @@ describe('persistent queue compaction', () => {
     expect(() => resolve({ reboundNeededMiB: 16 })).toThrow(/must be smaller than/);
     expect(() => resolve({ checkInterval: '5' })).toThrow(/checkInterval' must be a whole/);
     expect(() => resolve({ checkInterval: '500ms' })).toThrow(/must be between 1s and 60m/);
+  });
+
+  it('names the sizer unit when queueSize is malformed', () => {
+    const resolve = (sizer: 'requests' | 'bytes') =>
+      resolveClickStackStorage('t', { persistentQueue: { enabled: true, sizer, queueSize: 0 } });
+    expect(() => resolve('bytes')).toThrow(/the most bytes each of the exporter's queues holds/);
+    expect(() => resolve('requests')).toThrow(/the most requests each/);
   });
 
   it('ignores compaction options while the queue is disabled', () => {
