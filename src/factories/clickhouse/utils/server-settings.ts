@@ -1,34 +1,16 @@
-/**
- * Caller-supplied ClickHouse Settings
- *
- * Two build-time options let a composition set ClickHouse configuration that
- * TypeKro does not model field by field:
- *
- * - `serverSettings` — SERVER settings (`config.xml` level), e.g.
- *   `memory_worker_correct_memory_tracker` or `merge_tree/max_suspicious_broken_parts`.
- *   They ride the CHI's `configuration.settings`, which the clickhouse-operator
- *   renders into `config.d/chop-generated-settings.xml`: a path key
- *   `a/b` becomes `<a><b>value</b></a>`.
- * - `systemLogs.tables.<log>.settings` — MergeTree settings for ONE of
- *   ClickHouse's own `system.*_log` tables, rendered into that log's
- *   `<settings>` element (or into its engine's `SETTINGS` clause, for the logs
- *   the operator gives a full `<engine>`). See `./system-logs.ts`.
- *
- * Both end up as ClickHouse server configuration TEXT, and the operator writes
- * `configuration.settings` values into that XML VERBATIM — no escaping. So the
- * rules here are VALIDATION, not encoding:
- *
- * - a key is rendered as an XML ELEMENT NAME, which has no escape form, so
- *   every path segment must be a bare identifier;
- * - a string value must not contain `<`, `>` or `&` (and must be representable
- *   in XML at all), because it lands in the document unescaped;
- * - a number must render as a plain decimal (`1e21` is not something
- *   ClickHouse's config parser reads back as a number);
- * - a boolean renders as `1` / `0`, the form every ClickHouse boolean setting
- *   accepts.
- *
- * @module
- */
+// Caller-supplied ClickHouse settings: `serverSettings` (the CHI's
+// `configuration.settings`, which the clickhouse-operator renders into
+// `config.d/chop-generated-settings.xml`, a path key `a/b` becoming
+// `<a><b>value</b></a>`) and `systemLogs.tables.<log>.settings` (see
+// ./system-logs.ts).
+//
+// Both end up as server configuration TEXT, and the operator writes
+// `configuration.settings` values into that XML VERBATIM. So the rules here are
+// VALIDATION, not encoding: a key is an XML ELEMENT NAME (no escape form), so
+// every path segment must be a bare identifier; a string value must not contain
+// `<`, `>` or `&` and must be representable in XML; a number must render as a
+// plain decimal (`1e21` does not read back as a number); a boolean renders as
+// `1`/`0`, which every ClickHouse boolean setting accepts.
 
 import { assertXmlRepresentable } from './xml.js';
 
@@ -38,24 +20,16 @@ export type ClickHouseSettingValue = string | number | boolean;
 /** A settings map as it arrives from a `Composable<...>` config. */
 export type ClickHouseSettingsInput = Readonly<Record<string, ClickHouseSettingValue | undefined>>;
 
-/**
- * One path segment of a setting name: a letter or underscore, then letters,
- * digits or underscores. Every ClickHouse server and MergeTree setting name
- * has this shape, and it is also a legal XML element name.
- */
-export const CLICKHOUSE_SETTING_NAME_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// One path segment of a setting name. Every ClickHouse server and MergeTree
+// setting name has this shape, and it is also a legal XML element name.
+const CLICKHOUSE_SETTING_NAME_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** Upper bound on a setting key, as a sanity check on the rendered config. */
-export const CLICKHOUSE_SETTING_KEY_MAX_LENGTH = 256;
+const CLICKHOUSE_SETTING_KEY_MAX_LENGTH = 256;
 
-/**
- * Top-level configuration sections the clickhouse-operator generates itself
- * (`remote_servers`, `macros`) or that TypeKro renders from a dedicated option
- * (`zookeeper`, from `keeper`). A `serverSettings` key inside one of them would
- * be merged into the generated section and silently change the cluster
- * topology, so it is refused with a pointer to the option that owns it.
- */
-export const CLICKHOUSE_RESERVED_SERVER_SETTING_SECTIONS: Readonly<Record<string, string>> = {
+// Sections the operator generates (`remote_servers`, `macros`) or TypeKro
+// renders from a dedicated option (`zookeeper`, from `keeper`). A key inside
+// one would merge into the generated section and silently change the topology.
+const CLICKHOUSE_RESERVED_SERVER_SETTING_SECTIONS: Readonly<Record<string, string>> = {
   remote_servers: 'the clickhouse-operator generates it from the cluster layout',
   macros: 'the clickhouse-operator generates it per replica',
   zookeeper: 'it is rendered from the `keeper` option',
@@ -64,14 +38,7 @@ export const CLICKHOUSE_RESERVED_SERVER_SETTING_SECTIONS: Readonly<Record<string
 /** Characters the operator would write into the server's XML unescaped. */
 const XML_SPECIAL = /[<>&]/;
 
-/**
- * Validate a setting value and render it as the text ClickHouse reads back.
- *
- * @param context - Caller and option path, quoted into errors
- *   (e.g. `makeClickHouseCluster: serverSettings.max_concurrent_queries`)
- * @param value - The raw value
- * @returns The value as configuration text (`1`/`0` for booleans)
- */
+/** Validate a setting value and render it as configuration text (`1`/`0` for booleans). */
 export function renderClickHouseSettingValue(context: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? '1' : '0';
   if (typeof value === 'number') {
@@ -106,14 +73,7 @@ export function renderClickHouseSettingValue(context: string, value: unknown): s
   );
 }
 
-/**
- * Validate a setting KEY: `/`-separated path segments, each a bare identifier.
- *
- * @param context - Caller and option name, quoted into errors
- * @param key - The raw key
- * @param allowPath - Whether `/` path separators are allowed (server settings
- *   are path-keyed; a MergeTree setting name is a single segment)
- */
+/** Validate a setting name: bare identifier segments, `/`-separated when `allowPath`. */
 export function assertClickHouseSettingKey(context: string, key: string, allowPath: boolean): void {
   const segments = allowPath ? key.split('/') : [key];
   const valid =
@@ -131,18 +91,9 @@ export function assertClickHouseSettingKey(context: string, key: string, allowPa
 }
 
 /**
- * Validate and render a caller's `serverSettings`.
- *
- * @param factoryName - Caller name, quoted into errors
- * @param settings - The caller's map, if any
- * @param options.generated - Settings TypeKro already renders into
- *   `configuration.settings` for this installation. A caller key equal to one
- *   of them, or a path prefix/extension of one (which would give one element
- *   both text and children), is refused rather than silently overriding it.
- * @param options.ownedSections - Top-level sections owned by a dedicated
- *   TypeKro option, mapped to that option's name. Keys under them are refused
- *   with a pointer to the option.
- * @returns The settings as `configuration.settings` entries (string values)
+ * Validate and render a caller's `serverSettings` as `configuration.settings`
+ * entries. Keys equal to, or a path prefix/extension of, a `generated` key, and
+ * keys in an `ownedSections` section, are refused.
  */
 export function resolveClickHouseServerSettings(
   factoryName: string,

@@ -271,30 +271,21 @@ export interface ResolvedClickHouseSystemLogs {
   readonly storagePolicy?: string;
   /** TTL expression applied to every system log, or `undefined` for none. */
   readonly ttl?: string;
-  /**
-   * Per-log MergeTree settings, already rendered as the comma-separated
-   * `name = value` list ClickHouse appends to the table's `SETTINGS` clause.
-   * Only logs with at least one setting appear.
-   */
+  /** Per-log `name = value, …` clauses, for logs with at least one setting. */
   readonly tableSettings?: Readonly<Record<string, string>>;
 }
 
-/**
- * The logs `systemLogs.tables.<log>.settings` accepts: every log TypeKro
- * configures, whichever of the two mechanisms configures it.
- */
+/** The logs `systemLogs.tables.<log>.settings` accepts. */
 export const CLICKHOUSE_CONFIGURABLE_SYSTEM_LOG_TABLES: readonly string[] = [
   ...CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES,
   ...CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
 ];
 
-/**
- * Every system log section name TypeKro knows about, including the ones it
- * deliberately leaves alone. A `serverSettings` key under any of them is
- * refused in favour of `systemLogs`: writing into these sections by hand is
- * exactly how a server ends up refusing to boot (#235) or running a log the
- * operator switched off.
- */
+// Every system log section TypeKro knows, including those it leaves alone. A
+// `serverSettings` key under any of them is refused in favour of `systemLogs`:
+// writing into them by hand is how a server refuses to boot (#235) or runs a
+// log the operator switched off.
+/** System log section names `serverSettings` may not write into. */
 export const CLICKHOUSE_KNOWN_SYSTEM_LOG_SECTIONS: readonly string[] = [
   ...CLICKHOUSE_SYSTEM_LOG_TABLES,
   ...CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS,

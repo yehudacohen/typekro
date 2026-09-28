@@ -952,35 +952,10 @@ export interface ClickHouseClusterTopology {
    */
   readonly systemLogs?: ClickHouseSystemLogOptions;
   /**
-   * Extra ClickHouse SERVER settings — anything in the server's `config.xml`
-   * that this composition does not model as an option of its own.
-   *
-   * Rendered into the CHI's `configuration.settings`, which the
-   * clickhouse-operator writes to `config.d/chop-generated-settings.xml`. Keys
-   * are the operator's path form: `memory_worker_correct_memory_tracker` is a
-   * top-level element, `merge_tree/max_suspicious_broken_parts` nests.
-   * Booleans render as `1`/`0`; numbers must render as plain decimals.
-   *
-   * WHY build-time: like `systemLogs`, the values compile into server
-   * configuration TEXT, where a schema reference could only serialize as a
-   * `__KUBERNETES_REF__` marker. Changing them changes the CHI, and the
-   * operator restarts the server to apply them.
-   *
-   * VALIDATED at construction, because the operator writes values into the
-   * XML unescaped: every key segment must be an identifier, string values must
-   * not contain `<`, `>` or `&`, and keys are refused where another option
-   * owns the section — `systemLogs` for the `system.*_log` sections, `keeper`
-   * for `zookeeper`, the S3 storage option for `storage_configuration` and
-   * `merge_tree/storage_policy` — or the operator generates it
-   * (`remote_servers`, `macros`).
-   *
-   * @example
-   * ```ts
-   * // Let the background memory worker correct the server-wide memory
-   * // tracker from the cgroup's actual usage, so allocations that are
-   * // reserved but never touched stop counting against the memory limit.
-   * serverSettings: { memory_worker_correct_memory_tracker: true },
-   * ```
+   * Extra ClickHouse SERVER settings, rendered into the CHI's
+   * `configuration.settings` (path keys such as `merge_tree/x` nest).
+   * Build-time and validated at construction; see "Server settings and
+   * per-log table settings" in docs/api/clickhouse/index.md.
    */
   readonly serverSettings?: ClickHouseSettingsMap;
   /**
