@@ -341,18 +341,34 @@ export interface ClickStackPersistentQueueOptions {
    */
   extensions?: readonly string[];
   /**
-   * `sending_queue.queue_size`: the number of upstream requests each queue
-   * keeps, since the queue uses its default `requests` sizer. A positive
-   * integer; the collector enforces the capacity. Default: the collector's
-   * 1000, or with {@link batch} set, `1000 × 5s / processorTimeout` (25000 at
-   * 200ms), because the processor then sends requests more often.
+   * `sending_queue.queue_size`, in units of {@link sizer}: a positive integer
+   * the collector enforces. Default with `requests`: the collector's 1000, or
+   * with {@link batch} set, `1000 × 5s / processorTimeout` (25000 at 200ms).
    */
   queueSize?: number;
+  /** `sending_queue.sizer` (default `'requests'`); `'bytes'` caps each signal queue, see docs. */
+  sizer?: 'requests' | 'bytes';
+  /** bbolt file compaction (rebound on by default). */
+  compaction?: ClickStackQueueCompactionOptions;
   /**
    * Batch inside the persistent queue instead of ahead of it. See
    * {@link ClickStackPersistentQueueBatchOptions}.
    */
   batch?: ClickStackPersistentQueueBatchOptions;
+}
+
+/** `file_storage` compaction; see the ClickStack docs. */
+export interface ClickStackQueueCompactionOptions {
+  /** Compact on start (default: false; see docs). */
+  onStart?: boolean;
+  /** Compact drained files online (default: true). */
+  onRebound?: boolean;
+  /** Min file MiB to compact (default: 256). */
+  reboundNeededMiB?: number;
+  /** Max live MiB to compact (default: 32). */
+  reboundTriggerMiB?: number;
+  /** Rebound check interval (default: '5s'). */
+  checkInterval?: string;
 }
 
 /**

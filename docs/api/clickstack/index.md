@@ -1060,7 +1060,8 @@ exporters:
 | `queueSize` | see below | positive integer |
 
 **Two sizers.** `queueSize` is the number of upstream requests each queue keeps: the queue uses
-its default `requests` sizer, and the collector enforces that capacity itself. A request is one
+its default `requests` sizer, and the collector enforces that capacity itself. (`sizer: 'bytes'`
+makes it a byte bound instead; see [Queue storage and compaction](#queue-storage-and-compaction).) A request is one
 batch the processor sent. Each request keeps its slot until the batch holding it has been exported,
 including while that batch is retrying. `batch.minSize` and `batch.maxSize` count with the batch's
 own, independent sizer, log records, spans and data points (`items`) or `bytes`.
@@ -1099,6 +1100,142 @@ supervisor manages the pipelines, so TypeKro does not rewrite them.
   dropping the separate `batch` processor once `sending_queue.batch` is used. TypeKro keeps it, with
   a short timeout, for the reason above.
 - **The batch is also held in memory** while it fills. Set `maxSize` to cap it under heavy load.
+
+#### Queue storage and compaction
+
+The `file_storage` extension keeps each queue in its own [bbolt](https://github.com/etcd-io/bbolt)
+file on the claim, one per exporter and signal (`exporter_clickhouse__logs`,
+`exporter_clickhouse__metrics`, `exporter_clickhouse__traces`). A bbolt file does not shrink when
+items are deleted. Freed pages are reused, but the file keeps its high-water mark.
+
+**The failure mode.** After an extended backend outage, the queues grow to hold the backlog. When
+ClickHouse comes back they drain, but the bbolt files keep their high-water mark. All the files
+share one volume, so a file that grew to nearly the size of the claim (logs, usually) leaves the
+other signals' files no room to grow. Their writes then fail. The exporter counts every refused
+request in `otelcol_exporter_enqueue_failed_metric_points` (or `…_log_records`, `…_spans`) and drops
+it, while `otelcol_exporter_queue_size` for that signal reads 0: the queue is empty because nothing
+can be written to it. The signal whose file already has free pages inside it keeps flowing, so the
+outage looks partial.
+
+**Rebound compaction is on by default.** TypeKro renders the extension's `compaction` block:
+
+```yaml
+extensions:
+  file_storage/hyperdx:
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
+    compaction:
+      on_start: false
+      on_rebound: true
+      directory: /var/lib/otelcol/file_storage
+      rebound_needed_threshold_mib: 256
+      rebound_trigger_threshold_mib: 32
+      check_interval: 5s
+      cleanup_on_start: true
+```
+
+These keys and their behavior were checked against `extension/storage/filestorage` in
+collector-contrib v0.155.0, the version `clickstack-otel-collector` 2.35.0 is built from. Upstream
+leaves both modes off; TypeKro turns on rebound compaction only.
+
+- **Rebound (online) compaction.** Every `check_interval`, a file that is at least
+  `rebound_needed_threshold_mib` MiB with at most `rebound_trigger_threshold_mib` MiB of live data
+  is rewritten to its live data. That is the state a queue is in once an outage has drained. The
+  check is stateless, so any quiet sample qualifies. Compaction holds the file's write lock while it
+  copies the live data, so the trigger also bounds that pause. At 32 MiB (upstream: 10) a busy
+  gateway with a few batches in flight still qualifies. The 256 MiB threshold (upstream: 100) sits
+  above a healthy queue's working set, so a healthy queue does not compact in a loop, and it caps
+  the space a drained file can keep at 256 MiB per signal.
+- **Compaction on start is off by default** (`compaction.onStart: true` opts in). It compacts each
+  file as the collector opens it, which covers a file that never gets a quiet sample. It copies the
+  file's live data, which after an outage is the whole backlog. So it needs about that much free
+  space on the claim, and it delays exporter start (about 6s for 1.2 GiB of live data; longer on
+  slow disks). In collector v0.155.0, a compaction that runs out of space also **leaks** its
+  temporary file: the error path does not close the temporary database, so the deleted `tempdb`
+  stays mapped by the collector and its space is not returned until the process exits. A restart
+  that runs the same compaction leaks it again. On a nearly full claim, that turns the failure mode
+  above into a full volume. Opt in only when the claim keeps at least as much free space as the
+  largest backlog, for example with the byte bounds below. Rebound compaction goes through the
+  same code, but it only runs once live data is at most `reboundTriggerMiB`, so each failed rebound
+  attempt strands at most about that much. It retries every `checkInterval`, though, so repeated
+  failures while the claim is nearly full can add up until the collector restarts. A restart
+  reclaims all of it. Alert on the claim's usage (see *What to watch* below).
+- **Same volume.** `compaction.directory` is the queue directory. Compaction writes a temporary copy
+  there and renames it over the original, which is atomic on one filesystem. On a different
+  filesystem, such as an `emptyDir`, the extension falls back to reading the whole compacted file
+  into memory and rewriting the original in place, and a crash during that rewrite loses the queue.
+  Upstream's default directory is fixed at `/var/lib/otelcol/file_storage`, whatever `directory`
+  says, so TypeKro always renders it. `cleanup_on_start` removes any `tempdb*` copy a killed
+  compaction left behind. The queue's own files never match that prefix.
+
+Override any of it under `persistentQueue.compaction`:
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `compaction.onStart` | `false` | opt-in; needs free space of about the live data (see above) |
+| `compaction.onRebound` | `true` | both `false` renders no `compaction` block at all |
+| `compaction.reboundNeededMiB` | `256` | positive integer, larger than `reboundTriggerMiB` |
+| `compaction.reboundTriggerMiB` | `32` | positive integer |
+| `compaction.checkInterval` | `'5s'` | `1s`–`60m` (`ms`, `s` or `m`) |
+
+`reboundTriggerMiB` must be smaller than `reboundNeededMiB`. A compacted file is about the size of
+its live data, so otherwise a file could qualify again on every check.
+
+**Per-signal byte bounds (`sizer: 'bytes'`).** Compaction gives the space back after an outage. It
+does not stop one signal from taking the whole claim *during* one. With the default `requests`
+sizer a queue is bounded by a request count, and a request is as large as the batch that produced
+it, so no request count bounds the bytes on disk. `sizer: 'bytes'` renders `sizer: bytes` on every
+queued exporter's `sending_queue`, and `queueSize` becomes a byte bound per signal queue. By
+default that bound is **half the claim, split equally across three signal queues per exporter**:
+
+```typescript
+persistentQueue: { enabled: true, size: '10Gi', sizer: 'bytes' }
+// → queue_size: 1789569706 on each of logs, metrics and traces (10Gi / 2 / 3)
+```
+
+The other half is headroom the queues need. bbolt keeps more on disk than the sizer counts (about
+1.2× on a local Docker run), and an opted-in compaction on start writes a temporary copy of one
+file's live data next to it. When a queue reaches its bound, the collector refuses new data for that
+signal, and every other signal keeps enqueueing. An
+explicit `queueSize` is checked against the claim: bounds that add up to more than `size` are
+rejected, since they cannot keep one signal from filling it. So with `sizer: 'bytes'`, `size` must
+be a quantity TypeKro can read, explicit `queueSize` or not: an unsigned number with a binary
+suffix (`Ki` to `Ei`), a decimal suffix (`k`, `M`, `G`, `T`, `P`, `E`) or a decimal exponent (`1e10`,
+`5E+10`). Anything else is rejected at construction. An exporter that serves fewer than three signals
+is counted as three, which only makes the derived bound smaller.
+
+::: warning At a bound, the data is dropped, not pushed back to the sender
+In the ClickStack pipelines the image's `batch` processor runs ahead of the exporter, in every
+pipeline. The processor acknowledges data to the receiver before it exports it, so when the queue
+refuses a batch at its bound, the processor gets the error and drops the batch. The sender got a
+success and does not retry. The only trace is `otelcol_exporter_enqueue_failed_log_records` (or
+`…_metric_points`, `…_spans`). `persistentQueue.batch` does not change this: it moves the long wait
+into the queue, but TypeKro keeps the processor, with a shorter timeout (see
+[Batching inside the queue](#batching-inside-the-queue)).
+
+In practice, the byte bound protects the *other* signals. When one signal's backlog reaches its
+bound, that signal's newest data is lost at the gateway, while the other signals keep their room
+on the claim. Senders do not buffer it for you. Alert on the enqueue-failure counters, and size the
+bound for the outage you need to ride out.
+
+A refusal only reaches senders as a retryable error (HTTP 503 or gRPC `UNAVAILABLE`) when nothing
+asynchronous sits between the receiver and the exporter. That means taking `batch` out of the
+pipelines' `processors` lists and batching only inside the queue. Those lists come from the image's
+own configuration, which the OpAMP supervisor manages, so TypeKro does not rewrite them.
+:::
+
+The byte sizer is opt-in because it changes what `queueSize` means and bounds each signal to a
+share of the claim, so a long outage on one signal is buffered for less time than with the whole
+claim available. Size `size` for the outage you need to ride out.
+
+**What to watch.** `otelcol_exporter_enqueue_failed_*` above zero means data is being dropped at
+the queue: either a queue is at its bound, or the claim is full. With `sizer: 'bytes'`,
+`otelcol_exporter_queue_size` and `otelcol_exporter_queue_capacity` are in bytes, so their ratio is
+each signal's share of its bound. The kubelet's `kubelet_volume_stats_used_bytes` for the claim
+shows how full the volume is. After an outage, it should fall back once the queues drain and the
+collector logs `finished compaction`. Alert when it stays high. If it keeps climbing while the
+collector logs `compaction failure`, failed compactions are holding space: restart the collector to
+reclaim it.
 
 #### Release-name length
 

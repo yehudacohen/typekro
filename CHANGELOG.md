@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal
+  byte bounds: `storage.persistentQueue.compaction` and `storage.persistentQueue.sizer`.** The
+  `file_storage` extension keeps each queue in a bbolt file, and a bbolt file keeps its high-water
+  mark after its items are deleted. After an extended backend outage, a drained queue file stays
+  as large as its backlog was. All the files share the queue's claim, so one signal's file could
+  leave another signal's queue no room: that signal's data was refused
+  (`otelcol_exporter_enqueue_failed_*`) and dropped, while its queue-size gauge read 0. The
+  extension now renders `compaction` with `on_rebound: true`, `on_start: false`,
+  `rebound_needed_threshold_mib: 256`, `rebound_trigger_threshold_mib: 32`, `check_interval: 5s` and
+  `cleanup_on_start: true`. Its `directory` is the queue directory, because the extension's own
+  default ignores a custom queue directory, and because a compaction directory on another
+  filesystem is not atomic. `compaction: { onStart?, onRebound?, reboundNeededMiB?,
+  reboundTriggerMiB?, checkInterval? }` overrides the defaults. On-start compaction is opt-in only: it
+  copies the whole backlog, so it needs about that much free space on the claim and delays exporter
+  start. In collector v0.155.0, a compaction that runs out of space also keeps its deleted temporary
+  file mapped until the process exits. Rebound compaction only copies up to the trigger size, so
+  each failed attempt strands at most that much. It retries every `check_interval`, so failures
+  on a nearly full claim can add up until the collector restarts. With both modes off, no block is
+  rendered, and the overlay is byte-identical to the previous release. `sizer: 'bytes'` makes
+  `queueSize` a byte bound per signal queue, by default half the claim split across three signal
+  queues per exporter (1789569706 bytes for the default 10Gi), so one signal at its bound no longer
+  stops the others. In the ClickStack pipelines the `batch` processor sits ahead of the exporter,
+  so data refused at a bound is dropped and counted in `otelcol_exporter_enqueue_failed_*`. Senders
+  are not told to retry. Bounds that add up to more than the claim are rejected, so the claim's `size` must be a quantity TypeKro can read (binary or decimal suffix, or a decimal exponent such as `1e10`). The rendered overlays
+  are validated with `otelcontribcol validate` from `clickstack-otel-collector` 2.35.0 (collector
+  v0.155.0). A new Docker suite runs that image in front of a backend that is down, then brought
+  back. It shows a drained file keeping its size without compaction, and shrinking with the
+  default rendering (online, and on start when opted in). It also shows a logs queue at its byte bound
+  refusing data while metrics are still accepted. With the queue enabled and no new options, the
+  rendered values change only by the `compaction` block. See "Queue storage and compaction" in
+  the ClickStack docs.
+
 - **`serverSettings` and per-log `systemLogs.tables.<log>.settings` on `makeClickHouseCluster` and
   `clickHouseInstallation`.** `serverSettings` takes a map of ClickHouse server setting names to strings,
   numbers or booleans and renders it into the CHI's `configuration.settings` (path keys such as
