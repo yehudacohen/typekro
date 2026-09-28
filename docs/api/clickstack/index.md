@@ -1198,8 +1198,10 @@ The other half is headroom the queues need. bbolt keeps more on disk than the si
 file's live data next to it. When a queue reaches its bound, the collector refuses new data for that
 signal, and every other signal keeps enqueueing. An
 explicit `queueSize` is checked against the claim: bounds that add up to more than `size` are
-rejected, since they cannot keep one signal from filling it. A `size` TypeKro cannot parse (for
-example an exponent) needs an explicit `queueSize`. An exporter that serves fewer than three signals
+rejected, since they cannot keep one signal from filling it. So with `sizer: 'bytes'`, `size` must
+be a quantity TypeKro can read, explicit `queueSize` or not: an unsigned number with a binary
+suffix (`Ki` to `Ei`), a decimal suffix (`k`, `M`, `G`, `T`, `P`, `E`) or a decimal exponent (`1e10`,
+`5E+10`). Anything else is rejected at construction. An exporter that serves fewer than three signals
 is counted as three, which only makes the derived bound smaller.
 
 ::: warning At a bound, the data is dropped, not pushed back to the sender

@@ -346,13 +346,9 @@ export interface ClickStackPersistentQueueOptions {
    * with {@link batch} set, `1000 × 5s / processorTimeout` (25000 at 200ms).
    */
   queueSize?: number;
-  /**
-   * `sending_queue.sizer` (default `'requests'`). With `'bytes'`, `queueSize`
-   * caps each signal's queue in bytes, by default at `size / 6` per exporter,
-   * so one signal cannot fill the claim.
-   */
+  /** `sending_queue.sizer` (default `'requests'`); `'bytes'` caps each signal queue, see docs. */
   sizer?: 'requests' | 'bytes';
-  /** Compaction of the queue's bbolt files, on by default. */
+  /** bbolt file compaction (rebound on by default). */
   compaction?: ClickStackQueueCompactionOptions;
   /**
    * Batch inside the persistent queue instead of ahead of it. See
@@ -361,17 +357,17 @@ export interface ClickStackPersistentQueueOptions {
   batch?: ClickStackPersistentQueueBatchOptions;
 }
 
-/** `file_storage` compaction. See "Queue storage and compaction" in the ClickStack docs. */
+/** `file_storage` compaction; see the ClickStack docs. */
 export interface ClickStackQueueCompactionOptions {
-  /** Compact each file on start (default: false). Needs free space ≈ live data; see docs. */
+  /** Compact on start (default: false; see docs). */
   onStart?: boolean;
-  /** Compact a drained, bloated file online (default: true). */
+  /** Compact drained files online (default: true). */
   onRebound?: boolean;
-  /** File size in MiB from which a drained file is compacted (default: 256). */
+  /** Min file MiB to compact (default: 256). */
   reboundNeededMiB?: number;
-  /** Live data in MiB below which a file counts as drained (default: 32). */
+  /** Max live MiB to compact (default: 32). */
   reboundTriggerMiB?: number;
-  /** How often files are checked (default: '5s'). */
+  /** Rebound check interval (default: '5s'). */
   checkInterval?: string;
 }
 

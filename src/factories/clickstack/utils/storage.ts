@@ -315,22 +315,42 @@ const QUANTITY_MULTIPLIERS: Readonly<Record<string, number>> = {
   G: 1e9,
   T: 1e12,
   P: 1e15,
+  E: 1e18,
   Ki: 2 ** 10,
   Mi: 2 ** 20,
   Gi: 2 ** 30,
   Ti: 2 ** 40,
   Pi: 2 ** 50,
+  Ei: 2 ** 60,
 };
 
 /**
- * Bytes in a Kubernetes storage quantity (`'10Gi'`, `'500M'`, `'1.5Ti'`), or
- * `undefined` for a spelling this does not model (an exponent, `m`, `E`/`Ei`).
+ * Bytes in a Kubernetes storage quantity, or `undefined` for a spelling this
+ * does not model.
+ *
+ * The subset of the Kubernetes Quantity grammar a storage size uses: an
+ * unsigned decimal number (`10`, `1.5`, `.5`, `5.`) followed by nothing, a
+ * binary suffix (`Ki` … `Ei`), a decimal suffix (`k`, `M`, `G`, `T`, `P`, `E`)
+ * or a decimal exponent (`e` or `E` followed by signed digits: `1e9`, `5E+10`).
+ * A bare `E` is exa and `E` followed by digits is an exponent, exactly as in
+ * Kubernetes; the pattern is anchored, so mixed forms (`1e9Gi`, `1Ee9`) and a
+ * bare lowercase `e` do not match. Not modelled, and so `undefined`: a sign,
+ * the milli suffix `m`, and anything under one byte. The result is finite but
+ * need not be a safe integer — it is only compared against, never rendered.
  */
 function quantityBytes(quantity: string): number | undefined {
-  const match = /^([0-9]+(?:\.[0-9]+)?)(Ki|Mi|Gi|Ti|Pi|k|M|G|T|P)?$/.exec(quantity);
+  const match =
+    /^([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+)|(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E))?$/.exec(
+      quantity
+    );
   if (match === null) return undefined;
-  const bytes = Math.floor(Number(match[1]) * (QUANTITY_MULTIPLIERS[match[2] ?? ''] ?? Number.NaN));
-  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+  const number = match[1] as string;
+  const bytes = Math.floor(
+    match[2] === undefined
+      ? Number(number) * (QUANTITY_MULTIPLIERS[match[3] ?? ''] as number)
+      : Number(`${number}e${match[2]}`)
+  );
+  return Number.isFinite(bytes) && bytes > 0 ? bytes : undefined;
 }
 
 /**
@@ -579,9 +599,7 @@ export interface ResolvedClickStackStorage {
     readonly queueSize?: number;
     /** Exporter-side batching, when requested. Defaults already applied. */
     readonly batch?: ResolvedQueueBatch;
-    /** Present only for the `bytes` sizer. */
     readonly sizer?: 'bytes';
-    /** Absent when both compaction modes are off. */
     readonly compaction?: Required<ClickStackQueueCompactionOptions>;
   };
 }
@@ -868,17 +886,22 @@ function resolveQueueBytes(
   const path = 'storage.persistentQueue';
   const queues = exporterCount * QUEUES_PER_EXPORTER;
   const claimBytes = quantityBytes(size);
-  if (requested === undefined && claimBytes === undefined) {
+  // ALWAYS required, explicit queueSize or not: without the claim's capacity
+  // the bounds cannot be checked against it, and skipping the check for an
+  // explicit value let bounds that add up to more than the claim through.
+  if (claimBytes === undefined) {
     throw new Error(
-      `${context}: '${path}.sizer' is 'bytes' but '${path}.size' (${JSON.stringify(size)}) is ` +
-        `not a storage quantity TypeKro can read, so no per-queue byte bound can be derived ` +
-        `from it. Set '${path}.queueSize' (bytes per signal queue) explicitly, or spell the ` +
-        `size as a plain quantity such as '10Gi'.`
+      `${context}: '${path}.sizer' is 'bytes', and TypeKro cannot derive byte capacity from ` +
+        `'${path}.size' (${JSON.stringify(size)}); use a supported quantity such as 10Gi, ` +
+        `10000M or 1e10.`
     );
   }
+  // Capped so the rendered value stays an exact integer even for an exabyte
+  // claim; that cap is petabytes per queue.
   const queueSize =
-    requested ?? Math.floor(((claimBytes as number) * QUEUE_BYTES_CLAIM_SHARE) / queues);
-  if (claimBytes !== undefined && queueSize * queues > claimBytes) {
+    requested ??
+    Math.min(Math.floor((claimBytes * QUEUE_BYTES_CLAIM_SHARE) / queues), Number.MAX_SAFE_INTEGER);
+  if (queueSize * queues > claimBytes) {
     throw new Error(
       `${context}: '${path}.queueSize' (${queueSize} bytes) times ${queues} signal queues ` +
         `(${QUEUES_PER_EXPORTER} per exporter in 'exporterNames') exceeds the claim ` +

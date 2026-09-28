@@ -259,17 +259,82 @@ describe('persistent queue byte bounds (sizer: bytes)', () => {
     ).toThrow(/times 3 signal queues .* exceeds the claim/);
   });
 
-  it('needs an explicit bound when the claim size cannot be read', () => {
-    expect(() =>
-      resolveClickStackStorage('t', {
-        persistentQueue: { enabled: true, sizer: 'bytes', size: '1e10' },
-      })
-    ).toThrow(/Set 'storage.persistentQueue.queueSize'/);
-    expect(
-      resolveClickStackStorage('t', {
-        persistentQueue: { enabled: true, sizer: 'bytes', size: '1e10', queueSize: 1000 },
-      }).persistentQueue?.queueSize
-    ).toBe(1000);
+  it('rejects a claim size it cannot read, even with an explicit queueSize', () => {
+    // Without the claim's capacity the bounds cannot be checked against it, so
+    // an explicit queueSize is no way around the requirement.
+    for (const queueSize of [undefined, 1000]) {
+      expect(() =>
+        resolveClickStackStorage('t', {
+          persistentQueue: {
+            enabled: true,
+            sizer: 'bytes',
+            size: '100m',
+            ...(queueSize !== undefined && { queueSize }),
+          },
+        })
+      ).toThrow(
+        /TypeKro cannot derive byte capacity from 'storage.persistentQueue.size' \("100m"\)/
+      );
+    }
+  });
+
+  it('rejects explicit bounds over an exponent-spelled claim (regression)', () => {
+    // 3 × 400 MB = 1.2 GB against a 1 GB claim. `1e9` used to be unreadable,
+    // which skipped the check for an explicit queueSize entirely.
+    for (const size of ['1e9', '1E9', '1e+9']) {
+      expect(() =>
+        resolveClickStackStorage('t', {
+          persistentQueue: { enabled: true, sizer: 'bytes', size, queueSize: 400_000_000 },
+        })
+      ).toThrow(/times 3 signal queues .* exceeds the claim .* 1000000000 bytes/);
+    }
+  });
+
+  it('reads the storage subset of the Kubernetes Quantity grammar', () => {
+    // Observed through the derived bound, floor(claim / 2 / 3).
+    const derived = (size: string) =>
+      resolveClickStackStorage('t', { persistentQueue: { enabled: true, sizer: 'bytes', size } })
+        .persistentQueue?.queueSize;
+    const cases: Record<string, number> = {
+      '1e9': 166_666_666,
+      '1E9': 166_666_666,
+      '5e10': 8_333_333_333,
+      '5E+10': 8_333_333_333,
+      '10Gi': 1_789_569_706,
+      '10000M': 1_666_666_666,
+      '10G': 1_666_666_666,
+      '1.5Gi': 268_435_456,
+      '.5Gi': 89_478_485,
+      '6000000': 1_000_000,
+      '6k': 1_000,
+      // A bare `E` is exa; `Ei` is exbi. Scaled down so the bound stays exact.
+      '0.001E': 166_666_666_666_666,
+      '0.001Ei': 192_153_584_101_141,
+    };
+    for (const [size, queueSize] of Object.entries(cases)) {
+      expect({ size, queueSize: derived(size) }).toEqual({ size, queueSize });
+    }
+    // An exabyte claim caps the per-queue bound at an exact integer.
+    expect(derived('1E')).toBe(Number.MAX_SAFE_INTEGER);
+    expect(derived('1Ei')).toBe(Number.MAX_SAFE_INTEGER);
+
+    for (const size of [
+      '1e', // lowercase e is not a suffix, and an exponent needs digits
+      '1Ee9', // suffix and exponent mixed
+      '1e9Gi',
+      '1.5e',
+      '1K', // decimal kilo is lowercase k
+      '1ki', // binary kibi is Ki
+      '100m', // milli: under a byte
+      '1e-3',
+      '-1Gi',
+      '+1Gi',
+      '10 Gi',
+      'Gi',
+      '',
+    ]) {
+      expect(() => derived(size)).toThrow(/cannot derive byte capacity/);
+    }
   });
 
   it('rejects a byte batch the queue could never hold', () => {

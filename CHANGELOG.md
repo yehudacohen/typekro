@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queues per exporter (1789569706 bytes for the default 10Gi), so one signal at its bound no longer
   stops the others. In the ClickStack pipelines the `batch` processor sits ahead of the exporter,
   so data refused at a bound is dropped and counted in `otelcol_exporter_enqueue_failed_*`. Senders
-  are not told to retry. Bounds that add up to more than the claim are rejected. The rendered overlays
+  are not told to retry. Bounds that add up to more than the claim are rejected, so the claim's `size` must be a quantity TypeKro can read (binary or decimal suffix, or a decimal exponent such as `1e10`). The rendered overlays
   are validated with `otelcontribcol validate` from `clickstack-otel-collector` 2.35.0 (collector
   v0.155.0). A new Docker suite runs that image in front of a backend that is down, then brought
   back. It shows a drained file keeping its size without compaction, and shrinking with the
