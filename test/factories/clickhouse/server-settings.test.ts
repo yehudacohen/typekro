@@ -112,7 +112,11 @@ describe('serverSettings', () => {
       ['a non-finite number', { x_setting: Number.POSITIVE_INFINITY }, /finite number/],
       ['an exponent-form number', { x_setting: 1e-7 }, /plain decimal/],
       ['an object value', { x_setting: { nested: 1 } }, /must be a string, a number or a boolean/],
-      ['the server-wide storage policy', { 'merge_tree/storage_policy': 'x' }, /collides with/],
+      [
+        'the server-wide storage policy',
+        { 'merge_tree/storage_policy': 'x' },
+        /configured through `storage`/,
+      ],
       ['a system log section', { 'metric_log/ttl': 'x' }, /configured through `systemLogs`/],
       [
         'a system log TypeKro leaves alone',
@@ -224,26 +228,33 @@ describe('serverSettings', () => {
     });
   }
 
-  it('allows storage_configuration in PVC mode, where TypeKro renders none', () => {
-    expect(() =>
-      chi({ serverSettings: { 'storage_configuration/disks/extra/path': '/data/' } }, false)
-    ).not.toThrow();
+  describe('storage ownership holds in PVC mode too', () => {
+    for (const [key, message] of [
+      ['storage_configuration/disks/foo/path', /configured through `storage`/],
+      ['storage_configuration/policies/foo/volumes/main/disk', /configured through `storage`/],
+      ['merge_tree/storage_policy', /configured through `storage`/],
+      ['merge_tree', /configured through `storage`/],
+    ] as const) {
+      it(`rejects ${key}`, () => {
+        expect(() => chi({ serverSettings: { [key]: 'x' } }, false)).toThrow(message);
+      });
+    }
+    it('accepts the rest of merge_tree/*', () => {
+      expect(
+        settingsOf(chi({ serverSettings: { 'merge_tree/max_suspicious_broken_parts': 5 } }, false))[
+          'merge_tree/max_suspicious_broken_parts'
+        ]
+      ).toBe('5');
+    });
   });
 
   it('checks prefixes against the generated keys in both directions', () => {
+    const options = { generated: { 'a_section/generated': 'x' }, ownedSections: {} };
+    expect(() => resolveClickHouseServerSettings('t', { a_section: 'y' }, options)).toThrow(
+      /collides with the 'a_section\/generated' setting/
+    );
     expect(() =>
-      resolveClickHouseServerSettings(
-        't',
-        { merge_tree: 'x' },
-        { generated: { 'merge_tree/storage_policy': 's3_main' }, ownedSections: {} }
-      )
-    ).toThrow(/collides with the 'merge_tree\/storage_policy' setting/);
-    expect(() =>
-      resolveClickHouseServerSettings(
-        't',
-        { 'merge_tree/storage_policy/x': 'y' },
-        { generated: { 'merge_tree/storage_policy': 's3_main' }, ownedSections: {} }
-      )
+      resolveClickHouseServerSettings('t', { 'a_section/generated/deeper': 'y' }, options)
     ).toThrow(/collides with/);
   });
 

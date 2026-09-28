@@ -459,7 +459,10 @@ function compileInstallationSpec(
         Object.fromEntries(
           CLICKHOUSE_KNOWN_SYSTEM_LOG_SECTIONS.map((section) => [section, 'systemLogs'])
         ),
-        storage.mode === 's3' ? { storage_configuration: 'storage' } : {}
+        // In EVERY mode: `storage` owns where data lives (disks, policies, the
+        // default MergeTree policy). A PVC-mode disk at /tmp would otherwise
+        // put new tables off the volume while the status still reports PVC.
+        { storage_configuration: 'storage' }
       ),
     }),
   };

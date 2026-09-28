@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a full `<engine>`. Because the operator writes these values into XML unescaped, names must be
   identifiers, string values may not contain `<`, `>`, `&` or `${`, and integers must be within
   JavaScript's safe range (pass larger values as strings). Keys that collide with settings other
-  options render, or that fall in a section another option owns (`system.*_log`, `zookeeper`,
-  `storage_configuration` in S3 mode) or the operator generates (`remote_servers`, `macros`,
+  options render, or that fall in a section another option owns (`system.*_log`, `zookeeper`, and
+  `storage_configuration` and `merge_tree/storage_policy` in every storage mode, since `storage` owns
+  disks, policies and the default policy) or the operator generates (`remote_servers`, `macros`,
   `interserver_http_host`), are refused, as are the settings that would move server-written data off the
   storage volume (`path`, `tmp_path`, `user_files_path`, `access_control_path`, `user_directories`) and
   `filesystem_caches_path`, which can invalidate the S3 cache disk. Per-log
