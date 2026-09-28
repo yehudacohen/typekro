@@ -54,8 +54,10 @@ import {
   collectPlanValueSensitiveBindings,
   compileDirectArtifactPlan,
   createDirectArtifactExecutionMaterialization,
+  type DirectArtifactPlanInstance,
   directArtifactPlanToResourceGraph,
   encodeDirectArtifactExecutionRecord,
+  expandDirectArtifactPlanInstances,
   materializeDirectArtifactManifest,
   planValueContainsSensitiveValue,
   planValueSensitiveBindingNames,
@@ -128,6 +130,8 @@ import { setOwnProperty } from '../../shared/own-property.js';
 interface DirectArtifactExecution {
   readonly graph: DeploymentResourceGraph;
   readonly artifacts?: DirectKubernetesArtifactPlan;
+  /** The expanded operations behind `graph`'s nodes, with their materialization bindings. */
+  readonly instances?: () => DirectArtifactPlanInstance[];
 }
 
 function deployedResourceDeletionIdentity(
@@ -1490,24 +1494,26 @@ export class DirectResourceFactoryImpl<
         ].map((value) => [`readiness:${value}`, evaluator] as const);
       }),
     ]);
+    const adapterOptions = {
+      instanceName: instanceNameOverride ?? this.generateInstanceName(spec),
+      graphName: legacyGraph.name,
+      graphIdsByArtifactId,
+      spec,
+      ...(Object.keys(effectiveSensitiveBindings).length > 0
+        ? { sensitive: effectiveSensitiveBindings }
+        : {}),
+      ...(placeholderArtifactOutputs ? { artifactOutputs: placeholderArtifactOutputs } : {}),
+      runtimeResources,
+      readinessEvaluators,
+      resolveReadinessStrategy: resolvePortableReadinessStrategy,
+      // Existing singleton ownership is already reconciled before this graph
+      // executes. Keep compiler-generated owner operations out of the app graph.
+      includeSupportingArtifacts: false,
+    };
     return {
       artifacts,
-      graph: directArtifactPlanToResourceGraph(artifacts, {
-        instanceName: instanceNameOverride ?? this.generateInstanceName(spec),
-        graphName: legacyGraph.name,
-        graphIdsByArtifactId,
-        spec,
-        ...(Object.keys(effectiveSensitiveBindings).length > 0
-          ? { sensitive: effectiveSensitiveBindings }
-          : {}),
-        ...(placeholderArtifactOutputs ? { artifactOutputs: placeholderArtifactOutputs } : {}),
-        runtimeResources,
-        readinessEvaluators,
-        resolveReadinessStrategy: resolvePortableReadinessStrategy,
-        // Existing singleton ownership is already reconciled before this graph
-        // executes. Keep compiler-generated owner operations out of the app graph.
-        includeSupportingArtifacts: false,
-      }),
+      graph: directArtifactPlanToResourceGraph(artifacts, adapterOptions),
+      instances: () => expandDirectArtifactPlanInstances(artifacts, adapterOptions),
     };
   }
 
@@ -1661,20 +1667,46 @@ export class DirectResourceFactoryImpl<
       logicalId: string;
     }
     const byGraphId = new Map<string, Node>();
-    const artifactByLogicalId = new Map(
-      execution.artifacts?.resources.map((artifact) => [
-        artifact.sourceNodeId ?? artifact.id,
-        artifact,
-      ]) ?? []
-    );
     const executionArtifacts = execution.artifacts;
-    const materializationByArtifactId = new Map(
-      executionArtifacts?.resources.map((artifact) => [
-        artifact.id,
-        createDirectArtifactExecutionMaterialization(executionArtifacts, artifact.id, { spec }),
-      ]) ?? []
+    // One execution record per graph node, concretized from the same expanded bindings the graph
+    // was rendered from. An iterated artifact fans out into several nodes whose spec references
+    // (e.g. `regions.$item`) resolve only against their own iteration item, so records must be
+    // built per expanded instance rather than per template artifact.
+    const instances = executionArtifacts ? (execution.instances?.() ?? []) : [];
+    const instanceByGraphId = new Map(instances.map((instance) => [instance.graphId, instance]));
+    const materializationByGraphId = new Map(
+      executionArtifacts
+        ? instances.map((instance) => {
+            const dependencyLogicalIds: Record<string, string[]> = {};
+            for (const dependencyGraphId of graph.dependencyGraph.getDependencies(
+              instance.graphId
+            )) {
+              const dependency = instanceByGraphId.get(dependencyGraphId);
+              if (!dependency) continue;
+              dependencyLogicalIds[dependency.artifact.id] = [
+                ...(dependencyLogicalIds[dependency.artifact.id] ?? []),
+                dependency.logicalId,
+              ];
+            }
+            const { iterationItems, locals, resourceIds } = instance.bindings;
+            return [
+              instance.graphId,
+              createDirectArtifactExecutionMaterialization(
+                executionArtifacts,
+                instance.artifact.id,
+                {
+                  spec,
+                  ...(iterationItems ? { iterationItems } : {}),
+                  ...(locals ? { locals } : {}),
+                  ...(resourceIds ? { resourceIds } : {}),
+                },
+                { logicalId: instance.logicalId, dependencyLogicalIds }
+              ),
+            ] as const;
+          })
+        : []
     );
-    const hasSensitiveBindings = [...materializationByArtifactId.values()].some(
+    const hasSensitiveBindings = [...materializationByGraphId.values()].some(
       (materialization) => Object.keys(materialization.sensitiveBindings).length > 0
     );
     const hasSecretPayload = graph.resources.some(
@@ -1753,8 +1785,7 @@ export class DirectResourceFactoryImpl<
     const applicationDeclarations = ordered.flatMap((graphId) => {
       const node = byGraphId.get(graphId);
       if (!node) return [];
-      const artifact = artifactByLogicalId.get(node.logicalId);
-      const materialization = artifact ? materializationByArtifactId.get(artifact.id) : undefined;
+      const materialization = materializationByGraphId.get(graphId);
       const artifactOutputUses = materialization
         ? collectArtifactOutputUses(materialization.record.artifact)
         : [];

@@ -286,34 +286,24 @@ export function materializeDirectArtifactManifest(
   return manifest;
 }
 
-/**
- * Adapt a host-independent direct artifact plan into the graph consumed by the
- * established direct deployment engine. No Kubernetes calls occur here.
- */
-export function directArtifactPlanToResourceGraph(
+/** One concrete direct operation: an applied artifact after iteration expansion. */
+export interface DirectArtifactPlanInstance {
+  readonly artifact: DirectKubernetesArtifactResource;
+  /** Node id in the graph returned by {@link directArtifactPlanToResourceGraph}. */
+  readonly graphId: string;
+  /** Runtime resource id; iteration ordinals after the first carry a `-N` suffix. */
+  readonly logicalId: string;
+  /** Materialization bindings for this instance, including its iteration item and producer ids. */
+  readonly bindings: DirectArtifactRuntimeAdapterOptions;
+}
+
+function expandArtifactInstances(
   plan: DirectKubernetesArtifactPlan,
   options: DirectArtifactRuntimeAdapterOptions
-): DeploymentResourceGraph {
-  if (plan.target !== 'direct') {
-    throw new DirectArtifactRuntimeAdapterError(`Expected a direct artifact plan.`, {
-      target: Reflect.get(plan, 'target'),
-    });
-  }
-  if (plan.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
-    throw new DirectArtifactRuntimeAdapterError(
-      `Direct artifact plan contains compilation errors.`,
-      { diagnostics: plan.diagnostics }
-    );
-  }
-
-  const dependencyGraph = new DependencyGraph();
-  const resources: DeploymentResourceGraph['resources'] = [];
-  const externalReferences: NonNullable<DeploymentResourceGraph['externalReferences']> = [];
-  // External references are never applied, so they get no dependency-graph node. Their ordering
-  // requirement is recorded alongside them instead: the engine reads them after these graph ids
-  // have been applied and are ready.
-  const externalReferenceDependencies = new Map<string, Set<string>>();
-  const externalReferenceIdsByArtifactId = new Map<string, string[]>();
+): {
+  readonly instancesByArtifactId: ReadonlyMap<string, readonly ExpandedArtifactInstance[]>;
+  readonly bindingsFor: (instance: ExpandedArtifactInstance) => DirectArtifactRuntimeAdapterOptions;
+} {
   const instancesByArtifactId = new Map<string, ExpandedArtifactInstance[]>();
   const includedArtifacts = plan.resources.filter(
     (artifact) =>
@@ -374,6 +364,59 @@ export function directArtifactPlanToResourceGraph(
       })
     ),
   });
+
+  return { instancesByArtifactId, bindingsFor };
+}
+
+/**
+ * Expand a direct artifact plan into the concrete operations that
+ * {@link directArtifactPlanToResourceGraph} materializes, with the per-instance
+ * bindings (iteration items, locals, producer ids) each one was rendered from.
+ * Hosts that persist one execution record per operation must concretize each
+ * record from these bindings, not from the template artifact alone.
+ */
+export function expandDirectArtifactPlanInstances(
+  plan: DirectKubernetesArtifactPlan,
+  options: DirectArtifactRuntimeAdapterOptions
+): DirectArtifactPlanInstance[] {
+  const { instancesByArtifactId, bindingsFor } = expandArtifactInstances(plan, options);
+  return [...instancesByArtifactId.values()].flat().map((instance) => ({
+    artifact: instance.artifact,
+    graphId: instance.graphId,
+    logicalId: instance.logicalId,
+    bindings: bindingsFor(instance),
+  }));
+}
+
+/**
+ * Adapt a host-independent direct artifact plan into the graph consumed by the
+ * established direct deployment engine. No Kubernetes calls occur here.
+ */
+export function directArtifactPlanToResourceGraph(
+  plan: DirectKubernetesArtifactPlan,
+  options: DirectArtifactRuntimeAdapterOptions
+): DeploymentResourceGraph {
+  if (plan.target !== 'direct') {
+    throw new DirectArtifactRuntimeAdapterError(`Expected a direct artifact plan.`, {
+      target: Reflect.get(plan, 'target'),
+    });
+  }
+  if (plan.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+    throw new DirectArtifactRuntimeAdapterError(
+      `Direct artifact plan contains compilation errors.`,
+      { diagnostics: plan.diagnostics }
+    );
+  }
+
+  const dependencyGraph = new DependencyGraph();
+  const resources: DeploymentResourceGraph['resources'] = [];
+  const externalReferences: NonNullable<DeploymentResourceGraph['externalReferences']> = [];
+  // External references are never applied, so they get no dependency-graph node. Their ordering
+  // requirement is recorded alongside them instead: the engine reads them after these graph ids
+  // have been applied and are ready.
+  const externalReferenceDependencies = new Map<string, Set<string>>();
+  const externalReferenceIdsByArtifactId = new Map<string, string[]>();
+  const { instancesByArtifactId, bindingsFor } = expandArtifactInstances(plan, options);
 
   for (const instance of [...instancesByArtifactId.values()].flat()) {
     const { artifact, graphId, logicalId } = instance;
