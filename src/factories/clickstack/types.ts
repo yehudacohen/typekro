@@ -341,18 +341,38 @@ export interface ClickStackPersistentQueueOptions {
    */
   extensions?: readonly string[];
   /**
-   * `sending_queue.queue_size`: the number of upstream requests each queue
-   * keeps, since the queue uses its default `requests` sizer. A positive
-   * integer; the collector enforces the capacity. Default: the collector's
-   * 1000, or with {@link batch} set, `1000 × 5s / processorTimeout` (25000 at
-   * 200ms), because the processor then sends requests more often.
+   * `sending_queue.queue_size`, in units of {@link sizer}: a positive integer
+   * the collector enforces. Default with `requests`: the collector's 1000, or
+   * with {@link batch} set, `1000 × 5s / processorTimeout` (25000 at 200ms).
    */
   queueSize?: number;
+  /**
+   * `sending_queue.sizer` (default `'requests'`). With `'bytes'`, `queueSize`
+   * caps each signal's queue in bytes, by default at `size / 6` per exporter,
+   * so one signal cannot fill the claim.
+   */
+  sizer?: 'requests' | 'bytes';
+  /** Compaction of the queue's bbolt files, on by default. */
+  compaction?: ClickStackQueueCompactionOptions;
   /**
    * Batch inside the persistent queue instead of ahead of it. See
    * {@link ClickStackPersistentQueueBatchOptions}.
    */
   batch?: ClickStackPersistentQueueBatchOptions;
+}
+
+/** `file_storage` compaction. See "Queue storage and compaction" in the ClickStack docs. */
+export interface ClickStackQueueCompactionOptions {
+  /** Compact each file when the collector starts (default: true). */
+  onStart?: boolean;
+  /** Compact a drained, bloated file online (default: true). */
+  onRebound?: boolean;
+  /** File size in MiB from which a drained file is compacted (default: 256). */
+  reboundNeededMiB?: number;
+  /** Live data in MiB below which a file counts as drained (default: 32). */
+  reboundTriggerMiB?: number;
+  /** How often files are checked (default: '5s'). */
+  checkInterval?: string;
 }
 
 /**

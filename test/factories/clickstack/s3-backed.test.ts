@@ -407,6 +407,8 @@ describe('the collector overlay is a single well-formed YAML document', () => {
     expect(extensions['file_storage/hyperdx']).toEqual({
       directory: '/var/lib/otelcol/file_storage',
       create_directory: true,
+      // On by default; pinned in queue-compaction.test.ts.
+      compaction: expect.objectContaining({ on_start: true, on_rebound: true }),
     });
     // `service.extensions` must NAME it, or the extension is never started and
     // the collector refuses a config whose exporters point at it.

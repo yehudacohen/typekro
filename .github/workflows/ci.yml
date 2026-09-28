@@ -83,6 +83,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:integration:clickhouse-boot
 
+      - name: ClickStack queue storage test (real collector image)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bun run test:integration:clickstack-queue
+
       - name: Upload coverage to Codecov
         if: success()
         uses: codecov/codecov-action@v5

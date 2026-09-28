@@ -40,6 +40,7 @@
 import type {
   ClickStackPersistentQueueBatchOptions,
   ClickStackPersistentQueueOptions,
+  ClickStackQueueCompactionOptions,
   ClickStackStorageOptions,
 } from '../types.js';
 import { assertSafeCollectorConfigKey, type CollectorConfigFragment } from './collector-config.js';
@@ -223,6 +224,101 @@ export const QUEUE_BATCH_FLUSH_TIMEOUT_RANGE_MS = { min: 1_000, max: 600_000 } a
 
 /** Bounds of `persistentQueue.batch.processorTimeout`, in milliseconds. */
 export const QUEUE_BATCH_PROCESSOR_TIMEOUT_RANGE_MS = { min: 10, max: 5_000 } as const;
+
+// ---------------------------------------------------------------------------
+// Queue storage compaction and per-signal byte bounds.
+//
+// None of these are exported: the packed declaration budget is tight, and the
+// public surface is `ClickStackQueueCompactionOptions` plus `sizer`. The tests
+// pin the rendered values instead.
+// ---------------------------------------------------------------------------
+
+/**
+ * Default `compaction` of the queue's `file_storage` extension.
+ *
+ * WHY COMPACTION AT ALL. `file_storage` keeps each queue in a bbolt database,
+ * and a bbolt file never shrinks when its items are deleted: freed pages go on
+ * the freelist and are reused, but the file keeps its high-water mark. After
+ * an extended backend outage the queue grows to hold the backlog, drains once
+ * the backend is back, and the file stays at the backlog's size. Every signal
+ * shares the one claim, so a queue that no longer needs the space can leave
+ * another signal's queue unable to grow — its writes fail, and the exporter
+ * counts each refused request in `otelcol_exporter_enqueue_failed_*` while its
+ * queue-size gauge reads 0.
+ *
+ * THE VALUES, checked against `extension/storage/filestorage` at
+ * collector-contrib v0.155.0 (the version `clickstack-otel-collector` 2.35.0
+ * is built from; upstream defaults: both modes off, 100 MiB / 10 MiB, 5s):
+ *
+ * - `on_start` compacts every file as the exporter opens it. It copies the
+ *   file's LIVE data, so it is fast for a drained queue and slow for a large
+ *   backlog (about 1.4s for 300 MiB on a local Docker run). A failure is logged
+ *   (`compaction on start failed`) and is not fatal.
+ * - `on_rebound` compacts online when the file is at least
+ *   `rebound_needed_threshold_mib` AND its live data is at most
+ *   `rebound_trigger_threshold_mib`, sampled every `check_interval`. The check
+ *   is stateless, so any quiet sample qualifies. Compaction holds the
+ *   database's write lock while it copies the live data, which is why the
+ *   trigger bounds the copy: 32 MiB rather than upstream's 10 so a busy
+ *   gateway with a few batches in flight still qualifies, while the copy
+ *   stays well under a second. The needed threshold, 256 MiB, sits above the
+ *   working set of a healthy queue (a handful of in-flight batches of the
+ *   image's 10000-item `send_batch_size`), so a healthy queue does not compact
+ *   on a loop, and it bounds the space a drained file may keep to 256 MiB per
+ *   signal queue.
+ */
+const DEFAULT_QUEUE_COMPACTION: Required<ClickStackQueueCompactionOptions> = {
+  onStart: true,
+  onRebound: true,
+  reboundNeededMiB: 256,
+  reboundTriggerMiB: 32,
+  checkInterval: '5s',
+};
+
+/** Bounds of `persistentQueue.compaction.checkInterval`, in milliseconds. */
+const QUEUE_COMPACTION_CHECK_INTERVAL_RANGE_MS = { min: 1_000, max: 3_600_000 } as const;
+
+/**
+ * Signal queues each queued exporter holds: the ClickStack `clickhouse`
+ * exporter serves the `traces`, `metrics` and `logs/out-default` pipelines,
+ * and the exporter helper keeps one queue (one bbolt file) per signal. An
+ * exporter that serves fewer signals is over-counted, which only makes the
+ * derived per-queue byte bound smaller.
+ */
+const QUEUES_PER_EXPORTER = 3;
+
+/**
+ * Share of the claim the byte-sized queues may hold between them. The rest is
+ * headroom that the queues themselves need: bbolt keeps more on disk than the
+ * byte sizer counts (about 1.2× on a local Docker run), and `on_start`
+ * compaction writes a temporary copy of one file's live data next to it.
+ */
+const QUEUE_BYTES_CLAIM_SHARE = 0.5;
+
+const QUANTITY_MULTIPLIERS: Readonly<Record<string, number>> = {
+  '': 1,
+  k: 1e3,
+  M: 1e6,
+  G: 1e9,
+  T: 1e12,
+  P: 1e15,
+  Ki: 2 ** 10,
+  Mi: 2 ** 20,
+  Gi: 2 ** 30,
+  Ti: 2 ** 40,
+  Pi: 2 ** 50,
+};
+
+/**
+ * Bytes in a Kubernetes storage quantity (`'10Gi'`, `'500M'`, `'1.5Ti'`), or
+ * `undefined` for a spelling this does not model (an exponent, `m`, `E`/`Ei`).
+ */
+function quantityBytes(quantity: string): number | undefined {
+  const match = /^([0-9]+(?:\.[0-9]+)?)(Ki|Mi|Gi|Ti|Pi|k|M|G|T|P)?$/.exec(quantity);
+  if (match === null) return undefined;
+  const bytes = Math.floor(Number(match[1]) * (QUANTITY_MULTIPLIERS[match[2] ?? ''] ?? Number.NaN));
+  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+}
 
 /**
  * Parse a collector duration limited to whole milliseconds, seconds or minutes
@@ -470,6 +566,10 @@ export interface ResolvedClickStackStorage {
     readonly queueSize?: number;
     /** Exporter-side batching, when requested. Defaults already applied. */
     readonly batch?: ResolvedQueueBatch;
+    /** Present only for the `bytes` sizer. */
+    readonly sizer?: 'bytes';
+    /** Absent when both compaction modes are off. */
+    readonly compaction?: Required<ClickStackQueueCompactionOptions>;
   };
 }
 
@@ -663,7 +763,14 @@ export function resolveClickStackStorage(
       ? resolveQueueBatch(context, queue.batch, requestedQueueSize)
       : undefined;
   const batch = batched?.batch;
-  const queueSize = batched?.queueSize ?? requestedQueueSize;
+  const sizer = queue?.enabled === true ? resolveQueueSizer(context, queue.sizer) : undefined;
+  const size = queue?.size ?? DEFAULT_QUEUE_SIZE;
+  const queueSize =
+    sizer === 'bytes'
+      ? resolveQueueBytes(context, size, exporterNames.length, requestedQueueSize, batch)
+      : (batched?.queueSize ?? requestedQueueSize);
+  const compaction =
+    queue?.enabled === true ? resolveQueueCompaction(context, queue.compaction) : undefined;
 
   return {
     mode,
@@ -678,7 +785,7 @@ export function resolveClickStackStorage(
         directory: queue.directory ?? DEFAULT_QUEUE_DIRECTORY,
         // Always a real claim size: the ephemeral fallback is gone on purpose
         // (see ClickStackPersistentQueueOptions.size).
-        size: queue.size ?? DEFAULT_QUEUE_SIZE,
+        size,
         ...(queue.storageClassName !== undefined && {
           storageClassName: queue.storageClassName,
         }),
@@ -688,9 +795,138 @@ export function resolveClickStackStorage(
         extensions: queueExtensions,
         ...(queueSize !== undefined && { queueSize }),
         ...(batch !== undefined && { batch }),
+        ...(sizer !== undefined && { sizer }),
+        ...(compaction !== undefined && { compaction }),
       },
     }),
   };
+}
+
+/**
+ * Validate `persistentQueue.sizer`. Only `bytes` is carried forward: the
+ * collector's own default is `requests`, and leaving it unrendered keeps an
+ * install that does not choose a sizer byte-identical to one from before the
+ * option existed.
+ */
+function resolveQueueSizer(context: string, sizer: unknown): 'bytes' | undefined {
+  if (sizer === undefined || sizer === 'requests') return undefined;
+  if (sizer === 'bytes') return sizer;
+  throw new Error(
+    `${context}: 'storage.persistentQueue.sizer' must be 'requests' or 'bytes'. ` +
+      `Got ${JSON.stringify(sizer)}.`
+  );
+}
+
+/**
+ * `queue_size` for the `bytes` sizer: the caller's value, else an equal share
+ * of half the claim for every signal queue — see {@link QUEUES_PER_EXPORTER}
+ * and {@link QUEUE_BYTES_CLAIM_SHARE}.
+ *
+ * WHY BYTES. With the `requests` sizer a queue's bound is a request COUNT, and
+ * a request is as large as the batch that produced it, so nothing stops one
+ * signal's backlog from taking the whole claim. The exporter helper at
+ * collector v0.155.0 supports the `bytes` sizer on a persistent queue (it
+ * keeps a running byte total in the queue's metadata), and a byte bound per
+ * queue that sums to less than the claim means one signal refusing data
+ * cannot stop another from enqueueing. VERIFIED in the Docker suite: with the
+ * logs queue at its bound, the logs receiver answers 503 and metrics are still
+ * accepted.
+ *
+ * An explicit value is checked against the claim when the claim's size can be
+ * read: bounds that add up to more than the claim protect nothing.
+ */
+function resolveQueueBytes(
+  context: string,
+  size: string,
+  exporterCount: number,
+  requested: number | undefined,
+  batch: ResolvedQueueBatch | undefined
+): number {
+  const path = 'storage.persistentQueue';
+  const queues = exporterCount * QUEUES_PER_EXPORTER;
+  const claimBytes = quantityBytes(size);
+  if (requested === undefined && claimBytes === undefined) {
+    throw new Error(
+      `${context}: '${path}.sizer' is 'bytes' but '${path}.size' (${JSON.stringify(size)}) is ` +
+        `not a storage quantity TypeKro can read, so no per-queue byte bound can be derived ` +
+        `from it. Set '${path}.queueSize' (bytes per signal queue) explicitly, or spell the ` +
+        `size as a plain quantity such as '10Gi'.`
+    );
+  }
+  const queueSize =
+    requested ?? Math.floor(((claimBytes as number) * QUEUE_BYTES_CLAIM_SHARE) / queues);
+  if (claimBytes !== undefined && queueSize * queues > claimBytes) {
+    throw new Error(
+      `${context}: '${path}.queueSize' (${queueSize} bytes) times ${queues} signal queues ` +
+        `(${QUEUES_PER_EXPORTER} per exporter in 'exporterNames') exceeds the claim ` +
+        `('${path}.size' = ${size}, ${claimBytes} bytes). Byte bounds that add up to more ` +
+        `than the volume cannot keep one signal from filling it. Lower queueSize or raise size.`
+    );
+  }
+  if (batch?.sizer === 'bytes' && batch.minSize > queueSize) {
+    throw new Error(
+      `${context}: '${path}.batch.minSize' (${batch.minSize} bytes) must not exceed ` +
+        `'${path}.queueSize' (${queueSize} bytes) — the collector refuses a batch that the ` +
+        `queue could never hold.`
+    );
+  }
+  return queueSize;
+}
+
+/**
+ * Validate `persistentQueue.compaction` and apply its defaults (see
+ * {@link DEFAULT_QUEUE_COMPACTION}). Both modes off means no `compaction`
+ * block at all, which restores the rendering from before compaction existed.
+ */
+function resolveQueueCompaction(
+  context: string,
+  options: ClickStackQueueCompactionOptions | undefined
+): Required<ClickStackQueueCompactionOptions> | undefined {
+  const path = 'storage.persistentQueue.compaction';
+  const resolved = { ...DEFAULT_QUEUE_COMPACTION };
+  for (const key of ['onStart', 'onRebound'] as const) {
+    const value = options?.[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'boolean') {
+      throw new Error(
+        `${context}: '${path}.${key}' must be a boolean. Got ${JSON.stringify(value)}.`
+      );
+    }
+    resolved[key] = value;
+  }
+  for (const key of ['reboundNeededMiB', 'reboundTriggerMiB'] as const) {
+    const value = options?.[key];
+    if (value === undefined) continue;
+    if (!isPositiveSafeInteger(value)) {
+      throw new Error(
+        `${context}: '${path}.${key}' must be a positive integer (MiB). ` +
+          `Got ${JSON.stringify(value)}.`
+      );
+    }
+    resolved[key] = value;
+  }
+  // The rebound check is stateless: a file at least `needed` MiB with at most
+  // `trigger` MiB live is compacted. Compaction leaves a file of about its live
+  // data, so with `trigger >= needed` a file whose live data sits between the
+  // two would qualify again on every check and be rewritten in a loop.
+  if (resolved.reboundTriggerMiB >= resolved.reboundNeededMiB) {
+    throw new Error(
+      `${context}: '${path}.reboundTriggerMiB' (${resolved.reboundTriggerMiB}) must be ` +
+        `smaller than '${path}.reboundNeededMiB' (${resolved.reboundNeededMiB}). A compacted ` +
+        `file is about the size of its live data, so otherwise a file could qualify for ` +
+        `compaction again on every check.`
+    );
+  }
+  if (options?.checkInterval !== undefined) {
+    parseQueueBatchDuration(
+      context,
+      `${path}.checkInterval`,
+      options.checkInterval,
+      QUEUE_COMPACTION_CHECK_INTERVAL_RANGE_MS
+    );
+    resolved.checkInterval = options.checkInterval;
+  }
+  return resolved.onStart || resolved.onRebound ? resolved : undefined;
 }
 
 /**
@@ -981,6 +1217,9 @@ export function persistentQueueConfigFragment(
       [QUEUE_EXTENSION_NAME]: {
         directory: queue.directory,
         create_directory: true,
+        ...(queue.compaction !== undefined && {
+          compaction: renderCompaction(queue.directory, queue.compaction),
+        }),
       },
     },
     exporters,
@@ -994,8 +1233,44 @@ export function persistentQueueConfigFragment(
 }
 
 /**
- * One exporter's `sending_queue`: the persistent storage, plus the queue size
- * and the batch when the caller set them. A fresh object per exporter.
+ * The `file_storage` extension's `compaction` block.
+ *
+ * ⚠️ `directory` IS THE QUEUE DIRECTORY, rendered explicitly. Compaction
+ * writes a `tempdb*` copy of the live data into it, closes the database and
+ * renames the copy over the original. Upstream's default for this directory
+ * is `/var/lib/otelcol/file_storage` whatever `directory` says, so a custom
+ * queue directory would otherwise compact onto the container's root
+ * filesystem. The same volume is also the only correct place for it: a
+ * rename within one filesystem is atomic, while across filesystems (an
+ * `emptyDir`, say) `moveFileWithFallback` reads the whole compacted file into
+ * memory, truncates the original and rewrites it, so a crash in that window
+ * loses the queue. The cost is free space on the claim of about the live data
+ * being compacted — small by construction for rebound compaction.
+ *
+ * `cleanup_on_start` removes `tempdb*` files a killed compaction left behind,
+ * which would otherwise sit on the claim for good. It matches only that
+ * prefix, and the queue's own files are named `exporter_…` (or a hex hash),
+ * so it cannot touch them.
+ */
+function renderCompaction(
+  directory: string,
+  compaction: Required<ClickStackQueueCompactionOptions>
+): Record<string, unknown> {
+  return {
+    on_start: compaction.onStart,
+    on_rebound: compaction.onRebound,
+    directory,
+    rebound_needed_threshold_mib: compaction.reboundNeededMiB,
+    rebound_trigger_threshold_mib: compaction.reboundTriggerMiB,
+    check_interval: compaction.checkInterval,
+    cleanup_on_start: true,
+  };
+}
+
+/**
+ * One exporter's `sending_queue`: the persistent storage, plus the sizer, the
+ * queue size and the batch when the caller set them. A fresh object per
+ * exporter.
  */
 function renderSendingQueue(
   queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>
@@ -1004,6 +1279,7 @@ function renderSendingQueue(
   return {
     enabled: true,
     storage: QUEUE_EXTENSION_NAME,
+    ...(queue.sizer !== undefined && { sizer: queue.sizer }),
     ...(queue.queueSize !== undefined && { queue_size: queue.queueSize }),
     ...(batch !== undefined && {
       batch: {
