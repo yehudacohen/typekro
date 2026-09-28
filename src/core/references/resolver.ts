@@ -150,11 +150,12 @@ export class ReferenceResolver {
         continue;
       }
 
-      // Recursively filter nested objects and arrays
+      // Recursively filter nested objects and arrays. (No `__proto__` handling
+      // needed: `__`-prefixed keys are skipped above.)
       if (value !== null && typeof value === 'object') {
-        setOwnProperty(filtered, key, this.filterInternalFields(value));
+        filtered[key] = this.filterInternalFields(value);
       } else {
-        setOwnProperty(filtered, key, value);
+        filtered[key] = value;
       }
     }
     return filtered;

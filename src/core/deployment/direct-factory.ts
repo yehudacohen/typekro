@@ -2494,7 +2494,11 @@ export class DirectResourceFactoryImpl<
       this.logger.trace('Traversing object', { path, keys: Object.keys(resource) });
       const resolved: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(resource)) {
-        setOwnProperty(resolved, key, this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`));
+        setOwnProperty(
+          resolved,
+          key,
+          this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`)
+        );
       }
 
       // Debug: Check if id field is being preserved

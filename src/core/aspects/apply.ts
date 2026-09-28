@@ -28,6 +28,7 @@ import type {
   ReplaceOperation,
 } from './types.js';
 import { mergeValuesExpression } from './values-merge.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 type MutableResource = KubernetesResource & Record<string, unknown>;
 type RuntimeAspectDefinition = AspectDefinition<AspectTarget | readonly AspectTarget[]>;
@@ -96,7 +97,7 @@ function cloneValue<T>(value: T): T {
   if (value && typeof value === 'object') {
     const clone: Record<PropertyKey, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
-      clone[key] = cloneValue(child);
+      setOwnProperty(clone, key, cloneValue(child));
     }
     for (const key of Object.getOwnPropertySymbols(value)) {
       clone[key] = cloneValue(Reflect.get(value, key));
@@ -256,7 +257,8 @@ function mergeObjectsDeep(
       delete merged[key];
       continue;
     }
-    const existing = merged[key];
+    // Own only: an inherited `__proto__` would read back Object.prototype.
+    const existing = Object.hasOwn(merged, key) ? merged[key] : undefined;
     if (
       existing &&
       typeof existing === 'object' &&
@@ -269,12 +271,13 @@ function mergeObjectsDeep(
       !isKubernetesRef(value) &&
       !isCelExpression(value)
     ) {
-      merged[key] = mergeObjectsDeep(
-        existing as Record<string, unknown>,
-        value as Record<string, unknown>
+      setOwnProperty(
+        merged,
+        key,
+        mergeObjectsDeep(existing as Record<string, unknown>, value as Record<string, unknown>)
       );
     } else {
-      merged[key] = cloneValue(value);
+      setOwnProperty(merged, key, cloneValue(value));
     }
   }
   return merged;

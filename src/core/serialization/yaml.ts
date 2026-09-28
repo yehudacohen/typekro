@@ -311,7 +311,7 @@ function substituteForEachSentinels<T>(template: T, basePath: string, varName: s
   if (template !== null && typeof template === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(template)) {
-      result[key] = substituteForEachSentinels(value, basePath, varName);
+      setOwnProperty(result, key, substituteForEachSentinels(value, basePath, varName));
     }
     return result as T;
   }
