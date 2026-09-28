@@ -426,6 +426,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An own `__proto__` key in resource data is no longer dropped when a composition is rendered.**
+  Maps whose keys come from the caller, such as Helm values, ConfigMap data or ClickHouse
+  `serverSettings`, can contain `__proto__`. The helpers that rebuild resource data key by key on the
+  render paths assigned it with `result[key] = value`, which on an ordinary object runs the inherited
+  prototype setter, so the key disappeared without an error. They now assign through a
+  `setOwnProperty` helper that defines an own property for that one key and assigns every other key as
+  before. Covered end to end: KRO `toYaml()` (the RGD and the instance), direct `toYaml()`, and
+  `toAlchemyResources()` in both modes. Factory-level guards that deliberately skip such keys, such
+  as the prototype-safe values merges, are unchanged.
+
 - **ClickStack: building a composition no longer mutates the build-time `values` object.** The chart
   values merge assigned the caller's subtrees into the result by reference, and then merged the hard
   pins over them. With `storage.persistentQueue` on, the caller's `values['otel-collector']` gained

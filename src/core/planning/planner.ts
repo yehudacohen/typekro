@@ -62,6 +62,7 @@ import type {
   StatusProjection,
 } from './types.js';
 import { collectArtifactOutputUses, expressionIR, lowerPlanValue } from './values.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 /** Error raised by strict semantic planning. */
 export class SemanticPlanningError extends TypeKroError {
@@ -975,7 +976,7 @@ function cloneCanonicalizerInput<T>(value: T, seen = new WeakMap<object, object>
   const clone: Record<string, unknown> = {};
   seen.set(value, clone);
   for (const key of Object.keys(value)) {
-    clone[key] = cloneCanonicalizerInput(Reflect.get(value, key), seen);
+    setOwnProperty(clone, key, cloneCanonicalizerInput(Reflect.get(value, key), seen));
   }
   return clone as T;
 }

@@ -8,6 +8,7 @@ import {
   kroArtifactOutputField,
   kroArtifactRequirementField,
 } from './values.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 /** Explicit bindings supplied after pure planning and before artifact execution. */
 export interface PlanMaterializationBindings {
@@ -433,7 +434,7 @@ function materialize(
       const result: Record<string, unknown> = {};
       for (const entry of value.entries) {
         const child = materialize(entry.value, bindings, `${path}.${entry.key}`);
-        if (child !== OMIT) result[entry.key] = child;
+        if (child !== OMIT) setOwnProperty(result, entry.key, child);
       }
       return result;
     }
@@ -787,7 +788,7 @@ function materializeKro(value: PlanValue, path: string): unknown | typeof OMIT {
       const result: Record<string, unknown> = {};
       for (const entry of value.entries) {
         const child = materializeKro(entry.value, `${path}.${entry.key}`);
-        if (child !== OMIT) result[entry.key] = child;
+        if (child !== OMIT) setOwnProperty(result, entry.key, child);
       }
       return result;
     }

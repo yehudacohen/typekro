@@ -45,6 +45,7 @@ import { generateDeterministicResourceId } from '../resources/id.js';
 import type { Enhanced, KubernetesResource, MagicProxy, ReadinessEvaluator } from '../types.js';
 import { validateResourceId } from '../validation/cel-validator.js';
 import { detectStatusFieldTypo } from './known-status-fields.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = isDebugMode();
@@ -110,7 +111,7 @@ function deepCloneValue(value: unknown): unknown {
   const cloned: Record<string, unknown> = {};
   for (const k of Object.keys(value)) {
     if (typeof (value as Record<string, unknown>)[k] !== 'function') {
-      cloned[k] = deepCloneValue((value as Record<string, unknown>)[k]);
+      setOwnProperty(cloned, k, deepCloneValue((value as Record<string, unknown>)[k]));
     }
   }
   return cloned;
@@ -231,7 +232,7 @@ function createPropertyProxy<T extends object>(
         return () => {
           const result: Record<string, unknown> = {};
           for (const key of Object.keys(obj)) {
-            result[key] = deepCloneValue((obj as Record<string, unknown>)[key]);
+            setOwnProperty(result, key, deepCloneValue((obj as Record<string, unknown>)[key]));
           }
           return result;
         };
@@ -379,7 +380,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
               key !== 'readinessEvaluator' &&
               key !== 'id'
             ) {
-              result[key] = deepCloneValue(Reflect.get(target, key));
+              setOwnProperty(result, key, deepCloneValue(Reflect.get(target, key)));
             }
           }
           return result;

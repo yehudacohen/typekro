@@ -473,15 +473,32 @@ describe('makeClickHouseCluster', () => {
     expect(settings?.memory_worker_correct_memory_tracker).toBeUndefined();
   });
 
-  it("carries an own 'constructor' setting through the rendered RGD", () => {
-    const spec = chiSpecOf(
-      makeClickHouseCluster({
+  for (const name of ['__proto__', 'constructor']) {
+    it(`carries an own '${name}' setting through KRO, direct and Alchemy rendering`, async () => {
+      const cluster = makeClickHouseCluster({
         storage: IRSA_S3,
-        serverSettings: JSON.parse('{"constructor": 8}') as Record<string, number>,
-      }).toYaml()
-    );
-    expect(spec.configuration?.settings?.['constructor' as string]).toBe('8');
-  });
+        serverSettings: JSON.parse(`{"${name}": 8}`) as Record<string, number>,
+      });
+      const rgdSettings = chiSpecOf(cluster.toYaml()).configuration?.settings ?? {};
+      expect(Object.hasOwn(rgdSettings, name)).toBe(true);
+      expect(rgdSettings[name as keyof typeof rgdSettings]).toBe('8');
+
+      const spec = {
+        name: 'p',
+        namespace: 'ns',
+        version: '25.7.8.71',
+        storage: { size: '100Gi' },
+      } as never;
+      const line = `${name}: '8'`;
+      const direct = await cluster.factory('direct', { namespace: 'ns' });
+      expect(direct.toYaml(spec)).toContain(line);
+      const decls = async (factory: typeof direct) =>
+        JSON.stringify((await factory.toAlchemyResources(spec)).map((decl) => decl.props));
+      expect(await decls(direct)).toContain(`"${name}":"8"`);
+      const kro = await cluster.factory('kro', { namespace: 'ns' });
+      expect(await decls(kro as unknown as typeof direct)).toContain(`"${name}":"8"`);
+    });
+  }
 
   it('rejects a schema reference in serverSettings at construction', () => {
     expect(() =>

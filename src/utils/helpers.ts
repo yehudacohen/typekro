@@ -13,6 +13,7 @@
  */
 
 import { copyResourceMetadata } from '../core/metadata/index.js';
+import { setOwnProperty } from '../shared/own-property.js';
 
 /**
  * Recursively removes `undefined` values from an object tree.
@@ -35,7 +36,7 @@ export function removeUndefinedValues<T>(obj: T): T {
     for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
       const cleanedValue = removeUndefinedValues(value);
       if (cleanedValue !== undefined) {
-        cleaned[key] = cleanedValue;
+        setOwnProperty(cleaned, key, cleanedValue);
       }
     }
     return cleaned as T;

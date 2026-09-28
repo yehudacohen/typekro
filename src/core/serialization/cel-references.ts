@@ -28,6 +28,7 @@ import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { SerializationContext } from '../types/serialization.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 const logger = getComponentLogger('cel-references');
 
@@ -2765,7 +2766,7 @@ export function processResourceReferences(
       // Exclude hidden resourceId metadata; nested `id` fields can be valid resource config.
       if (key === '__resourceId') continue;
       if (inValueTree && value === undefined) continue;
-      result[key] = processResourceReferences(value, context, childPath(path, key));
+      setOwnProperty(result, key, processResourceReferences(value, context, childPath(path, key)));
     }
 
     // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap

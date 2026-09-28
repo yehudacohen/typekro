@@ -123,6 +123,7 @@ import {
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
 import { DirectDeploymentStrategy } from './strategies/index.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 interface DirectArtifactExecution {
   readonly graph: DeploymentResourceGraph;
@@ -1266,7 +1267,7 @@ export class DirectResourceFactoryImpl<
         ) {
           continue;
         }
-        if (value !== undefined) manifest[key] = value;
+        if (value !== undefined) setOwnProperty(manifest, key, value);
       }
 
       // JSON round-trip strips non-serializable values (functions, symbols, proxies)
@@ -2317,7 +2318,7 @@ export class DirectResourceFactoryImpl<
     if (value !== null && typeof value === 'object') {
       const resolved: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(value)) {
-        resolved[key] = this.deepResolveKubernetesRefs(val, `${path}.${key}`);
+        setOwnProperty(resolved, key, this.deepResolveKubernetesRefs(val, `${path}.${key}`));
       }
       return resolved;
     }
@@ -2493,7 +2494,7 @@ export class DirectResourceFactoryImpl<
       this.logger.trace('Traversing object', { path, keys: Object.keys(resource) });
       const resolved: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(resource)) {
-        resolved[key] = this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`);
+        setOwnProperty(resolved, key, this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`));
       }
 
       // Debug: Check if id field is being preserved
