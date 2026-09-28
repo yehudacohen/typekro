@@ -54,16 +54,17 @@ import {
   collectPlanValueSensitiveBindings,
   compileDirectArtifactPlan,
   createDirectArtifactExecutionMaterialization,
-  type DirectArtifactPlanInstance,
-  directArtifactPlanToResourceGraph,
   encodeDirectArtifactExecutionRecord,
-  expandDirectArtifactPlanInstances,
   materializeDirectArtifactManifest,
   planValueContainsSensitiveValue,
   planValueSensitiveBindingNames,
   resolveStaticYamlSensitiveBindings,
   type StaticYamlMaterializationOptions,
 } from '../planning/index.js';
+import {
+  type DirectArtifactPlanInstance,
+  expandDirectArtifactPlan,
+} from '../planning/direct-runtime-adapter.js';
 import type { CapabilityRequirement, PlanValue } from '../planning/types.js';
 import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
 import { resolvePortableReadinessStrategy } from '../readiness/portable-strategies.js';
@@ -130,8 +131,8 @@ import { setOwnProperty } from '../../shared/own-property.js';
 interface DirectArtifactExecution {
   readonly graph: DeploymentResourceGraph;
   readonly artifacts?: DirectKubernetesArtifactPlan;
-  /** The expanded operations behind `graph`'s nodes, with their materialization bindings. */
-  readonly instances?: () => DirectArtifactPlanInstance[];
+  /** The applied instance behind each `graph` node, with its materialization bindings. */
+  readonly instances?: readonly DirectArtifactPlanInstance[];
 }
 
 function deployedResourceDeletionIdentity(
@@ -1510,11 +1511,7 @@ export class DirectResourceFactoryImpl<
       // executes. Keep compiler-generated owner operations out of the app graph.
       includeSupportingArtifacts: false,
     };
-    return {
-      artifacts,
-      graph: directArtifactPlanToResourceGraph(artifacts, adapterOptions),
-      instances: () => expandDirectArtifactPlanInstances(artifacts, adapterOptions),
-    };
+    return { artifacts, ...expandDirectArtifactPlan(artifacts, adapterOptions) };
   }
 
   private getArtifactApplyPolicy(): ArtifactApplyPolicy {
@@ -1672,7 +1669,7 @@ export class DirectResourceFactoryImpl<
     // was rendered from. An iterated artifact fans out into several nodes whose spec references
     // (e.g. `regions.$item`) resolve only against their own iteration item, so records must be
     // built per expanded instance rather than per template artifact.
-    const instances = executionArtifacts ? (execution.instances?.() ?? []) : [];
+    const instances = executionArtifacts ? (execution.instances ?? []) : [];
     const instanceByGraphId = new Map(instances.map((instance) => [instance.graphId, instance]));
     const materializationByGraphId = new Map(
       executionArtifacts

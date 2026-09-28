@@ -31,16 +31,13 @@ export {
 } from './compiler.js';
 export {
   DirectArtifactRuntimeAdapterError,
-  type DirectArtifactPlanInstance,
   type DirectArtifactRuntimeAdapterOptions,
   directArtifactPlanToResourceGraph,
-  expandDirectArtifactPlanInstances,
   materializeDirectArtifactManifest,
 } from './direct-runtime-adapter.js';
 export {
   createDirectArtifactExecutionMaterialization,
   createDirectArtifactExecutionRecord,
-  type DirectArtifactExecutionInstance,
   type DirectArtifactExecutionMaterialization,
   DirectArtifactExecutionRecordError,
   decodeDirectArtifactExecutionRecord,

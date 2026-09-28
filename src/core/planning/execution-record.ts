@@ -358,18 +358,6 @@ function executionDigest(record: Omit<DirectArtifactExecutionRecord, 'executionD
 }
 
 /**
- * One expanded operation of a direct artifact. An artifact with iteration
- * dimensions fans out into several operations; each gets its own record,
- * concretized from that operation's iteration bindings.
- */
-export interface DirectArtifactExecutionInstance {
-  /** Runtime resource id of the operation, including any `-N` iteration ordinal suffix. */
-  readonly logicalId: string;
-  /** Logical ids of the producer operations this one depends on, keyed by producer artifact id. */
-  readonly dependencyLogicalIds: Readonly<Record<string, readonly string[]>>;
-}
-
-/**
  * A record describes exactly one already-expanded operation, so it carries the
  * operation's own logical id and no longer repeats the iteration it came from.
  */
@@ -399,7 +387,11 @@ export function createDirectArtifactExecutionMaterialization(
   plan: DirectKubernetesArtifactPlan,
   artifactId: string,
   bindings: PlanMaterializationBindings = {},
-  instance?: DirectArtifactExecutionInstance
+  /** @internal One expanded iteration instance: its runtime id and producer ids by artifact. */
+  instance?: {
+    readonly logicalId: string;
+    readonly dependencyLogicalIds: Readonly<Record<string, readonly string[]>>;
+  }
 ): DirectArtifactExecutionMaterialization {
   const artifact = plan.resources.find((candidate) => candidate.id === artifactId);
   if (!artifact) {

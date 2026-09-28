@@ -286,14 +286,11 @@ export function materializeDirectArtifactManifest(
   return manifest;
 }
 
-/** One concrete direct operation: an applied artifact after iteration expansion. */
+/** @internal An applied artifact instance after iteration expansion, with its bindings. */
 export interface DirectArtifactPlanInstance {
   readonly artifact: DirectKubernetesArtifactResource;
-  /** Node id in the graph returned by {@link directArtifactPlanToResourceGraph}. */
   readonly graphId: string;
-  /** Runtime resource id; iteration ordinals after the first carry a `-N` suffix. */
   readonly logicalId: string;
-  /** Materialization bindings for this instance, including its iteration item and producer ids. */
   readonly bindings: DirectArtifactRuntimeAdapterOptions;
 }
 
@@ -369,26 +366,6 @@ function expandArtifactInstances(
 }
 
 /**
- * Expand a direct artifact plan into the concrete operations that
- * {@link directArtifactPlanToResourceGraph} materializes, with the per-instance
- * bindings (iteration items, locals, producer ids) each one was rendered from.
- * Hosts that persist one execution record per operation must concretize each
- * record from these bindings, not from the template artifact alone.
- */
-export function expandDirectArtifactPlanInstances(
-  plan: DirectKubernetesArtifactPlan,
-  options: DirectArtifactRuntimeAdapterOptions
-): DirectArtifactPlanInstance[] {
-  const { instancesByArtifactId, bindingsFor } = expandArtifactInstances(plan, options);
-  return [...instancesByArtifactId.values()].flat().map((instance) => ({
-    artifact: instance.artifact,
-    graphId: instance.graphId,
-    logicalId: instance.logicalId,
-    bindings: bindingsFor(instance),
-  }));
-}
-
-/**
  * Adapt a host-independent direct artifact plan into the graph consumed by the
  * established direct deployment engine. No Kubernetes calls occur here.
  */
@@ -396,6 +373,14 @@ export function directArtifactPlanToResourceGraph(
   plan: DirectKubernetesArtifactPlan,
   options: DirectArtifactRuntimeAdapterOptions
 ): DeploymentResourceGraph {
+  return expandDirectArtifactPlan(plan, options).graph;
+}
+
+/** @internal The direct graph plus the applied instance behind each graph node. */
+export function expandDirectArtifactPlan(
+  plan: DirectKubernetesArtifactPlan,
+  options: DirectArtifactRuntimeAdapterOptions
+): { graph: DeploymentResourceGraph; instances: DirectArtifactPlanInstance[] } {
   if (plan.target !== 'direct') {
     throw new DirectArtifactRuntimeAdapterError(`Expected a direct artifact plan.`, {
       target: Reflect.get(plan, 'target'),
@@ -418,18 +403,16 @@ export function directArtifactPlanToResourceGraph(
   const externalReferenceIdsByArtifactId = new Map<string, string[]>();
   const { instancesByArtifactId, bindingsFor } = expandArtifactInstances(plan, options);
 
+  const planInstances: DirectArtifactPlanInstance[] = [];
   for (const instance of [...instancesByArtifactId.values()].flat()) {
     const { artifact, graphId, logicalId } = instance;
     if (!isAppliedArtifact(artifact)) continue;
-    const manifest = materializeDirectArtifactManifest(
-      artifact,
-      bindingsFor(instance),
-      graphId,
-      logicalId
-    );
+    const bindings = bindingsFor(instance);
+    const manifest = materializeDirectArtifactManifest(artifact, bindings, graphId, logicalId);
     const deployable = manifest as DeployableK8sResource<Enhanced<unknown, unknown>>;
     dependencyGraph.addNode(graphId, deployable);
     resources.push({ id: graphId, manifest: deployable });
+    planInstances.push({ artifact, graphId, logicalId, bindings });
   }
 
   for (const instance of [...instancesByArtifactId.values()].flat()) {
@@ -538,9 +521,12 @@ export function directArtifactPlanToResourceGraph(
   }
 
   return {
-    name: options.graphName ?? `${options.instanceName}-direct-artifacts`,
-    resources,
-    ...(externalReferences.length > 0 ? { externalReferences } : {}),
-    dependencyGraph,
+    graph: {
+      name: options.graphName ?? `${options.instanceName}-direct-artifacts`,
+      resources,
+      ...(externalReferences.length > 0 ? { externalReferences } : {}),
+      dependencyGraph,
+    },
+    instances: planInstances,
   };
 }
