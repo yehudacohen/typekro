@@ -31,7 +31,7 @@ const IRSA_S3: ClickHouseS3StorageOptions = {
   mode: 's3',
   bucket: 'example-observability',
   prefix: 'clickhouse',
-  region: 'us-east-2',
+  region: 'us-east-1',
   cache: { size: '50Gi' },
   auth: { irsa: { roleArn: 'arn:aws:iam::123456789012:role/clickhouse-s3' } },
 };
@@ -110,7 +110,7 @@ describe('serverSettings', () => {
       ['a key with a leading digit', { '1st': 1 }, /is not valid/],
       ['an empty path segment', { 'merge_tree//x': 1 }, /is not valid/],
       ['a non-finite number', { x_setting: Number.POSITIVE_INFINITY }, /finite number/],
-      ['an exponent-form number', { x_setting: 1e21 }, /plain decimal/],
+      ['an exponent-form number', { x_setting: 1e-7 }, /plain decimal/],
       ['an object value', { x_setting: { nested: 1 } }, /must be a string, a number or a boolean/],
       ['the server-wide storage policy', { 'merge_tree/storage_policy': 'x' }, /collides with/],
       ['a system log section', { 'metric_log/ttl': 'x' }, /configured through `systemLogs`/],
@@ -131,6 +131,36 @@ describe('serverSettings', () => {
       ],
       ['an operator-generated section', { 'remote_servers/x': 1 }, /clickhouse-operator generates/],
       ['a key and its own child', { a_section: 1, 'a_section/child': 2 }, /conflict/],
+      ['the per-host interserver host', { interserver_http_host: 'x' }, /generates it per host/],
+      ['a CEL opener in a value', { x_setting: 'a${b}' }, /must not contain '\$\{'/],
+      ['a system log section as a leaf', { metric_log: 1 }, /configured through `systemLogs`/],
+      [
+        'a non-engine key of a system log',
+        { 'text_log/level': 'x' },
+        /configured through `systemLogs`/,
+      ],
+      ['the data root', { path: '/tmp/clickhouse/' }, /<path> cannot be set/],
+      ['the temporary data path', { tmp_path: '/tmp/ch/' }, /<tmp_path> cannot be set/],
+      ['the file() data path', { user_files_path: '/tmp/uf/' }, /<user_files_path> cannot be set/],
+      ['the SQL access path', { access_control_path: '/tmp/a/' }, /<access_control_path> cannot/],
+      [
+        'the user directories',
+        { 'user_directories/local_directory/path': '/tmp/a/' },
+        /<user_directories> cannot be set/,
+      ],
+      ['the filesystem cache root', { filesystem_caches_path: '/tmp/c/' }, /every cache path/],
+      ['an unsafe integer', { x_setting: Number.MAX_SAFE_INTEGER + 1 }, /safe integer range/],
+      ['an unsafe integer (+2)', { x_setting: Number.MAX_SAFE_INTEGER + 2 }, /safe integer range/],
+      [
+        'an unsafe negative integer',
+        { x_setting: Number.MIN_SAFE_INTEGER - 1 },
+        /safe integer range/,
+      ],
+      [
+        'an unsafe negative integer (-2)',
+        { x_setting: Number.MIN_SAFE_INTEGER - 2 },
+        /safe integer range/,
+      ],
     ];
     for (const [label, serverSettings, message] of cases) {
       it(label, () => {
@@ -152,6 +182,47 @@ describe('serverSettings', () => {
       ).toThrow(/'serverSettings\.max_concurrent_queries' is a BUILD-TIME topology field/);
     });
   });
+
+  it('accepts the safe integer bounds and the path settings it does not reserve', () => {
+    const settings = settingsOf(
+      chi({
+        serverSettings: {
+          max_value: Number.MAX_SAFE_INTEGER,
+          min_value: Number.MIN_SAFE_INTEGER,
+          big_as_string: '10995116277760',
+          format_schema_path: '/etc/clickhouse-server/format_schemas/',
+          user_scripts_path: '/etc/clickhouse-server/user_scripts/',
+          tcp_port: 9000,
+        },
+      })
+    );
+    expect(settings.max_value).toBe('9007199254740991');
+    expect(settings.min_value).toBe('-9007199254740991');
+    expect(settings.big_as_string).toBe('10995116277760');
+    expect(settings.format_schema_path).toBe('/etc/clickhouse-server/format_schemas/');
+    expect(settings.user_scripts_path).toBe('/etc/clickhouse-server/user_scripts/');
+  });
+
+  for (const name of ['__proto__', 'constructor']) {
+    it(`renders an own '${name}' key rather than dropping or refusing it`, () => {
+      const serverSettings = JSON.parse(`{"${name}": 7, "nested_section": {}}`) as Record<
+        string,
+        unknown
+      >;
+      delete serverSettings.nested_section;
+      expect(Object.hasOwn(serverSettings, name)).toBe(true);
+      const installation = chi({ serverSettings } as Partial<InstallationConfig>);
+      const settings = settingsOf(installation);
+      expect(Object.hasOwn(settings, name)).toBe(true);
+      expect(settings[name]).toBe('7');
+      // ...and it survives serialization.
+      expect(JSON.parse(JSON.stringify(installation.spec.configuration?.settings))[name]).toBe('7');
+      // A nested path segment works the same way.
+      expect(
+        settingsOf(chi({ serverSettings: { [`merge_tree/${name}`]: 1 } }))[`merge_tree/${name}`]
+      ).toBe('1');
+    });
+  }
 
   it('allows storage_configuration in PVC mode, where TypeKro renders none', () => {
     expect(() =>
@@ -265,6 +336,16 @@ describe('systemLogs.tables.<log>.settings', () => {
     expect(files[CHI_SYSTEM_LOGS_CONFIG_FILE]).toBeUndefined();
   });
 
+  it('accepts a safe-integer boundary and an own __proto__ setting name', () => {
+    const settings = JSON.parse('{"__proto__": 1}') as Record<string, unknown>;
+    const resolved = resolveClickHouseSystemLogs(
+      't',
+      { tables: { metric_log: { settings: { ...settings, max_value: Number.MAX_SAFE_INTEGER } } } },
+      undefined
+    );
+    expect(resolved.tableSettings?.metric_log).toBe('__proto__ = 1, max_value = 9007199254740991');
+  });
+
   it('quotes string values as SQL literals, escaping quotes and backslashes', () => {
     const resolved = resolveClickHouseSystemLogs(
       't',
@@ -323,6 +404,17 @@ describe('systemLogs.tables.<log>.settings', () => {
         /is not valid/,
       ],
       ['an XML-special value', { metric_log: { settings: { x: '<y>' } } }, /must not contain/],
+      ['a CEL opener in a value', { metric_log: { settings: { x: '${y}' } } }, /must not contain/],
+      [
+        'an unsafe integer',
+        { metric_log: { settings: { x: Number.MAX_SAFE_INTEGER + 1 } } },
+        /safe integer range/,
+      ],
+      [
+        'an unsafe negative integer',
+        { metric_log: { settings: { x: Number.MIN_SAFE_INTEGER - 2 } } },
+        /safe integer range/,
+      ],
       ['a non-object entry', { metric_log: 'x' }, /must be an object/],
     ];
     for (const [label, tables, message] of cases) {
@@ -368,6 +460,16 @@ describe('makeClickHouseCluster', () => {
       ?.settings;
     expect(Object.keys(settings ?? {}).some((key) => key.endsWith('/settings'))).toBe(false);
     expect(settings?.memory_worker_correct_memory_tracker).toBeUndefined();
+  });
+
+  it("carries an own 'constructor' setting through the rendered RGD", () => {
+    const spec = chiSpecOf(
+      makeClickHouseCluster({
+        storage: IRSA_S3,
+        serverSettings: JSON.parse('{"constructor": 8}') as Record<string, number>,
+      }).toYaml()
+    );
+    expect(spec.configuration?.settings?.['constructor' as string]).toBe('8');
   });
 
   it('rejects a schema reference in serverSettings at construction', () => {

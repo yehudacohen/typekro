@@ -16,11 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system log table at a time. They are rendered into the log's `<settings>` element, or into the engine's
   `SETTINGS` clause for `query_log`, `part_log` and `trace_log`, whose sections the operator defines with
   a full `<engine>`. Because the operator writes these values into XML unescaped, names must be
-  identifiers and string values may not contain `<`, `>` or `&`. Keys that collide with settings other
+  identifiers, string values may not contain `<`, `>`, `&` or `${`, and integers must be within
+  JavaScript's safe range (pass larger values as strings). Keys that collide with settings other
   options render, or that fall in a section another option owns (`system.*_log`, `zookeeper`,
-  `storage_configuration` in S3 mode) or the operator generates (`remote_servers`, `macros`), are
-  refused. Logs that configuring would switch on or break (`query_thread_log`, `session_log`,
-  `opentelemetry_span_log`) are refused too. Both options are build-time. Verified against
+  `storage_configuration` in S3 mode) or the operator generates (`remote_servers`, `macros`,
+  `interserver_http_host`), are refused, as are the settings that would move server-written data off the
+  storage volume (`path`, `tmp_path`, `user_files_path`, `access_control_path`, `user_directories`) and
+  `filesystem_caches_path`, which can invalidate the S3 cache disk. Per-log
+  settings are refused for logs that configuring would switch on or break (`query_thread_log`,
+  `session_log`, `opentelemetry_span_log`). Both options are build-time. Verified against
   clickhouse-server 25.7.8.71 by the Docker boot suite. See "Server settings and per-log table settings"
   in the ClickHouse docs, including why keeping `metric_log` and `query_metric_log` in Compact parts
   and `memory_worker_correct_memory_tracker` bound memory under a container limit.

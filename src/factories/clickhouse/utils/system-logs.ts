@@ -315,7 +315,7 @@ function resolveSystemLogTableSettings(
       `${factoryName}: systemLogs.tables must be an object keyed by system log name.`
     );
   }
-  const rendered: Record<string, string> = {};
+  const rendered: Record<string, string> = Object.create(null);
   for (const [table, entry] of Object.entries(tables as Record<string, unknown>)) {
     if (entry === undefined) continue;
     const path = `systemLogs.tables.${table}`;

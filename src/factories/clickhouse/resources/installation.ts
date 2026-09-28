@@ -454,12 +454,13 @@ function compileInstallationSpec(
     ...generatedSettings,
     ...resolveClickHouseServerSettings('clickHouseInstallation', config.serverSettings, {
       generated: generatedSettings,
-      ownedSections: {
-        ...Object.fromEntries(
+      ownedSections: Object.assign(
+        Object.create(null) as Record<string, string>,
+        Object.fromEntries(
           CLICKHOUSE_KNOWN_SYSTEM_LOG_SECTIONS.map((section) => [section, 'systemLogs'])
         ),
-        ...(storage.mode === 's3' && { storage_configuration: 'storage' }),
-      },
+        storage.mode === 's3' ? { storage_configuration: 'storage' } : {}
+      ),
     }),
   };
   const configurationFiles: Record<string, string> = {
