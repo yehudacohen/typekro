@@ -340,6 +340,60 @@ export interface ClickStackPersistentQueueOptions {
    * supervisor's list, so it must name every extension the collector needs.
    */
   extensions?: readonly string[];
+  /**
+   * `sending_queue.queue_size`: the number of upstream requests each queue
+   * keeps, since the queue uses its default `requests` sizer. A positive
+   * integer; the collector enforces the capacity. Default: the collector's
+   * 1000, or with {@link batch} set, `1000 × 5s / processorTimeout` (25000 at
+   * 200ms), because the processor then sends requests more often.
+   */
+  queueSize?: number;
+  /**
+   * Batch inside the persistent queue instead of ahead of it. See
+   * {@link ClickStackPersistentQueueBatchOptions}.
+   */
+  batch?: ClickStackPersistentQueueBatchOptions;
+}
+
+/**
+ * Batching inside the gateway collector's persistent queue (the exporter's
+ * `sending_queue.batch`), so a long batch waits on disk instead of in the
+ * `batch` processor's memory. Setting it also lowers the processor's timeout
+ * (collector-wide) to `processorTimeout`.
+ *
+ * Crash-safe at collector v0.155.0 (`clickstack-otel-collector` 2.35.0): a
+ * request is persisted before it is batched and deleted only after its batch
+ * is exported, and in-flight requests are replayed on restart (at-least-once).
+ *
+ * `minSize` / `maxSize` count with the batch's own `sizer`, independent of
+ * the queue's. See "Batching inside the queue" in the ClickStack docs.
+ */
+export interface ClickStackPersistentQueueBatchOptions {
+  /**
+   * How long a batch may wait before it is exported, whatever its size. A
+   * duration in milliseconds, seconds or minutes (`'500ms'`, `'30s'`, `'2m'`),
+   * from 1s to 10m.
+   */
+  flushTimeout: string;
+  /**
+   * Export as soon as the batch reaches this size, in units of `sizer`
+   * (default: 8192, the collector's own default). A positive integer.
+   */
+  minSize?: number;
+  /**
+   * Split batches larger than this, in units of `sizer`. A positive integer no
+   * smaller than `minSize`. Omitted, batches are not split.
+   */
+  maxSize?: number;
+  /** What `minSize` and `maxSize` count: log records, spans and data points, or bytes (default: `'items'`). */
+  sizer?: 'items' | 'bytes';
+  /**
+   * The `batch` processor's timeout while this option is set (default:
+   * `'200ms'`, the upstream collector default). From 10ms to 5s, and shorter
+   * than `flushTimeout`. This is the window in which acknowledged data is
+   * still only in memory.
+   */
+  processorTimeout?: string;
 }
 
 /**
