@@ -63,7 +63,8 @@ const CLICKHOUSE_RESERVED_SERVER_SETTING_SECTIONS: Readonly<Record<string, strin
   }
 );
 
-const MERGE_TREE_STORAGE_POLICY_KEY = 'merge_tree/storage_policy';
+// Where new MergeTree tables store data: `storage` owns both, in every mode.
+const STORAGE_OWNED_KEYS = ['merge_tree/storage_policy', 'merge_tree/disk'];
 
 /** Characters the operator would write into the server's XML unescaped. */
 const XML_SPECIAL = /[<>&]/;
@@ -176,16 +177,14 @@ export function resolveClickHouseServerSettings(
           `\`${options.ownedSections[section]}\`, not serverSettings.`
       );
     }
-    // `storage` owns the default MergeTree policy in every mode, whether or not
-    // it renders one; the rest of `merge_tree/*` is behavioral tuning.
-    if (
-      key === MERGE_TREE_STORAGE_POLICY_KEY ||
-      MERGE_TREE_STORAGE_POLICY_KEY.startsWith(`${key}/`) ||
-      key.startsWith(`${MERGE_TREE_STORAGE_POLICY_KEY}/`)
-    ) {
+    // `storage` owns where new tables store data (the default MergeTree policy or
+    // disk) in every mode; the rest of `merge_tree/*` is behavioral tuning.
+    const storageOwned = STORAGE_OWNED_KEYS.find(
+      (owned) => key === owned || owned.startsWith(`${key}/`) || key.startsWith(`${owned}/`)
+    );
+    if (storageOwned !== undefined) {
       throw new Error(
-        `${context}: '${MERGE_TREE_STORAGE_POLICY_KEY}' is configured through \`storage\`, not ` +
-          `serverSettings.`
+        `${context}: '${storageOwned}' is configured through \`storage\`, not serverSettings.`
       );
     }
     const clash = generatedKeys.find(

@@ -233,6 +233,7 @@ describe('serverSettings', () => {
       ['storage_configuration/disks/foo/path', /configured through `storage`/],
       ['storage_configuration/policies/foo/volumes/main/disk', /configured through `storage`/],
       ['merge_tree/storage_policy', /configured through `storage`/],
+      ['merge_tree/disk', /'merge_tree\/disk' is configured through `storage`/],
       ['merge_tree', /configured through `storage`/],
     ] as const) {
       it(`rejects ${key}`, () => {

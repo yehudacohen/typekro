@@ -19,8 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identifiers, string values may not contain `<`, `>`, `&` or `${`, and integers must be within
   JavaScript's safe range (pass larger values as strings). Keys that collide with settings other
   options render, or that fall in a section another option owns (`system.*_log`, `zookeeper`, and
-  `storage_configuration` and `merge_tree/storage_policy` in every storage mode, since `storage` owns
-  disks, policies and the default policy) or the operator generates (`remote_servers`, `macros`,
+  `storage_configuration`, `merge_tree/storage_policy` and `merge_tree/disk` in every storage mode,
+  since `storage` owns disks, policies and the default policy) or the operator generates (`remote_servers`, `macros`,
   `interserver_http_host`), are refused, as are the settings that would move server-written data off the
   storage volume (`path`, `tmp_path`, `user_files_path`, `access_control_path`, `user_directories`) and
   `filesystem_caches_path`, which can invalidate the S3 cache disk. Per-log
@@ -432,8 +432,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render paths assigned it with `result[key] = value`, which on an ordinary object runs the inherited
   prototype setter, so the key disappeared without an error. They now assign through a
   `setOwnProperty` helper that defines an own property for that one key and assigns every other key as
-  before. Covered end to end: KRO `toYaml()` (the RGD and the instance), direct `toYaml()`, and
-  `toAlchemyResources()` in both modes. Factory-level guards that deliberately skip such keys, such
+  before. Covered end to end: KRO `toYaml()` (the RGD and the instance), direct `toYaml()` and
+  `toAlchemyResources()` in both modes, with aspects applied and inside `forEach` collections, plus the
+  hoisted-namespace rewrite and metadata, `canonicalDigest` and the Alchemy reference resolver. Factory-level guards that deliberately skip such keys, such
   as the prototype-safe values merges, are unchanged.
 
 - **ClickStack: building a composition no longer mutates the build-time `values` object.** The chart
