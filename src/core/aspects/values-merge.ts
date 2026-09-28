@@ -42,6 +42,37 @@ export function mergeValuesExpression(base: unknown, overlay: unknown): ValuesMe
 }
 
 /**
+ * True for a value a chart-values merge must treat as one opaque leaf, never
+ * merging into it, recursing through it or rebuilding it: a schema or
+ * resource reference, a CEL expression, a mixed template, a merge node, or any
+ * object carrying an own symbol key. The planning markers (`sensitiveValue`,
+ * `externalInput`, `artifactOutput`) are plain frozen objects recognised only
+ * by a symbol brand, and rebuilding one from its string keys drops the brand.
+ */
+export function isOpaqueValuesLeaf(value: unknown): boolean {
+  if (typeof value === 'function') return true;
+  if (!value || typeof value !== 'object') return false;
+  return (
+    isValuesMergeExpression(value) ||
+    isKubernetesRef(value) ||
+    isResourceReference(value) ||
+    isCelExpression(value) ||
+    isMixedTemplate(value) ||
+    Object.getOwnPropertySymbols(value).length > 0
+  );
+}
+
+/**
+ * True for an object a chart-values deep merge may merge into or recurse
+ * through: any non-array object that is not an {@link isOpaqueValuesLeaf}.
+ */
+export function isMergeableValuesObject(value: unknown): value is Record<string, unknown> {
+  return (
+    !!value && typeof value === 'object' && !Array.isArray(value) && !isOpaqueValuesLeaf(value)
+  );
+}
+
+/**
  * True when a chart-values argument cannot be enumerated at build time: a
  * whole-object schema/resource reference, a CEL expression, a mixed template,
  * or an existing runtime merge node.

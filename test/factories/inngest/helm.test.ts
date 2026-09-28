@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { Cel } from '../../../src/core/references/cel.js';
 import { inngestBootstrap } from '../../../src/factories/inngest/compositions/inngest-bootstrap.js';
 import {
   DEFAULT_INNGEST_REPO_NAME,
@@ -430,6 +431,38 @@ describe('Inngest Helm Values Mapper', () => {
       // Arrays should be replaced, not concatenated
       const inngest = values.inngest as Record<string, unknown>;
       expect(inngest.sdkUrl).toEqual(['http://override/api/inngest']);
+    });
+
+    it('should merge customValues without mutating the typed config objects', () => {
+      const nodeSelector = { tier: 'app' };
+      const postgres = { uri: 'postgresql://user@host:5432/db' };
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        inngest: { ...minimalConfig.inngest, postgres },
+        nodeSelector,
+        customValues: {
+          nodeSelector: { zone: 'a' },
+          inngest: { postgres: { uri: 'postgresql://user@other:5432/db' } },
+        },
+      });
+
+      expect(values.nodeSelector).toEqual({ tier: 'app', zone: 'a' });
+      expect(values.inngest?.postgres).toEqual({ uri: 'postgresql://user@other:5432/db' });
+      expect(nodeSelector).toEqual({ tier: 'app' });
+      expect(postgres).toEqual({ uri: 'postgresql://user@host:5432/db' });
+    });
+
+    it('should replace, never flatten, a CEL expression in customValues', () => {
+      const nodeSelector = { tier: 'app' };
+      const selectorExpression = Cel.expr<Record<string, string>>('schema.spec.nodeSelector');
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        nodeSelector,
+        customValues: { nodeSelector: selectorExpression },
+      });
+
+      expect(values.nodeSelector).toBe(selectorExpression);
+      expect(nodeSelector).toEqual({ tier: 'app' });
     });
   });
 });

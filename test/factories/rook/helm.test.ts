@@ -67,6 +67,21 @@ describe('Rook Helm integration', () => {
     expect(Object.prototype).not.toHaveProperty('polluted');
   });
 
+  it('merges raw values without mutating the typed config objects', () => {
+    const resources = { limits: { cpu: '1' } };
+    const values = mapRookCephOperatorConfigToHelmValues({
+      logLevel: undefined,
+      enableOBCWatchOperatorNamespace: undefined,
+      obcProvisionerNamePrefix: undefined,
+      obcAllowAdditionalConfigFields: undefined,
+      resources,
+      values: { resources: { limits: { memory: '1Gi' } } },
+    });
+
+    expect(values).toEqual({ resources: { limits: { cpu: '1', memory: '1Gi' } } });
+    expect(resources).toEqual({ limits: { cpu: '1' } });
+  });
+
   it('preserves a whole-map graph value as a runtime values merge', () => {
     const graphValues = Cel.expr<Record<string, unknown>>('schema.spec.values');
     const values = mapRookCephOperatorConfigToHelmValues({
