@@ -316,6 +316,92 @@ describeOrSkip('ClickHouse system logs on a real server under the operator defau
     ).toContain('TTL event_date + toIntervalDay(14)');
   });
 
+  it('applies serverSettings and per-log settings, alongside the pins and TTLs', async () => {
+    const WIDE_PART_OFF = '1099511627776';
+    const chi = clickHouseInstallation({
+      name: 'boot',
+      namespace: 'test',
+      version: '25.7.8.71',
+      storage: { ...S3, size: '10Gi' },
+      serverSettings: { memory_worker_correct_memory_tracker: true },
+      systemLogs: {
+        tables: {
+          // A number is written bare...
+          metric_log: { settings: { min_bytes_for_wide_part: Number(WIDE_PART_OFF) } },
+          // ...a string as an SQL string literal, which ClickHouse converts.
+          query_metric_log: { settings: { min_bytes_for_wide_part: WIDE_PART_OFF } },
+          // An operator-replaced log: the settings go inside its engine.
+          query_log: { settings: { min_bytes_for_wide_part: Number(WIDE_PART_OFF) } },
+        },
+      },
+    } as InstallationConfig);
+    const dir = renderConfigD(chi);
+    dirs.push(dir);
+    const server = await boot(dir, 'settings');
+    expect(server.logs).toBe('');
+    expect(server.started).toBe(true);
+
+    expect(
+      query(
+        server,
+        "SELECT value FROM system.server_settings WHERE name = 'memory_worker_correct_memory_tracker'"
+      )
+    ).toBe('1');
+
+    query(server, 'SYSTEM FLUSH LOGS');
+    const engines = new Map(
+      query(
+        server,
+        "SELECT name, storage_policy, engine_full FROM system.tables WHERE database = 'system' " +
+          "AND name IN ('metric_log', 'query_metric_log', 'query_log', 'text_log') FORMAT TSV"
+      )
+        .split('\n')
+        .map((line) => line.split('\t'))
+        .map(([name, storagePolicy, engine]) => [name, { storagePolicy, engine: engine ?? '' }])
+    );
+    for (const table of ['metric_log', 'query_metric_log', 'query_log']) {
+      expect(engines.get(table)?.storagePolicy).toBe('default');
+      expect(engines.get(table)?.engine).toContain('TTL event_date + toIntervalDay(14)');
+    }
+    expect(engines.get('metric_log')?.engine).toContain(
+      `storage_policy = \\'default\\', min_bytes_for_wide_part = ${WIDE_PART_OFF},`
+    );
+    expect(engines.get('query_metric_log')?.engine).toContain(
+      `min_bytes_for_wide_part = \\'${WIDE_PART_OFF}\\'`
+    );
+    expect(engines.get('query_log')?.engine).toContain(
+      `min_bytes_for_wide_part = ${WIDE_PART_OFF}`
+    );
+    // A log with no settings of its own is untouched.
+    expect(engines.get('text_log')?.engine).not.toContain('min_bytes_for_wide_part');
+
+    // And the setting does what it is for. The same insert into a copy of
+    // the table WITHOUT it crosses the default 10 MiB wide-part threshold and
+    // lands as a Wide part (one file per column); into metric_log it stays
+    // Compact.
+    const insert = (table: string) =>
+      query(
+        server,
+        `INSERT INTO ${table} (event_date, event_time, hostname) ` +
+          "SELECT today(), now() - number, 'h' FROM numbers(5000)"
+      );
+    const partTypes = (database: string, table: string) =>
+      query(
+        server,
+        'SELECT groupUniqArray(part_type) FROM system.parts ' +
+          `WHERE database = '${database}' AND table = '${table}' AND active AND rows = 5000`
+      );
+    query(
+      server,
+      'CREATE TABLE default.wide_control AS system.metric_log ' +
+        'ENGINE = MergeTree ORDER BY event_time'
+    );
+    insert('default.wide_control');
+    expect(partTypes('default', 'wide_control')).toBe("['Wide']");
+    insert('system.metric_log');
+    expect(partTypes('system', 'metric_log')).toBe("['Compact']");
+  });
+
   /**
    * `ttl: false` means "TypeKro does not manage retention": every log keeps
    * whatever TTL ClickHouse or the operator already gives it. The three

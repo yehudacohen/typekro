@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { TypeKroError } from '../errors.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 /** Error raised when a value cannot participate in a canonical plan encoding. */
 export class CanonicalizationError extends TypeKroError {
@@ -36,10 +37,10 @@ function canonicalize(value: unknown, path: string, seen: WeakSet<object>): unkn
     seen.add(value);
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(value).sort()) {
-      result[key] = canonicalize(
-        Reflect.get(value, key),
-        path === '$' ? `$.${key}` : `${path}.${key}`,
-        seen
+      setOwnProperty(
+        result,
+        key,
+        canonicalize(Reflect.get(value, key), path === '$' ? `$.${key}` : `${path}.${key}`, seen)
       );
     }
     seen.delete(value);

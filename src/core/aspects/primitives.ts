@@ -28,6 +28,7 @@ import type {
   PatchEachOperation,
   ReplaceOperation,
 } from './types.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -50,7 +51,7 @@ function cloneImmutable<T>(value: T): T {
   if (isPlainObject(value)) {
     const cloned: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
-      cloned[key] = cloneImmutable(child);
+      setOwnProperty(cloned, key, cloneImmutable(child));
     }
     return Object.freeze(cloned) as T;
   }

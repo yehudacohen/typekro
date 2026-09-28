@@ -12,6 +12,7 @@ import { generateDeterministicResourceId } from '../core/resources/id.js';
 import type { ResolutionContext } from '../core/types/deployment.js';
 import type { KubernetesResource } from '../core/types/kubernetes.js';
 import { isCelExpression, isKubernetesRef } from '../utils/type-guards.js';
+import { setOwnProperty } from '../shared/own-property.js';
 
 // Define alchemy-compatible types based on the actual alchemy domain model
 // These represent the interface that alchemy resources should implement
@@ -160,7 +161,7 @@ export async function resolveTypeKroReferencesOnly<T>(
 
     const resolved: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
-      resolved[key] = await resolveTypeKroReferencesOnly(value, context, visited);
+      setOwnProperty(resolved, key, await resolveTypeKroReferencesOnly(value, context, visited));
     }
     return resolved as T;
   }
@@ -215,7 +216,7 @@ export async function resolveAllReferences<T>(
 
     const resolved: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
-      resolved[key] = await resolveAllReferences(value, context, visited);
+      setOwnProperty(resolved, key, await resolveAllReferences(value, context, visited));
     }
     return resolved as T;
   }

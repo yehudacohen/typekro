@@ -104,6 +104,7 @@ import type {
   TypeKroResource,
   TypeKroResourceProps,
 } from './types.js';
+import { setOwnProperty } from '../shared/own-property.js';
 
 /**
  * Serializable resource properties stored by Alchemy after deployment.
@@ -1364,7 +1365,7 @@ function unwrapAlchemyRedactedValue(
   const clone: Record<string, unknown> = {};
   seen.set(value, clone);
   for (const [key, entry] of Object.entries(value)) {
-    clone[key] = unwrapAlchemyRedactedValue(entry, seen);
+    setOwnProperty(clone, key, unwrapAlchemyRedactedValue(entry, seen));
   }
   return clone;
 }
@@ -1641,7 +1642,7 @@ function _rehydrateCelStrings(value: unknown, seedIds: Set<string>): unknown {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = _rehydrateCelStrings(v, seedIds);
+      setOwnProperty(out, k, _rehydrateCelStrings(v, seedIds));
     }
     return out;
   }
@@ -2128,7 +2129,7 @@ function cloneAlchemyStateValue(value: unknown, seen = new WeakMap<object, unkno
   seen.set(value, clone);
   for (const [key, entry] of Object.entries(value)) {
     const cloned = cloneAlchemyStateValue(entry, seen);
-    if (cloned !== undefined) clone[key] = cloned;
+    if (cloned !== undefined) setOwnProperty(clone, key, cloned);
   }
   return clone;
 }

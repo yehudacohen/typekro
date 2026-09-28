@@ -38,6 +38,11 @@
 
 import type { ClickHouseSystemLogOptions } from '../types.js';
 import type { Loosen } from './loosen.js';
+import {
+  assertClickHouseSettingKey,
+  type ClickHouseSettingsInput,
+  renderClickHouseSettingValue,
+} from './server-settings.js';
 
 /**
  * System-log options as they arrive from a `Composable<...>` config: every
@@ -266,6 +271,94 @@ export interface ResolvedClickHouseSystemLogs {
   readonly storagePolicy?: string;
   /** TTL expression applied to every system log, or `undefined` for none. */
   readonly ttl?: string;
+  /** Per-log `name = value, …` clauses, for logs with at least one setting. */
+  readonly tableSettings?: Readonly<Record<string, string>>;
+}
+
+/** The logs `systemLogs.tables.<log>.settings` accepts. */
+export const CLICKHOUSE_CONFIGURABLE_SYSTEM_LOG_TABLES: readonly string[] = [
+  ...CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES,
+  ...CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS,
+];
+
+// Every system log section TypeKro knows, including those it leaves alone. A
+// `serverSettings` key under any of them is refused in favour of `systemLogs`:
+// writing into them by hand is how a server refuses to boot (#235) or runs a
+// log the operator switched off.
+/** System log section names `serverSettings` may not write into. */
+export const CLICKHOUSE_KNOWN_SYSTEM_LOG_SECTIONS: readonly string[] = [
+  ...CLICKHOUSE_SYSTEM_LOG_TABLES,
+  ...CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS,
+  'session_log',
+];
+
+/**
+ * Render one SQL `SETTINGS` value: numbers and booleans bare, strings as a
+ * single-quoted SQL literal. ClickHouse converts a string literal to the
+ * setting's type, so `'100G'`-style values work for numeric settings too.
+ */
+function renderSqlSettingValue(context: string, value: unknown): string {
+  const text = renderClickHouseSettingValue(context, value);
+  return typeof value === 'string' ? `'${text.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'` : text;
+}
+
+/**
+ * Validate `systemLogs.tables` and render each log's settings clause.
+ */
+function resolveSystemLogTableSettings(
+  factoryName: string,
+  tables: unknown
+): Record<string, string> {
+  if (tables === undefined) return {};
+  if (tables === null || typeof tables !== 'object' || Array.isArray(tables)) {
+    throw new Error(
+      `${factoryName}: systemLogs.tables must be an object keyed by system log name.`
+    );
+  }
+  const rendered: Record<string, string> = Object.create(null);
+  for (const [table, entry] of Object.entries(tables as Record<string, unknown>)) {
+    if (entry === undefined) continue;
+    const path = `systemLogs.tables.${table}`;
+    if (!CLICKHOUSE_CONFIGURABLE_SYSTEM_LOG_TABLES.includes(table)) {
+      const why = (CLICKHOUSE_OPERATOR_REMOVED_SYSTEM_LOGS as readonly string[]).includes(table)
+        ? 'the clickhouse-operator switches this log off, and configuring it would switch it back on'
+        : (CLICKHOUSE_ENGINE_BOUND_SYSTEM_LOGS as readonly string[]).includes(table)
+          ? 'ClickHouse ships this log with its own <engine>, which cannot be combined with <settings>'
+          : table === 'session_log'
+            ? 'ClickHouse ships this log disabled, and configuring it would enable it'
+            : 'it is not a system log TypeKro configures';
+      throw new Error(
+        `${factoryName}: ${path} is not supported: ${why}. Supported logs: ` +
+          `${CLICKHOUSE_CONFIGURABLE_SYSTEM_LOG_TABLES.join(', ')}.`
+      );
+    }
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`${factoryName}: ${path} must be an object such as \`{ settings: { … } }\`.`);
+    }
+    const settings = (entry as { settings?: unknown }).settings;
+    if (settings === undefined) continue;
+    if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) {
+      throw new Error(
+        `${factoryName}: ${path}.settings must be an object of MergeTree setting name to value.`
+      );
+    }
+    const pairs: string[] = [];
+    for (const [name, value] of Object.entries(settings as ClickHouseSettingsInput)) {
+      if (value === undefined) continue;
+      assertClickHouseSettingKey(`${factoryName}: ${path}.settings`, name, false);
+      if (name === 'storage_policy') {
+        throw new Error(
+          `${factoryName}: ${path}.settings.storage_policy is not accepted here; use ` +
+            `\`systemLogs.storagePolicy\`, which pins every system log consistently.`
+        );
+      }
+      pairs.push(
+        `${name} = ${renderSqlSettingValue(`${factoryName}: ${path}.settings.${name}`, value)}`
+      );
+    }
+    if (pairs.length > 0) rendered[table] = pairs.join(', ');
+  }
+  return rendered;
 }
 
 /**
@@ -324,9 +417,12 @@ export function resolveClickHouseSystemLogs(
     );
   }
 
+  const tableSettings = resolveSystemLogTableSettings(factoryName, options?.tables);
+
   return {
     ...(storagePolicy !== undefined && { storagePolicy }),
     ...(ttl !== undefined && { ttl }),
+    ...(Object.keys(tableSettings).length > 0 && { tableSettings }),
   };
 }
 
@@ -353,14 +449,18 @@ export function clickHouseSystemLogSettings(
   resolved: ResolvedClickHouseSystemLogs
 ): Record<string, string> {
   const settings: Record<string, string> = {};
-  if (resolved.storagePolicy === undefined && resolved.ttl === undefined) return settings;
-
   for (const table of CLICKHOUSE_SETTINGS_SYSTEM_LOG_TABLES) {
     if (resolved.storagePolicy !== undefined) {
       settings[`${table}/storage_policy`] = resolved.storagePolicy;
     }
     if (resolved.ttl !== undefined) {
       settings[`${table}/ttl`] = resolved.ttl;
+    }
+    // ClickHouse appends `<settings>` to the engine it builds for the log:
+    // `SETTINGS storage_policy = '…', <settings>` (SystemLog.cpp, v25.7).
+    const tableSettings = resolved.tableSettings?.[table];
+    if (tableSettings !== undefined) {
+      settings[`${table}/settings`] = tableSettings;
     }
   }
   return settings;
@@ -379,13 +479,22 @@ function escapeXmlText(value: string): string {
  * `ttl: false` the operator's own 30-day TTL is kept
  * ({@link OPERATOR_SYSTEM_LOG_TTL}).
  */
-export function operatorReplacedSystemLogEngine(resolved: ResolvedClickHouseSystemLogs): string {
+export function operatorReplacedSystemLogEngine(
+  resolved: ResolvedClickHouseSystemLogs,
+  table?: string
+): string {
+  const settings = [
+    ...(resolved.storagePolicy !== undefined
+      ? [`storage_policy = '${resolved.storagePolicy}'`]
+      : []),
+    ...(table !== undefined && resolved.tableSettings?.[table] !== undefined
+      ? [resolved.tableSettings[table]]
+      : []),
+  ];
   return [
     'ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time',
     `TTL ${resolved.ttl ?? OPERATOR_SYSTEM_LOG_TTL}`,
-    ...(resolved.storagePolicy !== undefined
-      ? [`SETTINGS storage_policy = '${resolved.storagePolicy}'`]
-      : []),
+    ...(settings.length > 0 ? [`SETTINGS ${settings.join(', ')}`] : []),
   ].join(' ');
 }
 
@@ -401,15 +510,21 @@ export function operatorReplacedSystemLogEngine(resolved: ResolvedClickHouseSyst
 export function clickHouseSystemLogConfigurationFiles(
   resolved: ResolvedClickHouseSystemLogs
 ): Record<string, string> {
-  if (resolved.storagePolicy === undefined && resolved.ttl === undefined) return {};
+  // With a policy or TTL to write, all three sections are replaced. Without
+  // one, only a log that carries its own settings is — the others keep the
+  // operator's section untouched.
+  const replaceAll = resolved.storagePolicy !== undefined || resolved.ttl !== undefined;
+  const tables = CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS.filter(
+    (table) => replaceAll || resolved.tableSettings?.[table] !== undefined
+  );
+  if (tables.length === 0) return {};
 
-  const engine = escapeXmlText(operatorReplacedSystemLogEngine(resolved));
-  const sections = CLICKHOUSE_OPERATOR_REPLACED_SYSTEM_LOGS.map((table) =>
+  const sections = tables.map((table) =>
     [
       `  <${table} replace="1">`,
       '    <database>system</database>',
       `    <table>${table}</table>`,
-      `    <engine>${engine}</engine>`,
+      `    <engine>${escapeXmlText(operatorReplacedSystemLogEngine(resolved, table))}</engine>`,
       `    <flush_interval_milliseconds>${OPERATOR_SYSTEM_LOG_FLUSH_INTERVAL_MS}</flush_interval_milliseconds>`,
       `  </${table}>`,
     ].join('\n')

@@ -7,6 +7,7 @@ import { copyResourceMetadata, getIncludeWhen } from '../metadata/index.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/serialization.js';
 import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 type ResourceCollection = Record<string, KubernetesResource> | readonly KubernetesResource[];
 
@@ -508,7 +509,7 @@ export function rewriteHoistedNamespaceRefsInValue<T>(
       for (const [key, item] of Object.entries(val as Record<string, unknown>)) {
         const rewritten = rewriteValue(item);
         if (rewritten !== item) changed = true;
-        next[key] = rewritten;
+        setOwnProperty(next, key, rewritten);
       }
       return changed ? (next as unknown) : val;
     }

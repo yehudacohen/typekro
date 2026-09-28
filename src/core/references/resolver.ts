@@ -28,6 +28,7 @@ import type {
 } from '../types.js';
 import { CelEvaluator } from './cel-evaluator.js';
 import { inlineNestedStatusRefs } from '../serialization/cel-references.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 // =============================================================================
 // TYPE DEFINITIONS FOR IMPROVED TYPE SAFETY
@@ -149,7 +150,8 @@ export class ReferenceResolver {
         continue;
       }
 
-      // Recursively filter nested objects and arrays
+      // Recursively filter nested objects and arrays. (No `__proto__` handling
+      // needed: `__`-prefixed keys are skipped above.)
       if (value !== null && typeof value === 'object') {
         filtered[key] = this.filterInternalFields(value);
       } else {
@@ -195,7 +197,7 @@ export class ReferenceResolver {
 
       // Clone string-keyed properties
       for (const [key, value] of Object.entries(obj)) {
-        cloned[key] = this.selectiveClone(value, visited);
+        setOwnProperty(cloned, key, this.selectiveClone(value, visited));
       }
 
       // Preserve Symbol-keyed properties (like KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND)

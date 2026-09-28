@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`serverSettings` and per-log `systemLogs.tables.<log>.settings` on `makeClickHouseCluster` and
+  `clickHouseInstallation`.** `serverSettings` takes a map of ClickHouse server setting names to strings,
+  numbers or booleans and renders it into the CHI's `configuration.settings` (path keys such as
+  `merge_tree/max_suspicious_broken_parts` nest). `systemLogs.tables` takes MergeTree settings for one
+  system log table at a time. They are rendered into the log's `<settings>` element, or into the engine's
+  `SETTINGS` clause for `query_log`, `part_log` and `trace_log`, whose sections the operator defines with
+  a full `<engine>`. Because the operator writes these values into XML unescaped, names must be
+  identifiers, string values may not contain `<`, `>`, `&` or `${`, and integers must be within
+  JavaScript's safe range (pass larger values as strings). Keys that collide with settings other
+  options render, or that fall in a section another option owns (`system.*_log`, `zookeeper`, and
+  `storage_configuration`, `merge_tree/storage_policy` and `merge_tree/disk` in every storage mode,
+  since `storage` owns disks, policies and the default policy) or the operator generates (`remote_servers`, `macros`,
+  `interserver_http_host`), are refused, as are the settings that would move server-written data off the
+  storage volume (`path`, `tmp_path`, `user_files_path`, `access_control_path`, `user_directories`) and
+  `filesystem_caches_path`, which can invalidate the S3 cache disk. Per-log
+  settings are refused for logs that configuring would switch on or break (`query_thread_log`,
+  `session_log`, `opentelemetry_span_log`). Both options are build-time. Verified against
+  clickhouse-server 25.7.8.71 by the Docker boot suite. See "Server settings and per-log table settings"
+  in the ClickHouse docs, including why keeping `metric_log` and `query_metric_log` in Compact parts
+  and `memory_worker_correct_memory_tracker` bound memory under a container limit.
+
 - **Batching inside the ClickStack persistent queue: `storage.persistentQueue.batch`.** The gateway
   collector batches in its `batch` processor, ahead of the exporter's queue, so acknowledged data
   waits in memory for up to the processor timeout (5s in the ClickStack image) before it reaches the
@@ -404,6 +425,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of reaching generated configuration.
 
 ### Fixed
+
+- **An own `__proto__` key in resource data is no longer dropped when a composition is rendered.**
+  Maps whose keys come from the caller, such as Helm values, ConfigMap data or ClickHouse
+  `serverSettings`, can contain `__proto__`. The helpers that rebuild resource data key by key on the
+  render paths assigned it with `result[key] = value`, which on an ordinary object runs the inherited
+  prototype setter, so the key disappeared without an error. They now assign through a
+  `setOwnProperty` helper that defines an own property for that one key and assigns every other key as
+  before. Covered end to end: KRO `toYaml()` (the RGD and the instance), direct `toYaml()` and
+  `toAlchemyResources()` in both modes, with aspects applied and inside `forEach` collections, plus the
+  hoisted-namespace rewrite and metadata, `canonicalDigest` and the Alchemy reference resolver. Factory-level guards that deliberately skip such keys, such
+  as the prototype-safe values merges, are unchanged.
 
 - **ClickStack: building a composition no longer mutates the build-time `values` object.** The chart
   values merge assigned the caller's subtrees into the result by reference, and then merged the hard

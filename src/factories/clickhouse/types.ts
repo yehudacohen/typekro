@@ -492,6 +492,18 @@ export const ClickHouseUserSchema = type({
 export type ClickHouseUser = typeof ClickHouseUserSchema.infer;
 
 /**
+ * ArkType schema for a map of ClickHouse setting names to scalar values, used
+ * by `serverSettings` and `systemLogs.tables.<log>.settings`. The shape check
+ * is here; the name and value rules (identifier names, no XML-special
+ * characters, plain decimal numbers) are enforced at construction by
+ * `utils/server-settings.ts`, which names the offending key.
+ */
+export const ClickHouseSettingsMapSchema = type('Record<string, string | number | boolean>');
+
+/** A settings map (see {@link ClickHouseSettingsMapSchema}). */
+export type ClickHouseSettingsMap = typeof ClickHouseSettingsMapSchema.infer;
+
+/**
  * ArkType schema for the per-log configuration of ClickHouse's OWN
  * `system.*_log` tables.
  *
@@ -527,6 +539,34 @@ export const ClickHouseSystemLogOptionsSchema = type({
   'ttl?': 'string | false',
   /** Retention window for the DEFAULT TTL expression, in days (default: 14). */
   'retentionDays?': 'number.integer',
+  /**
+   * Per-log options, keyed by log name (`metric_log`, `query_log`, …). Today
+   * each entry takes `settings`: MergeTree settings for that one table,
+   * rendered into the log's `<settings>` element — or, for `query_log`,
+   * `part_log` and `trace_log`, whose sections the operator gives a full
+   * `<engine>`, into that engine's `SETTINGS` clause. Numbers and booleans are
+   * written bare (booleans as `1`/`0`), strings as SQL string literals.
+   *
+   * Setting names must be identifiers; string values must not contain `<`,
+   * `>` or `&`; `storage_policy` is refused (use `storagePolicy`). Logs the
+   * operator switches off (`query_thread_log`), logs ClickHouse ships with its
+   * own engine (`opentelemetry_span_log`) and logs it ships disabled
+   * (`session_log`) are refused, because configuring them would enable them or
+   * stop the server from starting.
+   *
+   * @example
+   * ```ts
+   * // Keep the wide (1000+ column) metric logs in Compact parts, so a merge
+   * // opens one set of write buffers instead of one per column.
+   * systemLogs: {
+   *   tables: {
+   *     metric_log: { settings: { min_bytes_for_wide_part: 1099511627776 } },
+   *     query_metric_log: { settings: { min_bytes_for_wide_part: 1099511627776 } },
+   *   },
+   * }
+   * ```
+   */
+  'tables?': type({ '[string]': { 'settings?': ClickHouseSettingsMapSchema } }),
 });
 
 /** Per-log configuration (see {@link ClickHouseSystemLogOptionsSchema}). */
@@ -688,6 +728,13 @@ export const ClickHouseInstallationConfigSchema = type({
    * See {@link ClickHouseSystemLogOptionsSchema}.
    */
   'systemLogs?': ClickHouseSystemLogOptionsSchema,
+  /**
+   * BUILD-TIME. Extra ClickHouse SERVER settings, rendered into the CHI's
+   * `configuration.settings` (the operator writes them to
+   * `config.d/chop-generated-settings.xml`; a path key `a/b` becomes
+   * `<a><b>…</b></a>`). See {@link ClickHouseClusterTopology.serverSettings}.
+   */
+  'serverSettings?': ClickHouseSettingsMapSchema,
   /**
    * BUILD-TIME. ClickHouse server container probes. Defaults give the server a
    * generous startup budget and a short liveness leash once started; see
@@ -904,6 +951,13 @@ export interface ClickHouseClusterTopology {
    * @see https://github.com/yehudacohen/typekro/issues/232
    */
   readonly systemLogs?: ClickHouseSystemLogOptions;
+  /**
+   * Extra ClickHouse SERVER settings, rendered into the CHI's
+   * `configuration.settings` (path keys such as `merge_tree/x` nest).
+   * Build-time and validated at construction; see "Server settings and
+   * per-log table settings" in docs/api/clickhouse/index.md.
+   */
+  readonly serverSettings?: ClickHouseSettingsMap;
   /**
    * ClickHouse server container probes.
    *

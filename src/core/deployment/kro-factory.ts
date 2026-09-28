@@ -201,6 +201,7 @@ import {
   assertNoDeployedSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 /**
  * Label stamped on every KRO instance CR this factory creates, keyed to the
@@ -5945,7 +5946,7 @@ export class KroResourceFactoryImpl<
       const out: Record<string, string> = {};
       for (const [key, val] of Object.entries(value ?? {})) {
         const resolved = KroResourceFactoryImpl.resolveMetadataStringValue(val, spec);
-        if (resolved !== undefined) out[key] = resolved;
+        if (resolved !== undefined) setOwnProperty(out, key, resolved);
       }
       return out;
     };

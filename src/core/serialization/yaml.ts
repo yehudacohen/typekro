@@ -40,6 +40,7 @@ import {
   processResourceReferences,
 } from './cel-references.js';
 import { generateKroSchema } from './schema.js';
+import { setOwnProperty } from '../../shared/own-property.js';
 
 /**
  * The RGD dump schema: JSON_SCHEMA (null/bool/int/float/string only — no !!binary/!!omap/etc. coercions)
@@ -310,7 +311,7 @@ function substituteForEachSentinels<T>(template: T, basePath: string, varName: s
   if (template !== null && typeof template === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(template)) {
-      result[key] = substituteForEachSentinels(value, basePath, varName);
+      setOwnProperty(result, key, substituteForEachSentinels(value, basePath, varName));
     }
     return result as T;
   }
@@ -349,7 +350,7 @@ function stripOrphanedItemSentinels<T>(template: T): T {
   if (template !== null && typeof template === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(template)) {
-      result[key] = stripOrphanedItemSentinels(value);
+      setOwnProperty(result, key, stripOrphanedItemSentinels(value));
     }
     return result as T;
   }
