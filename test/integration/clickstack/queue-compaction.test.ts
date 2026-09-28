@@ -31,7 +31,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as yaml from 'js-yaml';
@@ -112,7 +112,9 @@ function renderedQueue(options: Partial<ClickStackPersistentQueueOptions> = {}) 
 
 function writeFile(name: string, content: string): string {
   const path = join(workDir, name);
-  writeFileSync(path, content);
+  // The collector runs as uid 10001, not as the user running the tests.
+  writeFileSync(path, content, { mode: 0o644 });
+  chmodSync(path, 0o644);
   return path;
 }
 
@@ -408,6 +410,8 @@ async function drain(gateway: Gateway): Promise<void> {
 beforeAll(() => {
   if (!dockerAvailable) return;
   workDir = mkdtempSync(join(tmpdir(), 'typekro-queue-compaction-'));
+  // mkdtemp creates the directory 0700; the collector (uid 10001) reads from it.
+  chmodSync(workDir, 0o755);
   if (!docker(['image', 'inspect', IMAGE]).ok) mustDocker(['pull', IMAGE]);
   docker(['network', 'rm', NETWORK]);
   mustDocker(['network', 'create', NETWORK]);
