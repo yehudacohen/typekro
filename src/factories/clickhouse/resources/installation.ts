@@ -43,7 +43,9 @@ import {
   clickHouseS3ServiceAccountName,
   resolveClickHouseStorage,
 } from '../utils/s3-storage.js';
+import { resolveClickHouseServerSettings } from '../utils/server-settings.js';
 import {
+  CLICKHOUSE_KNOWN_SYSTEM_LOG_SECTIONS,
   clickHouseSystemLogConfigurationFiles,
   clickHouseSystemLogSettings,
   resolveClickHouseSystemLogs,
@@ -212,7 +214,10 @@ function assertConcreteTopology(config: Composable<ClickHouseInstallationConfig>
 
   // Same loudness as `reject`, but says WHY these two in particular can never
   // take a reference, and quotes the exact nested path that carried it.
-  const rejectBuildTimeOption = (path: string, field: 'systemLogs' | 'probes'): never => {
+  const rejectBuildTimeOption = (
+    path: string,
+    field: 'systemLogs' | 'serverSettings' | 'probes'
+  ): never => {
     throw new Error(
       `clickHouseInstallation: '${path}' is a BUILD-TIME topology field and received a ` +
         `schema reference or CEL expression. \`${field}\` compiles into ClickHouse server ` +
@@ -252,6 +257,7 @@ function assertConcreteTopology(config: Composable<ClickHouseInstallationConfig>
   // nested CEL expression, which `containsKubernetesRefs` alone does not.
   for (const [field, value] of [
     ['systemLogs', config.systemLogs],
+    ['serverSettings', config.serverSettings],
     ['probes', config.probes],
   ] as const) {
     if (value === undefined) continue;
@@ -437,9 +443,24 @@ function compileInstallationSpec(
     config.systemLogs,
     storage.mode === 's3' ? storage.policyName : undefined
   );
-  const configurationSettings: Record<string, unknown> = {
+  const generatedSettings: Record<string, unknown> = {
     ...(storage.mode === 's3' ? clickHouseS3ConfigurationSettings(storage) : {}),
     ...clickHouseSystemLogSettings(systemLogs),
+  };
+  // The caller's own server settings go LAST and may not touch anything the
+  // two contributions above render, nor a section a dedicated option owns —
+  // see utils/server-settings.ts.
+  const configurationSettings: Record<string, unknown> = {
+    ...generatedSettings,
+    ...resolveClickHouseServerSettings('clickHouseInstallation', config.serverSettings, {
+      generated: generatedSettings,
+      ownedSections: {
+        ...Object.fromEntries(
+          CLICKHOUSE_KNOWN_SYSTEM_LOG_SECTIONS.map((section) => [section, 'systemLogs'])
+        ),
+        ...(storage.mode === 's3' && { storage_configuration: 'storage' }),
+      },
+    }),
   };
   const configurationFiles: Record<string, string> = {
     ...(storage.mode === 's3' ? clickHouseS3ConfigurationFiles(storage) : {}),

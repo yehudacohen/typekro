@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`serverSettings` and per-log `systemLogs.tables.<log>.settings` on `makeClickHouseCluster` and
+  `clickHouseInstallation`.** `serverSettings` takes a map of ClickHouse server setting names to strings,
+  numbers or booleans and renders it into the CHI's `configuration.settings` (path keys such as
+  `merge_tree/max_suspicious_broken_parts` nest). `systemLogs.tables` takes MergeTree settings for one
+  system log table at a time. They are rendered into the log's `<settings>` element, or into the engine's
+  `SETTINGS` clause for `query_log`, `part_log` and `trace_log`, whose sections the operator defines with
+  a full `<engine>`. Because the operator writes these values into XML unescaped, names must be
+  identifiers and string values may not contain `<`, `>` or `&`. Keys that collide with settings other
+  options render, or that fall in a section another option owns (`system.*_log`, `zookeeper`,
+  `storage_configuration` in S3 mode) or the operator generates (`remote_servers`, `macros`), are
+  refused. Logs that configuring would switch on or break (`query_thread_log`, `session_log`,
+  `opentelemetry_span_log`) are refused too. Both options are build-time. Verified against
+  clickhouse-server 25.7.8.71 by the Docker boot suite. See "Server settings and per-log table settings"
+  in the ClickHouse docs, including why keeping `metric_log` and `query_metric_log` in Compact parts
+  and `memory_worker_correct_memory_tracker` bound memory under a container limit.
+
 - **Batching inside the ClickStack persistent queue: `storage.persistentQueue.batch`.** The gateway
   collector batches in its `batch` processor, ahead of the exporter's queue, so acknowledged data
   waits in memory for up to the processor timeout (5s in the ClickStack image) before it reaches the

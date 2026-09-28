@@ -37,6 +37,7 @@ import {
   type ClickHouseProbeOptions,
   type ClickHouseS3StorageOptions,
   type ClickHouseStorageTopology,
+  type ClickHouseSettingsMap,
   type ClickHouseSystemLogOptions,
   type ClickHouseUser,
 } from '../types.js';
@@ -150,6 +151,8 @@ interface ResolvedTopology {
   storage: ClickHouseStorageTopology;
   /** Per-log configuration of ClickHouse's own `system.*_log` tables. */
   systemLogs?: ClickHouseSystemLogOptions;
+  /** Extra ClickHouse server settings. */
+  serverSettings?: ClickHouseSettingsMap;
   /** ClickHouse server container probes. */
   probes?: ClickHouseProbeOptions;
   /** The raw S3 options, narrowed — present iff the topology selects S3. */
@@ -227,6 +230,7 @@ function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology 
   // same loudness `storage` gets.
   for (const [field, value] of [
     ['systemLogs', topology.systemLogs],
+    ['serverSettings', topology.serverSettings],
     ['probes', topology.probes],
   ] as const) {
     if (value !== undefined && containsKubernetesRefs(value)) {
@@ -244,6 +248,7 @@ function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology 
     shards,
     storage,
     ...(topology.systemLogs !== undefined ? { systemLogs: topology.systemLogs } : {}),
+    ...(topology.serverSettings !== undefined ? { serverSettings: topology.serverSettings } : {}),
     ...(topology.probes !== undefined ? { probes: topology.probes } : {}),
     ...(isS3Storage(storage) ? { s3Options: storage } : {}),
     ...(resolvedStorage.mode === 's3' ? { s3: resolvedStorage } : {}),
@@ -479,6 +484,9 @@ export function makeClickHouseCluster(
         // (#232), and a startup probe so a slow-loading server is not killed
         // mid-boot (#230).
         ...(resolved.systemLogs !== undefined ? { systemLogs: resolved.systemLogs } : {}),
+        ...(resolved.serverSettings !== undefined
+          ? { serverSettings: resolved.serverSettings }
+          : {}),
         ...(resolved.probes !== undefined ? { probes: resolved.probes } : {}),
         id: CHI_RESOURCE_ID,
       });

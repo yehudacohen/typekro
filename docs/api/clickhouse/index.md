@@ -95,6 +95,7 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
 - `users[].name` and `users[].networksIp` — user names become CHI configuration **path fragments**
 - `storage` — the storage *mode*. PVC (the default) or the full S3 disk configuration; see [Storage](#storage)
 - `systemLogs`, `probes` — where ClickHouse's own `system.*_log` tables live, how long they are kept, and the server container's probes; see [System log tables and startup time](#system-log-tables-and-startup-time)
+- `serverSettings`, `systemLogs.tables` — extra ClickHouse server settings, and MergeTree settings for individual system log tables; see [Server settings and per-log table settings](#server-settings-and-per-log-table-settings)
 
 **Runtime (spec fields — schema refs / proxies serialize to clean CEL):**
 
@@ -488,6 +489,52 @@ DROP TABLE IF EXISTS system.query_log_0 SYNC;  -- and so on, per table listed
 ```
 
 If the server will not start at all, the startup probe is what buys the time to get in: raise `probes.startup.failureThreshold` until it boots, drop the renamed tables, then put it back. These tables are safe to drop — ClickHouse writes "It is safe to truncate or drop this table at any time" into their own `COMMENT`.
+
+## Server Settings and Per-Log Table Settings
+
+Two build-time options cover ClickHouse configuration that the composition does not model as options of its own.
+
+```typescript
+const clickhouse = makeClickHouseCluster({
+  storage: { mode: 's3', /* … */ },
+  // Server settings (config.xml level), rendered into the CHI's configuration.settings.
+  serverSettings: {
+    memory_worker_correct_memory_tracker: true,
+    'merge_tree/max_suspicious_broken_parts': 5,
+  },
+  systemLogs: {
+    // MergeTree settings for individual system log tables.
+    tables: {
+      metric_log: { settings: { min_bytes_for_wide_part: 1099511627776 } },
+      query_metric_log: { settings: { min_bytes_for_wide_part: 1099511627776 } },
+    },
+  },
+});
+```
+
+**`serverSettings`** is a map of setting name to a string, number or boolean. It is rendered into the CHI's `configuration.settings`, which the clickhouse-operator writes to `config.d/chop-generated-settings.xml`. Keys use the operator's path form: `memory_worker_correct_memory_tracker` is a top-level element and `merge_tree/max_suspicious_broken_parts` becomes `<merge_tree><max_suspicious_broken_parts>`. Booleans are written as `1`/`0`. Changing a server setting changes the CHI, and the operator restarts the server to apply it.
+
+**`systemLogs.tables.<log>.settings`** is a map of MergeTree setting name to value for one system log table. For most logs it becomes the log's `<settings>` element, which ClickHouse appends to the table's `SETTINGS` clause after the storage policy. For `query_log`, `part_log` and `trace_log`, whose sections the operator gives a full `<engine>`, it goes inside that engine's `SETTINGS` clause in `config.d/system-logs.xml` (see [What the composition does about it](#what-the-composition-does-about-it)). Numbers and booleans are written bare, strings as SQL string literals. Like any change to a system log's definition, it makes ClickHouse rename the old table to `<name>_0` at the next restart; see [Remediating a cluster that is already affected](#remediating-a-cluster-that-is-already-affected).
+
+### Validation
+
+The operator writes setting values into the server's XML **unescaped**, and setting names become XML element names, which have no escaped form at all. So both options are validated at construction, and a value that would produce a configuration the server cannot parse is refused with the offending key named:
+
+- every name (every `/`-separated segment of a server setting key) must be a letter or underscore followed by letters, digits or underscores;
+- string values must not contain `<`, `>` or `&`, or any character XML cannot represent;
+- numbers must be finite and render as plain decimals — pass very large values as strings;
+- a server setting may not collide with a setting another option renders (`merge_tree/storage_policy` in S3 mode), or sit in a section another option owns: the `system.*_log` sections (use `systemLogs`), `storage_configuration` in S3 mode (use `storage`) and `zookeeper` (use `keeper`), or one the operator generates (`remote_servers`, `macros`);
+- per-log settings are accepted for the logs listed under [What the composition does about it](#what-the-composition-does-about-it). `query_thread_log`, `session_log` and `opentelemetry_span_log` are refused, because configuring them would switch them on or stop the server from starting, and `storage_policy` is refused in favour of `systemLogs.storagePolicy`.
+
+A schema reference in either option is rejected, as for `systemLogs` and `probes`.
+
+### Example: bounding memory under a container limit
+
+Two settings are worth knowing when ClickHouse runs under a container memory limit, where it caps itself at `max_server_memory_usage_to_ram_ratio` (0.9) of the limit.
+
+**Keep the wide metric logs in Compact parts.** `system.metric_log` has well over a thousand columns (one per profile event and metric), and `system.query_metric_log` nearly a thousand. When a merge of either produces a part past `min_bytes_for_wide_part` (10 MiB by default), the part is written in the Wide format, with one file per column, and each column stream allocates its write buffers up front. On ClickHouse 25.7, one such merge of `metric_log` can charge several GiB to the server's memory tracker even though little of that memory is ever touched. Under a 4 GiB limit that is enough for the merge to fail with `MEMORY_LIMIT_EXCEEDED`, retry, and push concurrent queries and inserts over the limit as well. A Compact part writes all columns into one file, and the same merge needs around a hundred MiB. Setting `min_bytes_for_wide_part` far above any part these tables will reach, as in the example above, keeps them Compact.
+
+**Let the memory worker correct the tracker.** `memory_worker_correct_memory_tracker: true` has ClickHouse's background memory worker reset the server-wide memory tracker to the process's actual usage (read from the cgroup, or jemalloc) on every tick. Memory that was allocated but never touched then stops counting against the limit once the worker next runs, so the limit tracks the memory that can actually cause an OOM kill.
 
 ## Users Shape
 
