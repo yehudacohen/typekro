@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  isMergeableValuesObject,
   isValuesMergeExpression,
   materializeValuesMergeExpressions,
   mergeValuesExpression,
   type ValuesMergeExpression,
   withChartValueDefaults,
 } from '../../src/core/aspects/values-merge.js';
-import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import {
+  CEL_EXPRESSION_BRAND,
+  KUBERNETES_REF_BRAND,
+  MIXED_TEMPLATE_BRAND,
+} from '../../src/core/constants/brands.js';
+import { containsExplicitPlanValue, sensitiveValue } from '../../src/core/planning/values.js';
+import { Cel } from '../../src/core/references/cel.js';
+import { mapClickStackConfigToHelmValues } from '../../src/factories/clickstack/utils/helm-values-mapper.js';
 
 describe('direct values merge materialization', () => {
   it('deep-merges objects, replaces arrays and scalars, and preserves its inputs', () => {
@@ -140,5 +148,136 @@ describe('withChartValueDefaults', () => {
         overlays: (merged as ValuesMergeExpression).overlays.slice(1),
       })
     ).toEqual({ crds: { create: true, keep: true }, replicaCount: 1 });
+  });
+});
+
+describe('isMergeableValuesObject', () => {
+  it('accepts plain objects, with either plain prototype', () => {
+    expect(isMergeableValuesObject({})).toBe(true);
+    expect(isMergeableValuesObject({ nested: { a: 1 } })).toBe(true);
+    expect(isMergeableValuesObject(Object.create(null))).toBe(true);
+    // Frozen is still mergeable: the merges copy before they write.
+    expect(isMergeableValuesObject(Object.freeze({ a: 1 }))).toBe(true);
+  });
+
+  it('refuses every opaque leaf', () => {
+    class Settings {
+      replicas = 1;
+    }
+    const leaves: [string, unknown][] = [
+      ['array', []],
+      ['null', null],
+      ['string', 'x'],
+      ['class instance', new Settings()],
+      ['Date', new Date(0)],
+      ['CEL expression', Cel.expr<string>('schema.spec.name')],
+      ['values merge node', mergeValuesExpression({}, {})],
+      [
+        'resource reference',
+        { __type: 'ResourceReference', resourceId: 'db', fieldPath: 'status.host' },
+      ],
+      ['mixed template', { [MIXED_TEMPLATE_BRAND]: true, expression: 'a-${b}' }],
+      ['planning marker', sensitiveValue('token')],
+      [
+        'object kubernetes ref',
+        { [KUBERNETES_REF_BRAND]: true, resourceId: 'db', fieldPath: 'status.host' },
+      ],
+      ['symbol-keyed object', { [Symbol('brand')]: true, a: 1 }],
+    ];
+    for (const [label, value] of leaves) {
+      expect(isMergeableValuesObject(value), label).toBe(false);
+    }
+  });
+});
+
+describe('deferred merges use the same atomic-leaf rule as static ones', () => {
+  it('treats symbol-branded values as atomic during deferred merges', () => {
+    const secret = sensitiveValue('token');
+    const merged = materializeValuesMergeExpressions(
+      mergeValuesExpression({ nested: { ordinary: true } }, { nested: secret })
+    ) as Record<string, unknown>;
+
+    expect(merged.nested).toBe(secret);
+    expect(containsExplicitPlanValue(merged)).toBe(true);
+  });
+
+  it('lets an ordinary object replace a branded base whole', () => {
+    const secret = sensitiveValue('token');
+    const merged = materializeValuesMergeExpressions(
+      mergeValuesExpression({ nested: secret }, { nested: { ordinary: true } })
+    ) as Record<string, unknown>;
+
+    expect(merged.nested).toEqual({ ordinary: true });
+    expect(containsExplicitPlanValue(merged)).toBe(false);
+    expect(Object.isFrozen(secret)).toBe(true);
+  });
+
+  it('never rebuilds a branded value while walking a tree without merge nodes', () => {
+    const secret = sensitiveValue('token');
+    const tree = { env: [{ name: 'TOKEN', value: secret }], nested: { secret } };
+    const walked = materializeValuesMergeExpressions({
+      tree,
+      merged: mergeValuesExpression({ a: 1 }, { b: 2 }),
+    }) as { tree: typeof tree };
+
+    expect(walked.tree).toBe(tree);
+    expect(walked.tree.nested.secret).toBe(secret);
+  });
+
+  it('keeps a branded whole-values argument whole under chart defaults', () => {
+    const secret = sensitiveValue('token');
+    const layered = withChartValueDefaults({ replicas: 1 }, secret);
+
+    expect(isValuesMergeExpression(layered)).toBe(true);
+    expect(materializeValuesMergeExpressions(layered)).toBe(secret);
+  });
+
+  it('gives the static mapper merge and the deferred merge identical results', () => {
+    class Settings {
+      tier = 'app';
+    }
+    const secret = sensitiveValue('token');
+    const cel = Cel.expr<string>('schema.spec.x');
+    const instance = new Settings();
+    // [label, base, overlay, the leaf the result must carry by identity]
+    const cases: [string, unknown, unknown, unknown?][] = [
+      ['nested objects', { a: 1, keep: { x: 1 } }, { b: 2, keep: { y: 2 } }],
+      ['array replaces', { list: [1, 2] }, { list: [3] }],
+      ['scalar replaces object', { a: { x: 1 } }, { a: 'flat' }],
+      ['object replaces scalar', { a: 'flat' }, { a: { x: 1 } }],
+      ['marker over object', { a: { x: 1 } }, { a: secret }, secret],
+      ['object over marker', { a: secret }, { a: { x: 1 } }],
+      ['CEL expression over object', { a: { x: 1 } }, { a: cel }, cel],
+      ['class instance over object', { a: { x: 1 } }, { a: instance }, instance],
+      ['object over class instance', { a: instance }, { a: { x: 1 } }],
+    ];
+    const spec = {
+      name: 'demo',
+      namespace: 'demo',
+      clickhouse: { host: 'clickhouse.demo.svc', username: 'u', password: 'p' },
+      apiKey: 'k',
+    };
+
+    for (const [label, base, overlay, leaf] of cases) {
+      // Static: build-time `values` under direct-mode `customValues`, both
+      // concrete, merged by the mapper's copy-on-write deep merge.
+      const staticResult = (
+        mapClickStackConfigToHelmValues({ ...spec, customValues: { extra: overlay } } as never, {
+          values: { extra: base } as never,
+        }) as Record<string, unknown>
+      ).extra as Record<string, unknown>;
+      // Deferred: the same two layers as a merge node, materialized.
+      const deferredResult = (
+        materializeValuesMergeExpressions(
+          mergeValuesExpression({ extra: base }, { extra: overlay })
+        ) as Record<string, unknown>
+      ).extra as Record<string, unknown>;
+
+      expect(deferredResult, label).toEqual(staticResult);
+      if (leaf !== undefined) {
+        expect(staticResult.a, label).toBe(leaf);
+        expect(deferredResult.a, label).toBe(leaf);
+      }
+    }
   });
 });
