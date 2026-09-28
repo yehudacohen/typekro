@@ -167,7 +167,7 @@ export class DirectDeploymentEngine {
     });
   }
 
-  /**
+  /*
    * Create an abortable delay that can be cancelled via AbortSignal
    * @param ms - Delay in milliseconds
    * @param signal - Optional AbortSignal to cancel the delay
@@ -195,7 +195,7 @@ export class DirectDeploymentEngine {
     });
   }
 
-  /**
+  /*
    * Wrap an async operation with abort signal handling
    * If the signal is aborted, the promise will reject with AbortError
    * Note: This doesn't actually cancel the underlying operation, but it allows
@@ -237,7 +237,7 @@ export class DirectDeploymentEngine {
     });
   }
 
-  /**
+  /*
    * Create and track an AbortController for a deployment operation
    * @returns AbortController that is tracked for cleanup
    */
@@ -247,7 +247,7 @@ export class DirectDeploymentEngine {
     return controller;
   }
 
-  /**
+  /*
    * Remove an AbortController from tracking
    * @param controller - The AbortController to remove
    */
@@ -555,7 +555,7 @@ export class DirectDeploymentEngine {
     }
   }
 
-  /**
+  /*
    * Create an AbortController and set up a timeout that aborts the deployment
    * when the configured timeout is reached. Also stops event monitoring on timeout.
    * @param deploymentId - The unique deployment ID for logging
@@ -624,7 +624,7 @@ export class DirectDeploymentEngine {
     return { abortController, timeoutId, detachExternalAbort };
   }
 
-  /**
+  /*
    * Validate the dependency graph for cycles, analyze deployment order,
    * integrate closures into the plan, initialize event/debug monitoring,
    * and build the resource key mapping and resolution context.
@@ -794,7 +794,7 @@ export class DirectDeploymentEngine {
     return { enhancedPlan, context, resourceKeyMapping, scheduledExternalReferences };
   }
 
-  /**
+  /*
    * Split external references into the ones that can be read before anything is applied and the
    * ones that must wait for resources this graph creates.
    *
@@ -838,7 +838,7 @@ export class DirectDeploymentEngine {
     return scheduled;
   }
 
-  /**
+  /*
    * Read the external references scheduled for a level that has just finished deploying.
    *
    * The read is retried until the observed resource appears or the deployment's remaining budget
@@ -867,7 +867,7 @@ export class DirectDeploymentEngine {
     }
   }
 
-  /**
+  /*
    * Remaining time this deployment may spend waiting for a single observed resource to appear.
    *
    * Bounded by the same per-call read budget the rest of the engine polls against, and kept one
@@ -879,7 +879,7 @@ export class DirectDeploymentEngine {
     return Math.max(0, Math.min(remaining - DEFAULT_POLL_INTERVAL, DEFAULT_READINESS_TIMEOUT));
   }
 
-  /**
+  /*
    * Read one external reference into the resolution context, or fail the deployment.
    *
    * Without `retry` this is the historical single read that happens before anything is applied.
@@ -1006,7 +1006,7 @@ export class DirectDeploymentEngine {
     );
   }
 
-  /**
+  /*
    * Initialize and start Kubernetes event monitoring if enabled in deployment options.
    * Logs a warning and continues if initialization fails.
    * @param options - Deployment options containing event monitoring configuration
@@ -1077,7 +1077,7 @@ export class DirectDeploymentEngine {
     return current;
   }
 
-  /**
+  /*
    * Deploy a single level of resources and closures in parallel. Processes results,
    * handles rollback on failure if configured, and logs level performance metrics.
    * Returns a DeploymentResult if rollback occurred (early exit), or undefined to continue.
@@ -1387,7 +1387,7 @@ export class DirectDeploymentEngine {
     return undefined;
   }
 
-  /**
+  /*
    * Build the final DeploymentResult after all levels have been deployed.
    * Logs comprehensive performance metrics and emits completion/failure events.
    * @param deploymentId - Unique deployment ID
@@ -1445,7 +1445,7 @@ export class DirectDeploymentEngine {
     };
   }
 
-  /**
+  /*
    * Stop event monitoring, clear the deployment timeout, and remove the
    * abort controller from tracking. Safe to call multiple times.
    * @param abortController - The deployment's AbortController to untrack
@@ -1476,7 +1476,7 @@ export class DirectDeploymentEngine {
     this.removeTrackedAbortController(abortController);
   }
 
-  /**
+  /*
    * Update the resourceKeyMapping with a live resource fetched from the cluster.
    * This is critical for CEL expression evaluation which needs access to resource status.
    */
@@ -1522,7 +1522,7 @@ export class DirectDeploymentEngine {
     }
   }
 
-  /**
+  /*
    * Deploy a single resource
    */
   private async deploySingleResource(
@@ -1630,7 +1630,7 @@ export class DirectDeploymentEngine {
     return deployedResource;
   }
 
-  /**
+  /*
    * Wait for a resource to be ready
    * @param deployedResource - The deployed resource to wait for
    * @param options - Deployment options
@@ -1644,7 +1644,7 @@ export class DirectDeploymentEngine {
     return this.readinessWaiter.waitForResourceReady(deployedResource, options, abortSignal);
   }
 
-  /**
+  /*
    * Rollback deployed resources
    */
   private async rollbackDeployedResources(
@@ -1669,14 +1669,14 @@ export class DirectDeploymentEngine {
     return this.rollbackManager.rollbackOrderedResources(deployedResources, options);
   }
 
-  /**
+  /*
    * Generate a unique deployment ID
    */
   private generateDeploymentId(): string {
     return `deployment-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
   }
 
-  /**
+  /*
    * Emit deployment events
    */
   private emitEvent(options: DeploymentOptions, event: DeploymentEvent): void {
@@ -1733,6 +1733,7 @@ export class DirectDeploymentEngine {
       includeUnscopedResources?: boolean;
       timeout?: number;
       abortSignal?: AbortSignal;
+      beforeDeleteResource?: DeploymentOptions['beforeDeleteResource'];
     } = {}
   ): Promise<RollbackResult> {
     const deploymentRecord = this.deploymentState.get(deploymentId);
@@ -1775,6 +1776,7 @@ export class DirectDeploymentEngine {
       includeUnscopedResources?: boolean;
       timeout?: number;
       abortSignal?: AbortSignal;
+      beforeDeleteResource?: DeploymentOptions['beforeDeleteResource'];
     } = {}
   ): Promise<RollbackResult> {
     const startTime = Date.now();
@@ -1911,6 +1913,9 @@ export class DirectDeploymentEngine {
           ...deploymentRecord.options,
           ...(opts.timeout !== undefined && { timeout: opts.timeout }),
           ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+          ...(opts.beforeDeleteResource
+            ? { beforeDeleteResource: opts.beforeDeleteResource }
+            : {}),
         }
       );
 

@@ -15,10 +15,14 @@ import type {
   AlchemyResourceDeclaration,
   TypeKroResourceProps,
 } from '../../../src/alchemy/types.js';
+import { ResourceApplier } from '../../../src/core/deployment/resource-applier.js';
+import { getComponentLogger } from '../../../src/core/logging/index.js';
+import { getResourceScope } from '../../../src/core/metadata/index.js';
 import { decodeDirectArtifactExecutionRecord } from '../../../src/core/planning/index.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 import { ConfigMap, Deployment, Service } from '../../../src/factories/simple/index.js';
-import { kubernetesComposition } from '../../../src/index.js';
+import { kubernetesComposition, observedResource } from '../../../src/index.js';
+import { createMockK8sApi } from '../../utils/mock-factories.js';
 
 const RegionSpec = type({
   name: 'string',
@@ -66,10 +70,14 @@ function spec(count: number): RegionSpecType {
   return { name: 'shop', image: 'nginx:1.27', regions: regions.slice(0, count) };
 }
 
-/** Plain JSON view of a manifest: drops the graph `id` and any non-enumerable metadata. */
+/** Compare the actual Kubernetes payload, retaining TypeKro scope separately in state. */
+const applier = new ResourceApplier(
+  createMockK8sApi(),
+  undefined,
+  getComponentLogger('foreach-test')
+);
 function plain(resource: unknown): Record<string, unknown> {
-  const { id: _id, ...manifest } = JSON.parse(JSON.stringify(resource)) as Record<string, unknown>;
-  return manifest;
+  return applier.serializeResourceForK8s(JSON.parse(JSON.stringify(resource)));
 }
 
 function manifestKey(manifest: Record<string, unknown>): string {
@@ -176,7 +184,264 @@ describe('direct toAlchemyResources with forEach', () => {
       expect(record.artifact.iteration).toBeUndefined();
 
       const rehydrated = resourceFromDirectArtifactRecordForTest(restoredProps(declaration));
+      if (!rehydrated) throw new Error('Expanded declaration did not rehydrate');
       expect(plain(rehydrated)).toEqual(plain(declaration.props.resource));
+      const declaredScope = getResourceScope(declaration.props.resource);
+      if (!declaredScope) throw new Error('Expanded declaration lost its persisted scope');
+      expect(getResourceScope(rehydrated)).toBe(declaredScope);
+    }
+  });
+
+  it('preserves one external credential observation in every expanded durable record', async () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'regional-credentials',
+        kind: 'RegionalCredentials',
+        spec: RegionSpec,
+        status: type({ total: 'number' }),
+      },
+      (input) => {
+        const credentials = observedResource<Record<string, never>, Record<string, never>>({
+          id: 'credentials',
+          apiVersion: 'v1',
+          kind: 'Secret',
+          metadata: { name: 'provider-credentials', namespace: 'provider-system' },
+        });
+        const data = credentials.data;
+        if (!data) throw new Error('Credential observation has no deferred data');
+        for (const region of input.regions) {
+          Deployment({
+            id: 'regionalDeployment',
+            name: `${input.name}-${region.name}`,
+            image: input.image,
+            replicas: region.replicas,
+            env: { API_KEY: data.API_KEY },
+          });
+        }
+        return { total: input.regions.length };
+      }
+    );
+    const declarations = await composition
+      .factory('direct', { namespace: 'apps' })
+      .toAlchemyResources(spec(2));
+    expect(declarations).toHaveLength(2);
+    for (const declaration of declarations) {
+      const record = decodeDirectArtifactExecutionRecord(
+        declaration.props.artifactExecutionRecord ?? ''
+      );
+      expect(record.artifact.iteration).toBeUndefined();
+      expect(record.externalReferences).toHaveLength(1);
+      expect(record.externalReferences?.[0]).toMatchObject({
+        role: 'external-reference',
+        identity: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          name: { kind: 'literal', value: 'provider-credentials' },
+          namespace: { kind: 'literal', value: 'provider-system' },
+        },
+        lifecycle: {
+          creation: 'require-existing',
+          management: 'reference-only',
+          deletion: 'retain',
+        },
+      });
+      const resource = resourceFromDirectArtifactRecordForTest(restoredProps(declaration));
+      if (!resource) throw new Error('Expanded credential consumer did not rehydrate');
+      expect(plain(resource)).toEqual(plain(declaration.props.resource));
+      expect(getResourceScope(resource)).toBe('namespaced');
+    }
+  });
+
+  it('slices independent iterated observations to the operation that consumes them', async () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'independent-observations',
+        kind: 'IndependentObservations',
+        spec: type({
+          regions: type({ name: 'string', secret: 'string' }).array(),
+          tenants: type({ name: 'string', secret: 'string' }).array(),
+        }),
+        status: type({ ready: 'boolean' }),
+      },
+      (input) => {
+        observedResource<Record<string, never>, Record<string, never>>({
+          id: 'unrelated',
+          apiVersion: 'v1',
+          kind: 'Secret',
+          metadata: { name: 'unrelated-absent', namespace: 'providers' },
+        });
+        for (const region of input.regions) {
+          const credentials = observedResource<Record<string, never>, Record<string, never>>({
+            id: 'regionalCredentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: region.secret, namespace: 'providers' },
+          });
+          const data = credentials.data;
+          if (!data) throw new Error('Observed credentials must have deferred data');
+          ConfigMap({ id: 'regionalConfig', name: region.name, data: { key: data.KEY } });
+        }
+        for (const tenant of input.tenants) {
+          const credentials = observedResource<Record<string, never>, Record<string, never>>({
+            id: 'tenantCredentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: tenant.secret, namespace: 'providers' },
+          });
+          const data = credentials.data;
+          if (!data) throw new Error('Observed credentials must have deferred data');
+          Deployment({
+            id: 'tenantWorker',
+            name: tenant.name,
+            image: 'worker:1',
+            env: { KEY: data.KEY },
+          });
+        }
+        return { ready: true };
+      }
+    );
+    const input = {
+      regions: [
+        { name: 'region-a', secret: 'region-a-key' },
+        { name: 'region-b', secret: 'region-b-key' },
+      ],
+      tenants: [
+        { name: 'tenant-a', secret: 'tenant-a-key' },
+        { name: 'tenant-b', secret: 'tenant-b-key' },
+      ],
+    };
+    const declarations = await composition
+      .factory('direct', { namespace: 'apps' })
+      .toAlchemyResources(input);
+    expect(declarations).toHaveLength(4);
+    for (const declaration of declarations) {
+      const record = decodeDirectArtifactExecutionRecord(
+        declaration.props.artifactExecutionRecord ?? ''
+      );
+      expect(record.externalReferences).toHaveLength(1);
+      expect(record.externalReferences?.[0]?.identity?.name).toEqual({
+        kind: 'literal',
+        value: `${declaration.props.resource.metadata.name}-key`,
+      });
+      expect(record.externalReferences?.[0]?.iteration).toBeUndefined();
+      expect(JSON.stringify(record)).not.toContain('unrelated-absent');
+      const rehydrated = resourceFromDirectArtifactRecordForTest(restoredProps(declaration));
+      expect(plain(rehydrated)).toEqual(plain(declaration.props.resource));
+    }
+  });
+
+  it('keeps generated-observation prerequisites in serialized Alchemy dependencies', async () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'generated-observation',
+        kind: 'GeneratedObservation',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (input) => {
+        const controller = Deployment({
+          id: 'controller',
+          name: input.name,
+          image: 'controller:1',
+        });
+        const credentials = observedResource<Record<string, never>, Record<string, never>>({
+          id: 'generatedCredentials',
+          apiVersion: 'v1',
+          kind: 'Secret',
+          metadata: { name: `${input.name}-credentials`, namespace: 'apps' },
+        }).dependsOn(controller);
+        const data = credentials.data;
+        if (!data) throw new Error('Observed credentials must have deferred data');
+        ConfigMap({ id: 'consumer', name: `${input.name}-consumer`, data: { key: data.KEY } });
+        return { ready: true };
+      }
+    );
+    const declarations = await composition
+      .factory('direct', { namespace: 'apps' })
+      .toAlchemyResources({ name: 'generated' });
+    const controller = declarations.find(
+      (declaration) => declaration.props.resourceId === 'controller'
+    );
+    const consumer = declarations.find(
+      (declaration) => declaration.props.resourceId === 'consumer'
+    );
+    if (!controller?.props.resourceId || !consumer)
+      throw new Error('Missing generated-observation declarations');
+    const record = decodeDirectArtifactExecutionRecord(
+      consumer.props.artifactExecutionRecord ?? ''
+    );
+    expect(consumer.dependsOn).toEqual([controller.id]);
+    expect(record.dependencies).toEqual([controller.props.resourceId]);
+    expect(
+      decodeDirectArtifactExecutionRecord(controller.props.artifactExecutionRecord ?? '')
+        .externalReferences
+    ).toEqual([]);
+    const props = restoredProps(consumer);
+    props.dependencies = [
+      {
+        resource: controller.props.resource,
+        resourceId: 'controller',
+        namespace: 'apps',
+        deploymentStrategy: 'direct',
+        deployedResource: controller.props.resource,
+        ready: true,
+        deployedAt: 0,
+      },
+    ];
+    expect(resourceFromDirectArtifactRecordForTest(props)?.kind).toBe('ConfigMap');
+  });
+
+  it('pairs generated observation prerequisites within their iteration coordinates', async () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'regional-generated-observations',
+        kind: 'RegionalGeneratedObservations',
+        spec: RegionSpec,
+        status: type({ total: 'number' }),
+      },
+      (input) => {
+        for (const region of input.regions) {
+          const controller = Deployment({
+            id: 'controller',
+            name: `${region.name}-controller`,
+            image: input.image,
+          });
+          const credentials = observedResource<Record<string, never>, Record<string, never>>({
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: `${region.name}-credentials`, namespace: 'apps' },
+          }).dependsOn(controller);
+          const data = credentials.data;
+          if (!data) throw new Error('Missing deferred credentials');
+          ConfigMap({ id: 'consumer', name: `${region.name}-consumer`, data: { key: data.KEY } });
+        }
+        return { total: input.regions.length };
+      }
+    );
+    const declarations = await composition
+      .factory('direct', { namespace: 'apps' })
+      .toAlchemyResources(spec(2));
+    const consumers = declarations.filter((declaration) =>
+      declaration.props.resourceId?.startsWith('consumer')
+    );
+    expect(consumers).toHaveLength(2);
+    for (const [index, consumer] of consumers.entries()) {
+      const controller = declarations.find(
+        (declaration) =>
+          declaration.props.resource.metadata.name === `${spec(2).regions[index]?.name}-controller`
+      );
+      if (!controller?.props.resourceId) throw new Error('Missing paired controller');
+      const record = decodeDirectArtifactExecutionRecord(
+        consumer.props.artifactExecutionRecord ?? ''
+      );
+      expect(consumer.dependsOn).toEqual([controller.id]);
+      expect(record.dependencies).toEqual([controller.props.resourceId]);
+      expect(record.externalReferences).toHaveLength(1);
+      expect(record.externalReferences?.[0]?.identity?.name).toEqual({
+        kind: 'literal',
+        value: `${spec(2).regions[index]?.name}-credentials`,
+      });
     }
   });
 

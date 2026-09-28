@@ -29,14 +29,6 @@ import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { ResourceReplacementTimeoutError } from '../core/deployment/errors.js';
 import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
 import {
-  type CallDeadlineBudget,
-  callDeadlineBudget,
-  isRequestTimeoutError,
-  retryOnceOnRequestTimeout,
-  usesExecCredential,
-  withCallDeadline,
-} from '../core/deployment/poll-timeout.js';
-import {
   migrateLegacyKroArtifactBindingCrd,
   repairRetainedKroGeneratedCrdOwnership,
 } from '../core/deployment/kro-artifact-binding-migration.js';
@@ -48,13 +40,21 @@ import {
   NAMESPACE_OWNER_ANNOTATION,
   readHoistedNamespacesRecord,
 } from '../core/deployment/kro-namespace-teardown.js';
+import {
+  type CallDeadlineBudget,
+  callDeadlineBudget,
+  isRequestTimeoutError,
+  retryOnceOnRequestTimeout,
+  usesExecCredential,
+  withCallDeadline,
+} from '../core/deployment/poll-timeout.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { materializeSerializableKubeConfigOptions } from '../core/deployment/shared-utilities.js';
 import {
   type DeployedSingletonInstance as LiveSingletonOwner,
   singletonDriftVerdict,
 } from '../core/deployment/singleton-owner-drift.js';
-import { ensureError } from '../core/errors.js';
+import { ensureError, TypeKroError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import {
   createBunCompatibleCustomObjectsApi,
@@ -63,6 +63,7 @@ import {
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import {
   copyResourceMetadata,
+  getMetadataField,
   getReadinessEvaluator,
   getResourceScope,
   type ResourceScope,
@@ -84,7 +85,12 @@ import type {
   DeployedResource,
   DeploymentOptions,
 } from '../core/types/deployment.js';
-import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
+import type {
+  DeployableK8sResource,
+  Enhanced,
+  KubernetesResource,
+} from '../core/types/kubernetes.js';
+import { setOwnProperty } from '../shared/own-property.js';
 import {
   DirectTypeKroDeployer,
   KroTypeKroDeployer,
@@ -92,10 +98,15 @@ import {
 } from './deployers.js';
 import type { KroDeletionOptions } from './kro-delete.js';
 import {
+  decideKroRgdDeletion,
   deleteKroDefinition,
   deleteKroInstanceFinalizerSafe,
-  decideKroRgdDeletion,
 } from './kro-delete.js';
+import {
+  guardKubernetesObjectApi,
+  type KubernetesEffectDecision,
+  type KubernetesEffectMutation,
+} from './kubernetes-effect-gate.js';
 import type {
   AlchemyResourceDeclaration,
   MaterializeAlchemyResourcesOptions,
@@ -104,7 +115,6 @@ import type {
   TypeKroResource,
   TypeKroResourceProps,
 } from './types.js';
-import { setOwnProperty } from '../shared/own-property.js';
 
 /**
  * Serializable resource properties stored by Alchemy after deployment.
@@ -198,9 +208,7 @@ function desiredKroResourceIdentity<T extends Enhanced<unknown, unknown>>(
     // cluster-scoped resource identity.
     namespace = undefined;
   } else {
-    const explicitNamespace = inputResourceIdentityField(
-      Reflect.get(metadata, 'namespace')
-    );
+    const explicitNamespace = inputResourceIdentityField(Reflect.get(metadata, 'namespace'));
     if (explicitNamespace === UNRESOLVED_IDENTITY) return UNRESOLVED_IDENTITY;
     if (explicitNamespace) {
       namespace = explicitNamespace;
@@ -216,10 +224,7 @@ function desiredKroResourceIdentity<T extends Enhanced<unknown, unknown>>(
   return { apiVersion, kind, name, ...(namespace ? { namespace } : {}) };
 }
 
-function sameKroResourceIdentity(
-  left: KubernetesResource,
-  right: KroResourceIdentity
-): boolean {
+function sameKroResourceIdentity(left: KubernetesResource, right: KroResourceIdentity): boolean {
   return (
     left.apiVersion === right.apiVersion &&
     left.kind === right.kind &&
@@ -253,77 +258,171 @@ export const shouldReplaceKroResourceIdentityForTest = shouldReplaceKroResourceI
  * convergent create/update (apply the manifest, wait for readiness); `delete` performs the
  * finalizer-safe, shared-RGD-aware teardown.
  */
-export const kroProvider = ProviderMod.effect(
-  KroResource,
-  // Typed so the service literal is checked directly against `ProviderService` (methods bivariant) —
-  // avoids the exactOptionalPropertyTypes friction of an inferred literal while keeping the effect-hosted
-  // registration the conformance boundary requires.
-  Effect.succeed<ProviderMod.ProviderService<KroResourceR>>({
-    // `namespace` is identity-stable: a namespace change is a replacement, not an in-place update.
-    stables: ['namespace'],
-    // Account-wide enumeration (powers `alchemy nuke`). A generic KRO resource isn't discoverable
-    // cluster-wide from props alone — TypeKro manages teardown through its own `delete` lifecycle —
-    // so this reports nothing to nuke rather than guessing (required by Alchemy's ProviderService).
-    list: () => Effect.succeed([]),
-    diff: Effect.fn(function* ({ olds, news, output }) {
-      if (shouldReplaceKroResourceIdentity(olds, news, output)) {
-        return { action: 'replace' as const };
-      }
-      return yield* Effect.tryPromise({
-        try: (abortSignal) => detectKroResourceIdentityDrift(olds, output, undefined, abortSignal),
-        catch: ensureError,
-      });
-    }),
-    reconcile: Effect.fn(function* ({ news, output }) {
-      return yield* Effect.tryPromise({
-        try: async (abortSignal) => {
-          const persistedIdentity = persistedKroResourceIdentity(output);
-          const desiredIdentity = desiredKroResourceIdentity(news, output);
+export interface KroResourceEffectHooks {
+  /** Runs at reconcile time, after Alchemy resolves inputs and before deployment begins. */
+  readonly beforeReconcile?: (
+    props: TypeKroResourceProps<Enhanced<unknown, unknown>>
+  ) => Promise<TypeKroResourceProps<Enhanced<unknown, unknown>>['mutationPrecondition']>;
+  /** Preflight before teardown; effect-time authority belongs in beforeKubernetesEffect. */
+  readonly beforeDelete?: (
+    props: TypeKroResourceProps<Enhanced<unknown, unknown>>
+  ) => Promise<void>;
+  /** Classify a stable Alchemy resource id before planning replacement. False leaves this resource on the ordinary lifecycle. */
+  readonly guardsResource?: (id: string) => boolean;
+  /** Also observe an unguarded direct resource. Cannot disable observation of a guarded resource. */
+  readonly observesResource?: (id: string) => boolean;
+  /** Runs at each direct Kubernetes API mutation, including retries and rollback. Return undefined for an unguarded resource. */
+  readonly beforeKubernetesEffect?: (
+    props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
+    mutation: KubernetesEffectMutation,
+    context?: { readonly id: string }
+  ) => Promise<KubernetesEffectDecision>;
+}
+
+function hooksForResource(hooks: KroResourceEffectHooks, id: string): KroResourceEffectHooks {
+  if (!hooks.beforeKubernetesEffect) return hooks;
+  if (hooks.guardsResource?.(id) === false && hooks.observesResource?.(id) !== true) {
+    const { beforeKubernetesEffect: _unused, ...remaining } = hooks;
+    return remaining;
+  }
+  return {
+    ...hooks,
+    beforeKubernetesEffect: (props, mutation) =>
+      hooks.beforeKubernetesEffect!(props, mutation, { id }),
+  };
+}
+
+/** Bind operation-scoped Kubernetes effect gates without persisting callback closures in Alchemy state. */
+export function kroProviderWithHooks(hooks: KroResourceEffectHooks = {}) {
+  return ProviderMod.effect(
+    KroResource,
+    // Typed so the service literal is checked directly against `ProviderService` (methods bivariant) —
+    // avoids the exactOptionalPropertyTypes friction of an inferred literal while keeping the effect-hosted
+    // registration the conformance boundary requires.
+    Effect.succeed<ProviderMod.ProviderService<KroResourceR>>({
+      // `namespace` is identity-stable: a namespace change is a replacement, not an in-place update.
+      stables: ['namespace'],
+      // Account-wide enumeration (powers `alchemy nuke`). A generic KRO resource isn't discoverable
+      // cluster-wide from props alone — TypeKro manages teardown through its own `delete` lifecycle —
+      // so this reports nothing to nuke rather than guessing (required by Alchemy's ProviderService).
+      list: () => Effect.succeed([]),
+      diff: Effect.fn(function* ({ id, olds, news, output }) {
+        if (shouldReplaceKroResourceIdentity(olds, news, output)) {
+          // A gated replacement needs reconcile to deploy the new identity
+          // successfully before it deletes the persisted identity. Alchemy's
+          // replace action would run teardown before reconcile can do so.
+          // KRO mode does not use the direct object API gate and keeps
+          // Alchemy's normal create-before-delete replacement behavior.
+          const strategy =
+            typeof news === 'object' && news !== null && 'deploymentStrategy' in news
+              ? Reflect.get(news, 'deploymentStrategy')
+              : undefined;
           if (
-            persistedIdentity &&
-            desiredIdentity &&
-            desiredIdentity !== UNRESOLVED_IDENTITY &&
-            !sameKroResourceIdentity(persistedIdentity, desiredIdentity)
+            hooks.beforeKubernetesEffect &&
+            hooks.guardsResource?.(id) !== false &&
+            strategy !== 'kro'
           ) {
-            const previous = propsFromOutput(output);
-            if (!previous) {
-              throw new Error(
-                `Alchemy cannot replace prior Kubernetes identity ${persistedIdentity.apiVersion}/${persistedIdentity.kind} ` +
-                  `${persistedIdentity.metadata.namespace ? `${persistedIdentity.metadata.namespace}/` : ''}` +
-                  `${persistedIdentity.metadata.name}: persisted delete properties are unavailable`
-              );
-            }
-            await deleteKroResource(previous, abortSignal);
+            return { action: 'update' as const };
           }
-          await waitForPersistedIdentityDeletion(news, output, abortSignal);
-          return deployKroResource(news, abortSignal);
-        },
-        catch: ensureError,
-      });
-    }),
-    delete: Effect.fn(function* ({ output, olds }) {
-      // Prefer the live spec (`olds` — the last-applied props; Alchemy renamed the delete
-      // input's spec field from `news` to `olds`); fall back to reconstructing minimal props from
-      // persisted output (a delete after the spec is gone — e.g. resource removed from the stack).
-      const props = olds ?? propsFromOutput(output);
-      if (props) {
-        yield* Effect.tryPromise({
-          try: (abortSignal) => deleteKroResource(props, abortSignal),
+          return { action: 'replace' as const };
+        }
+        return yield* Effect.tryPromise({
+          try: (abortSignal) =>
+            detectKroResourceIdentityDrift(olds, output, undefined, abortSignal),
           catch: ensureError,
         });
-      } else {
-        // Neither a live spec nor a usable output (e.g. a create that failed before persisting a
-        // complete output). Warn rather than silently no-op so a possible leaked cluster object is
-        // visible — there's nothing reconstructable to tear down here.
-        getComponentLogger('alchemy-deployment')
-          .child({ alchemyType: KRO_RESOURCE_TYPE })
-          .warn('Skipping delete: no live spec and no reconstructable output to tear down', {
-            hasOutput: !!output,
+      }),
+      reconcile: Effect.fn(function* ({ id, news, output }) {
+        return yield* Effect.tryPromise({
+          try: async (abortSignal) => {
+            const resourceHooks = hooksForResource(hooks, id);
+            const persistedIdentity = persistedKroResourceIdentity(output);
+            const desiredIdentity = desiredKroResourceIdentity(news, output);
+            const mutationPrecondition = await resourceHooks.beforeReconcile?.(news);
+            if (resourceHooks.beforeKubernetesEffect && news.deploymentStrategy === 'direct') {
+              if (mutationPrecondition || news.mutationPrecondition) {
+                throw new Error(
+                  'Effect-time Kubernetes admission cannot reuse a preflight mutation precondition.'
+                );
+              }
+              if (news.deployer) {
+                throw new Error(
+                  'Effect-time Kubernetes admission cannot use an injected deployer.'
+                );
+              }
+            }
+            if (
+              persistedIdentity &&
+              desiredIdentity &&
+              desiredIdentity !== UNRESOLVED_IDENTITY &&
+              !sameKroResourceIdentity(persistedIdentity, desiredIdentity)
+            ) {
+              const previous = propsFromOutput(output);
+              if (!previous) {
+                throw new Error(
+                  `Alchemy cannot replace prior Kubernetes identity ${persistedIdentity.apiVersion}/${persistedIdentity.kind} ` +
+                    `${persistedIdentity.metadata.namespace ? `${persistedIdentity.metadata.namespace}/` : ''}` +
+                    `${persistedIdentity.metadata.name}: persisted delete properties are unavailable`
+                );
+              }
+              // A distinct guarded identity must exist successfully before the incumbent is
+              // destroyed. Each write still obtains its own fresh effect-time authority. If
+              // teardown fails, persisted output stays on the incumbent and retry converges
+              // against the already-created successor before retrying the old delete.
+              if (resourceHooks.beforeKubernetesEffect && news.deploymentStrategy === 'direct') {
+                const successor = await deployKroResource(news, abortSignal, {}, resourceHooks);
+                await resourceHooks.beforeDelete?.(previous);
+                await deleteKroResource(previous, abortSignal, resourceHooks);
+                await waitForPersistedIdentityDeletion(news, output, abortSignal);
+                return successor;
+              }
+              await resourceHooks.beforeDelete?.(previous);
+              await deleteKroResource(previous, abortSignal, resourceHooks);
+            }
+            await waitForPersistedIdentityDeletion(news, output, abortSignal);
+            return deployKroResource(
+              mutationPrecondition ? { ...news, mutationPrecondition } : news,
+              abortSignal,
+              {},
+              resourceHooks
+            );
+          },
+          catch: ensureError,
+        });
+      }),
+      delete: Effect.fn(function* ({ id, output, olds }) {
+        // Prefer the live spec (`olds` — the last-applied props; Alchemy renamed the delete
+        // input's spec field from `news` to `olds`); fall back to reconstructing minimal props from
+        // persisted output (a delete after the spec is gone — e.g. resource removed from the stack).
+        const props = yield* Effect.try({
+          try: () => propsForRetainedDelete(olds, output),
+          catch: ensureError,
+        });
+        if (props) {
+          yield* Effect.tryPromise({
+            try: async (abortSignal) => {
+              const resourceHooks = hooksForResource(hooks, id);
+              await resourceHooks.beforeDelete?.(props);
+              await deleteKroResource(props, abortSignal, resourceHooks);
+            },
+            catch: ensureError,
           });
-      }
-    }),
-  })
-);
+        } else {
+          // Neither a live spec nor a usable output (e.g. a create that failed before persisting a
+          // complete output). Warn rather than silently no-op so a possible leaked cluster object is
+          // visible — there's nothing reconstructable to tear down here.
+          getComponentLogger('alchemy-deployment')
+            .child({ alchemyType: KRO_RESOURCE_TYPE })
+            .warn('Skipping delete: no live spec and no reconstructable output to tear down', {
+              hasOutput: !!output,
+            });
+        }
+      }),
+    })
+  );
+}
+
+export const kroProvider = kroProviderWithHooks();
 
 /**
  * Instantiate a set of {@link AlchemyResourceDeclaration}s (from a factory's `toAlchemyResources`)
@@ -412,11 +511,9 @@ export function materializeAlchemyResources(
       // provider's delete hook. Register it natively so destroy/prune drops
       // only the state entry without invoking Kubernetes deletion. Keep the
       // provider-level retain guard for legacy state and direct provider use.
-      handles[decl.id] = yield* (
-        decl.props.retain === true
-          ? RemovalPolicy.retain()(resource)
-          : resource
-      );
+      handles[decl.id] = yield* decl.props.retain === true
+        ? RemovalPolicy.retain()(resource)
+        : resource;
     }
     return handles;
   });
@@ -491,7 +588,8 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
     migrateLegacyArtifactBindings?: typeof migrateLegacyKroArtifactBindingCrd;
     repairRetainedCrdOwnership?: typeof repairRetainedKroGeneratedCrdOwnership;
     kubeConfigForMigration?: () => KubeConfig;
-  } = {}
+  } = {},
+  hooks: KroResourceEffectHooks = {}
 ): Promise<TypeKroResource<T>> {
   abortSignal?.throwIfAborted();
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
@@ -512,7 +610,12 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   // otherwise strip it so teardown never deletes a namespace typekro merely adopted.
   const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger, abortSignal);
   abortSignal?.throwIfAborted();
-  const { deployer, dispose } = await _resolveDeployer(effectiveProps, 'deployment', abortSignal);
+  const { deployer, dispose } = await _resolveDeployer(
+    effectiveProps,
+    'deployment',
+    abortSignal,
+    hooks
+  );
   try {
     // Direct mode: hand the deployer the live state of this resource's dependencies so the engine
     // resolves its cross-resource references + CEL expressions against them (the deps deployed
@@ -574,6 +677,10 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       copyResourceMetadata(resourceForDeploy, wrapped);
       resourceForDeploy = wrapped;
     }
+    resourceForDeploy = applyKroResourceMutationPrecondition(
+      resourceForDeploy,
+      effectiveProps.mutationPrecondition
+    );
     if (
       effectiveProps.deploymentStrategy === 'kro' &&
       (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition'
@@ -628,6 +735,54 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
  * through the Effect provider above.
  */
 export const deployKroResourceForTest = deployKroResource;
+
+function applyKroResourceMutationPrecondition<T extends Enhanced<unknown, unknown>>(
+  resource: T,
+  precondition: TypeKroResourceProps<T>['mutationPrecondition']
+): T {
+  if (!precondition) return resource;
+  const guarded = {
+    ...resource,
+    metadata: { ...(resource.metadata ?? { name: '' }) },
+  } as T;
+  copyResourceMetadata(resource, guarded);
+  if (precondition.operation === 'create') {
+    setMetadataField(guarded, 'applyPolicy', {
+      strategy: 'create-only',
+    });
+    return guarded;
+  }
+  const policy = getMetadataField(guarded, 'applyPolicy') as
+    | {
+        strategy?: string;
+        existingResource?: string;
+        immutableFieldPolicy?: string;
+      }
+    | undefined;
+  if (
+    policy?.strategy === 'replace' ||
+    policy?.existingResource === 'replace' ||
+    policy?.immutableFieldPolicy === 'recreate'
+  ) {
+    throw new TypeKroError(
+      `A preconditioned update cannot use replacement semantics for ${guarded.kind}/${guarded.metadata?.name}`,
+      'MUTATION_PRECONDITION_REPLACEMENT_UNSAFE'
+    );
+  }
+  const updated = {
+    ...guarded,
+    metadata: {
+      ...(guarded.metadata ?? { name: '' }),
+      uid: precondition.uid,
+      resourceVersion: precondition.resourceVersion,
+    },
+  } as T;
+  copyResourceMetadata(guarded, updated);
+  return updated;
+}
+
+/** @internal Exact helper shared with focused operation-host tests. */
+export const applyKroResourceMutationPreconditionForTest = applyKroResourceMutationPrecondition;
 
 interface KroResourceIdentityReader {
   read(resource: KubernetesResource): Promise<KubernetesResource>;
@@ -1599,7 +1754,7 @@ function _resourceFromDirectArtifactRecord<T extends Enhanced<unknown, unknown>>
     preserveSensitiveInputs,
     `Direct artifact ${logicalId}`
   );
-  return materializeDirectArtifactManifest(
+  const resource = materializeDirectArtifactManifest(
     record.artifact,
     {
       instanceName: props.resourceId ?? logicalId,
@@ -1611,6 +1766,21 @@ function _resourceFromDirectArtifactRecord<T extends Enhanced<unknown, unknown>>
     },
     props.resourceId ?? logicalId
   ) as T;
+  const externalReferences = (record.externalReferences ?? []).map((reference) => {
+    const id = reference.sourceNodeId ?? reference.id;
+    return {
+      id,
+      manifest: materializeDirectArtifactManifest(
+        reference,
+        { instanceName: props.resourceId ?? logicalId },
+        id
+      ) as DeployableK8sResource<Enhanced<unknown, unknown>>,
+    };
+  });
+  if (externalReferences.length > 0) {
+    setMetadataField(resource, 'directExternalReferences', externalReferences);
+  }
+  return resource;
 }
 
 /** Internal test hook for canonical direct-artifact state rehydration. */
@@ -1692,6 +1862,44 @@ function propsFromOutput<T extends Enhanced<unknown, unknown>>(
   };
 }
 
+/** Recover a retained base-format input's scope only from its matching persisted output. */
+function propsForRetainedDelete<T extends Enhanced<unknown, unknown>>(
+  olds: TypeKroResourceProps<T> | undefined,
+  output: TypeKroResource<T> | undefined
+): TypeKroResourceProps<T> | undefined {
+  if (!olds) return propsFromOutput(output);
+  const outputScope = output?.resource && getResourceScope(output.resource);
+  if (!outputScope) return olds;
+  const deployed = persistedKroResourceIdentity(output);
+  const sameIdentity = (left: KubernetesResource, right: KubernetesResource): boolean =>
+    left.apiVersion === right.apiVersion &&
+    left.kind === right.kind &&
+    left.metadata?.name === right.metadata?.name &&
+    left.metadata?.namespace === right.metadata?.namespace;
+  if (
+    !deployed ||
+    !sameIdentity(olds.resource, output.resource) ||
+    !sameIdentity(output.resource, deployed)
+  ) {
+    throw new Error(
+      'Retained Alchemy delete scope cannot be recovered from a conflicting persisted Kubernetes identity.'
+    );
+  }
+  const oldScope = getResourceScope(olds.resource);
+  if (oldScope && oldScope !== outputScope) {
+    throw new Error(
+      'Retained Alchemy delete scope conflicts with the persisted Kubernetes output.'
+    );
+  }
+  if (oldScope) return olds;
+  const resource = { ...olds.resource, scope: outputScope } as T;
+  copyResourceMetadata(olds.resource, resource);
+  return { ...olds, resource };
+}
+
+/** @internal Retained-state migration regression helper. */
+export const propsForRetainedDeleteForTest = propsForRetainedDelete;
+
 /**
  * Create KubernetesClientProvider using centralized configuration management
  * Eliminates complex multi-stage fallback logic and consolidates TLS handling
@@ -1734,7 +1942,8 @@ function _createClientProvider<T extends Enhanced<unknown, unknown>>(
 async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   kc: import('@kubernetes/client-node').KubeConfig,
   props: TypeKroResourceProps<T>,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  hooks: KroResourceEffectHooks = {}
 ): Promise<TypeKroDeployer> {
   // Use dynamic import to avoid circular dependencies
   const { DirectDeploymentEngine } = await import('../core/deployment/engine.js');
@@ -1748,15 +1957,21 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   // config is still passed so Bun applies it at the socket (which can also cancel the request),
   // and the deadline wrapper adds the runtime-neutral bound on top. Both use the same per-verb
   // budgets, so under Bun this changes nothing.
+  const boundedApi = _boundClusterCalls(
+    createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
+    props,
+    'deployment-engine',
+    abortSignal,
+    kc
+  );
+  const effectGate = hooks.beforeKubernetesEffect;
+  const api =
+    effectGate && props.deploymentStrategy === 'direct'
+      ? guardKubernetesObjectApi(boundedApi, (mutation) => effectGate(props, mutation))
+      : boundedApi;
   const engine = new DirectDeploymentEngine(
     kc,
-    _boundClusterCalls(
-      createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
-      props,
-      'deployment-engine',
-      abortSignal,
-      kc
-    ),
+    api,
     undefined,
     DeploymentMode.DIRECT,
     props.options?.httpTimeouts
@@ -1923,14 +2138,18 @@ export const enrichKroDeletionOptionsForTest = enrichKroDeletionOptions;
 async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   phase: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  hooks: KroResourceEffectHooks = {}
 ): Promise<{ deployer: TypeKroDeployer; dispose: () => Promise<void> }> {
   if (props.deployer) {
+    if (hooks.beforeKubernetesEffect && props.deploymentStrategy === 'direct') {
+      throw new Error('Effect-time Kubernetes admission cannot use an injected deployer.');
+    }
     return { deployer: props.deployer, dispose: async () => {} };
   }
 
   const kc = _createClientProvider(props, phase);
-  const deployer = await _createDeployer(kc, props, abortSignal);
+  const deployer = await _createDeployer(kc, props, abortSignal, hooks);
   return {
     deployer,
     dispose: async () => {
@@ -1948,7 +2167,8 @@ async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
  */
 async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  hooks: KroResourceEffectHooks = {}
 ): Promise<void> {
   abortSignal?.throwIfAborted();
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
@@ -1982,9 +2202,18 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
       return;
     }
     const kubeConfig = _createClientProvider(props, 'delete');
+    const effectGate = hooks.beforeKubernetesEffect;
+    const k8sApi =
+      effectGate && props.deploymentStrategy === 'direct'
+        ? guardKubernetesObjectApi(createBunCompatibleKubernetesObjectApi(kubeConfig), (mutation) =>
+            effectGate(props, mutation)
+          )
+        : undefined;
     abortSignal?.throwIfAborted();
     await deleteNamespaceIfEmpty(kubeConfig, namespaceName, {
       logger,
+      ...(k8sApi ? { k8sApi } : {}),
+      ...(k8sApi ? { forbidResidualPvcCleanup: true } : {}),
       // Ownership record (finding #4) + gated delete (finding #1): only delete a
       // namespace this composition's RGD created, and gate it to a real 404.
       ...(props.namespaceOwnerRgd !== undefined && { ownedByRgd: props.namespaceOwnerRgd }),
@@ -2001,7 +2230,7 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
     abortSignal?.throwIfAborted();
     return;
   }
-  const { deployer, dispose } = await _resolveDeployer(props, 'delete', abortSignal);
+  const { deployer, dispose } = await _resolveDeployer(props, 'delete', abortSignal, hooks);
   try {
     await deployer.delete(props.resource, {
       mode: props.deploymentStrategy,
@@ -2094,7 +2323,7 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
 function cloneResourceForAlchemyState<T extends Enhanced<unknown, unknown>>(
   resource: T,
   fallbackScope?: ResourceScope
-): T {
+): T & { scope?: ResourceScope } {
   const cleanResource = cloneAlchemyStateValue(resource) as T & { scope?: ResourceScope };
   const scope =
     getResourceScope(resource as T & { scope?: ResourceScope }) ??
@@ -2106,7 +2335,7 @@ function cloneResourceForAlchemyState<T extends Enhanced<unknown, unknown>>(
       delete (cleanResource.metadata as Record<string, unknown> | undefined)?.namespace;
     }
   }
-  return cleanResource as T;
+  return cleanResource;
 }
 
 function cloneAlchemyStateValue(value: unknown, seen = new WeakMap<object, unknown>()): unknown {

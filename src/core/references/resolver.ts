@@ -517,7 +517,6 @@ export class ReferenceResolver {
             this.logger.debug('Extracted field value from resourceKeyMapping', {
               resourceId: ref.resourceId,
               fieldPath: ref.fieldPath,
-              value,
               valueType: typeof value,
             });
             this.cache.set(cacheKey, value);
@@ -723,7 +722,6 @@ export class ReferenceResolver {
       );
       this.logger.debug('CEL expression evaluated successfully', {
         expression: resolvedExpression,
-        result,
         resultType: typeof result,
       });
       this.cache.set(cacheKey, result);

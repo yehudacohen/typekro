@@ -410,6 +410,25 @@ describe('DependencyResolver', () => {
       expect(warnings).toEqual([]);
     });
 
+    it('ignores resource paths quoted inside a triple-quoted CEL literal', () => {
+      const app = createMockResource({
+        id: 'app',
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: `concat("""address "helm.status.url" suffix""", cache.status.host)`,
+          },
+        },
+      });
+      const graph = resolver.buildDependencyGraph([
+        app,
+        createMockResource({ id: 'helm' }),
+        createMockResource({ id: 'cache' }),
+      ]);
+
+      expect(graph.getDependencies('app')).toEqual(['cache']);
+    });
+
     it('does not treat a Kubernetes DNS suffix as a resource reference', () => {
       const warnings: Array<{ message: string; context?: unknown }> = [];
       (

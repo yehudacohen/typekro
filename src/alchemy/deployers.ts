@@ -16,6 +16,7 @@ import { getComponentLogger } from '../core/logging/index.js';
 import {
   applyResourceScopeMetadata,
   copyResourceMetadata,
+  getMetadataField,
   getReadinessEvaluator,
 } from '../core/metadata/index.js';
 import { ensureReadinessEvaluator } from '../core/readiness/index.js';
@@ -145,6 +146,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
         },
       ],
       dependencyGraph,
+      externalReferences: [...(getMetadataField(resource, 'directExternalReferences') ?? [])],
     };
   }
 

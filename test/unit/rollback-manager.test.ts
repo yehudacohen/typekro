@@ -161,6 +161,50 @@ describe('ResourceRollbackManager', () => {
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
     });
 
+    it('authorizes and preconditions each ordered delete, stopping before a drifted sibling', async () => {
+      const first = createTestConfigMap('first');
+      const second = createTestConfigMap('second');
+      const deployedResources: DeployedResource[] = [first, second].map((manifest, index) => ({
+        id: index === 0 ? 'first' : 'second',
+        kind: 'ConfigMap',
+        name: index === 0 ? 'first' : 'second',
+        namespace: 'default',
+        manifest,
+        status: 'deployed',
+        deployedAt: new Date(),
+      }));
+      const trace: string[] = [];
+      mockK8sApi.delete.mockImplementation(async (target) => {
+        trace.push(`delete:${target.metadata.name}`);
+        return {};
+      });
+      mockK8sApi.read.mockRejectedValue(createK8sError('Not found', 404));
+
+      const result = await manager.rollbackOrderedResources(deployedResources, {
+        mode: 'direct',
+        beforeDeleteResource: async ({ name }) => {
+          trace.push(`authorize:${name}`);
+          if (name === 'second') throw new Error('sibling drift detected');
+          return { presence: 'present', uid: 'first-uid', resourceVersion: '7' };
+        },
+      });
+
+      expect(trace).toEqual(['authorize:first', 'delete:first', 'authorize:second']);
+      expect(result.deletedResources.map(({ name }) => name)).toEqual(['first']);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]?.error.message).toBe('sibling drift detected');
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
+      expect(mockK8sApi.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: { name: 'first', namespace: 'default' } }),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { preconditions: { uid: 'first-uid', resourceVersion: '7' } }
+      );
+    });
+
     it('should emit proper rollback events throughout the process', async () => {
       const deployment1 = createTestDeployment('test-app');
       const resources = [deployment1] as Enhanced<unknown, unknown>[];

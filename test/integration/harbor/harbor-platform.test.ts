@@ -16,13 +16,24 @@
  *   RUN_HARBOR_PLATFORM_INTEGRATION=true HARBOR_DEPLOYMENT_MODE=direct bun test \
  *     test/integration/harbor/harbor-platform.test.ts
  *
+ * An opt-in TYPEKRO_HARBOR_CONSUMER_SCRIPT runs after the fixture passes and
+ * before TypeKro-first teardown. It receives only non-secret installation
+ * connection fields through TYPEKRO_HARBOR_TEST_INSTALLATION and the selected
+ * context through TYPEKRO_HARBOR_TEST_CONTEXT.
+ * TYPEKRO_HARBOR_SHARED_EXTERNAL_CONSUMER=true creates a disposable installation
+ * at one explicit external connection, runs the injected consumer hook against
+ * it, then deletes only test-owned resources on the prerequisite TypeKro
+ * Rook/Ceph platform.
+ *
  * Retained mode is deliberate: Chirp consumes that shared registry platform.
  * Non-retained runs use unique namespaces, project, bucket, and NodePorts and
  * perform TypeKro-first teardown without touching the retained installation.
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type { KubernetesObject, V1Secret } from '@kubernetes/client-node';
 import { type } from 'arktype';
@@ -57,19 +68,41 @@ import {
   createTestNamespace,
   deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
+  ensureFluxInstalled,
   ensureSharedPrerequisiteNamespace,
   isClusterAvailable,
   runTestPodAndReadLogs,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
+import { runIntegrationConsumer } from '../shared-consumer-process.js';
 
 const requested = process.env.RUN_HARBOR_PLATFORM_INTEGRATION === 'true';
 const describeOrSkip = requested && (await isClusterAvailable()) ? describe : describe.skip;
 const retainPlatform = process.env.KEEP_HARBOR_PLATFORM === 'true';
+const consumerScript = process.env.TYPEKRO_HARBOR_CONSUMER_SCRIPT;
+const sharedExternalConsumer = process.env.TYPEKRO_HARBOR_SHARED_EXTERNAL_CONSUMER === 'true';
 const deploymentMode = process.env.HARBOR_DEPLOYMENT_MODE === 'direct' ? 'direct' : 'kro';
+if (process.env.HARBOR_STORAGE_BACKEND || process.env.TYPEKRO_HARBOR_CONSUMER_OWNS_INSTALLATION) {
+  throw new Error(
+    'The Harbor fixture requires its Rook/Ceph prerequisite; disposable S3 and consumer-owned fixture modes were removed.'
+  );
+}
+if (
+  sharedExternalConsumer &&
+  (!consumerScript ||
+    retainPlatform ||
+    deploymentMode !== 'direct' ||
+    (process.env.HARBOR_NODE_PORT && process.env.HARBOR_NODE_PORT !== '32080'))
+) {
+  throw new Error(
+    'The shared external Harbor consumer requires direct mode, port 32080, and one consumer script.'
+  );
+}
 const runId = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
-const suffix = retainPlatform ? 'harbor' : `harbor-${runId}`;
-const controlNamespace = `typekro-${suffix}-platform-control`.slice(0, 63);
+const fixedExternalBinding = retainPlatform || sharedExternalConsumer;
+const suffix = fixedExternalBinding ? 'harbor' : `harbor-${runId}`;
+const controlNamespace =
+  `typekro-${suffix}-${sharedExternalConsumer ? 'registry' : 'platform'}-control`.slice(0, 63);
 const harborNamespace = `typekro-${suffix}-registry`.slice(0, 63);
 const clientNamespace = `typekro-${suffix}-clients`.slice(0, 63);
 const storageClassName = 'typekro-harbor-bucket-retain';
@@ -78,15 +111,67 @@ const activeStorageClassName = retainPlatform ? storageClassName : disposableSto
 const claimName = retainPlatform
   ? 'harbor-registry-storage'
   : `harbor-storage-${runId}`.slice(0, 63);
-const installationName = retainPlatform ? 'harbor' : `harbor-${runId}`.slice(0, 63);
+const installationName = fixedExternalBinding ? 'harbor' : `harbor-${runId}`.slice(0, 63);
 const projectName = retainPlatform ? 'chirp-live' : `chirp-${runId}`.slice(0, 63);
-const port = Number(process.env.HARBOR_NODE_PORT ?? (retainPlatform ? 32_080 : 32_082));
-// The official NodePort is reachable from both the host and BuildKit through
-// the OrbStack Kubernetes node. Host-side port-forwarding is intentionally not
-// part of the registry lifecycle proof.
+const bucketName = `typekro-${suffix}-registry`.slice(0, 63);
+const port = Number(process.env.HARBOR_NODE_PORT ?? (fixedExternalBinding ? 32_080 : 32_082));
+function localPublishHost(): string {
+  const route = execFileSync('route', ['-n', 'get', 'default'], { encoding: 'utf8' });
+  const interfaceName = /^\s*interface:\s*(\S+)/mu.exec(route)?.[1];
+  const address =
+    interfaceName &&
+    networkInterfaces()[interfaceName]?.find(
+      (candidate) => candidate.family === 'IPv4' && !candidate.internal
+    )?.address;
+  if (!address)
+    throw new Error('The owned Harbor test has no reachable default-route IPv4 host address.');
+  return address;
+}
+// The ordinary route uses a directly reachable NodePort. The shared consumer
+// route uses a test-scoped host forward when the selected node is not reachable.
 let apiOrigin = '';
 let registryHost = '';
 let registryOrigin = '';
+let sharedHostForward: ReturnType<typeof spawn> | undefined;
+async function startSharedHostForward(context: string): Promise<void> {
+  if (!sharedExternalConsumer) return;
+  const host = localPublishHost();
+  const child = spawn(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'port-forward',
+      '-n',
+      harborNamespace,
+      'service/harbor',
+      `${port}:80`,
+      '--address',
+      host,
+    ],
+    { stdio: 'ignore' }
+  );
+  sharedHostForward = child;
+  let forwardError: Error | undefined;
+  child.once('error', (cause) => {
+    forwardError = cause;
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (forwardError) throw forwardError;
+    if (child.exitCode !== null || child.signalCode !== null)
+      throw new Error('Disposable shared Harbor forward exited before readiness.');
+    try {
+      const response = await fetch(`${apiOrigin}/api/v2.0/ping`, {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (response.ok && (await response.text()) === 'Pong') return;
+    } catch {
+      /* Wait for kubectl to bind the test-owned service. */
+    }
+    await Bun.sleep(200);
+  }
+  throw new Error('Disposable shared Harbor forward did not become ready.');
+}
 
 const secretNames = {
   storage: 'typekro-harbor-s3',
@@ -142,7 +227,8 @@ setDefaultTimeout(1_800_000);
 
 async function ensureSecret(
   name: string,
-  stringData: Readonly<Record<string, string>>
+  stringData: Readonly<Record<string, string>>,
+  namespace = harborNamespace
 ): Promise<void> {
   const store = createHarborKubernetesStore({ skipTLSVerify: true });
   await store.upsertSecret({
@@ -150,7 +236,7 @@ async function ensureSecret(
     kind: 'Secret',
     metadata: {
       name,
-      namespace: harborNamespace,
+      namespace,
       labels: {
         'app.kubernetes.io/name': 'harbor',
         'app.kubernetes.io/managed-by': 'typekro-integration',
@@ -240,8 +326,9 @@ function assertSecretDoesNotContain(
 }
 
 describeOrSkip(
-  `official Harbor platform (${deploymentMode}) backed by retained Rook/Ceph object storage`,
+  `official Harbor platform (${deploymentMode}) backed by Rook/Ceph object storage`,
   () => {
+    const t = it.skipIf(sharedExternalConsumer);
     const kubeConfig = getKubeConfig({ skipTLSVerify: true });
     const claimFactory = rookObjectStorageClaim.factory('direct', {
       namespace: harborNamespace,
@@ -270,13 +357,17 @@ describeOrSkip(
             kubeConfig,
           });
     const store = createHarborKubernetesStore({ skipTLSVerify: true });
-    let harborDeployed = false;
+    let harborAttempted = false;
     let claimDeployed = false;
     let projectReconciled = false;
     let bucketClassDeployed = false;
+    let storageBinding: HarborLocalInstallationConfig['storage'] | undefined;
     const namespaceLeases: TestNamespaceLease[] = [];
 
     beforeAll(async () => {
+      if (sharedExternalConsumer) {
+        await ensureFluxInstalled({ kubeConfig, verbose: false });
+      }
       const objectApi = createKubernetesObjectApiClient(kubeConfig);
       const storageClass = await objectApi
         .read({
@@ -286,8 +377,7 @@ describeOrSkip(
         })
         .catch(() => undefined);
       const expectedProvisioner =
-        process.env.TYPEKRO_HARBOR_BUCKET_PROVISIONER ??
-        'typekro-harbor-ceph.ceph.rook.io/bucket';
+        process.env.TYPEKRO_HARBOR_BUCKET_PROVISIONER ?? 'typekro-harbor-ceph.ceph.rook.io/bucket';
       if (
         !storageClass ||
         (storageClass as { provisioner?: string }).provisioner !== expectedProvisioner
@@ -312,7 +402,7 @@ describeOrSkip(
             address.address.includes('.')
         )?.address;
       if (!nodeAddress) throw new Error('OrbStack Kubernetes node has no InternalIP address.');
-      registryHost = `${nodeAddress}:${port}`;
+      registryHost = `${sharedExternalConsumer ? localPublishHost() : nodeAddress}:${port}`;
       registryOrigin = `http://${registryHost}`;
       apiOrigin = registryOrigin;
       if (retainPlatform) {
@@ -331,11 +421,11 @@ describeOrSkip(
         name: claimName,
         namespace: harborNamespace,
         storageClassName: activeStorageClassName,
-        bucket: { name: `typekro-${suffix}-registry`.slice(0, 63), mode: 'generated' },
+        bucket: { name: bucketName, mode: 'generated' },
       });
       claimDeployed = true;
       expect(claim.status).toMatchObject({ ready: true, phase: 'Bound' });
-      const storage = await prepareHarborRookS3Binding({
+      storageBinding = await prepareHarborRookS3Binding({
         sourceNamespace: harborNamespace,
         claimName,
         targetNamespace: harborNamespace,
@@ -343,12 +433,16 @@ describeOrSkip(
         kubeConfig: { skipTLSVerify: true },
         rootDirectory: '/registry',
       });
-      expect(storage.existingSecret).toBe(secretNames.storage);
+      expect(storageBinding.existingSecret).toBe(secretNames.storage);
       await ensureHarborSecrets();
     });
 
     afterAll(async () => {
       if (retainPlatform) return;
+      if (sharedHostForward) {
+        sharedHostForward.kill('SIGTERM');
+        sharedHostForward = undefined;
+      }
       const cleanupErrors: unknown[] = [];
       if (projectReconciled) {
         const secrets = activeTestSecrets();
@@ -368,7 +462,8 @@ describeOrSkip(
           store,
         }).catch((error) => cleanupErrors.push(error));
       }
-      if (harborDeployed) {
+      if (harborAttempted) {
+        console.log(`Cleaning test Harbor installation ${installationName}`);
         await deleteTestFactoryInstanceAndRecoverNamespaces(
           harborFactory,
           installationName,
@@ -397,7 +492,8 @@ describeOrSkip(
         ).catch((error) => cleanupErrors.push(error));
       }
       for (const lease of namespaceLeases) {
-        await deleteTestNamespaceAndWait(lease, kubeConfig).catch((error) =>
+        console.log(`Cleaning test namespace ${lease.name}`);
+        await deleteTestNamespaceAndWait(lease, kubeConfig, 30_000, 120_000).catch((error) =>
           cleanupErrors.push(error)
         );
       }
@@ -407,14 +503,7 @@ describeOrSkip(
     });
 
     it(`installs the official chart through ${deploymentMode} mode with schema-complete status`, async () => {
-      const storage = await prepareHarborRookS3Binding({
-        sourceNamespace: harborNamespace,
-        claimName,
-        targetNamespace: harborNamespace,
-        targetSecretName: secretNames.storage,
-        kubeConfig: { skipTLSVerify: true },
-        rootDirectory: '/registry',
-      });
+      if (!storageBinding) throw new Error('Harbor storage binding was not prepared.');
       const desired = {
         name: installationName,
         namespace: harborNamespace,
@@ -427,7 +516,7 @@ describeOrSkip(
           nodePort: { http: port, https: port + 1 },
         },
         storage: {
-          ...storage,
+          ...storageBinding,
           skipVerify: false,
           disableRedirect: true,
         },
@@ -452,8 +541,8 @@ describeOrSkip(
           },
         },
       } satisfies HarborLocalInstallationConfig;
+      harborAttempted = true;
       const installation = await harborFactory.deploy(desired);
-      harborDeployed = true;
       expect(installation.status).toMatchObject({
         ready: true,
         failed: false,
@@ -470,8 +559,10 @@ describeOrSkip(
       });
       expect(installation.status.release.observedGeneration).toBeGreaterThan(0);
       expect(installation.status.release.conditions.length).toBeGreaterThan(0);
+      await startSharedHostForward(kubeConfig.getCurrentContext());
       const ping = await fetch(`${apiOrigin}/api/v2.0/ping`);
       expect(await ping.text()).toBe('Pong');
+      if (sharedExternalConsumer) return;
 
       // Exercise an actual factory update. waitForReady must not reuse the prior
       // generation's Ready condition while Flux is still reconciling the new
@@ -550,127 +641,178 @@ describeOrSkip(
       expect(await (await fetch(`${apiOrigin}/api/v2.0/ping`)).text()).toBe('Pong');
     });
 
-    it('reconciles a private project and purpose-scoped robot credentials idempotently', async () => {
-      const secrets = activeTestSecrets();
-      const client = new HarborApiClient({
-        endpoint: apiOrigin,
-        allowPlainHttp: true,
-        credentialProvider: async () => ({
-          username: 'admin',
-          password: secrets.adminPassword,
-        }),
-      });
-      const options = {
-        project: {
-          name: projectName,
-          public: false,
-          storageLimitBytes: 5_000_000_000,
-          autoScan: false,
-          autoSbomGeneration: false,
-          immutableTags: { repositoryPattern: '**', tagPattern: 'release-*' },
-          retention: { keepMostRecent: 20 },
-        },
-        robots: [
-          {
-            name: `${projectName}-pull`,
-            secretName: secretNames.robotPull,
-            access: 'pull' as const,
+    t(
+      'reconciles a private project and purpose-scoped robot credentials idempotently',
+      async () => {
+        const secrets = activeTestSecrets();
+        const client = new HarborApiClient({
+          endpoint: apiOrigin,
+          allowPlainHttp: true,
+          credentialProvider: async () => ({
+            username: 'admin',
+            password: secrets.adminPassword,
+          }),
+        });
+        const options = {
+          project: {
+            name: projectName,
+            public: false,
+            storageLimitBytes: 5_000_000_000,
+            autoScan: false,
+            autoSbomGeneration: false,
+            immutableTags: { repositoryPattern: '**', tagPattern: 'release-*' },
+            retention: { keepMostRecent: 20 },
           },
-          {
-            name: `${projectName}-push`,
-            secretName: secretNames.robotPush,
-            access: 'push' as const,
-          },
-        ],
-        secretNamespace: clientNamespace,
-        registry: registryOrigin,
-        kubeConfig: { skipTLSVerify: true },
-      };
-      const first = await reconcileHarborProject(client, options);
-      projectReconciled = true;
-      const second = await reconcileHarborProject(client, options);
-      expect(second).toEqual(first);
-      expect(first.project).toBe(projectName);
-      expect(first.robots).toHaveLength(2);
-      const pullSecret = await store.readSecret(clientNamespace, secretNames.robotPull);
-      const pushSecret = await store.readSecret(clientNamespace, secretNames.robotPush);
-      expect(pullSecret?.type).toBe('kubernetes.io/dockerconfigjson');
-      expect(pushSecret?.type).toBe('kubernetes.io/dockerconfigjson');
-      assertSecretDoesNotContain(pushSecret, [secrets.adminPassword, secrets.registryPassword]);
-    });
-
-    it('pushes once through container(), verifies the registry digest, and exposes the artifact', async () => {
-      clearContainerCache();
-      const credentialProvider = kubernetesSecretRegistryCredentials({
-        namespace: clientNamespace,
-        name: secretNames.robotPush,
-        registry: registryOrigin,
-      });
-      const options = {
-        context: join(import.meta.dir, 'fixtures/oci-smoke'),
-        imageName: 'typekro-oci-smoke',
-        timeout: 600_000,
-        progress: 'plain' as const,
-        registry: harborRegistry({
-          registry: registryOrigin,
-          project: projectName,
-          credentialProvider,
-          tls: { plainHttp: true },
-        }),
-      };
-      const first = await container(options);
-      const second = await container(options);
-      expect(second).toEqual(first);
-      const digest = first.digest;
-      expect(digest).toMatch(/^sha256:[a-f0-9]{64}$/);
-      if (!digest) throw new Error('Remote Harbor build did not return a verified digest.');
-      expect(first.imageUri).toBe(`${registryHost}/${projectName}/typekro-oci-smoke@${digest}`);
-      expect(first.taggedImageUri).toContain(
-        `${registryHost}/${projectName}/typekro-oci-smoke:sha-`
-      );
-
-      const pullPod = `harbor-pull-${runId}`.slice(0, 63);
-      const pulledDigest = await runTestPodAndReadLogs(
-        {
-          namespace: clientNamespace,
-          name: pullPod,
-          image:
-            'gcr.io/go-containerregistry/crane@sha256:1b1fb24d2b1bb27a9daf81a588157e68463876904e8e537a812edba6284fb252',
-          command: ['/ko-app/crane'],
-          args: ['digest', '--insecure', first.imageUri],
-          env: [{ name: 'DOCKER_CONFIG', value: '/docker' }],
-          volumeMounts: [{ name: 'registry-auth', mountPath: '/docker', readOnly: true }],
-          volumes: [
+          robots: [
             {
-              name: 'registry-auth',
-              secret: {
-                secretName: secretNames.robotPull,
-                items: [{ key: '.dockerconfigjson', path: 'config.json' }],
-              },
+              name: `${projectName}-pull`,
+              secretName: secretNames.robotPull,
+              access: 'pull' as const,
+            },
+            {
+              name: `${projectName}-push`,
+              secretName: secretNames.robotPush,
+              access: 'push' as const,
             },
           ],
-          timeoutMs: 300_000,
-        },
-        kubeConfig
-      );
-      expect(pulledDigest.trim()).toBe(digest);
+          secretNamespace: clientNamespace,
+          registry: registryOrigin,
+          kubeConfig: { skipTLSVerify: true },
+        };
+        const first = await reconcileHarborProject(client, options);
+        projectReconciled = true;
+        const second = await reconcileHarborProject(client, options);
+        expect(second).toEqual(first);
+        expect(first.project).toBe(projectName);
+        expect(first.robots).toHaveLength(2);
+        const pullSecret = await store.readSecret(clientNamespace, secretNames.robotPull);
+        const pushSecret = await store.readSecret(clientNamespace, secretNames.robotPush);
+        expect(pullSecret?.type).toBe('kubernetes.io/dockerconfigjson');
+        expect(pushSecret?.type).toBe('kubernetes.io/dockerconfigjson');
+        assertSecretDoesNotContain(pushSecret, [secrets.adminPassword, secrets.registryPassword]);
+      }
+    );
 
-      const secrets = activeTestSecrets();
-      const client = new HarborApiClient({
-        endpoint: apiOrigin,
-        allowPlainHttp: true,
-        credentialProvider: async () => ({
-          username: 'admin',
-          password: secrets.adminPassword,
-        }),
-      });
-      const artifact = await client.request<{ digest?: string }>({
-        method: 'GET',
-        path:
-          `/projects/${projectName}/repositories/typekro-oci-smoke/artifacts/` +
-          encodeURIComponent(digest),
-      });
-      expect(artifact.body?.digest).toBe(digest);
-    });
+    t(
+      'pushes once through container(), verifies the registry digest, and exposes the artifact',
+      async () => {
+        clearContainerCache();
+        const credentialProvider = kubernetesSecretRegistryCredentials({
+          namespace: clientNamespace,
+          name: secretNames.robotPush,
+          registry: registryOrigin,
+        });
+        const options = {
+          context: join(import.meta.dir, 'fixtures/oci-smoke'),
+          imageName: 'typekro-oci-smoke',
+          timeout: 600_000,
+          progress: 'plain' as const,
+          registry: harborRegistry({
+            registry: registryOrigin,
+            project: projectName,
+            credentialProvider,
+            tls: { plainHttp: true },
+          }),
+        };
+        const first = await container(options);
+        const second = await container(options);
+        expect(second).toEqual(first);
+        const digest = first.digest;
+        expect(digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+        if (!digest) throw new Error('Remote Harbor build did not return a verified digest.');
+        expect(first.imageUri).toBe(`${registryHost}/${projectName}/typekro-oci-smoke@${digest}`);
+        expect(first.taggedImageUri).toContain(
+          `${registryHost}/${projectName}/typekro-oci-smoke:sha-`
+        );
+
+        const pullPod = `harbor-pull-${runId}`.slice(0, 63);
+        const pulledDigest = await runTestPodAndReadLogs(
+          {
+            namespace: clientNamespace,
+            name: pullPod,
+            image:
+              'gcr.io/go-containerregistry/crane@sha256:1b1fb24d2b1bb27a9daf81a588157e68463876904e8e537a812edba6284fb252',
+            command: ['/ko-app/crane'],
+            args: ['digest', '--insecure', first.imageUri],
+            env: [{ name: 'DOCKER_CONFIG', value: '/docker' }],
+            volumeMounts: [{ name: 'registry-auth', mountPath: '/docker', readOnly: true }],
+            volumes: [
+              {
+                name: 'registry-auth',
+                secret: {
+                  secretName: secretNames.robotPull,
+                  items: [{ key: '.dockerconfigjson', path: 'config.json' }],
+                },
+              },
+            ],
+            timeoutMs: 300_000,
+          },
+          kubeConfig
+        );
+        expect(pulledDigest.trim()).toBe(digest);
+
+        // The workload image must be fetched by the Kubernetes node using the
+        // purpose-scoped pull Secret, not only by a client already running in a Pod.
+        await runTestPodAndReadLogs(
+          {
+            namespace: clientNamespace,
+            name: `harbor-kubelet-pull-${runId}`.slice(0, 63),
+            image: first.imageUri,
+            imagePullPolicy: 'Always',
+            imagePullSecrets: [{ name: secretNames.robotPull }],
+            timeoutMs: 300_000,
+          },
+          kubeConfig
+        );
+
+        const secrets = activeTestSecrets();
+        const client = new HarborApiClient({
+          endpoint: apiOrigin,
+          allowPlainHttp: true,
+          credentialProvider: async () => ({
+            username: 'admin',
+            password: secrets.adminPassword,
+          }),
+        });
+        const artifact = await client.request<{ digest?: string }>({
+          method: 'GET',
+          path:
+            `/projects/${projectName}/repositories/typekro-oci-smoke/artifacts/` +
+            encodeURIComponent(digest),
+        });
+        expect(artifact.body?.digest).toBe(digest);
+      }
+    );
+
+    (consumerScript ? it : it.skip)(
+      'qualifies an opt-in exact-package consumer against the test-owned Harbor installation',
+      async () => {
+        if (!consumerScript || retainPlatform) {
+          throw new Error(
+            'The Harbor consumer hook requires a disposable test-owned installation.'
+          );
+        }
+        if (!storageBinding) {
+          throw new Error('The Harbor consumer hook has no selected storage binding.');
+        }
+        await runIntegrationConsumer(consumerScript, {
+          env: {
+            ...process.env,
+            TYPEKRO_HARBOR_TEST_CONTEXT: kubeConfig.getCurrentContext(),
+            TYPEKRO_HARBOR_TEST_INSTALLATION: JSON.stringify({
+              name: installationName,
+              namespace: harborNamespace,
+              nodePort: port,
+              registryOrigin,
+              adminPasswordSecret: secretNames.admin,
+              storageEndpoint: storageBinding.regionEndpoint,
+            }),
+          },
+          // A shared hook may run two sequential 600-second consumer plans.
+          // Keep its enclosing deadline above their sum and bounded by the suite.
+          timeout: sharedExternalConsumer ? 1_260_000 : 600_000,
+        });
+      }
+    );
   }
 );

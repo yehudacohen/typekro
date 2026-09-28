@@ -31,7 +31,7 @@ import type { CelExpression, KubernetesRef } from '../types.js';
 import {
   collectCelLambdaScopes,
   isCelLambdaLocalAt,
-  maskCelStringLiterals,
+  maskClosedCelLiteralsAndComments,
 } from './cel-lexical-scanner.js';
 
 export class CelEvaluator {
@@ -187,7 +187,7 @@ export class CelEvaluator {
     expression: string
   ): Array<{ resourceId: string; fieldPath: string }> {
     const refs: Array<{ resourceId: string; fieldPath: string }> = [];
-    const searchableExpression = maskCelStringLiterals(expression);
+    const searchableExpression = maskClosedCelLiteralsAndComments(expression);
     const lambdaScopes = collectCelLambdaScopes(searchableExpression);
 
     // Pattern to match resource references: resourceId.section.field

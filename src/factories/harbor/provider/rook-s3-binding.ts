@@ -1,6 +1,7 @@
 import type { V1Secret } from '@kubernetes/client-node';
-
 import type { KubernetesClientConfig } from '../../../core/kubernetes/client-provider.js';
+import { Cel } from '../../../core/references/cel.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   createHarborKubernetesStore,
   type HarborKubernetesStore,
@@ -52,8 +53,6 @@ export async function prepareHarborRookS3Binding(
       `Rook OBC connection ConfigMap ${options.sourceNamespace}/${options.claimName} is not available.`
     );
   }
-  const accessKey = requiredSecretKey(credentials, 'AWS_ACCESS_KEY_ID');
-  const secretKey = requiredSecretKey(credentials, 'AWS_SECRET_ACCESS_KEY');
   const bucket = requiredConfig(connection.data, 'BUCKET_NAME');
   const secure = options.secure ?? false;
   const host = requiredConfig(connection.data, 'BUCKET_HOST');
@@ -81,10 +80,7 @@ export async function prepareHarborRookS3Binding(
       },
     },
     type: 'Opaque',
-    data: {
-      REGISTRY_STORAGE_S3_ACCESSKEY: accessKey,
-      REGISTRY_STORAGE_S3_SECRETKEY: secretKey,
-    },
+    data: harborRookS3SecretData(credentials),
   };
   await store.upsertSecret(adapted);
 
@@ -98,8 +94,37 @@ export async function prepareHarborRookS3Binding(
   };
 }
 
-function requiredSecretKey(secret: V1Secret, key: string): string {
+/** Copy already-encoded OBC credentials into the official Harbor S3 key contract. */
+export function harborRookS3SecretData(credentials: {
+  readonly data?: Readonly<Record<string, string>> | undefined;
+}): Record<string, string> {
+  return {
+    REGISTRY_STORAGE_S3_ACCESSKEY: requiredSecretKey(credentials, 'AWS_ACCESS_KEY_ID'),
+    REGISTRY_STORAGE_S3_SECRETKEY: requiredSecretKey(credentials, 'AWS_SECRET_ACCESS_KEY'),
+  };
+}
+
+function requiredSecretKey(
+  secret: {
+    readonly data?: Readonly<Record<string, string>> | undefined;
+  },
+  key: string
+): string {
   const value = secret.data?.[key];
+  if (isKubernetesRef(value)) {
+    // CEL has no assert primitive. A guarded, deliberately out-of-bounds
+    // selection fails reconciliation in both evaluators before a target write.
+    // Do not use includeWhen here: invalid rotation must preserve a valid target.
+    return Cel.expr<string>(
+      'has(',
+      value,
+      ') && size(',
+      value,
+      ') > 0 ? ',
+      value,
+      ` : ["Rook OBC credential Secret is missing required key ${key}."][1]`
+    );
+  }
   if (!value) throw new Error(`Rook OBC credential Secret is missing required key ${key}.`);
   return value;
 }

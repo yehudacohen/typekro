@@ -58,12 +58,12 @@ const HELM_RELEASE_STRATEGY = 'typekro.readiness.flux.helm-release';
 const HELM_RELEASE_REVISION_STRATEGY = 'typekro.readiness.flux.helm-release-revision';
 const HELM_RELEASE_TEST_STRATEGY = 'typekro.readiness.flux.helm-release-test';
 /**
- * Bumped to '2' with the #191 tightening (Reconciling/Stalled gating, exact
- * generation observation, released-revision currency). The revision is part of
- * the portable strategy identity, so a graph serialized by an older TypeKro
- * cannot silently rehydrate the looser evaluator.
+ * Revision '3' also requires Flux's top-level generation observation, matching
+ * the generated status contract. It retains revision '2' checks for
+ * Reconciling/Stalled, exact condition generations and released revisions.
+ * Serialized older strategies must not silently rehydrate stricter behavior.
  */
-const HELM_READINESS_REVISION = '2';
+const HELM_READINESS_REVISION = '3';
 
 /** Flux condition types this evaluator gates on, beyond `Ready`. */
 const RECONCILING_CONDITION = 'Reconciling';
@@ -164,7 +164,7 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
           : [];
       if (
         typeof desiredGeneration === 'number' &&
-        (observedGenerations.length === 0 || mismatchedGenerations.length > 0)
+        (typeof status.observedGeneration !== 'number' || mismatchedGenerations.length > 0)
       ) {
         return {
           ready: false,
@@ -172,8 +172,14 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
           message: `${prefix}HelmRelease has not observed generation ${desiredGeneration} yet`,
           details: {
             desiredGeneration,
-            ...(observedGenerations.length > 0
-              ? { observedGeneration: Math.max(...observedGenerations) }
+            ...(typeof status.observedGeneration === 'number'
+              ? { observedGeneration: status.observedGeneration }
+              : {}),
+            ...(typeof readyCondition?.observedGeneration === 'number'
+              ? { conditionObservedGeneration: readyCondition.observedGeneration }
+              : {}),
+            ...(typeof releasedCondition?.observedGeneration === 'number'
+              ? { releasedObservedGeneration: releasedCondition.observedGeneration }
               : {}),
           },
         };

@@ -425,6 +425,24 @@ Rook must remain the sole active reconciler for an ObjectBucketClaim while it
 binds. KRO can safely own the operator, `CephObjectStore`, and bucket
 `StorageClass`; direct mode applies and hydrates the application OBC.
 
+## Disposable integration recovery
+
+The opt-in `test/integration/rook/ceph-platform.test.ts` can preserve its
+TypeKro-owned development platform with `KEEP_ROOK_PLATFORM=true` for another
+consumer test. If only the S3 probe failed, retry the existing leaf fixture with
+`TYPEKRO_ROOK_EXISTING_PLATFORM_NAME` and `TYPEKRO_ROOK_EXISTING_PLATFORM_UID`
+set to that exact live KRO instance. Keep retained mode enabled and omit
+`TYPEKRO_ROOK_OWN_OPERATOR`; the fixture checks UID, current platform/RGW
+readiness and matching namespace/object-store/bucket-class bindings before
+creating its disposable claim. It skips platform creation and
+never takes lifecycle authority over the injected operator, platform or block
+fixture. A failed identity/readiness check stops before new resources.
+
+This test path uses a pinned official AWS CLI container solely as its S3 client,
+with credentials from the claim Secret. Ceph/RGW remains the server. A skipped
+platform test proves no installation or retained migration. The original fixture
+owner remains responsible for eventual teardown of the preserved test platform.
+
 ## Current scope
 
 The complete platform compositions create a `CephCluster` through the official

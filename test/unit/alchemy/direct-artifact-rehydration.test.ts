@@ -1,16 +1,34 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { KubeConfig, type KubernetesObject, KubernetesObjectApi } from '@kubernetes/client-node';
+import * as Test from 'alchemy/Test/Core';
 import { type } from 'arktype';
+import { Effect } from 'effect';
 import * as Redacted from 'effect/Redacted';
-
+import { DirectTypeKroDeployer } from '../../../src/alchemy/deployers.js';
+import { KroResource, kroProviderWithHooks } from '../../../src/alchemy/index.js';
 import {
   cloneResourceForAlchemyStateForTest,
+  propsForRetainedDeleteForTest,
   resourceFromDirectArtifactRecordForTest,
 } from '../../../src/alchemy/resource-registration.js';
 import type { TypeKroResourceProps } from '../../../src/alchemy/types.js';
-import { getMetadataField, getReadinessEvaluator } from '../../../src/core/metadata/index.js';
+import { DirectDeploymentEngine } from '../../../src/core/deployment/engine.js';
+import {
+  getMetadataField,
+  getReadinessEvaluator,
+  getResourceScope,
+} from '../../../src/core/metadata/index.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 import { artifactOutput } from '../../../src/experimental-planning.js';
-import { Cel, createResource, simple, toResourceGraph } from '../../../src/index.js';
+import { secret } from '../../../src/factories/kubernetes/config/secret.js';
+import { namespace } from '../../../src/factories/kubernetes/core/namespace.js';
+import {
+  Cel,
+  createResource,
+  observedResource,
+  simple,
+  toResourceGraph,
+} from '../../../src/index.js';
 import { isCelExpression } from '../../../src/utils/type-guards.js';
 
 const specSchema = type({ name: 'string' });
@@ -47,6 +65,199 @@ function fixture() {
 }
 
 describe('direct Alchemy artifact rehydration', () => {
+  for (const present of [true, false]) {
+    it(`preserves serialized external Secret identity through the real direct engine (present=${present})`, async () => {
+      const composition = toResourceGraph(
+        {
+          name: 'observed-secret-fanout',
+          kind: 'ObservedSecretFanout',
+          spec: specSchema,
+          status: statusSchema,
+        },
+        (schema) => {
+          const source = observedResource<Record<string, never>, Record<string, never>>({
+            id: 'source',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name, namespace: 'source-system' },
+          });
+          const sourceData = source.data;
+          if (!sourceData) throw new Error('Observed Secret data must expose deferred references');
+          const disabled = observedResource<Record<string, never>, Record<string, never>>({
+            id: 'disabled', apiVersion: 'v1', kind: 'Secret',
+            metadata: { name: 'disabled-absent', namespace: 'source-system' },
+          }).withIncludeWhen(false);
+          return {
+            source,
+            disabled,
+            target: secret({
+              id: 'target',
+              metadata: { name: 'target', namespace: 'target-system' },
+              data: { projected: Cel.expr<string>('string(', sourceData.providerKey, ')') },
+            }),
+          };
+        },
+        () => ({ ready: true })
+      );
+      const declarations = await composition
+        .factory('direct', { namespace: 'target-system' })
+        .toAlchemyResources({ name: 'provider-credentials' });
+      expect(declarations).toHaveLength(1);
+      const declaration = declarations[0]!;
+      const restored = JSON.parse(JSON.stringify(declaration.props));
+      const resource = resourceFromDirectArtifactRecordForTest(restored)!;
+      const encoded = 'bmV1dHJhbC1jcmVkZW50aWFs';
+      const source = {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: 'provider-credentials', namespace: 'source-system' },
+        data: { providerKey: encoded },
+      };
+      const config = new KubeConfig();
+      config.loadFromClusterAndUser(
+        { name: 'inert', server: 'http://127.0.0.1:1', skipTLSVerify: false },
+        { name: 'inert' }
+      );
+      const api = KubernetesObjectApi.makeApiClient(config);
+      const reads: KubernetesObject[] = [];
+      let target: KubernetesObject | undefined;
+      spyOn(api, 'read').mockImplementation(async (identity) => {
+        reads.push(JSON.parse(JSON.stringify(identity)));
+        if (identity.metadata.namespace === 'source-system'
+          && identity.metadata.name === 'provider-credentials' && present)
+          return JSON.parse(JSON.stringify(source));
+        if (target && identity.metadata.name === 'target')
+          return JSON.parse(JSON.stringify(target));
+        throw Object.assign(new Error('Absent inert resource'), { statusCode: 404 });
+      });
+      const create = spyOn(api, 'create').mockImplementation(async (value) => {
+        target = value;
+        return value;
+      });
+      const patch = spyOn(api, 'patch').mockImplementation(async (value) => {
+        target = value;
+        return value;
+      });
+      const remove = spyOn(api, 'delete').mockImplementation(async () => ({}));
+      const engine = new DirectDeploymentEngine(config, api);
+      const deployer = new DirectTypeKroDeployer(engine);
+      try {
+        if (present) {
+          await deployer.deploy(resource, {
+            mode: 'direct',
+            namespace: 'target-system',
+            timeout: 1000,
+          });
+          expect(target).toMatchObject({
+            kind: 'Secret',
+            metadata: { name: 'target', namespace: 'target-system' },
+            data: { projected: encoded },
+          });
+          expect(create).toHaveBeenCalledTimes(1);
+          expect(patch).not.toHaveBeenCalled();
+        } else {
+          await expect(
+            deployer.deploy(resource, { mode: 'direct', namespace: 'target-system', timeout: 1000 })
+          ).rejects.toThrow('Required external resource Secret/provider-credentials');
+          expect(create).not.toHaveBeenCalled();
+          expect(patch).not.toHaveBeenCalled();
+        }
+        expect(reads[0]).toEqual({
+          apiVersion: 'v1',
+          kind: 'Secret',
+          metadata: { name: 'provider-credentials', namespace: 'source-system' },
+        });
+        expect(remove).not.toHaveBeenCalled();
+        expect(reads.some(identity => identity.metadata?.name === 'disabled-absent')).toBe(false);
+        expect(restored.artifactExecutionRecord).not.toContain('disabled-absent');
+        expect(JSON.stringify(declaration)).not.toContain(encoded);
+        expect(JSON.stringify(cloneResourceForAlchemyStateForTest(resource))).not.toContain(
+          encoded
+        );
+        expect(getMetadataField(resource, 'directExternalReferences')).toHaveLength(1);
+      } finally {
+        await deployer.dispose();
+      }
+    });
+  }
+
+  it('recovers the retained base-format declaration scope at the state-driven delete gate', async () => {
+    const composition = toResourceGraph(
+      { name: 'retained-direct-namespace', apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'RetainedDirectNamespace', spec: specSchema, status: statusSchema },
+      (schema) => ({ ns: namespace({ id: 'ns', metadata: { name: schema.spec.name } }) }),
+      () => ({ ready: true })
+    );
+    const factory = await composition.factory('direct', { namespace: 'default' });
+    const declaration = (await factory.toAlchemyResources({ name: 'retained-scope-test' }))[0]!;
+    const oldProps = JSON.parse(JSON.stringify(declaration.props));
+    delete oldProps.resource.scope;
+    expect(getResourceScope(oldProps.resource)).toBeUndefined();
+    const outputResource = resourceFromDirectArtifactRecordForTest(oldProps)!;
+    expect(getResourceScope(outputResource)).toBe('cluster');
+    const persistedOutput = { resource: outputResource, deployedResource: outputResource,
+      namespace: 'default', deploymentStrategy: 'direct' } as never;
+    expect(() => propsForRetainedDeleteForTest({ ...oldProps,
+      resource: { ...oldProps.resource, metadata: { ...oldProps.resource.metadata, name: 'other' } },
+    }, persistedOutput)).toThrow(/conflicting persisted Kubernetes identity/u);
+    const admitted: unknown[] = [];
+    const deleteTargets: { namespace: string }[] = [];
+    const options = { providers: kroProviderWithHooks({
+      async beforeDelete(props) {
+        admitted.push(props.resource);
+        const deployer = new DirectTypeKroDeployer({
+          async deleteResource(target: { namespace: string }) { deleteTargets.push(target); },
+        } as never);
+        await deployer.delete(props.resource, { mode: 'direct', namespace: props.namespace });
+        throw new Error('stop before physical delete');
+      },
+    }) };
+    const scratch = Test.scratchStack(options, 'tk-retained-direct-scope-delete');
+    const resource = Effect.gen(function* () {
+      return yield* KroResource(declaration.id, { ...oldProps,
+        deployer: {
+          async deploy() { return outputResource; },
+          async delete() {},
+        },
+      });
+    });
+    await Test.run(scratch.deploy(resource), options);
+    await expect(Test.run(scratch.destroy(), options)).rejects.toThrow('stop before physical delete');
+    expect(admitted).toHaveLength(1);
+    expect(getResourceScope(admitted[0] as typeof outputResource)).toBe('cluster');
+    expect((admitted[0] as typeof outputResource).metadata.namespace).toBeUndefined();
+    expect(deleteTargets).toHaveLength(1);
+    expect(deleteTargets[0]?.namespace).toBe('');
+  });
+
+  it('retains factory cluster scope in the persisted direct artifact used for delete', async () => {
+    const composition = toResourceGraph(
+      {
+        name: 'alchemy-direct-namespace-artifact',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'AlchemyDirectNamespaceArtifact',
+        spec: specSchema,
+        status: statusSchema,
+      },
+      (schema) => ({
+        ns: namespace({ id: 'ns', metadata: { name: schema.spec.name } }),
+      }),
+      () => ({ ready: true })
+    );
+    const factory = await composition.factory('direct', { namespace: 'default' });
+    const declaration = (await factory.toAlchemyResources({ name: 'artifact-scope-test' }))[0]!;
+    expect(getResourceScope(declaration.props.resource)).toBe('cluster');
+    expect((declaration.props.resource as { scope?: string }).scope).toBe('cluster');
+    const restoredInput = JSON.parse(JSON.stringify(declaration.props.resource));
+    expect(getResourceScope(restoredInput)).toBe('cluster');
+    expect(restoredInput.metadata.namespace).toBeUndefined();
+
+    const materialized = resourceFromDirectArtifactRecordForTest(declaration.props)!;
+    const persisted = cloneResourceForAlchemyStateForTest(materialized);
+    expect(persisted.scope).toBe('cluster');
+    expect(persisted.metadata.namespace).toBeUndefined();
+  });
+
   it('keeps provider outputs symbolic until Alchemy supplies them', async () => {
     const composition = toResourceGraph(
       {

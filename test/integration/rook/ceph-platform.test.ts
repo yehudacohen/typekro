@@ -4,8 +4,16 @@
  * RUN_ROOK_PLATFORM_INTEGRATION=true bun test \
  *   test/integration/rook/ceph-platform.test.ts
  *
+ * TYPEKRO_ROOK_NODE_NAME explicitly selects the local block-fixture node
+ * (default: orbstack). TYPEKRO_ROOK_OWN_OPERATOR=true uses the existing
+ * operator bootstrap on a fresh, test-owned installation; otherwise the
+ * shared operator is an injected prerequisite. Both modes use TypeKro.
  * Set KEEP_ROOK_PLATFORM=true to retain the platform intentionally for a
- * subsequent Harbor integration run. Test-owned bucket claims and their
+ * subsequent Harbor integration run. A leaf retry may inject that exact ready
+ * platform via TYPEKRO_ROOK_EXISTING_PLATFORM_NAME and
+ * TYPEKRO_ROOK_EXISTING_PLATFORM_UID, with KEEP_ROOK_PLATFORM=true and no
+ * owned-operator flag. It performs no platform/operator/block lifecycle work.
+ * Test-owned bucket claims and their
  * Delete-policy StorageClass are always removed through TypeKro factories.
  */
 
@@ -16,6 +24,7 @@ import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { rookBucketStorageClass } from '../../../src/factories/rook/resources/bucket-storage-class.js';
 import {
   rookCephExternalOperatorSingleNodePlatform,
+  rookCephOperatorBootstrap,
   rookObjectStorageClaim,
 } from '../../../src/factories/rook/index.js';
 import {
@@ -27,6 +36,7 @@ import {
   deleteTestNamespaceAndWait,
   isClusterAvailable,
   runTestPodAndReadLogs,
+  runWithExpectedTestNamespaces,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 import { createOrbStackLocalBlockFixture } from './local-block-fixture.js';
@@ -34,6 +44,18 @@ import { createOrbStackLocalBlockFixture } from './local-block-fixture.js';
 const requested = process.env.RUN_ROOK_PLATFORM_INTEGRATION === 'true';
 const describeOrSkip = requested && (await isClusterAvailable()) ? describe : describe.skip;
 const retainPlatform = process.env.KEEP_ROOK_PLATFORM === 'true';
+const ownOperator = process.env.TYPEKRO_ROOK_OWN_OPERATOR === 'true';
+const existingPlatformName = process.env.TYPEKRO_ROOK_EXISTING_PLATFORM_NAME;
+const existingPlatformUid = process.env.TYPEKRO_ROOK_EXISTING_PLATFORM_UID;
+if (Boolean(existingPlatformName) !== Boolean(existingPlatformUid)) {
+  throw new Error('An injected Rook test platform requires both its exact name and UID.');
+}
+if (existingPlatformName && (!retainPlatform || ownOperator)) {
+  throw new Error(
+    'An injected Rook test platform requires retained mode without operator ownership.'
+  );
+}
+const nodeName = process.env.TYPEKRO_ROOK_NODE_NAME ?? 'orbstack';
 const stable = retainPlatform;
 const runId = crypto.randomUUID().slice(0, 12);
 const suffix = stable ? 'harbor' : runId;
@@ -71,7 +93,7 @@ const rgwResources = {
 const localBlock = createOrbStackLocalBlockFixture({
   name: `typekro-${suffix}-ceph-block`.slice(0, 48),
   namespace: controlNamespace,
-  nodeName: 'orbstack',
+  nodeName,
   loopDeviceNumber: 63,
   storageClassName: `typekro-${suffix}-ceph-block`.slice(0, 63),
   persistentVolumeName: `typekro-${suffix}-ceph-block-0`.slice(0, 63),
@@ -105,16 +127,16 @@ async function proveS3(claimName: string): Promise<void> {
   await runTestPodAndReadLogs({
     namespace: appNamespace,
     name: podName,
-    image: 'minio/mc:RELEASE.2025-05-21T01-59-54Z',
+    image: 'public.ecr.aws/aws-cli/aws-cli:2.27.21',
     containerName: 'client',
     envFrom: [{ secretRef: { name: claimName } }, { configMapRef: { name: claimName } }],
     command: ['/bin/sh', '-ec'],
     args: [
-      'mc alias set rook "http://${BUCKET_HOST}:${BUCKET_PORT}" "${AWS_ACCESS_KEY_ID}" "${AWS_SECRET_ACCESS_KEY}"; ' +
+      'export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true AWS_PAGER=""; ' +
         'printf typekro-rgw-proof > /tmp/payload; ' +
-        'mc cp /tmp/payload "rook/${BUCKET_NAME}/proof"; ' +
-        'test "$(mc cat "rook/${BUCKET_NAME}/proof")" = typekro-rgw-proof; ' +
-        'mc rm "rook/${BUCKET_NAME}/proof"',
+        'aws --endpoint-url "http://${BUCKET_HOST}:${BUCKET_PORT}" s3 cp /tmp/payload "s3://${BUCKET_NAME}/proof"; ' +
+        'test "$(aws --endpoint-url "http://${BUCKET_HOST}:${BUCKET_PORT}" s3 cp "s3://${BUCKET_NAME}/proof" -)" = typekro-rgw-proof; ' +
+        'aws --endpoint-url "http://${BUCKET_HOST}:${BUCKET_PORT}" s3 rm "s3://${BUCKET_NAME}/proof"',
     ],
     timeoutMs: 300_000,
   });
@@ -122,6 +144,12 @@ async function proveS3(claimName: string): Promise<void> {
 
 describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
   const kubeConfig = getKubeConfig({ skipTLSVerify: true });
+  const operatorFactory = rookCephOperatorBootstrap.factory('direct', {
+    namespace: controlNamespace,
+    waitForReady: true,
+    timeout: 600_000,
+    kubeConfig,
+  });
   const platformFactory = rookCephExternalOperatorSingleNodePlatform.factory('kro', {
     namespace: controlNamespace,
     waitForReady: true,
@@ -152,6 +180,7 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
     timeout: 120_000,
     kubeConfig,
   });
+  let operatorAttempted = false;
   let platformAttempted = false;
   let platformDeployed = false;
   let appNamespacePrepared = false;
@@ -161,10 +190,50 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
   let controlNamespaceLease: TestNamespaceLease;
   let appNamespaceLease: TestNamespaceLease | undefined;
   let platformNamespaceLease: TestNamespaceLease | undefined;
+  let operatorNamespaceLease: TestNamespaceLease | undefined;
 
   beforeAll(async () => {
+    if (existingPlatformName) {
+      const platform = await createKubernetesObjectApiClient(kubeConfig).read({
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'RookCephExternalOperatorSingleNodePlatform',
+        metadata: { name: existingPlatformName, namespace: controlNamespace },
+      });
+      if (platform.metadata?.uid !== existingPlatformUid) {
+        throw new Error('Injected Rook test platform UID does not match the live instance.');
+      }
+      const observed = (await platformFactory.getInstances()).find(
+        (instance) => instance.metadata.name === existingPlatformName
+      );
+      if (
+        !observed?.status.ready || !observed.status.objectStoreReady ||
+        observed.spec.namespace !== platformNamespace ||
+        observed.spec.objectStoreName !== objectStoreName ||
+        observed.status.bucketStorageClassName !== retainedStorageClass
+      ) {
+        throw new Error(
+          'Injected Rook test platform must be ready and match the selected namespace, object store and bucket class.'
+        );
+      }
+      return;
+    }
     controlNamespaceLease = await createTestNamespace(controlNamespace, kubeConfig);
     await assertTestNamespaceAbsent(platformNamespace, kubeConfig);
+    if (ownOperator) {
+      await runWithExpectedTestNamespaces(
+        [operatorNamespace], kubeConfig,
+        (lease) => { operatorNamespaceLease = lease; },
+        () => {
+          operatorAttempted = true;
+          return operatorFactory.deploy({
+            name: 'rook-ceph', namespace: operatorNamespace,
+            enableOBCWatchOperatorNamespace: true,
+            obcProvisionerNamePrefix: platformNamespace,
+            values: { allowLoopDevices: true },
+          });
+        }
+      );
+    }
     localBlockAttempted = true;
     await localBlockFactory.deploy({ name: 'block' });
   });
@@ -194,7 +263,7 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
         cleanupErrors.push(error)
       );
     }
-    const preservePlatform = platformDeployed && retainPlatform;
+    const preservePlatform = Boolean(existingPlatformName) || (platformDeployed && retainPlatform);
     let platformCleanupComplete = !platformAttempted || preservePlatform;
     if (platformAttempted && !preservePlatform) {
       try {
@@ -233,6 +302,13 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
         cleanupErrors.push(error);
       }
     }
+    if (operatorAttempted && !preservePlatform && platformCleanupComplete) {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        operatorFactory, 'rook-ceph', operatorNamespaceLease ? [operatorNamespaceLease] : [],
+        kubeConfig, 180_000,
+        { scopes: ['cluster'], includeUnscopedResources: true }
+      ).catch((error) => cleanupErrors.push(error));
+    }
     if (!preservePlatform && platformCleanupComplete) {
       await deleteTestNamespaceAndWait(controlNamespaceLease, kubeConfig).catch((error) =>
         cleanupErrors.push(error)
@@ -243,7 +319,8 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
     }
   });
 
-  it('creates a healthy CephCluster, RGW, and retained bucket class through KRO', async () => {
+  const platformTest = existingPlatformName ? it.skip : it;
+  platformTest('creates a healthy CephCluster, RGW, and retained bucket class through KRO', async () => {
     platformAttempted = true;
     let platform: Awaited<ReturnType<typeof platformFactory.deploy>>;
     try {

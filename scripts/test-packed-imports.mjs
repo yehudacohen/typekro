@@ -78,6 +78,18 @@ try {
   if (!tarballName) throw new Error('bun pm pack did not produce a tarball.');
 
   const tarballPath = join(temporaryRoot, tarballName);
+
+  const packMembers = run('tar', ['-tzf', tarballPath])
+    .stdout.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const buildInfoMembers = packMembers.filter((member) => member.endsWith('.tsbuildinfo'));
+  if (buildInfoMembers.length > 0) {
+    throw new Error(
+      `Packed tarball ships compiler cache metadata:\n- ${buildInfoMembers.join('\n- ')}`
+    );
+  }
+
   const packageRoot = join(temporaryRoot, 'package');
   const consumerRoot = join(temporaryRoot, 'consumer');
   mkdirSync(packageRoot, { recursive: true });
@@ -182,6 +194,8 @@ try {
   const evidence = {
     schemaVersion: 1,
     exportCount: exportEntries.length,
+    packMemberCount: packMembers.length,
+    tsbuildinfoMemberCount: buildInfoMembers.length,
     ...artifactMetrics,
     coldImportMilliseconds,
     coldImportSamplesMilliseconds,

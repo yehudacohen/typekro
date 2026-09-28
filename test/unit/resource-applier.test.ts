@@ -17,13 +17,13 @@ import {
 } from '../../src/core/deployment/errors.js';
 import { ResourceApplier } from '../../src/core/deployment/resource-applier.js';
 import type { TypeKroLogger } from '../../src/core/logging/types.js';
-import type { ArtifactApplyPolicy } from '../../src/core/planning/artifacts.js';
 import {
   getResourceMetadata,
   setMetadataField,
   setReadinessEvaluator,
   setResourceId,
 } from '../../src/core/metadata/index.js';
+import type { ArtifactApplyPolicy } from '../../src/core/planning/artifacts.js';
 import type { ReferenceResolver } from '../../src/core/references/resolver.js';
 import type { DeploymentOptions, ResolutionContext } from '../../src/core/types/deployment.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
@@ -718,6 +718,40 @@ describe('ResourceApplier', () => {
       );
     });
 
+    it('carries the exact incumbent UID and resourceVersion into an update mutation', async () => {
+      mockApi.patch.mockImplementation((resource) => Promise.resolve(resource));
+      const resource = createTestResource({
+        metadata: {
+          name: 'test-deployment',
+          namespace: 'default',
+          uid: 'incumbent-uid',
+          resourceVersion: '7',
+        },
+      });
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'server-side-apply',
+        fieldManager: 'typekro-test',
+        fieldConflictPolicy: 'fail',
+        immutableFieldPolicy: 'fail',
+      } satisfies ArtifactApplyPolicy);
+
+      await applier.applyResourceToCluster(resource, createTestOptions(), mockLogger);
+
+      expect(mockApi.patch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            uid: 'incumbent-uid',
+            resourceVersion: '7',
+          }),
+        }),
+        undefined,
+        undefined,
+        'typekro-test',
+        false,
+        'application/apply-patch+yaml'
+      );
+    });
+
     it('retries SSA when create races with another writer', async () => {
       mockApi.patch
         .mockImplementationOnce(() => Promise.reject(createK8sError('Not Found', 404)))
@@ -1061,124 +1095,63 @@ describe('ResourceApplier', () => {
       expect(result.metadata.name).toBe('resolved-deployment');
     });
 
-    it('should fall back to original resource when resolution fails', async () => {
-      const resolver = {
-        resolveReferences: mock(() => Promise.reject(new Error('Resolution failed'))),
-      } as unknown as ReferenceResolver;
+    for (const populated of [false, true]) {
+      it(`fails closed on reference errors with populated mapping=${populated}`, async () => {
+        const resource = createTestResource({ id: 'deploy' });
+        const resolver = createMockReferenceResolver(resource);
+        resolver.resolveReferences = mock(() => Promise.reject(new Error('Resolution failed')));
+        const localApplier = new ResourceApplier(
+          mockApi as k8s.KubernetesObjectApi,
+          resolver,
+          mockLogger
+        );
+        const context: ResolutionContext = {
+          deployedResources: [],
+          kubeClient: {} as k8s.KubeConfig,
+          namespace: 'default',
+          resourceKeyMapping: new Map(populated ? [['deploy', 'present']] : []),
+        };
+        await expect(
+          localApplier.resolveResourceReferences(
+            resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
+            context,
+            createTestOptions(),
+            mockLogger
+          )
+        ).rejects.toThrow('Resolution failed');
+        expect(mockApi.create).not.toHaveBeenCalled();
+        expect(mockApi.patch).not.toHaveBeenCalled();
+      });
+    }
+
+    it('fails closed on reference resolution timeout', async () => {
+      const resource = createTestResource({ id: 'deploy' });
+      const resolver = createMockReferenceResolver(resource);
+      resolver.resolveReferences = mock(async () => {
+        await new Promise<void>(() => {});
+        throw new Error('Unreachable');
+      });
       const localApplier = new ResourceApplier(
         mockApi as k8s.KubernetesObjectApi,
         resolver,
         mockLogger
       );
-
-      const resource = createTestResource({ id: 'deploy' });
       const context: ResolutionContext = {
         deployedResources: [],
         kubeClient: {} as k8s.KubeConfig,
         namespace: 'default',
         resourceKeyMapping: new Map(),
       };
-      const options = createTestOptions();
-
-      const result = await localApplier.resolveResourceReferences(
-        resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
-        context,
-        options,
-        mockLogger
-      );
-
-      // Should return the original resource on failure
-      expect(result).toBe(resource);
-    });
-
-    it('should log at warn level when resolution fails with non-empty resourceKeyMapping', async () => {
-      const resolver = {
-        resolveReferences: mock(() => Promise.reject(new Error('Resolution failed'))),
-      } as unknown as ReferenceResolver;
-      const localApplier = new ResourceApplier(
-        mockApi as k8s.KubernetesObjectApi,
-        resolver,
-        mockLogger
-      );
-
-      const resource = createTestResource({ id: 'deploy' });
-      const context: ResolutionContext = {
-        deployedResources: [],
-        kubeClient: {} as k8s.KubeConfig,
-        namespace: 'default',
-        resourceKeyMapping: new Map([['deploy', 'something']]),
-      };
-      const options = createTestOptions();
-
-      await localApplier.resolveResourceReferences(
-        resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
-        context,
-        options,
-        mockLogger
-      );
-
-      expect(mockLogger.warn).toHaveBeenCalled();
-    });
-
-    it('should log at debug level when resolution fails with empty resourceKeyMapping', async () => {
-      const resolver = {
-        resolveReferences: mock(() => Promise.reject(new Error('Resolution failed'))),
-      } as unknown as ReferenceResolver;
-      const localApplier = new ResourceApplier(
-        mockApi as k8s.KubernetesObjectApi,
-        resolver,
-        mockLogger
-      );
-
-      const resource = createTestResource({ id: 'deploy' });
-      const context: ResolutionContext = {
-        deployedResources: [],
-        kubeClient: {} as k8s.KubeConfig,
-        namespace: 'default',
-        resourceKeyMapping: new Map(),
-      };
-      const options = createTestOptions();
-
-      await localApplier.resolveResourceReferences(
-        resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
-        context,
-        options,
-        mockLogger
-      );
-
-      expect(mockLogger.debug).toHaveBeenCalled();
-      expect(mockLogger.warn).not.toHaveBeenCalled();
-    });
-
-    it('should time out if resolution takes too long', async () => {
-      const resolver = {
-        resolveReferences: mock(() => new Promise((resolve) => setTimeout(resolve, 5000))),
-      } as unknown as ReferenceResolver;
-      const localApplier = new ResourceApplier(
-        mockApi as k8s.KubernetesObjectApi,
-        resolver,
-        mockLogger
-      );
-
-      const resource = createTestResource({ id: 'deploy' });
-      const context: ResolutionContext = {
-        deployedResources: [],
-        kubeClient: {} as k8s.KubeConfig,
-        namespace: 'default',
-        resourceKeyMapping: new Map(),
-      };
-      // Very short timeout to trigger the race
-      const options = createTestOptions({ timeout: 10 });
-
-      const result = await localApplier.resolveResourceReferences(
-        resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
-        context,
-        options,
-        mockLogger
-      );
-
-      // Should fall back to original resource on timeout
-      expect(result).toBe(resource);
+      await expect(
+        localApplier.resolveResourceReferences(
+          resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
+          context,
+          createTestOptions({ timeout: 10 }),
+          mockLogger
+        )
+      ).rejects.toThrow('Reference resolution timeout');
+      expect(mockApi.create).not.toHaveBeenCalled();
+      expect(mockApi.patch).not.toHaveBeenCalled();
     });
 
     it('clears the reference resolution timeout after a successful resolve', async () => {

@@ -257,9 +257,32 @@ export function createBunCompatibleKubernetesObjectApi(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.KubernetesObjectApi {
+  // The generated V1JSONSchemaProps model uses JavaScript aliases such as
+  // `_enum` and `xKubernetesValidations`. A CRD manifest uses the Kubernetes
+  // wire names (`enum` and `x-kubernetes-validations`), so model serialization
+  // silently drops parts of its schema. Keep CRDs as raw JSON on both writes
+  // and reads while retaining the generated models for other resource kinds.
+  class SchemaPreservingKubernetesObjectApi extends getKubernetesClientNode().KubernetesObjectApi {
+    configureDefaultNamespace(config: k8s.KubeConfig): void {
+      this.setDefaultNamespace(config);
+    }
+
+    protected override async getSerializationType(
+      apiVersion?: string,
+      kind?: string
+    ): Promise<string> {
+      if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
+        return 'object';
+      }
+      return super.getSerializationType(apiVersion, kind);
+    }
+  }
+
   // If not running in Bun, use standard method
   if (!isBunRuntime()) {
-    return getKubernetesClientNode().KubernetesObjectApi.makeApiClient(kubeConfig);
+    const client = kubeConfig.makeApiClient(SchemaPreservingKubernetesObjectApi);
+    client.configureDefaultNamespace(kubeConfig);
+    return client;
   }
 
   const cluster = kubeConfig.getCurrentCluster();
@@ -284,5 +307,7 @@ export function createBunCompatibleKubernetesObjectApi(
     httpApi: new BunCompatibleHttpLibrary(timeoutConfig),
   });
 
-  return new (getKubernetesClientNode().KubernetesObjectApi)(config);
+  const client = new SchemaPreservingKubernetesObjectApi(config);
+  client.configureDefaultNamespace(kubeConfig);
+  return client;
 }

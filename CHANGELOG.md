@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Operation-scoped Alchemy Kubernetes effect and rollback admission with fresh
+  UID/resourceVersion preconditions, retained resource scope and external
+  observation activation during durable direct-artifact rehydration.
+- Harbor Rook/Ceph credential projection as a typed graph dependency, plus
+  selected consumer qualification and bounded cleanup coverage.
+
 - **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal
   byte bounds: `storage.persistentQueue.compaction` and `storage.persistentQueue.sizer`.** The
   `file_storage` extension keeps each queue in a bbolt file, and a bbolt file keeps its high-water
@@ -457,6 +463,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of reaching generated configuration.
 
 ### Fixed
+
+- Guarded direct Alchemy identity replacement admits and deploys the successor
+  before deleting the incumbent, preserving the incumbent on admission failure
+  and converging after a failed old delete. Durable operation records slice
+  external observations by concrete iteration and preserve generated
+  prerequisites inherited through those observations, matching Alchemy scheduling
+  after serialization and recovery.
+
+- Reconciled application integration contracts with current upstream lifecycle
+  deadlines, direct forEach expansion and readiness. CEL dependency consumers
+  reuse the complete upstream literal/comment scanner. CRD transport preserves
+  canonical schemas, Jobs report terminal failure, and deterministic packages
+  exclude TypeScript build-info. Retained ClickStack naming follows the existing
+  upstream ownership/migration contract; no second naming mechanism is introduced.
+  Helm/Job portable readiness revisions advance to 3/2 respectively, so older
+  serialized strategy identities cannot silently select changed behavior.
+
 
 - **Direct-mode `toAlchemyResources()` now expands `forEach` collections.** A direct composition
   that iterated a spec array of two or more items threw `Declared spec reference regions.$item...

@@ -1,16 +1,24 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { KubeConfig, type KubernetesObject, KubernetesObjectApi } from '@kubernetes/client-node';
 import { type } from 'arktype';
+import { parse as parseYaml } from 'yaml';
 
+import { DirectTypeKroDeployer } from '../../../src/alchemy/deployers.js';
+import { resourceFromDirectArtifactRecordForTest } from '../../../src/alchemy/resource-registration.js';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { DirectDeploymentEngine } from '../../../src/core/deployment/engine.js';
+import { Cel } from '../../../src/core/references/cel.js';
+import { CelEvaluator } from '../../../src/core/references/cel-evaluator.js';
 import { DEFAULT_SINGLETON_NAMESPACE, singleton } from '../../../src/core/singleton/singleton.js';
-import { harbor as rootHarborNamespace } from '../../../src/factories/index.js';
 import {
   DEFAULT_HARBOR_CHART_VERSION,
   DEFAULT_HARBOR_VERSION,
+  HarborProductionInstallationConfigSchema,
+  HarborRookS3CredentialsConfigSchema,
   harborHelmRelease,
   harborLocalInstallation,
-  HarborProductionInstallationConfigSchema,
   harborProductionInstallation,
+  harborRookS3Credentials,
   mapHarborLocalInstallationToHelmValues,
   mapHarborProductionInstallationToHelmValues,
 } from '../../../src/factories/harbor/index.js';
@@ -18,6 +26,7 @@ import type {
   HarborLocalInstallationConfig,
   HarborProductionInstallationConfig,
 } from '../../../src/factories/harbor/types.js';
+import { harbor as rootHarborNamespace } from '../../../src/factories/index.js';
 
 const secrets = {
   encryptionKey: 'platform-harbor-encryption',
@@ -116,6 +125,192 @@ function expectCleanYaml(yaml: string): void {
 }
 
 describe('official Harbor platform', () => {
+  const credentialCases: ReadonlyArray<{
+    name: string;
+    data?: Record<string, string>;
+    valid: boolean;
+  }> = [
+    {
+      name: 'valid',
+      data: { AWS_ACCESS_KEY_ID: 'YWNjZXNz', AWS_SECRET_ACCESS_KEY: 'c2VjcmV0' },
+      valid: true,
+    },
+    {
+      name: 'empty-access',
+      data: { AWS_ACCESS_KEY_ID: '', AWS_SECRET_ACCESS_KEY: 'c2VjcmV0' },
+      valid: false,
+    },
+    {
+      name: 'empty-secret',
+      data: { AWS_ACCESS_KEY_ID: 'YWNjZXNz', AWS_SECRET_ACCESS_KEY: '' },
+      valid: false,
+    },
+    { name: 'missing-access', data: { AWS_SECRET_ACCESS_KEY: 'c2VjcmV0' }, valid: false },
+    { name: 'missing-secret', data: { AWS_ACCESS_KEY_ID: 'YWNjZXNz' }, valid: false },
+    { name: 'missing-data', valid: false },
+  ];
+  for (const testCase of credentialCases) {
+    it(`validates ${testCase.name} Rook credentials before direct mutation and in emitted KRO expressions`, async () => {
+      const config = {
+        name: 'harbor-s3',
+        namespace: 'registry-control',
+        source: { namespace: 'bucket-system', claimName: 'registry-bucket' },
+      };
+      const source = {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: config.source.claimName, namespace: config.source.namespace },
+        ...(testCase.data ? { data: testCase.data } : {}),
+      };
+      const declarations = await harborRookS3Credentials
+        .factory('direct', { namespace: config.namespace })
+        .toAlchemyResources(config);
+      const declaration = declarations[0]!;
+      const restored = JSON.parse(JSON.stringify(declaration.props));
+      const resource = resourceFromDirectArtifactRecordForTest(restored)!;
+      const kubeConfig = new KubeConfig();
+      kubeConfig.loadFromClusterAndUser(
+        { name: 'inert', server: 'http://127.0.0.1:1', skipTLSVerify: false },
+        { name: 'inert' }
+      );
+      const api = KubernetesObjectApi.makeApiClient(kubeConfig);
+      const previous = {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: config.name, namespace: config.namespace },
+        data: {
+          REGISTRY_STORAGE_S3_ACCESSKEY: 'cHJldmlvdXM=',
+          REGISTRY_STORAGE_S3_SECRETKEY: 'cHJldmlvdXM=',
+        },
+      };
+      let target: KubernetesObject = previous;
+      const read = spyOn(api, 'read').mockImplementation(async (identity) =>
+        JSON.parse(
+          JSON.stringify(identity.metadata.namespace === config.source.namespace ? source : target)
+        )
+      );
+      const create = spyOn(api, 'create').mockImplementation(async (value) => {
+        target = value;
+        return value;
+      });
+      const patch = spyOn(api, 'patch').mockImplementation(async (value) => {
+        target = value;
+        return value;
+      });
+      const remove = spyOn(api, 'delete').mockImplementation(async () => ({}));
+      const deployer = new DirectTypeKroDeployer(new DirectDeploymentEngine(kubeConfig, api));
+      try {
+        const operation = deployer.deploy(resource, {
+          mode: 'direct',
+          namespace: config.namespace,
+          timeout: 1000,
+        });
+        if (testCase.valid) {
+          await operation;
+          expect(target).toMatchObject({
+            data: {
+              REGISTRY_STORAGE_S3_ACCESSKEY: testCase.data?.AWS_ACCESS_KEY_ID,
+              REGISTRY_STORAGE_S3_SECRETKEY: testCase.data?.AWS_SECRET_ACCESS_KEY,
+            },
+          });
+          expect(patch).toHaveBeenCalledTimes(1);
+          expect(patch.mock.calls[0]?.[0].metadata).toMatchObject({
+            name: config.name, namespace: config.namespace,
+          });
+        } else {
+          await expect(operation).rejects.toThrow(
+            'Rook OBC credential Secret is missing required key'
+          );
+          expect(patch).not.toHaveBeenCalled();
+          expect(target).toBe(previous);
+        }
+        expect(create).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+        expect(read.mock.calls[0]?.[0]).toEqual({
+          apiVersion: 'v1',
+          kind: 'Secret',
+          metadata: source.metadata,
+        });
+        expect(JSON.stringify(declaration)).not.toContain('c2VjcmV0');
+
+        // Evaluate the exact generated expressions, not a hand-authored equivalent.
+        // Physical KRO rotation remains a separate qualification gate.
+        const graph: {
+          spec: { resources: Array<{ id: string; template?: { data?: Record<string, string> } }> };
+        } = parseYaml(
+          harborRookS3Credentials.factory('kro', { namespace: config.namespace }).toYaml()
+        );
+        const fields = graph.spec.resources.find((entry) => entry.id === 'harborStorageCredentials')
+          ?.template?.data;
+        expect(fields).toBeDefined();
+        const evaluate = async () =>
+          Object.fromEntries(
+            await Promise.all(
+              Object.entries(fields ?? {}).map(async ([key, expression]) => [
+                key,
+                await new CelEvaluator().evaluate(Cel.expr<string>(expression.slice(2, -1)), {
+                  resources: new Map([['rookCredentials', source]]),
+                }),
+              ])
+            )
+          );
+        if (testCase.valid) {
+          expect(await evaluate()).toEqual({
+            REGISTRY_STORAGE_S3_ACCESSKEY: 'YWNjZXNz',
+            REGISTRY_STORAGE_S3_SECRETKEY: 'c2VjcmV0',
+          });
+        } else {
+          await expect(evaluate()).rejects.toThrow(
+            'Rook OBC credential Secret is missing required key'
+          );
+        }
+      } finally {
+        await deployer.dispose();
+      }
+    });
+  }
+
+  it('keeps Rook credentials external and models their encoded Harbor projection as an owned graph child', async () => {
+    const config = {
+      name: 'harbor-s3',
+      namespace: 'registry-system',
+      source: { namespace: 'bucket-system', claimName: 'registry-bucket' },
+    };
+    const yaml = harborRookS3Credentials.factory('kro', { namespace: 'registry-control' }).toYaml();
+    expect(yaml).toContain('externalRef:');
+    expect(yaml).toContain('id: rookCredentials');
+    expect(yaml).toContain('id: harborStorageCredentials');
+    expect(yaml).toContain(
+      'has(rookCredentials.data.AWS_ACCESS_KEY_ID) && size(rookCredentials.data.AWS_ACCESS_KEY_ID) > 0'
+    );
+    expect(yaml).toContain(
+      'has(rookCredentials.data.AWS_SECRET_ACCESS_KEY) && size(rookCredentials.data.AWS_SECRET_ACCESS_KEY) > 0'
+    );
+    expect(yaml).not.toContain('stringData:');
+    expect(yaml).toContain(
+      'schema.spec.namespace != schema.spec.source.namespace || schema.spec.name != schema.spec.source.claimName'
+    );
+    expectCleanYaml(yaml);
+    const declarations = await harborRookS3Credentials
+      .factory('direct', { namespace: 'registry-control' })
+      .toAlchemyResources(config);
+    const serialized = JSON.stringify(declarations);
+    expect(serialized).toContain('REGISTRY_STORAGE_S3_ACCESSKEY');
+    expect(serialized).toContain('registry-bucket');
+    expect(serialized).toContain('harbor-s3');
+    expect(serialized).not.toContain('AWS_SECRET_ACCESS_KEY_VALUE');
+  });
+
+  it('rejects a Harbor projection that would own the source OBC Secret identity', () => {
+    const invalid = HarborRookS3CredentialsConfigSchema({
+      name: 'registry-bucket',
+      namespace: 'bucket-system',
+      source: { namespace: 'bucket-system', claimName: 'registry-bucket' },
+    });
+    expect(invalid instanceof type.errors).toBe(true);
+    expect(String(invalid)).toContain('distinct from the Rook OBC');
+  });
+
   it('pins the reviewed official chart and application versions', () => {
     const release = harborHelmRelease({ name: 'harbor' });
     expect(release.spec.chart.spec.chart).toBe('harbor');
@@ -317,6 +512,12 @@ describe('official Harbor platform', () => {
 
   it('generates a KRO graph with graph-aware defaults and schema-complete status', () => {
     const yaml = harborLocalInstallation.factory('kro', { namespace: 'harbor-control' }).toYaml();
+    expect(yaml).toContain(
+      'harborRelease.status.observedGeneration >= harborRelease.metadata.generation'
+    );
+    expect(yaml).toContain(
+      'c.status == "True" && (has(c.observedGeneration) ? c.observedGeneration >= harborRelease.metadata.generation : true)'
+    );
     for (const field of [
       'ready',
       'failed',
@@ -348,9 +549,17 @@ describe('official Harbor platform', () => {
       'harborJobserviceCredentials',
       'harborRegistryCredentials',
       'harborRegistryBasicAuth',
+      'harborDatabaseCredentials',
+      'harborCacheCredentials',
     ]) {
       expect(yaml).toContain(`depends-on-${dependency}`);
     }
+    expect(yaml).toContain(
+      'has(schema.spec.database) ? schema.spec.database.existingSecret : schema.spec.adminPasswordSecret.name'
+    );
+    expect(yaml).toContain(
+      'has(schema.spec.cache) ? schema.spec.cache.existingSecret : schema.spec.adminPasswordSecret.name'
+    );
     expect(yaml).toContain('has(schema.spec.database) && has(schema.spec.database.port)');
     expect(yaml).toContain('has(schema.spec.cache) && has(schema.spec.cache.tls)');
     expect(yaml).toContain('has(schema.spec.networkPolicy.ingressNamespaceLabels) ?');
@@ -374,7 +583,9 @@ describe('official Harbor platform', () => {
     expect(yaml).toContain('skipVerify: boolean | validation="self == false"');
     expect(yaml).toContain('exposure: HarborProductionInstallationExposure | validation=');
     expect(yaml).toContain('has(self.tls.secretName) && size(self.tls.secretName) > 0');
-    expect(yaml).toContain('certificate: HarborProductionInstallationCertificate | validation="size(self.secretName) > 0"');
+    expect(yaml).toContain(
+      'certificate: HarborProductionInstallationCertificate | validation="size(self.secretName) > 0"'
+    );
     expect(yaml).toContain('storage: HarborProductionInstallationStorage | validation=');
     expect(yaml).toContain(
       'networkPolicy: HarborProductionInstallationNetworkpolicy | validation='

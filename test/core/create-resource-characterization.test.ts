@@ -22,12 +22,32 @@ import {
 } from '../../src/core/composition/context.js';
 import { TypeKroError } from '../../src/core/errors.js';
 import { createResource } from '../../src/core/proxy/create-resource.js';
+import { externalRef } from '../../src/core/references/external-refs.js';
 import { processResourceReferences } from '../../src/core/serialization/cel-references.js';
 import type { CelExpression } from '../../src/core/types/common.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 import { asKubernetesRef, getReadinessEvaluator } from '../utils/mock-factories.js';
+
+describe('observed root-level Kubernetes data', () => {
+  it.each(['Secret', 'ConfigMap'])(
+    'keeps an observed %s data key as a deferred resource reference',
+    (kind) => {
+      const observed = externalRef<Record<string, never>, Record<string, never>>({
+        apiVersion: 'v1',
+        kind,
+        metadata: { name: 'source', namespace: 'platform' },
+        id: 'source',
+      });
+      const value = observed.data?.providerKey;
+      if (!isKubernetesRef(value)) throw new Error('Expected deferred observed data reference.');
+      expect(value.resourceId).toBe('source');
+      expect(value.fieldPath).toBe('data.providerKey');
+      expect(JSON.stringify(observed)).not.toContain('providerKey');
+    }
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Runtime accessor helpers (avoid `as any` for branded proxy objects)

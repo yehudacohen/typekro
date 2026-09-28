@@ -292,6 +292,7 @@ export interface DirectArtifactPlanInstance {
   readonly graphId: string;
   readonly logicalId: string;
   readonly bindings: DirectArtifactRuntimeAdapterOptions;
+  readonly externalReferences?: readonly DirectArtifactPlanInstance[];
 }
 
 function expandArtifactInstances(
@@ -400,7 +401,7 @@ export function expandDirectArtifactPlan(
   // requirement is recorded alongside them instead: the engine reads them after these graph ids
   // have been applied and are ready.
   const externalReferenceDependencies = new Map<string, Set<string>>();
-  const externalReferenceIdsByArtifactId = new Map<string, string[]>();
+  const referencesByGraphId = new Map<string, Map<string, DirectArtifactPlanInstance>>();
   const { instancesByArtifactId, bindingsFor } = expandArtifactInstances(plan, options);
 
   const planInstances: DirectArtifactPlanInstance[] = [];
@@ -429,10 +430,6 @@ export function expandDirectArtifactPlan(
       manifest: manifest as DeployableK8sResource<Enhanced<unknown, unknown>>,
     });
     externalReferenceDependencies.set(logicalId, new Set());
-    externalReferenceIdsByArtifactId.set(artifact.id, [
-      ...(externalReferenceIdsByArtifactId.get(artifact.id) ?? []),
-      logicalId,
-    ]);
   }
 
   const pairedInstances = (
@@ -485,12 +482,14 @@ export function expandDirectArtifactPlan(
   // requirement on the reference instead, so the engine can defer the live read until those
   // resources are applied and ready.
   for (const { prerequisiteArtifactId, dependentArtifactId } of normalizedEdges) {
-    for (const referenceId of externalReferenceIdsByArtifactId.get(dependentArtifactId) ?? []) {
-      const recorded = externalReferenceDependencies.get(referenceId);
-      if (!recorded) continue;
-      for (const prerequisite of appliedInstances(prerequisiteArtifactId)) {
-        recorded.add(prerequisite.graphId);
-      }
+    const references = (instancesByArtifactId.get(dependentArtifactId) ?? []).filter(
+      (instance) => instance.artifact.role === 'external-reference'
+    );
+    for (const [prerequisite, reference] of pairedInstances(
+      appliedInstances(prerequisiteArtifactId),
+      references
+    )) {
+      externalReferenceDependencies.get(reference.logicalId)?.add(prerequisite.graphId);
     }
   }
 
@@ -500,12 +499,15 @@ export function expandDirectArtifactPlan(
     // Consuming a deferred external reference means consuming whatever produces it, so the
     // consumer inherits the reference's own prerequisites. Without this it could be scheduled at a
     // level that runs before the reference has been read, and would resolve against nothing.
-    for (const referenceId of externalReferenceIdsByArtifactId.get(prerequisiteArtifactId) ?? []) {
-      for (const inherited of externalReferenceDependencies.get(referenceId) ?? []) {
-        for (const dependent of dependents) {
-          if (inherited !== dependent.graphId)
-            dependencyGraph.addEdge(dependent.graphId, inherited);
-        }
+    const references = (instancesByArtifactId.get(prerequisiteArtifactId) ?? []).filter(
+      (instance) => instance.artifact.role === 'external-reference'
+    );
+    for (const [reference, dependent] of pairedInstances(references, dependents)) {
+      const recorded = referencesByGraphId.get(dependent.graphId) ?? new Map();
+      recorded.set(reference.logicalId, { ...reference, bindings: bindingsFor(reference) });
+      referencesByGraphId.set(dependent.graphId, recorded);
+      for (const inherited of externalReferenceDependencies.get(reference.logicalId) ?? []) {
+        if (inherited !== dependent.graphId) dependencyGraph.addEdge(dependent.graphId, inherited);
       }
     }
     for (const [prerequisite, dependent] of pairedInstances(prerequisites, dependents)) {
@@ -527,6 +529,9 @@ export function expandDirectArtifactPlan(
       ...(externalReferences.length > 0 ? { externalReferences } : {}),
       dependencyGraph,
     },
-    instances: planInstances,
+    instances: planInstances.map((instance) => ({
+      ...instance,
+      externalReferences: [...(referencesByGraphId.get(instance.graphId)?.values() ?? [])],
+    })),
   };
 }

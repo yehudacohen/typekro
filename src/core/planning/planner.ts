@@ -23,13 +23,13 @@ import {
   getPortableReadinessStrategy,
   getRuntimeReadinessClassification,
 } from '../readiness/portable-strategies.js';
-import { inlineNestedStatusRefs } from '../serialization/cel-references.js';
 import {
   type FactoryRegistration,
   type FactoryRepresentationRequirement,
   getFactoryRegistration,
   getFactoryRegistrationsForGVK,
 } from '../resources/factory-registry.js';
+import { inlineNestedStatusRefs } from '../serialization/cel-references.js';
 import type { DeploymentResourceGraph } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/schema.js';
@@ -1623,12 +1623,16 @@ function buildResourceNodes(
     const resourceId = getResourceId(resource);
     if (resourceId) capturedResourceByLogicalId.set(resourceId, resource);
   }
-  const lower = (value: unknown) => lowerPlanValue(value, { specSchema });
+  const resourceIds = new Set([
+    ...capturedResourceByLogicalId.keys(),
+    ...graph.resources.flatMap(({ id, manifest }) => [id, getResourceId(manifest) ?? id]),
+  ]);
+  const lower = (value: unknown) => lowerPlanValue(value, { specSchema, resourceIds });
   const lowerAnalyzedExpression = (value: unknown): PlanValue => {
     if (typeof value === 'string' && value.startsWith('${') && value.endsWith('}')) {
       return {
         kind: 'expression',
-        expression: expressionIR(value.slice(2, -1)),
+        expression: expressionIR(value.slice(2, -1), { resourceIds }),
       };
     }
     return lower(value).value;

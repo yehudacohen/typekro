@@ -455,6 +455,42 @@ describe('semantic artifact compilers', () => {
 
     expect(decodeDirectArtifactExecutionRecord(encoded)).toEqual(record);
     expect(JSON.stringify(record.artifact.desired)).toContain('platformInput');
+    expect(record.externalReferences?.[0]).toMatchObject({
+      id: 'platformInput',
+      role: 'external-reference',
+      identity: {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        name: { kind: 'literal', value: 'platform-input' },
+        namespace: { kind: 'literal', value: 'apps' },
+      },
+      lifecycle: { creation: 'require-existing', management: 'reference-only', deletion: 'retain' },
+    });
+
+    // Older v1 records retain their original digest contract when the field is absent.
+    const { externalReferences: _references, executionDigest: _digest, ...legacy } = record;
+    expect(
+      decodeDirectArtifactExecutionRecord(
+        JSON.stringify({
+          ...legacy,
+          executionDigest: canonicalDigest(legacy),
+        })
+      ).externalReferences
+    ).toBeUndefined();
+
+    const invalidObservation = { ...record, externalReferences: [record.artifact] };
+    expect(() => decodeDirectArtifactExecutionRecord(JSON.stringify(invalidObservation))).toThrow(
+      'External observations require distinct identities'
+    );
+    const changedObservation = {
+      ...record,
+      externalReferences: record.externalReferences?.map((reference) => ({
+        ...reference,
+        identity: { ...reference.identity, name: { kind: 'literal', value: 'changed-source' } },
+      })),
+    };
+    expect(() => decodeDirectArtifactExecutionRecord(JSON.stringify(changedObservation)))
+      .toThrow('digest does not match');
 
     const corrupted = JSON.parse(encoded) as {
       artifact: { id: string };
@@ -810,10 +846,7 @@ describe('semantic artifact compilers', () => {
     const bindings = (instance: object) => {
       const spec = Reflect.get(instance, 'spec');
       if (!spec || typeof spec !== 'object') throw new Error('Expected materialized instance spec');
-      return Reflect.get(spec, 'typekroArtifactBindings') as Record<
-        string,
-        Record<string, string>
-      >;
+      return Reflect.get(spec, 'typekroArtifactBindings') as Record<string, Record<string, string>>;
     };
     expect(bindings(noOutputInstance)).toEqual({});
     expect(Object.keys(bindings(firstInstance))).toHaveLength(1);

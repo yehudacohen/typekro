@@ -66,8 +66,15 @@ export {
 } from './clickhouse-schema/index.js';
 // Deployer implementations
 export { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
+export type {
+  KubernetesEffectDecision,
+  KubernetesEffectMutation,
+  KubernetesEffectPermit,
+  KubernetesEffectSkip,
+} from './kubernetes-effect-gate.js';
 export type { AlchemyPromise, AlchemyResolutionContext, AlchemyResource } from './resolver.js';
-
+// Hosts that stamp a TypeKro resource before KroResource must retain its factory scope.
+export { copyResourceMetadata, getResourceScope } from '../core/metadata/resource-metadata.js';
 // Reference resolution
 export {
   buildResourceGraphWithDeferredResolution,
@@ -85,7 +92,7 @@ export {
   resolveReferencesWithAlchemy,
   resolveTypeKroReferencesOnly,
 } from './resolver.js';
-export type { KroResourceR } from './resource-registration.js';
+export type { KroResourceEffectHooks, KroResourceR } from './resource-registration.js';
 // Alchemy v2 KRO resource (declarative): instantiate `KroResource` in a Stack and merge
 // `kroProvider` into the runtime's providers. Replaces the v1 imperative registration.
 export {
@@ -93,6 +100,7 @@ export {
   KRO_RESOURCE_TYPE,
   KroResource,
   kroProvider,
+  kroProviderWithHooks,
   materializeAlchemyResources,
 } from './resource-registration.js';
 // Type inference
@@ -105,6 +113,7 @@ export type {
   MaterializeAlchemyResourcesOptions,
   SerializableKubeConfigOptions,
   TypeKroDeployer,
+  TypeKroMutationPrecondition,
   TypeKroResource,
   TypeKroResourceProps,
 } from './types.js';

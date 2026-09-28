@@ -17,7 +17,8 @@ export type V1JobSpec = NonNullable<V1Job['spec']>;
 export type V1JobStatus = NonNullable<V1Job['status']>;
 
 const JOB_READINESS_STRATEGY = 'typekro.readiness.kubernetes.job';
-const JOB_READINESS_REVISION = '1';
+// Terminal failures change serialized readiness behavior; older records must not silently change.
+const JOB_READINESS_REVISION = '2';
 
 interface JobReadinessDefaults {
   readonly expectedCompletions: number | undefined;
@@ -54,10 +55,24 @@ function createJobReadinessEvaluator(
       const succeeded = status.succeeded || 0;
       const failed = status.failed || 0;
       const active = status.active || 0;
+      const failedCondition = status.conditions?.find(
+        (condition) => condition.type === 'Failed' && condition.status === 'True'
+      );
+
+      if (failedCondition) {
+        return {
+          ready: false,
+          terminal: true,
+          reason: 'JobFailed',
+          message: failedCondition.message || failedCondition.reason || 'Job failed',
+          details: { expectedCompletions, succeeded, failed, active, completionMode },
+        };
+      }
 
       if (failed > 0 && backoffLimit !== undefined && failed > backoffLimit) {
         return {
           ready: false,
+          terminal: true,
           reason: 'JobFailed',
           message: `Job failed: ${failed} failed pods exceed backoff limit of ${backoffLimit}`,
           details: {
@@ -147,7 +162,7 @@ registerPortableReadinessStrategy(JOB_READINESS_STRATEGY, JOB_READINESS_REVISION
  * Creates a Kubernetes Job resource with completion-based readiness evaluation.
  *
  * @param resource - The Job specification conforming to the Kubernetes V1Job API.
- * @returns An Enhanced Job resource that tracks readiness based on successful completions, supporting both Indexed and NonIndexed completion modes.
+ * @returns An Enhanced Job resource that tracks successful completions and reports terminal Kubernetes Job failures without waiting for the deployment timeout.
  * @example
  * const migrate = job({
  *   metadata: { name: 'db-migrate' },
