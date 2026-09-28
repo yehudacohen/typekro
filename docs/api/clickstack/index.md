@@ -1156,8 +1156,10 @@ leaves both modes off; TypeKro turns on rebound compaction only.
   that runs the same compaction leaks it again. On a nearly full claim, that turns the failure mode
   above into a full volume. Opt in only when the claim keeps at least as much free space as the
   largest backlog, for example with the byte bounds below. Rebound compaction goes through the
-  same code, but it only runs once live data is at most `reboundTriggerMiB`, so a failed rebound
-  compaction strands at most about that much until the next restart.
+  same code, but it only runs once live data is at most `reboundTriggerMiB`, so each failed rebound
+  attempt strands at most about that much. It retries every `checkInterval`, though, so repeated
+  failures while the claim is nearly full can add up until the collector restarts. A restart
+  reclaims all of it. Alert on the claim's usage (see *What to watch* below).
 - **Same volume.** `compaction.directory` is the queue directory. Compaction writes a temporary copy
   there and renames it over the original, which is atomic on one filesystem. On a different
   filesystem, such as an `emptyDir`, the extension falls back to reading the whole compacted file
@@ -1229,7 +1231,9 @@ the queue: either a queue is at its bound, or the claim is full. With `sizer: 'b
 `otelcol_exporter_queue_size` and `otelcol_exporter_queue_capacity` are in bytes, so their ratio is
 each signal's share of its bound. The kubelet's `kubelet_volume_stats_used_bytes` for the claim
 shows how full the volume is. After an outage, it should fall back once the queues drain and the
-collector logs `finished compaction`.
+collector logs `finished compaction`. Alert when it stays high. If it keeps climbing while the
+collector logs `compaction failure`, failed compactions are holding space: restart the collector to
+reclaim it.
 
 #### Release-name length
 

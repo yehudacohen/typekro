@@ -269,9 +269,11 @@ export const QUEUE_BATCH_PROCESSOR_TIMEOUT_RANGE_MS = { min: 10, max: 5_000 } as
  *   database's write lock while it copies the live data, which is why the
  *   trigger bounds the copy: 32 MiB rather than upstream's 10 so a busy
  *   gateway with a few batches in flight still qualifies, while the copy
- *   stays well under a second. It also bounds the leak above: a rebound
- *   compaction that runs out of space can strand at most about the trigger's
- *   worth of space until the next restart. The needed threshold, 256 MiB, sits above the
+ *   stays well under a second. It also bounds the leak above PER ATTEMPT: a
+ *   rebound compaction that runs out of space strands at most about the
+ *   trigger's worth of space. It is retried every `check_interval`, so
+ *   repeated failures on a nearly full claim can accumulate until a restart
+ *   reclaims them. The needed threshold, 256 MiB, sits above the
  *   working set of a healthy queue (a handful of in-flight batches of the
  *   image's 10000-item `send_batch_size`), so a healthy queue does not compact
  *   on a loop, and it bounds the space a drained file may keep to 256 MiB per

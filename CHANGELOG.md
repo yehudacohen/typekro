@@ -24,7 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reboundTriggerMiB?, checkInterval? }` overrides the defaults. On-start compaction is opt-in only: it
   copies the whole backlog, so it needs about that much free space on the claim and delays exporter
   start. In collector v0.155.0, a compaction that runs out of space also keeps its deleted temporary
-  file mapped until the process exits. Rebound compaction only copies up to the trigger size. With both modes off, no block is
+  file mapped until the process exits. Rebound compaction only copies up to the trigger size, so
+  each failed attempt strands at most that much. It retries every `check_interval`, so failures
+  on a nearly full claim can add up until the collector restarts. With both modes off, no block is
   rendered, and the overlay is byte-identical to the previous release. `sizer: 'bytes'` makes
   `queueSize` a byte bound per signal queue, by default half the claim split across three signal
   queues per exporter (1789569706 bytes for the default 10Gi), so one signal at its bound no longer
