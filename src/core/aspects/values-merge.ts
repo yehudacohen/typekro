@@ -51,17 +51,41 @@ export function mergeValuesExpression(base: unknown, overlay: unknown): ValuesMe
  * symbol check matters for the planning markers (`sensitiveValue`,
  * `externalInput`, `artifactOutput`): they are plain frozen objects recognised
  * only by a symbol brand, and rebuilding one from its string keys drops it.
- * This is {@link isPlainMergeObject}, the test the runtime merge
- * materialisation uses, plus that symbol check.
+ *
+ * Static merges (the chart values mappers) and deferred ones
+ * ({@link materializeValuesMergeExpressions}) both use this rule, so the same
+ * layers give the same result either way.
  */
 export function isMergeableValuesObject(value: unknown): value is Record<string, unknown> {
-  return isPlainMergeObject(value) && Object.getOwnPropertySymbols(value).length === 0;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    isValuesMergeExpression(value) ||
+    isKubernetesRef(value) ||
+    isResourceReference(value) ||
+    isCelExpression(value) ||
+    isMixedTemplate(value)
+  ) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Object.getOwnPropertySymbols(value).length === 0
+  );
+}
+
+/** An object that carries an own symbol key: a branded value such as a planning marker. */
+function isSymbolBranded(value: unknown): boolean {
+  return !!value && typeof value === 'object' && Object.getOwnPropertySymbols(value).length > 0;
 }
 
 /**
- * True when a chart-values argument cannot be enumerated at build time: a
+ * True when a chart-values argument cannot be merged at build time: a
  * whole-object schema/resource reference, a CEL expression, a mixed template,
- * or an existing runtime merge node.
+ * an existing runtime merge node, or a symbol-branded value such as a
+ * planning marker, which must reach the plan stage whole.
  */
 function isOpaqueChartValues(value: unknown): boolean {
   return (
@@ -69,7 +93,8 @@ function isOpaqueChartValues(value: unknown): boolean {
     isKubernetesRef(value) ||
     isResourceReference(value) ||
     isCelExpression(value) ||
-    isMixedTemplate(value)
+    isMixedTemplate(value) ||
+    isSymbolBranded(value)
   );
 }
 
@@ -98,7 +123,7 @@ export function withChartValueDefaults(
     // the overlay chain so the defaults sit underneath it rather than being
     // replaced by it — dropping `base` here is what lost the defaults before.
     const overlays = overlaysOf(values);
-    return isPlainMergeObject(values.base)
+    return isMergeableValuesObject(values.base)
       ? ({
           __typekroValuesMerge: true,
           base: { ...defaults, ...values.base },
@@ -111,33 +136,22 @@ export function withChartValueDefaults(
         } satisfies ValuesMergeExpression);
   }
   if (isOpaqueChartValues(values)) return mergeValuesExpression(defaults, values);
-  if (isPlainMergeObject(values)) return { ...defaults, ...values };
+  if (isMergeableValuesObject(values)) return { ...defaults, ...values };
   // Nothing to layer the defaults under: `undefined`, or an argument that is
   // not a values object at all. The defaults stand alone rather than being
   // dropped.
   return { ...defaults };
 }
 
-function isPlainMergeObject(value: unknown): value is Record<string, unknown> {
-  if (
-    !value ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    isValuesMergeExpression(value) ||
-    isKubernetesRef(value) ||
-    isResourceReference(value) ||
-    isCelExpression(value) ||
-    isMixedTemplate(value)
-  ) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
+/**
+ * One deferred merge step. Objects that pass {@link isMergeableValuesObject}
+ * merge key by key, recursing only on keys the overlay owns; anything else is
+ * an atomic leaf and the overlay replaces it whole. `undefined` results are
+ * dropped.
+ */
 function mergeMaterializedValues(base: unknown, overlay: unknown): unknown {
   if (overlay === undefined) return base;
-  if (!isPlainMergeObject(base) || !isPlainMergeObject(overlay)) return overlay;
+  if (!isMergeableValuesObject(base) || !isMergeableValuesObject(overlay)) return overlay;
 
   return Object.fromEntries(
     Array.from(new Set([...Object.keys(base), ...Object.keys(overlay)])).flatMap((key) => {
@@ -193,7 +207,9 @@ export function materializeValuesMergeExpressions(value: unknown): unknown {
       return changed ? materialized : current;
     }
 
-    if (!isPlainMergeObject(current)) return current;
+    // The same atomic-leaf rule as the merge step: a symbol-branded value or a
+    // non-plain object is returned as it is, never rebuilt.
+    if (!isMergeableValuesObject(current)) return current;
     if (visiting.has(current)) {
       throw new TypeError('Circular value tree containing a TypeKro values merge expression.');
     }
