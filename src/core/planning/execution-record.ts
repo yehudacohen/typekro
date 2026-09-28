@@ -357,6 +357,19 @@ function executionDigest(record: Omit<DirectArtifactExecutionRecord, 'executionD
   return canonicalDigest(record);
 }
 
+/**
+ * A record describes exactly one already-expanded operation, so it carries the
+ * operation's own logical id and no longer repeats the iteration it came from.
+ */
+function expandedInstanceArtifact(
+  artifact: DirectKubernetesArtifactResource,
+  logicalId: string
+): DirectKubernetesArtifactResource {
+  if (!artifact.iteration && logicalId === (artifact.sourceNodeId ?? artifact.id)) return artifact;
+  const { iteration: _iteration, ...operation } = artifact;
+  return { ...operation, sourceNodeId: logicalId };
+}
+
 /** Select and concretize one direct operation for a fan-out execution host. */
 export function createDirectArtifactExecutionRecord(
   plan: DirectKubernetesArtifactPlan,
@@ -373,7 +386,12 @@ export function createDirectArtifactExecutionRecord(
 export function createDirectArtifactExecutionMaterialization(
   plan: DirectKubernetesArtifactPlan,
   artifactId: string,
-  bindings: PlanMaterializationBindings = {}
+  bindings: PlanMaterializationBindings = {},
+  /** @internal One expanded iteration instance: its runtime id and producer ids by artifact. */
+  instance?: {
+    readonly logicalId: string;
+    readonly dependencyLogicalIds: Readonly<Record<string, readonly string[]>>;
+  }
 ): DirectArtifactExecutionMaterialization {
   const artifact = plan.resources.find((candidate) => candidate.id === artifactId);
   if (!artifact) {
@@ -384,13 +402,19 @@ export function createDirectArtifactExecutionMaterialization(
     );
   }
   const sensitiveBindings: Record<string, unknown> = {};
+  const concrete = concreteArtifact(artifact, bindings, sensitiveBindings);
+  const artifactDependencies = incomingDependencies(plan, artifactId);
   const unsigned = {
     version: DIRECT_ARTIFACT_EXECUTION_RECORD_VERSION,
     target: 'direct' as const,
     planIdentityDigest: plan.planIdentityDigest,
     compiledArtifactDigest: plan.compiledArtifactDigest,
-    artifact: concreteArtifact(artifact, bindings, sensitiveBindings),
-    dependencies: incomingDependencies(plan, artifactId),
+    artifact: instance ? expandedInstanceArtifact(concrete, instance.logicalId) : concrete,
+    dependencies: instance
+      ? [
+          ...new Set(artifactDependencies.flatMap((id) => instance.dependencyLogicalIds[id] ?? [])),
+        ].sort()
+      : artifactDependencies,
   };
   return {
     record: { ...unsigned, executionDigest: executionDigest(unsigned) },

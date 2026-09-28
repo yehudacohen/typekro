@@ -426,6 +426,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Direct-mode `toAlchemyResources()` now expands `forEach` collections.** A direct composition
+  that iterated a spec array of two or more items threw `Declared spec reference regions.$item...
+  is not present in materialization input` (named after the collection) from
+  `toAlchemyResources()`, while direct `toYaml()` and direct deploy rendered it. The graph was
+  already expanded per item, but the Alchemy path built one execution record per template artifact
+  from the spec alone, with no iteration item bound. It now builds one record per expanded resource
+  from that resource's own iteration bindings. Each record carries the resource's runtime id
+  (`regionDeployment-1`, ...) and the dependencies it is wired to, so it rehydrates to the same
+  manifest, and the declarations match direct `toYaml()` resource for resource. Compositions
+  without iteration, and KRO mode, produce the same output as before.
+
 - **An own `__proto__` key in resource data is no longer dropped when a composition is rendered.**
   Maps whose keys come from the caller, such as Helm values, ConfigMap data or ClickHouse
   `serverSettings`, can contain `__proto__`. The helpers that rebuild resource data key by key on the
