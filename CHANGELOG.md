@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [0.43.1] - 2026-09-29
+
+### Fixed
 
 - **Use `@kubernetes/client-node` 1.4.0 while preserving canonical CRD transport.** The SDK
   removed the overridable serialization hook. TypeKro now keeps CRD wire fields such as `enum`
   and `x-kubernetes-validations` intact on create, patch, replace and read without changing
   serialization for other Kubernetes resources.
+
+## [0.43.0] - 2026-09-29
 
 ### Added
 
@@ -1780,8 +1784,6 @@ It should print `object`. Deleting and recreating the RGD also works (KRO re-reg
 but destroys existing custom resources, so prefer the annotation. Do not enable it globally: it disables a real
 safety check, and a genuinely lossy change (narrowing a type, dropping a field) can strand existing CRs.
 
-## [0.43.0] - 2026-09-29
-
 ### Added
 
 - Operation-scoped Alchemy Kubernetes effect and rollback admission with fresh
@@ -2213,7 +2215,9 @@ safety check, and a genuinely lossy change (narrowing a type, dropping a field) 
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.43.1...HEAD
+[0.43.1]: https://github.com/yehudacohen/typekro/compare/v0.43.0...v0.43.1
+[0.43.0]: https://github.com/yehudacohen/typekro/releases/tag/v0.43.0
 [0.21.0]: https://github.com/yehudacohen/typekro/compare/v0.20.3...v0.21.0
 [0.20.3]: https://github.com/yehudacohen/typekro/compare/v0.20.2...v0.20.3
 [0.20.2]: https://github.com/yehudacohen/typekro/compare/v0.20.1...v0.20.2
