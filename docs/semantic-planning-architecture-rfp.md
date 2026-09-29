@@ -1299,7 +1299,12 @@ The current branch contains substantially more than the v0.28.1 baseline:
   compiled-artifact digests;
 - a plan-value materializer and direct artifact runtime adapter that preserve typed references,
   require explicit sensitive bindings, and keep external-reference artifacts outside the
-  apply/rollback ownership set;
+  apply/rollback ownership set. Per-resource direct Alchemy records retain the
+  required external observations, including concrete identity and reference-only
+  retained lifecycle, so fan-out reconciliation uses the same pre-read path.
+  Records without that optional observation field preserve their original v1
+  digest contract. A reference-resolution error or timeout fails before apply;
+  an unresolved original manifest is never a fallback authority for a write;
 - recursive sensitive-value validation that rejects plaintext hidden beneath arrays, objects, or
   nested sensitive wrappers; inspection-time Secret-derived spec taint; and strict diagnostics for
   sensitive values used in Kubernetes identity, activation, readiness, or iteration. Control-flow

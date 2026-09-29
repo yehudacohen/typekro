@@ -13,7 +13,7 @@ import { getMetadataField, getResourceId } from '../metadata/index.js';
 import {
   collectCelLambdaScopes,
   isCelLambdaLocalAt,
-  maskCelStringLiterals,
+  maskClosedCelLiteralsAndComments,
 } from '../references/cel-lexical-scanner.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
@@ -574,7 +574,7 @@ export class DependencyResolver {
    */
   private parseCelReferences(expression: string): KubernetesRef[] {
     const refs: KubernetesRef[] = [];
-    const searchableExpression = maskCelStringLiterals(expression);
+    const searchableExpression = maskClosedCelLiteralsAndComments(expression);
     const lambdaScopes = collectCelLambdaScopes(searchableExpression);
 
     // Pattern: resourceId.section.field (e.g., database.status.endpoint)

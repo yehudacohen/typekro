@@ -51,6 +51,60 @@ const outputs = yield* materializeAlchemyResources(KroResource, decls);
 
 Once deployed, each TypeKro resource is a per-resource entry in Alchemy's state: Alchemy reconciles them idempotently and tears them down in reverse-topological order.
 
+An operation host with short-lived Kubernetes authority may provide
+`kroProviderWithHooks({ beforeKubernetesEffect })` in place of `kroProvider`.
+For direct resources the callback receives the actual create, patch, replace or
+delete target immediately before each API call, plus the stable Alchemy resource
+id as callback context, and must return a fresh
+create-only or UID/resourceVersion precondition, or `undefined` for a resource
+outside the host's guarded scope. A `{ precondition, release }` result holds a
+host lock until that API attempt settles, including failure. It runs again for
+retries and rollback writes. A delete callback may return
+`{ skip: 'already-absent', release }` after proving the target absent; TypeKro
+then makes no delete request.
+When one stack includes unrelated direct resources, `guardsResource(id)` identifies
+the guarded declarations before Alchemy plans an identity replacement. A false
+result leaves that resource on its ordinary create-before-delete lifecycle and
+does not install the effect hook for it by default. A host that must detect an
+unclaimed resource colliding with a claimed Kubernetes identity can set
+`observesResource(id)` independently. Returning true attaches the callback to
+that direct resource while `guardsResource(id)` still controls replacement
+ordering. The callback can return `undefined` for a truly unrelated effect or
+reject the collision before the Kubernetes API call. Observation is mandatory
+for a guarded resource; `observesResource(id) === false` cannot remove its gate.
+An explicit `guardsResource(id) === true` classification requires an effect
+authority decision for every mutation. An absent callback or an `undefined`
+decision fails before any API write, including hoisted Namespace ownership
+creation. Dynamic scope without an explicit classifier and unguarded
+observation-only callbacks retain their `undefined` behavior.
+Method-style effect callbacks retain the supplied hooks object as their receiver.
+The host must ensure every resource requiring admission is a direct declaration;
+KRO-mode effects do not pass through this object API. TypeKro refuses an injected
+direct deployer or a preflight mutation precondition when this gate is installed.
+A direct resource's gated identity change is reconciled as one update: TypeKro
+admits and deploys the distinct successor successfully (including requested
+readiness) before it authorizes and deletes the incumbent. Rejected successor
+admission preserves the incumbent. Failed incumbent deletion leaves both objects;
+retry converges against the successor and obtains fresh authority for the old
+delete. Output advances only after this operation completes. KRO mode keeps
+Alchemy's create-before-delete replacement ordering.
+
+Each durable direct operation records only the concrete external observations it
+consumes, using those observations' own iteration bindings. Its dependency ids
+match the actual concrete graph, including generated prerequisites inherited
+through observations. An unrelated observation never becomes a recovery
+requirement for that operation.
+The same gate covers create-first hoisted Namespace ownership preparation. A
+rejected create leaves an absent Namespace absent and stops reconciliation.
+Existing Namespaces are observed for their retained ownership stamp; subsequent
+writes under the selected apply policy use fresh authority. Absence itself never
+grants ownership. A create conflict
+uses the existing read/adopt decision, so a concurrent external Namespace is not
+stamped as TypeKro-owned.
+A namespace teardown that requires residual PVC
+cleanup through a separate CoreV1 API also fails closed until that cleanup has
+its own authorized effect path.
+
 ### Cross-provider artifact outputs
 
 An experimental semantic plan may reference an output from a non-Kubernetes Alchemy resource with

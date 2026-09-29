@@ -11,6 +11,9 @@ import { RemovalPolicy } from 'alchemy/RemovalPolicy';
 import { Effect } from 'effect';
 import * as Option from 'effect/Option';
 import { type KroResource, materializeAlchemyResources } from '../../../src/alchemy/index.js';
+import { applyKroResourceMutationPreconditionForTest } from '../../../src/alchemy/resource-registration.js';
+import { getMetadataField, setMetadataField } from '../../../src/core/metadata/index.js';
+import { configMap } from '../../../src/factories/kubernetes/config/config-map.js';
 import type { AlchemyResourceDeclaration } from '../../../src/alchemy/types.js';
 
 // A fake KroResource constructor: records call order, returns a minimal handle (an FQN is enough
@@ -48,6 +51,46 @@ const decl = (id: string, dependsOn: string[] = []): AlchemyResourceDeclaration 
 });
 
 describe('materializeAlchemyResources', () => {
+  it('binds create/update effects to exact Kubernetes mutation semantics', () => {
+    const desired = configMap({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: 'guarded', namespace: 'system' },
+      data: { value: 'next' },
+    });
+    const create = applyKroResourceMutationPreconditionForTest(desired, {
+      operation: 'create',
+    });
+    expect(getMetadataField(create, 'applyPolicy')).toEqual({
+      strategy: 'create-only',
+    });
+
+    setMetadataField(desired, 'applyPolicy', {
+      strategy: 'server-side-apply',
+      fieldManager: 'host',
+      fieldConflictPolicy: 'fail',
+      immutableFieldPolicy: 'fail',
+    });
+    const update = applyKroResourceMutationPreconditionForTest(desired, {
+      operation: 'update',
+      uid: 'incumbent-uid',
+      resourceVersion: '7',
+    });
+    expect(update.metadata).toMatchObject({
+      uid: 'incumbent-uid',
+      resourceVersion: '7',
+    });
+
+    setMetadataField(desired, 'applyPolicy', { strategy: 'replace' });
+    expect(() =>
+      applyKroResourceMutationPreconditionForTest(desired, {
+        operation: 'update',
+        uid: 'incumbent-uid',
+        resourceVersion: '7',
+      })
+    ).toThrow(/cannot use replacement semantics/u);
+  });
+
   it('instantiates every declaration, in order, returning a handle per id', async () => {
     const { fake, calls } = makeFakeKroResource();
     const handles = await Effect.runPromise(

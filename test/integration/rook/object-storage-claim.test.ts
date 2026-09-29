@@ -266,15 +266,15 @@ async function proveS3(claimName: string): Promise<void> {
     {
       namespace: appNamespace,
       name: `${claimName}-s3-client`,
-      image: 'minio/mc:RELEASE.2025-05-21T01-59-54Z',
+      image: 'public.ecr.aws/aws-cli/aws-cli:2.27.21',
       envFrom: [{ secretRef: { name: claimName } }, { configMapRef: { name: claimName } }],
       command: ['/bin/sh', '-ec'],
       args: [
-        'mc alias set rook "http://${BUCKET_HOST}:${BUCKET_PORT}" "${AWS_ACCESS_KEY_ID}" "${AWS_SECRET_ACCESS_KEY}"; ' +
+        'export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true AWS_PAGER=""; ' +
           'printf typekro-e2e > /tmp/payload; ' +
-          'mc cp /tmp/payload "rook/${BUCKET_NAME}/proof"; ' +
-          'test "$(mc cat "rook/${BUCKET_NAME}/proof")" = typekro-e2e; ' +
-          'mc rm "rook/${BUCKET_NAME}/proof"',
+          'aws --endpoint-url "http://${BUCKET_HOST}:${BUCKET_PORT}" s3 cp /tmp/payload "s3://${BUCKET_NAME}/proof"; ' +
+          'test "$(aws --endpoint-url "http://${BUCKET_HOST}:${BUCKET_PORT}" s3 cp "s3://${BUCKET_NAME}/proof" -)" = typekro-e2e; ' +
+          'aws --endpoint-url "http://${BUCKET_HOST}:${BUCKET_PORT}" s3 rm "s3://${BUCKET_NAME}/proof"',
       ],
       timeoutMs: 300_000,
     },

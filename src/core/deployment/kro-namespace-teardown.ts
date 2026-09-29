@@ -438,6 +438,8 @@ export async function deleteNamespaceIfEmpty(
     persistentVolumeCleanupApi?: NamespacePersistentVolumeCleanupApi;
     /** Per-verb request timeouts for this teardown's own Kubernetes calls. */
     httpTimeouts?: HttpTimeoutConfig;
+    /** An effect-time gate covers the object API, so refuse the separate CoreV1 PVC path. */
+    forbidResidualPvcCleanup?: boolean;
   } = {}
 ): Promise<NamespaceDeletionOutcome> {
   const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
@@ -532,6 +534,11 @@ export async function deleteNamespaceIfEmpty(
   }
 
   if (pvcIsOnlyKnownOccupant) {
+    if (options.forbidResidualPvcCleanup) {
+      throw new Error(
+        `Effect-time Kubernetes admission cannot authorize residual PVC cleanup in namespace ${namespace}.`
+      );
+    }
     const namespaceUid = live.metadata?.uid;
     if (!namespaceUid) {
       return {

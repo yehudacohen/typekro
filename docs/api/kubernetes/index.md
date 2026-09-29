@@ -86,6 +86,33 @@ const debugPod = pod({
 });
 ```
 
+`customResourceDefinition()` accepts the Kubernetes CRD manifest shape. Its OpenAPI schema
+uses Kubernetes field names, including `enum` and `x-kubernetes-validations`; direct
+deployments preserve those fields when creating, patching, and reading the CRD.
+
+For an Alchemy operation host that must authorize each Kubernetes effect, use
+`kroProviderWithHooks({ beforeKubernetesEffect })` from `typekro/alchemy`.
+The callback runs before every direct Kubernetes create, patch, replace or delete,
+including retries, and returns a fresh create-only or UID/resourceVersion
+precondition for guarded resources. It may return `{ precondition, release }` to
+hold an operation lock until that write succeeds or fails. It returns `undefined` for direct resources
+outside the host's guarded scope. A proven absent delete may return
+`{ skip: 'already-absent', release }`. `beforeReconcile` and `beforeDelete` remain preflight hooks; they run
+before TypeKro's reads and preparation and cannot provide short-lived write
+authority. When the host returns create-only authority for server-side apply of
+a proven absent resource, TypeKro performs an atomic create with the same
+field manager. Other patch forms cannot use create-only authority. The
+effect-time hook cannot be combined with a preflight mutation
+precondition or an injected deployer. Callbacks are not stored in Alchemy state,
+so each operation host must supply them when it runs.
+
+Alchemy hosts that make a stamped copy of a TypeKro resource should call
+`copyResourceMetadata(original, stamped)` from `typekro/alchemy` before passing the
+copy to `KroResource`. That preserves factory scope and readiness metadata across
+the copy; `getResourceScope(stamped)` can verify the selected scope. Direct
+Alchemy declarations also carry that scope as a serializable input so a later
+state-driven delete retains the same cluster or namespaced identity.
+
 ### Storage
 
 | Factory | Description |

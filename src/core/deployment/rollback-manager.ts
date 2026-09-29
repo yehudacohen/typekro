@@ -20,6 +20,7 @@ import type {
   DeploymentError,
   DeploymentEvent,
   DeploymentOptions,
+  ResourceDeletePreconditions,
   RollbackResult,
 } from '../types/deployment.js';
 import type {
@@ -478,8 +479,60 @@ export class ResourceRollbackManager {
     for (const resource of resources) {
       if (resource.status === 'failed' && resource.applied !== true) continue;
 
+      let preconditions: ResourceDeletePreconditions | undefined;
+      let alreadyAbsent = false;
+      if (options.beforeDeleteResource) {
+        try {
+          const authorization = await options.beforeDeleteResource({
+            apiVersion: resource.manifest.apiVersion || '',
+            kind: resource.kind,
+            name: resource.name,
+            ...(getMetadataField(resource.manifest, 'scope') === 'cluster'
+              ? {}
+              : { namespace: resource.namespace }),
+          });
+          alreadyAbsent = authorization.presence === 'absent';
+          if (authorization.presence === 'present'
+            && (!authorization.uid.trim() || !authorization.resourceVersion.trim())) {
+            throw new TypeKroError(
+              `Rollback authorization returned incomplete Kubernetes preconditions for ${resource.kind}/${resource.name}`,
+              'ROLLBACK_PRECONDITION_INVALID',
+              { resourceId: resource.id }
+            );
+          }
+          if (authorization.presence === 'present') {
+            preconditions = {
+              uid: authorization.uid,
+              resourceVersion: authorization.resourceVersion,
+            };
+          }
+        } catch (error: unknown) {
+          this.logger.warn('Resource rollback authorization failed; stopping ordered deletion', {
+            error: ensureError(error),
+            resourceId: resource.id,
+            kind: resource.kind,
+            name: resource.name,
+          });
+          errors.push({
+            resourceId: resource.id,
+            phase: 'rollback',
+            error: ensureError(error),
+            timestamp: new Date(),
+          });
+          break;
+        }
+      }
+
+      if (alreadyAbsent) {
+        rolledBackResources.push(`${resource.kind}/${resource.name}`);
+        deletedResources.push(resource);
+        continue;
+      }
+
       try {
-        await this.deleteDeployedResource(resource, options.timeout, options.abortSignal);
+        await this.deleteDeployedResource(resource, options.timeout, options.abortSignal, {
+          ...(preconditions ? { preconditions } : {}),
+        });
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
         deletedResources.push(resource);
@@ -516,7 +569,10 @@ export class ResourceRollbackManager {
     resource: DeployedResource,
     timeout?: number,
     abortSignal?: AbortSignal,
-    behavior: { waitForNamespaceDeletion?: boolean } = {}
+    behavior: {
+      waitForNamespaceDeletion?: boolean;
+      preconditions?: ResourceDeletePreconditions;
+    } = {}
   ): Promise<void> {
     throwIfAborted(abortSignal);
     const deleteLogger = this.logger.child({
@@ -532,9 +588,9 @@ export class ResourceRollbackManager {
     };
 
     try {
-      let namespaceUid: string | undefined;
+      let namespaceUid = behavior.preconditions?.uid;
       if (resource.kind === 'Namespace') {
-        namespaceUid = resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
+        namespaceUid ??= resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
         if (!namespaceUid) {
           try {
             const live = (await this.k8sApi.read({
@@ -566,7 +622,9 @@ export class ResourceRollbackManager {
           kind: resource.kind,
           metadata,
         } as k8s.KubernetesObject;
-        if (namespaceUid) {
+        const deletePreconditions = behavior.preconditions ??
+          (namespaceUid ? { uid: namespaceUid } : undefined);
+        if (deletePreconditions) {
           await this.k8sApi.delete(
             deletionTarget,
             undefined,
@@ -574,7 +632,7 @@ export class ResourceRollbackManager {
             undefined,
             undefined,
             undefined,
-            { preconditions: { uid: namespaceUid } }
+            { preconditions: deletePreconditions }
           );
         } else {
           await this.k8sApi.delete(deletionTarget);

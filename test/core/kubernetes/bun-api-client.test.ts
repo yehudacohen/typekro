@@ -144,6 +144,66 @@ describe('bun-api-client', () => {
       const client = createBunCompatibleKubernetesObjectApi(kc);
       expect(client).toBeDefined();
     });
+
+    it('preserves canonical CRD enum and CEL validation fields on create and patch', async () => {
+      const client = createBunCompatibleKubernetesObjectApi(createTestKubeConfig());
+      const manifest = {
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: 'widgets.example.com' },
+        spec: {
+          group: 'example.com',
+          scope: 'Namespaced',
+          names: { kind: 'Widget', plural: 'widgets' },
+          versions: [
+            {
+              name: 'v1',
+              served: true,
+              storage: true,
+              schema: {
+                openAPIV3Schema: {
+                  type: 'object',
+                  properties: {
+                    spec: {
+                      type: 'object',
+                      properties: { mode: { type: 'string', enum: ['safe', 'fast'] } },
+                      'x-kubernetes-validations': [
+                        { rule: 'self.mode == "safe"', message: 'safe mode required' },
+                      ],
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      };
+      const requestBodies: unknown[] = [];
+      Reflect.set(client, 'resource', async () => ({
+        kind: 'CustomResourceDefinition',
+        name: 'customresourcedefinitions',
+        namespaced: false,
+      }));
+      Reflect.set(client, 'requestPromise', async (request: { getBody(): unknown }) => {
+        const body = JSON.parse(String(request.getBody()));
+        requestBodies.push(body);
+        return body;
+      });
+
+      await client.create(manifest);
+      await client.patch(
+        manifest,
+        undefined,
+        undefined,
+        'test',
+        false,
+        'application/apply-patch+yaml'
+      );
+      for (const body of requestBodies) {
+        expect(body).toMatchObject(manifest);
+      }
+      expect(requestBodies).toHaveLength(2);
+    });
   });
 
   // =========================================================================

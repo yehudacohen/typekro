@@ -16,6 +16,7 @@
 import type { ResourceAspectMetadata } from '../aspects/types.js';
 import type { ArtifactApplyPolicy } from '../planning/artifacts.js';
 import type { ReadinessStrategyIdentity } from '../planning/types.js';
+import type { ResourceGraphResource } from '../types/deployment.js';
 import type { ResourceStatus } from '../types/kubernetes.js';
 import type { RefOrValue } from '../types/references.js';
 
@@ -62,6 +63,8 @@ export interface ResourceMetadata {
     name: RefOrValue<string>;
     namespace?: RefOrValue<string>;
   };
+  /** Required external observations retained by a direct fan-out execution record. */
+  directExternalReferences?: readonly ResourceGraphResource[];
   /** Original resource identifier for cross-resource references */
   resourceId?: string;
   /** Local resource IDs that should resolve to this emitted resource ID. */

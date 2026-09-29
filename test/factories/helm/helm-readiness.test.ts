@@ -124,6 +124,33 @@ describe('Helm Readiness Evaluators', () => {
       });
     });
 
+    it('waits for the top-level observation even when the Ready condition is current', () => {
+      const resource = {
+        metadata: { name: 'test', generation: 1 },
+        status: {
+          conditions: [
+            { type: 'Ready', status: 'True', observedGeneration: 1, message: 'Chart installed' },
+          ],
+        },
+      };
+
+      expect(helmReleaseReadinessEvaluator(resource)).toMatchObject({
+        ready: false,
+        reason: 'GenerationNotObserved',
+        details: { desiredGeneration: 1, conditionObservedGeneration: 1 },
+      });
+      expect(
+        helmReleaseReadinessEvaluator({
+          ...resource,
+          status: { ...resource.status, observedGeneration: 0 },
+        })
+      ).toMatchObject({
+        ready: false,
+        reason: 'GenerationNotObserved',
+        details: { desiredGeneration: 1, observedGeneration: 0 },
+      });
+    });
+
     it('accepts Ready only after Flux observes the current generation', () => {
       const resource = {
         metadata: { name: 'test', generation: 3 },

@@ -41,6 +41,7 @@ import {
   getMetadataField,
   getReadinessEvaluator,
   getResourceId,
+  getResourceScope,
   setResourceId,
 } from '../metadata/index.js';
 import type {
@@ -48,6 +49,10 @@ import type {
   DirectKubernetesArtifactPlan,
   DirectKubernetesArtifactResource,
 } from '../planning/artifacts.js';
+import {
+  type DirectArtifactPlanInstance,
+  expandDirectArtifactPlan,
+} from '../planning/direct-runtime-adapter.js';
 import {
   assertAdapterCapabilitiesSupported,
   collectArtifactOutputUses,
@@ -61,10 +66,6 @@ import {
   resolveStaticYamlSensitiveBindings,
   type StaticYamlMaterializationOptions,
 } from '../planning/index.js';
-import {
-  type DirectArtifactPlanInstance,
-  expandDirectArtifactPlan,
-} from '../planning/direct-runtime-adapter.js';
 import type { CapabilityRequirement, PlanValue } from '../planning/types.js';
 import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
 import { resolvePortableReadinessStrategy } from '../readiness/portable-strategies.js';
@@ -113,6 +114,7 @@ interface FactoryHealthDetails {
   errors: DeploymentError[];
 }
 
+import { setOwnProperty } from '../../shared/own-property.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from './resource-tagging.js';
 import {
   extractSerializableKubeConfigOptions,
@@ -126,7 +128,6 @@ import {
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
 import { DirectDeploymentStrategy } from './strategies/index.js';
-import { setOwnProperty } from '../../shared/own-property.js';
 
 interface DirectArtifactExecution {
   readonly graph: DeploymentResourceGraph;
@@ -184,6 +185,7 @@ export class DirectResourceFactoryImpl<
 > implements DirectResourceFactory<TSpec, TStatus>
 {
   readonly mode = 'direct' as const;
+  readonly resourceMutationBoundary = 'before-delete-v1' as const;
   readonly name: string;
   readonly namespace: string;
 
@@ -570,6 +572,9 @@ export class DirectResourceFactoryImpl<
                 }
               : {}),
             ...(abortSignal ? { abortSignal } : {}),
+            ...(opts?.beforeDeleteResource
+              ? { beforeDeleteResource: opts.beforeDeleteResource }
+              : {}),
           });
         } catch (error: unknown) {
           const isNotFound =
@@ -607,6 +612,7 @@ export class DirectResourceFactoryImpl<
         ? { timeout: opts?.timeout ?? this.factoryOptions.timeout }
         : {}),
       ...(abortSignal ? { abortSignal } : {}),
+      ...(opts?.beforeDeleteResource ? { beforeDeleteResource: opts.beforeDeleteResource } : {}),
     });
   }
 
@@ -1697,7 +1703,11 @@ export class DirectResourceFactoryImpl<
                   ...(locals ? { locals } : {}),
                   ...(resourceIds ? { resourceIds } : {}),
                 },
-                { logicalId: instance.logicalId, dependencyLogicalIds }
+                {
+                  logicalId: instance.logicalId,
+                  dependencyLogicalIds,
+                  externalReferences: instance.externalReferences ?? [],
+                }
               ),
             ] as const;
           })
@@ -1863,6 +1873,14 @@ export class DirectResourceFactoryImpl<
       if (declarationResource !== node.resource) {
         copyResourceMetadata(node.resource, declarationResource);
       }
+      // Alchemy serializes declaration inputs before state-driven deletion.
+      // Persist the factory scope so a cluster resource cannot acquire the
+      // deployment namespace when WeakMap metadata is no longer available.
+      const scope = getResourceScope(declarationResource);
+      const alchemyResource = scope ? { ...declarationResource, scope } : declarationResource;
+      if (alchemyResource !== declarationResource) {
+        copyResourceMetadata(declarationResource, alchemyResource);
+      }
       const dependsOn = graph.dependencyGraph
         .getDependencies(graphId)
         .map((dependencyGraphId) => byGraphId.get(dependencyGraphId)?.alchemyId)
@@ -1873,7 +1891,7 @@ export class DirectResourceFactoryImpl<
         ...(artifactRequirements.length > 0 ? { artifactRequirements } : {}),
         ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
         props: {
-          resource: declarationResource,
+          resource: alchemyResource,
           resourceId: node.logicalId,
           ...(materialization
             ? {

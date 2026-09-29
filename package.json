@@ -1,6 +1,6 @@
 {
   "name": "typekro",
-  "version": "0.42.0",
+  "version": "0.43.0",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "repository": {
@@ -149,7 +149,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "!dist/.tsbuildinfo",
+    "!dist/**/*.tsbuildinfo"
   ],
   "scripts": {
     "build": "bun run clean && bun run lint && bun run typecheck && bun run build:lib && bun run build:examples",
@@ -169,9 +171,9 @@
     "test:integration:required": "REQUIRE_CLUSTER_TESTS=true ./scripts/run-integration-tests.sh",
     "test:integration:debug": "DEBUG_MODE=true ./scripts/run-integration-tests.sh",
     "typecheck": "bun run typecheck:lib && bun run typecheck:examples && bun run typecheck:tests",
-    "typecheck:lib": "bun tsc --noEmit",
-    "typecheck:examples": "bun tsc --noEmit --project tsconfig.examples.json",
-    "typecheck:tests": "bun tsc --noEmit --project tsconfig.test.json",
+    "typecheck:lib": "bun tsc --noEmit --incremental false",
+    "typecheck:examples": "bun tsc --noEmit --incremental false --project tsconfig.examples.json",
+    "typecheck:tests": "bun tsc --noEmit --incremental false --project tsconfig.test.json",
     "typecheck:demo": "bun tsc --project test/tsconfig.typecheck.json",
     "lint": "biome lint src examples test plugins",
     "lint:fix": "biome lint --write src examples test",

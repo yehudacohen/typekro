@@ -158,6 +158,16 @@ export async function waitForTestNamespaceEmpty(
   );
 }
 
+/** Stop waiting for inventory once Kubernetes has removed the test namespace. */
+export async function waitForTestNamespaceEmptyOrAbsent(
+  namespace: string,
+  inventory: NamespaceInventory,
+  waitForAbsent: () => Promise<void>,
+  timeoutMs: number
+): Promise<void> {
+  await Promise.race([waitForTestNamespaceEmpty(namespace, inventory, timeoutMs), waitForAbsent()]);
+}
+
 export function isNotFoundError(error: unknown): boolean {
   const candidate = error as {
     code?: number;
@@ -287,6 +297,8 @@ export interface TestPodOptions {
   namespace: string;
   name: string;
   image: string;
+  imagePullPolicy?: k8s.V1Container['imagePullPolicy'];
+  imagePullSecrets?: k8s.V1LocalObjectReference[];
   command?: string[];
   args?: string[];
   env?: k8s.V1EnvVar[];
@@ -318,6 +330,7 @@ export async function runTestPodAndReadLogs(
           {
             name: containerName,
             image: options.image,
+            ...(options.imagePullPolicy ? { imagePullPolicy: options.imagePullPolicy } : {}),
             ...(options.command ? { command: options.command } : {}),
             ...(options.args ? { args: options.args } : {}),
             ...(options.env ? { env: options.env } : {}),
@@ -326,6 +339,7 @@ export async function runTestPodAndReadLogs(
             ...(options.volumeMounts ? { volumeMounts: options.volumeMounts } : {}),
           },
         ],
+        ...(options.imagePullSecrets ? { imagePullSecrets: options.imagePullSecrets } : {}),
         ...(options.volumes ? { volumes: options.volumes } : {}),
       },
     },
@@ -347,6 +361,16 @@ export async function runTestPodAndReadLogs(
         namespace: options.namespace,
         name: options.name,
       });
+      const waiting = pod.status?.containerStatuses?.find((status) =>
+        ['ErrImagePull', 'ImagePullBackOff', 'InvalidImageName'].includes(
+          status.state?.waiting?.reason ?? ''
+        )
+      )?.state?.waiting;
+      if (waiting) {
+        throw new Error(
+          `Test Pod ${options.namespace}/${options.name} image pull failed: ${waiting.reason}`
+        );
+      }
       if (pod.status?.phase === 'Succeeded') {
         logs = await coreApi.readNamespacedPodLog({
           namespace: options.namespace,
@@ -1050,9 +1074,15 @@ export async function deleteTestNamespaceAndWait(
       `Refusing namespace finalizer recovery for ${namespace}: unexpected finalizers ${finalizers.join(', ')}`
     );
   }
-  await waitForTestNamespaceEmpty(
+  await waitForTestNamespaceEmptyOrAbsent(
     namespace,
     inventory ?? createClusterNamespaceInventory(kubeConfig),
+    () =>
+      waitForResourceAbsent(
+        { apiVersion: 'v1', kind: 'Namespace', metadata: { name: namespace } },
+        kubeConfig,
+        recoveryTimeoutMs
+      ),
     recoveryTimeoutMs
   );
 

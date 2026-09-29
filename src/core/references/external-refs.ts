@@ -133,6 +133,11 @@ export function externalRef<TSpec extends object, TStatus extends object>(
     },
     spec: {} as TSpec,
     status: {} as TStatus,
+    // Observed Secrets/ConfigMaps have root-level data rather than spec data.
+    // Seed only the proxy shape: externalRef serialization emits identity,
+    // never this empty body or credential bytes. Without it Enhanced.data
+    // silently returned undefined instead of a deferred resource reference.
+    ...(resolvedKind === 'Secret' || resolvedKind === 'ConfigMap' ? { data: {} } : {}),
     // Mark this as an external reference for serialization
     __externalRef: true,
     ...(resolvedId && { id: resolvedId }),

@@ -202,6 +202,13 @@ export interface DeploymentOptions extends BaseDeploymentConfig {
   rollbackOnFailure?: boolean;
 
   /**
+   * Host authorization performed immediately before each ordered rollback mutation.
+   * The returned Kubernetes preconditions are attached to that resource's DELETE.
+   * A rejected authorization stops the rollback before later resources are touched.
+   */
+  beforeDeleteResource?: BeforeDeleteResource;
+
+  /**
    * Abort readiness waits for all resources when any resource in the same level fails
    * This significantly speeds up deployments when failures occur
    * @default true
@@ -886,7 +893,36 @@ export interface ResourceFactoryDeleteOptions extends ResourceFactoryOperationOp
   timeout?: number;
   scopes?: string[];
   includeUnscopedResources?: boolean;
+  /** Authorize and precondition every individual Kubernetes rollback mutation. */
+  beforeDeleteResource?: BeforeDeleteResource;
 }
+
+/** Redaction-safe identity supplied to a resource-level rollback authorization hook. */
+export interface ResourceDeleteIdentity {
+  readonly apiVersion: string;
+  readonly kind: string;
+  readonly name: string;
+  readonly namespace?: string;
+}
+
+/** Exact Kubernetes optimistic-concurrency lease returned by the authorization hook. */
+export interface ResourceDeletePreconditions {
+  readonly uid: string;
+  readonly resourceVersion: string;
+}
+
+/** A fresh observation can also prove that no delete mutation is necessary. */
+export interface ResourceAlreadyAbsent {
+  readonly presence: 'absent';
+}
+
+export type ResourceDeleteAuthorization =
+  | ({ readonly presence: 'present' } & ResourceDeletePreconditions)
+  | ResourceAlreadyAbsent;
+
+export type BeforeDeleteResource = (
+  resource: ResourceDeleteIdentity
+) => Promise<ResourceDeleteAuthorization> | ResourceDeleteAuthorization;
 
 /** Options exposed to library consumers for cluster-backed factory reads. */
 export interface ResourceFactoryReadOptions extends ResourceFactoryOperationOptions {}
@@ -945,6 +981,8 @@ export interface DirectResourceFactory<
   TStatus extends KroCompatibleType,
 > extends ResourceFactory<TSpec, TStatus> {
   mode: 'direct';
+  /** Resource-level rollback authorization and Kubernetes preconditions are enforced. */
+  readonly resourceMutationBoundary?: 'before-delete-v1';
 
   // Direct-specific features
   rollback(opts?: ResourceFactoryOperationOptions): Promise<RollbackResult>;

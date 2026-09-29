@@ -71,6 +71,13 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   deploymentStrategy: 'direct' | 'kro';
 
   /**
+   * One-effect Kubernetes identity lease supplied by a host immediately before
+   * this reconcile. Create mode uses create-only semantics. Update mode carries
+   * the incumbent UID/resourceVersion into the API mutation.
+   */
+  mutationPrecondition?: TypeKroMutationPrecondition;
+
+  /**
    * The resource's logical id within its composition graph (e.g. `webappDeployment`) — the id
    * sibling resources' `KubernetesRef`s point at. Surfaced on the output so dependents can seed
    * reference resolution against this resource's live state. Set by `toAlchemyResources`.
@@ -188,6 +195,14 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
    */
   options?: Partial<Omit<DeploymentOptions, 'mode' | 'namespace'>>;
 }
+
+export type TypeKroMutationPrecondition =
+  | { readonly operation: 'create' }
+  | {
+      readonly operation: 'update';
+      readonly uid: string;
+      readonly resourceVersion: string;
+    };
 
 /**
  * A single declarative alchemy v2 resource to instantiate: a stable `id` plus the

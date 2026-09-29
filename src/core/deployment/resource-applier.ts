@@ -137,8 +137,8 @@ export class ResourceApplier implements ArtifactResourceApplier {
   }
 
   /**
-   * Resolve all references in a resource, with timeout and fallback behavior.
-   * Falls back to the original resource if resolution fails.
+   * Resolve all references before applying a resource. Resolution errors and
+   * timeouts fail the operation; an unresolved manifest cannot authorize a write.
    */
   async resolveResourceReferences(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>,
@@ -177,23 +177,7 @@ export class ResourceApplier implements ArtifactResourceApplier {
         }
       }
     } catch (error: unknown) {
-      // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
-      // one at a time. This is expected behavior, so we log at debug level instead of warn.
-      const hasResourceKeyMapping =
-        context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
-      if (hasResourceKeyMapping) {
-        resourceLogger.warn('Reference resolution failed, using original resource', {
-          error: ensureError(error).message,
-        });
-      } else {
-        resourceLogger.debug(
-          'Reference resolution skipped (no resourceKeyMapping), using original resource',
-          {
-            error: ensureError(error).message,
-          }
-        );
-      }
-      return resource;
+      throw ensureError(error);
     }
   }
 

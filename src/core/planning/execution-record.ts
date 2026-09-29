@@ -4,11 +4,17 @@ import { decodeDirectArtifactResource } from './artifact-codec.js';
 import {
   DIRECT_ARTIFACT_EXECUTION_RECORD_VERSION,
   type DirectArtifactExecutionRecord,
+  type DirectExternalReferenceArtifact,
   type DirectKubernetesArtifactPlan,
   type DirectKubernetesArtifactResource,
 } from './artifacts.js';
 import { canonicalDigest, canonicalStringify } from './canonical.js';
-import { materializePlanValue, type PlanMaterializationBindings } from './materialization.js';
+import type { DirectArtifactPlanInstance } from './direct-runtime-adapter.js';
+import {
+  evaluatePlanActivation,
+  materializePlanValue,
+  type PlanMaterializationBindings,
+} from './materialization.js';
 import type { LifecyclePolicy, PlanValue, ReadinessStrategyIdentity } from './types.js';
 import { lowerPlanValue } from './values.js';
 
@@ -231,11 +237,11 @@ function concreteReadinessStrategy(
   };
 }
 
-function concreteArtifact(
-  artifact: DirectKubernetesArtifactResource,
+function concreteArtifact<T extends DirectKubernetesArtifactResource>(
+  artifact: T,
   bindings: PlanMaterializationBindings,
   sensitiveBindings: Record<string, unknown>
-): DirectKubernetesArtifactResource {
+): T {
   const path = `$.artifact`;
   const readinessStrategy = concreteReadinessStrategy(
     artifact.readiness.strategy,
@@ -332,15 +338,10 @@ function concreteArtifact(
   };
 }
 
-function incomingDependencies(
+function incomingPrerequisites(
   plan: DirectKubernetesArtifactPlan,
   artifactId: string
 ): readonly string[] {
-  const emittedArtifactIds = new Set(
-    plan.resources
-      .filter((artifact) => artifact.role === 'application-resource')
-      .map((artifact) => artifact.id)
-  );
   const dependencies = new Set<string>();
   for (const edge of plan.edges) {
     if (edge.kind === 'output' && edge.consumer === artifactId) dependencies.add(edge.producer);
@@ -350,7 +351,23 @@ function incomingDependencies(
     if (edge.kind === 'ownership' && edge.child === artifactId) dependencies.add(edge.owner);
   }
   dependencies.delete(artifactId);
-  return [...dependencies].filter((dependency) => emittedArtifactIds.has(dependency)).sort();
+  return [...dependencies].sort();
+}
+
+function incomingDependencies(plan: DirectKubernetesArtifactPlan, artifactId: string): string[] {
+  const dependencies = new Set<string>();
+  const visited = new Set<string>([artifactId]);
+  const visit = (id: string) => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const artifact = plan.resources.find((candidate) => candidate.id === id);
+    if (artifact?.role === 'application-resource') dependencies.add(id);
+    if (artifact?.role === 'external-reference') {
+      for (const prerequisite of incomingPrerequisites(plan, id)) visit(prerequisite);
+    }
+  };
+  for (const prerequisite of incomingPrerequisites(plan, artifactId)) visit(prerequisite);
+  return [...dependencies].sort();
 }
 
 function executionDigest(record: Omit<DirectArtifactExecutionRecord, 'executionDigest'>): string {
@@ -361,6 +378,14 @@ function executionDigest(record: Omit<DirectArtifactExecutionRecord, 'executionD
  * A record describes exactly one already-expanded operation, so it carries the
  * operation's own logical id and no longer repeats the iteration it came from.
  */
+function expandedInstanceArtifact(
+  artifact: DirectExternalReferenceArtifact,
+  logicalId: string
+): DirectExternalReferenceArtifact;
+function expandedInstanceArtifact(
+  artifact: DirectKubernetesArtifactResource,
+  logicalId: string
+): DirectKubernetesArtifactResource;
 function expandedInstanceArtifact(
   artifact: DirectKubernetesArtifactResource,
   logicalId: string
@@ -391,6 +416,10 @@ export function createDirectArtifactExecutionMaterialization(
   instance?: {
     readonly logicalId: string;
     readonly dependencyLogicalIds: Readonly<Record<string, readonly string[]>>;
+    readonly externalReferences: readonly Pick<
+      DirectArtifactPlanInstance,
+      'artifact' | 'logicalId' | 'bindings'
+    >[];
   }
 ): DirectArtifactExecutionMaterialization {
   const artifact = plan.resources.find((candidate) => candidate.id === artifactId);
@@ -403,7 +432,16 @@ export function createDirectArtifactExecutionMaterialization(
   }
   const sensitiveBindings: Record<string, unknown> = {};
   const concrete = concreteArtifact(artifact, bindings, sensitiveBindings);
-  const artifactDependencies = incomingDependencies(plan, artifactId);
+  const incoming = new Set(incomingPrerequisites(plan, artifactId));
+  const references =
+    instance?.externalReferences ??
+    plan.resources
+      .filter((candidate) => candidate.role === 'external-reference' && incoming.has(candidate.id))
+      .map((candidate) => ({
+        artifact: candidate,
+        logicalId: candidate.sourceNodeId ?? candidate.id,
+        bindings,
+      }));
   const unsigned = {
     version: DIRECT_ARTIFACT_EXECUTION_RECORD_VERSION,
     target: 'direct' as const,
@@ -411,10 +449,32 @@ export function createDirectArtifactExecutionMaterialization(
     compiledArtifactDigest: plan.compiledArtifactDigest,
     artifact: instance ? expandedInstanceArtifact(concrete, instance.logicalId) : concrete,
     dependencies: instance
-      ? [
-          ...new Set(artifactDependencies.flatMap((id) => instance.dependencyLogicalIds[id] ?? [])),
-        ].sort()
-      : artifactDependencies,
+      ? [...new Set(Object.values(instance.dependencyLogicalIds).flat())].sort()
+      : incomingDependencies(plan, artifactId),
+    externalReferences: references
+      .filter(({ artifact: candidate, bindings: referenceBindings }) =>
+        candidate.readiness.activation.every(
+          (condition, index) =>
+            evaluatePlanActivation(
+              condition,
+              referenceBindings,
+              `$.externalReferences.${candidate.id}.activation[${index}]`
+            ) !== false
+        )
+      )
+      .map(({ artifact: candidate, logicalId, bindings: referenceBindings }) => {
+        if (candidate.role !== 'external-reference') {
+          throw new DirectArtifactExecutionRecordError(
+            'Expected a concrete external observation.',
+            '$.externalReferences'
+          );
+        }
+        const reference = concreteArtifact(candidate, referenceBindings, sensitiveBindings);
+        return instance
+          ? { ...expandedInstanceArtifact(reference, logicalId), id: logicalId }
+          : reference;
+      })
+      .sort((left, right) => left.id.localeCompare(right.id)),
   };
   return {
     record: { ...unsigned, executionDigest: executionDigest(unsigned) },
@@ -482,6 +542,9 @@ export function decodeDirectArtifactExecutionRecord(
     compiledArtifactDigest: record.compiledArtifactDigest as string,
     artifact,
     dependencies,
+    ...(record.externalReferences !== undefined
+      ? { externalReferences: decodeExternalReferences(record.externalReferences, artifact.id) }
+      : {}),
     executionDigest: record.executionDigest as string,
   };
   const expected = executionDigest({
@@ -491,6 +554,9 @@ export function decodeDirectArtifactExecutionRecord(
     compiledArtifactDigest: decoded.compiledArtifactDigest,
     artifact: decoded.artifact,
     dependencies: decoded.dependencies,
+    ...(decoded.externalReferences !== undefined
+      ? { externalReferences: decoded.externalReferences }
+      : {}),
   });
   if (expected !== decoded.executionDigest) {
     throw new DirectArtifactExecutionRecordError(
@@ -499,4 +565,36 @@ export function decodeDirectArtifactExecutionRecord(
     );
   }
   return decoded;
+}
+
+function decodeExternalReferences(
+  value: unknown,
+  artifactId: string
+): NonNullable<DirectArtifactExecutionRecord['externalReferences']> {
+  if (!Array.isArray(value)) {
+    throw new DirectArtifactExecutionRecordError(
+      'Expected external reference array.',
+      '$.externalReferences'
+    );
+  }
+  const ids = new Set<string>();
+  return value.map((entry, index) => {
+    const reference = decodeDirectArtifactResource(canonicalStringify(entry));
+    if (
+      reference.role !== 'external-reference' ||
+      !reference.identity ||
+      reference.lifecycle.creation !== 'require-existing' ||
+      reference.lifecycle.management !== 'reference-only' ||
+      reference.lifecycle.deletion !== 'retain' ||
+      reference.id === artifactId ||
+      ids.has(reference.id)
+    ) {
+      throw new DirectArtifactExecutionRecordError(
+        'External observations require distinct identities and reference-only retained lifecycle.',
+        `$.externalReferences[${index}]`
+      );
+    }
+    ids.add(reference.id);
+    return reference;
+  });
 }

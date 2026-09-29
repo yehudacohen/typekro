@@ -159,6 +159,8 @@ export interface DirectArtifactExecutionRecord {
   readonly compiledArtifactDigest: string;
   readonly artifact: DirectKubernetesArtifactResource;
   readonly dependencies: readonly string[];
+  /** Required observations from the graph; never owned fan-out operations. Absent in older v1 records. */
+  readonly externalReferences?: readonly DirectExternalReferenceArtifact[];
   readonly executionDigest: string;
 }
 

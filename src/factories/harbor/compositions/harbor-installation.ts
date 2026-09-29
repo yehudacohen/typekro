@@ -3,6 +3,7 @@ import { Cel } from '../../../core/references/cel.js';
 import { observedResource } from '../../../core/references/external-refs.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { certificate } from '../../cert-manager/resources/certificates.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { networkPolicy } from '../../kubernetes/networking/network-policy.js';
@@ -255,24 +256,42 @@ function createHarborInstallation(
     targetNamespace
   );
   const databaseCredentials =
-    profile === 'production'
+    graphMode || spec.database
       ? observedResource<Record<string, never>, Record<string, never>>({
           apiVersion: 'v1',
           kind: 'Secret',
           metadata: {
-            name: (spec as HarborProductionInstallationConfig).database.existingSecret,
+            name: profile === 'production'
+              ? (spec as HarborProductionInstallationConfig).database.existingSecret
+              : graphMode
+                ? Cel.expr<string>(
+                    'has(schema.spec.database) ? schema.spec.database.existingSecret : schema.spec.adminPasswordSecret.name'
+                  )
+                : requiredLocalExternalSecretName(
+                    (spec as HarborLocalInstallationConfig).database,
+                    'database'
+                  ),
             namespace: targetNamespace,
           },
           id: 'harborDatabaseCredentials',
         })
       : undefined;
   const cacheCredentials =
-    profile === 'production'
+    graphMode || spec.cache
       ? observedResource<Record<string, never>, Record<string, never>>({
           apiVersion: 'v1',
           kind: 'Secret',
           metadata: {
-            name: (spec as HarborProductionInstallationConfig).cache.existingSecret,
+            name: profile === 'production'
+              ? (spec as HarborProductionInstallationConfig).cache.existingSecret
+              : graphMode
+                ? Cel.expr<string>(
+                    'has(schema.spec.cache) ? schema.spec.cache.existingSecret : schema.spec.adminPasswordSecret.name'
+                  )
+                : requiredLocalExternalSecretName(
+                    (spec as HarborLocalInstallationConfig).cache,
+                    'cache'
+                  ),
             namespace: targetNamespace,
           },
           id: 'harborCacheCredentials',
@@ -319,7 +338,11 @@ function createHarborInstallation(
   });
   release.dependsOn(repository);
   // KRO must model external Secret observations explicitly so its controller
-  // delays the HelmRelease until they exist. Direct mode has no deployable
+  // delays the HelmRelease until they exist. Optional local database/cache
+  // observers resolve to the already-required administrator Secret when their
+  // external providers are absent: KRO only supports unconditional dependsOn
+  // edges, so this keeps both local profile branches reconcilable.
+  // Direct mode has no deployable
   // graph node for an external observation; its caller prepares those Secrets
   // before deploy(), and Flux readiness remains the integration check.
   if (graphMode) {
@@ -341,22 +364,11 @@ function createHarborInstallation(
     release.dependsOn(ingressPolicy);
   }
 
-  const ready = Cel.expr<boolean>(
-    release.status.conditions,
-    '.exists(c, c.type == "Ready" && c.status == "True")'
-  );
-  const readyExpression =
-    'harborRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")';
-  const failed = Cel.expr<boolean>(
-    release.status.conditions,
-    '.exists(c, c.type == "Ready" && c.status == "False")'
-  );
+  const { ready, failed, phase } = helmReleaseConditionSummary(release);
   return {
     ready,
     failed,
-    phase: Cel.expr<'Installing' | 'Ready' | 'Failed'>(
-      'harborRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") ? "Failed" : (harborRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing")'
-    ),
+    phase,
     endpoint: Cel.expr<string>('harborMetadata.metadata.annotations["typekro.dev/endpoint"]'),
     chartVersion: Cel.expr<string>(
       'harborMetadata.metadata.annotations["typekro.dev/chart-version"]'
@@ -376,16 +388,16 @@ function createHarborInstallation(
     // The HelmRelease Ready condition is the chart's bounded integration
     // acknowledgement, so do not report a provider ready ahead of it.
     storageReady: graphMode
-      ? Cel.expr<boolean>(`${readyExpression} && harborStorageCredentials.metadata.name != ""`)
+      ? Cel.expr<boolean>(ready, ' && harborStorageCredentials.metadata.name != ""')
       : ready,
     databaseReady: databaseCredentials
       ? graphMode
-        ? Cel.expr<boolean>(`${readyExpression} && harborDatabaseCredentials.metadata.name != ""`)
+        ? Cel.expr<boolean>(ready, ' && harborDatabaseCredentials.metadata.name != ""')
         : ready
       : ready,
     cacheReady: cacheCredentials
       ? graphMode
-        ? Cel.expr<boolean>(`${readyExpression} && harborCacheCredentials.metadata.name != ""`)
+        ? Cel.expr<boolean>(ready, ' && harborCacheCredentials.metadata.name != ""')
         : ready
       : ready,
     networkPolicyReady: graphMode
@@ -413,6 +425,16 @@ function observeHarborSecret(id: string, name: string, namespaceName: string) {
     metadata: { name, namespace: namespaceName },
     id,
   });
+}
+
+function requiredLocalExternalSecretName(
+  connection: { existingSecret: string } | undefined,
+  provider: 'database' | 'cache'
+): string {
+  if (!connection?.existingSecret) {
+    throw new Error(`Harbor local external ${provider} requires a credential Secret.`);
+  }
+  return connection.existingSecret;
 }
 
 function harborIngressRules(

@@ -10,6 +10,7 @@ import {
   requireTestStorageClass,
   TestFactoryCleanupRegistry,
   waitForTestNamespaceEmpty,
+  waitForTestNamespaceEmptyOrAbsent,
 } from '../integration/shared-kubeconfig.js';
 
 function inventory(overrides: Partial<NamespaceInventory> = {}): NamespaceInventory {
@@ -160,6 +161,31 @@ describe('test namespace finalizer recovery gate', () => {
           listObjectNames: async () => ['remaining-pod'],
         }),
         0,
+        0
+      )
+    ).rejects.toThrow('still contains v1/Pod "remaining-pod"');
+  });
+
+  it('does not wait for a stalled inventory after Kubernetes removes the namespace', async () => {
+    await expect(
+      waitForTestNamespaceEmptyOrAbsent(
+        'test-gone',
+        inventory({ discoverNamespacedTypes: () => new Promise<never>(() => {}) }),
+        async () => {},
+        50
+      )
+    ).resolves.toBeUndefined();
+  });
+
+  it('still rejects an occupied namespace when no absence is observed', async () => {
+    await expect(
+      waitForTestNamespaceEmptyOrAbsent(
+        'test-occupied',
+        inventory({
+          discoverNamespacedTypes: async () => [{ apiVersion: 'v1', kind: 'Pod' }],
+          listObjectNames: async () => ['remaining-pod'],
+        }),
+        () => new Promise<void>(() => {}),
         0
       )
     ).rejects.toThrow('still contains v1/Pod "remaining-pod"');

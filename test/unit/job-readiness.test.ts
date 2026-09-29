@@ -149,6 +149,7 @@ describe('Job Factory with Readiness Evaluation', () => {
 
     const status = enhanced.readinessEvaluator!(liveResource);
     expect(status.ready).toBe(false);
+    expect(status.terminal).toBe(true);
     expect(status.reason).toBe('JobFailed');
     expect(status.message).toContain('4 failed pods exceed backoff limit of 3');
     expect(status.details).toEqual({
@@ -158,6 +159,41 @@ describe('Job Factory with Readiness Evaluation', () => {
       active: 0,
       backoffLimit: 3,
       completionMode: 'NonIndexed',
+    });
+  });
+
+  it('should stop waiting when Kubernetes reports a terminal Job failure', () => {
+    const resource: V1Job = {
+      metadata: { name: 'failed-job' },
+      spec: {
+        template: {
+          spec: {
+            containers: [{ name: 'test', image: 'busybox' }],
+            restartPolicy: 'Never',
+          },
+        },
+      },
+    };
+    const liveResource: V1Job = {
+      ...resource,
+      status: {
+        failed: 1,
+        conditions: [
+          {
+            type: 'Failed',
+            status: 'True',
+            reason: 'BackoffLimitExceeded',
+            message: 'Job has reached the specified backoff limit',
+          },
+        ],
+      },
+    };
+
+    expect(job(resource).readinessEvaluator!(liveResource)).toMatchObject({
+      ready: false,
+      terminal: true,
+      reason: 'JobFailed',
+      message: 'Job has reached the specified backoff limit',
     });
   });
 
