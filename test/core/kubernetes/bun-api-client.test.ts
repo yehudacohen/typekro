@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
+import { from, of } from '@kubernetes/client-node/dist/gen/rxjsStub.js';
 import {
   createBunCompatibleApiClient,
   createBunCompatibleApiextensionsV1Api,
@@ -145,7 +146,7 @@ describe('bun-api-client', () => {
       expect(client).toBeDefined();
     });
 
-    it('preserves canonical CRD enum and CEL validation fields on create and patch', async () => {
+    it('preserves canonical CRD enum and CEL validation fields on create, patch, replace, and read', async () => {
       const client = createBunCompatibleKubernetesObjectApi(createTestKubeConfig());
       const manifest = {
         apiVersion: 'apiextensions.k8s.io/v1',
@@ -178,31 +179,165 @@ describe('bun-api-client', () => {
           ],
         },
       };
-      const requestBodies: unknown[] = [];
+      const requests: Array<{ method: string; body: unknown }> = [];
       Reflect.set(client, 'resource', async () => ({
         kind: 'CustomResourceDefinition',
         name: 'customresourcedefinitions',
         namespaced: false,
       }));
-      Reflect.set(client, 'requestPromise', async (request: { getBody(): unknown }) => {
-        const body = JSON.parse(String(request.getBody()));
-        requestBodies.push(body);
-        return body;
+      const configuration = Reflect.get(client, 'configuration');
+      Reflect.set(configuration, 'httpApi', {
+        send(request: { getHttpMethod(): string; getBody(): unknown }) {
+          const method = request.getHttpMethod();
+          const body = method === 'GET' ? undefined : JSON.parse(String(request.getBody()));
+          requests.push({ method, body });
+          return of({
+            httpStatusCode: 200,
+            headers: { 'content-type': 'application/json' },
+            body: { text: async () => JSON.stringify(manifest) },
+          });
+        },
       });
 
-      await client.create(manifest);
-      await client.patch(
-        manifest,
-        undefined,
-        undefined,
-        'test',
-        false,
-        'application/apply-patch+yaml'
-      );
-      for (const body of requestBodies) {
-        expect(body).toMatchObject(manifest);
+      expect(await client.create(manifest)).toMatchObject(manifest);
+      expect(
+        await client.patch(
+          manifest,
+          undefined,
+          undefined,
+          'test',
+          false,
+          'application/apply-patch+yaml'
+        )
+      ).toMatchObject(manifest);
+      expect(await client.replace(manifest)).toMatchObject(manifest);
+      expect(
+        await client.read({
+          apiVersion: manifest.apiVersion,
+          kind: manifest.kind,
+          metadata: { name: manifest.metadata.name },
+        })
+      ).toMatchObject(manifest);
+      for (const request of requests.filter(({ body }) => body !== undefined)) {
+        expect(request.body).toMatchObject(manifest);
       }
-      expect(requestBodies).toHaveLength(2);
+      expect(requests.map(({ method }) => method)).toEqual(['POST', 'PATCH', 'PUT', 'GET']);
+    });
+
+    it('keeps concurrent CRD and ordinary object serialization separate', async () => {
+      const client = createBunCompatibleKubernetesObjectApi(createTestKubeConfig());
+      const crd = {
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: 'widgets.example.com' },
+        spec: { versions: [{ schema: { openAPIV3Schema: { enum: ['safe'] } } }] },
+      };
+      const configMap = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'ordinary', namespace: 'default' },
+        data: { mode: 'ordinary' },
+      };
+      const bodies: unknown[] = [];
+      Reflect.set(client, 'resource', async (_version: string, kind: string) => ({
+        kind,
+        name: kind === 'ConfigMap' ? 'configmaps' : 'customresourcedefinitions',
+        namespaced: kind === 'ConfigMap',
+      }));
+      const configuration = Reflect.get(client, 'configuration');
+      Reflect.set(configuration, 'httpApi', {
+        send(request: { getBody(): unknown }) {
+          const body = JSON.parse(String(request.getBody()));
+          bodies.push(body);
+          return of({
+            httpStatusCode: 200,
+            headers: { 'content-type': 'application/json' },
+            body: { text: async () => JSON.stringify(body) },
+          });
+        },
+      });
+
+      await Promise.all([client.create(crd), client.create(configMap)]);
+      expect(bodies).toContainEqual(crd);
+      expect(bodies).toContainEqual(configMap);
+    });
+
+    it('does not pass a CRD body into an ordinary request nested by middleware', async () => {
+      const client = createBunCompatibleKubernetesObjectApi(createTestKubeConfig());
+      const crd = {
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: 'widgets.example.com' },
+        spec: { versions: [{ schema: { openAPIV3Schema: { enum: ['safe'] } } }] },
+      };
+      const configMap = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'ordinary', namespace: 'default' },
+        data: { mode: 'ordinary' },
+      };
+      const deleteOptions = { apiVersion: 'v1', kind: 'DeleteOptions', gracePeriodSeconds: 0 };
+      const requests: Array<{ method: string; url: string; body: unknown }> = [];
+      Reflect.set(client, 'resource', async (_version: string, kind: string) => ({
+        kind,
+        name: kind === 'ConfigMap' ? 'configmaps' : 'customresourcedefinitions',
+        namespaced: kind === 'ConfigMap',
+      }));
+      const configuration = Reflect.get(client, 'configuration');
+      Reflect.set(configuration, 'middleware', [
+        {
+          pre(request: { getUrl(): string }) {
+            if (request.getUrl().includes('customresourcedefinitions')) {
+              return from(
+                Promise.all([
+                  client.create(configMap),
+                  client.delete(
+                    configMap,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    deleteOptions
+                  ),
+                  client.list('v1', 'ConfigMap', 'default'),
+                ]).then(() => request)
+              );
+            }
+            return of(request);
+          },
+          post: of,
+        },
+      ]);
+      Reflect.set(configuration, 'httpApi', {
+        send(request: { getHttpMethod(): string; getUrl(): string; getBody(): unknown }) {
+          const method = request.getHttpMethod();
+          const body = method === 'GET' ? undefined : JSON.parse(String(request.getBody()));
+          requests.push({ method, url: request.getUrl(), body });
+          const responseBody =
+            method === 'DELETE'
+              ? { apiVersion: 'v1', kind: 'Status', status: 'Success' }
+              : method === 'GET'
+                ? { apiVersion: 'v1', kind: 'ConfigMapList', items: [configMap] }
+                : body;
+          return of({
+            httpStatusCode: 200,
+            headers: { 'content-type': 'application/json' },
+            body: { text: async () => JSON.stringify(responseBody) },
+          });
+        },
+      });
+
+      await client.create(crd);
+      expect(requests).toHaveLength(4);
+      expect(
+        requests.find(({ method, url }) => method === 'POST' && url.includes('/configmaps'))?.body
+      ).toEqual(configMap);
+      expect(requests.find(({ method }) => method === 'DELETE')?.body).toEqual(deleteOptions);
+      expect(requests.find(({ method }) => method === 'GET')?.body).toBeUndefined();
+      expect(requests.find(({ url }) => url.includes('/customresourcedefinitions'))?.body).toEqual(
+        crd
+      );
     });
   });
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Use `@kubernetes/client-node` 1.4.0 while preserving canonical CRD transport.** The SDK
+  removed the overridable serialization hook. TypeKro now keeps CRD wire fields such as `enum`
+  and `x-kubernetes-validations` intact on create, patch, replace and read without changing
+  serialization for other Kubernetes resources.
+
 ### Added
 
 - **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal

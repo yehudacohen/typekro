@@ -34,7 +34,9 @@
  * ```
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type * as k8s from '@kubernetes/client-node';
+import type { RequestContext } from '@kubernetes/client-node/dist/gen/http/http.js';
 import type { AuthMethodsConfiguration } from '@kubernetes/client-node/dist/gen/auth/auth.js';
 import type { Configuration } from '@kubernetes/client-node/dist/gen/configuration.js';
 import { KubernetesClientError } from '../errors.js';
@@ -257,24 +259,148 @@ export function createBunCompatibleKubernetesObjectApi(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.KubernetesObjectApi {
-  // The generated V1JSONSchemaProps model uses JavaScript aliases such as
-  // `_enum` and `xKubernetesValidations`. A CRD manifest uses the Kubernetes
-  // wire names (`enum` and `x-kubernetes-validations`), so model serialization
-  // silently drops parts of its schema. Keep CRDs as raw JSON on both writes
-  // and reads while retaining the generated models for other resource kinds.
+  // The SDK's generated CRD model silently drops Kubernetes wire fields such
+  // as `enum` and `x-kubernetes-validations`. SDK 1.4 removed the virtual
+  // serialization-type hook, so preserve the raw CRD at the request boundary.
+  // AsyncLocalStorage keeps concurrent object operations independent while the
+  // SDK continues to own paths, query parameters, authentication and retries.
   class SchemaPreservingKubernetesObjectApi extends getKubernetesClientNode().KubernetesObjectApi {
+    private readonly rawCrd = new AsyncLocalStorage<
+      | {
+          apiVersion?: string | undefined;
+          kind?: string | undefined;
+        }
+      | undefined
+    >();
+
     configureDefaultNamespace(config: k8s.KubeConfig): void {
       this.setDefaultNamespace(config);
     }
 
-    protected override async getSerializationType(
-      apiVersion?: string,
-      kind?: string
-    ): Promise<string> {
-      if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
-        return 'object';
+    private withRawCrd<T>(
+      spec: { apiVersion?: string | undefined; kind?: string | undefined },
+      operation: () => Promise<T>
+    ): Promise<T> {
+      const rawSpec =
+        spec.apiVersion === 'apiextensions.k8s.io/v1' && spec.kind === 'CustomResourceDefinition'
+          ? spec
+          : undefined;
+      return this.rawCrd.run(rawSpec, operation);
+    }
+
+    override create<T extends k8s.KubernetesObject>(
+      spec: T,
+      pretty?: string,
+      dryRun?: string,
+      fieldManager?: string,
+      options?: Configuration
+    ): Promise<T> {
+      return this.withRawCrd(spec, () => super.create(spec, pretty, dryRun, fieldManager, options));
+    }
+
+    override patch<T extends k8s.KubernetesObject>(
+      spec: T,
+      pretty?: string,
+      dryRun?: string,
+      fieldManager?: string,
+      force?: boolean,
+      patchStrategy?: k8s.PatchStrategy,
+      options?: Configuration
+    ): Promise<T> {
+      return this.withRawCrd(spec, () =>
+        super.patch(spec, pretty, dryRun, fieldManager, force, patchStrategy, options)
+      );
+    }
+
+    override replace<T extends k8s.KubernetesObject>(
+      spec: T,
+      pretty?: string,
+      dryRun?: string,
+      fieldManager?: string,
+      options?: Configuration
+    ): Promise<T> {
+      return this.withRawCrd(spec, () =>
+        super.replace(spec, pretty, dryRun, fieldManager, options)
+      );
+    }
+
+    override read<T extends k8s.KubernetesObject>(
+      spec: Pick<T, 'apiVersion' | 'kind'> & { metadata: { name: string; namespace?: string } },
+      pretty?: string,
+      exact?: boolean,
+      exportt?: boolean,
+      options?: Configuration
+    ): Promise<T> {
+      return this.withRawCrd(spec, () => super.read<T>(spec, pretty, exact, exportt, options));
+    }
+
+    override delete(
+      spec: k8s.KubernetesObject,
+      pretty?: string,
+      dryRun?: string,
+      gracePeriodSeconds?: number,
+      orphanDependents?: boolean,
+      propagationPolicy?: string,
+      body?: k8s.V1DeleteOptions,
+      options?: Configuration
+    ): Promise<k8s.V1Status> {
+      return this.rawCrd.run(undefined, () =>
+        super.delete(
+          spec,
+          pretty,
+          dryRun,
+          gracePeriodSeconds,
+          orphanDependents,
+          propagationPolicy,
+          body,
+          options
+        )
+      );
+    }
+
+    override list<T extends k8s.KubernetesObject>(
+      apiVersion: string,
+      kind: string,
+      namespace?: string,
+      pretty?: string,
+      exact?: boolean,
+      exportt?: boolean,
+      fieldSelector?: string,
+      labelSelector?: string,
+      limit?: number,
+      continueToken?: string,
+      options?: Configuration
+    ): Promise<k8s.KubernetesListObject<T>> {
+      return this.rawCrd.run(undefined, () =>
+        super.list<T>(
+          apiVersion,
+          kind,
+          namespace,
+          pretty,
+          exact,
+          exportt,
+          fieldSelector,
+          labelSelector,
+          limit,
+          continueToken,
+          options
+        )
+      );
+    }
+
+    protected override requestPromise<T extends k8s.KubernetesObject>(
+      requestContext: RequestContext,
+      type?: string,
+      options?: Configuration
+    ): Promise<T> {
+      const spec = this.rawCrd.getStore();
+      if (spec) {
+        if (requestContext.getHttpMethod() !== 'GET') {
+          requestContext.setBody(JSON.stringify(spec));
+        }
+        return super.requestPromise<T>(requestContext, 'object', options);
       }
-      return super.getSerializationType(apiVersion, kind);
+      return super.requestPromise<T>(requestContext, type, options);
     }
   }
 
