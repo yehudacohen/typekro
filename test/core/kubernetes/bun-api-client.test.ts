@@ -276,7 +276,8 @@ describe('bun-api-client', () => {
         metadata: { name: 'ordinary', namespace: 'default' },
         data: { mode: 'ordinary' },
       };
-      const requests: Array<{ url: string; body: unknown }> = [];
+      const deleteOptions = { apiVersion: 'v1', kind: 'DeleteOptions', gracePeriodSeconds: 0 };
+      const requests: Array<{ method: string; url: string; body: unknown }> = [];
       Reflect.set(client, 'resource', async (_version: string, kind: string) => ({
         kind,
         name: kind === 'ConfigMap' ? 'configmaps' : 'customresourcedefinitions',
@@ -287,7 +288,21 @@ describe('bun-api-client', () => {
         {
           pre(request: { getUrl(): string }) {
             if (request.getUrl().includes('customresourcedefinitions')) {
-              return from(client.create(configMap).then(() => request));
+              return from(
+                Promise.all([
+                  client.create(configMap),
+                  client.delete(
+                    configMap,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    deleteOptions
+                  ),
+                  client.list('v1', 'ConfigMap', 'default'),
+                ]).then(() => request)
+              );
             }
             return of(request);
           },
@@ -295,20 +310,31 @@ describe('bun-api-client', () => {
         },
       ]);
       Reflect.set(configuration, 'httpApi', {
-        send(request: { getUrl(): string; getBody(): unknown }) {
-          const body = JSON.parse(String(request.getBody()));
-          requests.push({ url: request.getUrl(), body });
+        send(request: { getHttpMethod(): string; getUrl(): string; getBody(): unknown }) {
+          const method = request.getHttpMethod();
+          const body = method === 'GET' ? undefined : JSON.parse(String(request.getBody()));
+          requests.push({ method, url: request.getUrl(), body });
+          const responseBody =
+            method === 'DELETE'
+              ? { apiVersion: 'v1', kind: 'Status', status: 'Success' }
+              : method === 'GET'
+                ? { apiVersion: 'v1', kind: 'ConfigMapList', items: [configMap] }
+                : body;
           return of({
             httpStatusCode: 200,
             headers: { 'content-type': 'application/json' },
-            body: { text: async () => JSON.stringify(body) },
+            body: { text: async () => JSON.stringify(responseBody) },
           });
         },
       });
 
       await client.create(crd);
-      expect(requests).toHaveLength(2);
-      expect(requests.find(({ url }) => url.includes('/configmaps'))?.body).toEqual(configMap);
+      expect(requests).toHaveLength(4);
+      expect(
+        requests.find(({ method, url }) => method === 'POST' && url.includes('/configmaps'))?.body
+      ).toEqual(configMap);
+      expect(requests.find(({ method }) => method === 'DELETE')?.body).toEqual(deleteOptions);
+      expect(requests.find(({ method }) => method === 'GET')?.body).toBeUndefined();
       expect(requests.find(({ url }) => url.includes('/customresourcedefinitions'))?.body).toEqual(
         crd
       );

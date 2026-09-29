@@ -334,6 +334,60 @@ export function createBunCompatibleKubernetesObjectApi(
       return this.withRawCrd(spec, () => super.read<T>(spec, pretty, exact, exportt, options));
     }
 
+    override delete(
+      spec: k8s.KubernetesObject,
+      pretty?: string,
+      dryRun?: string,
+      gracePeriodSeconds?: number,
+      orphanDependents?: boolean,
+      propagationPolicy?: string,
+      body?: k8s.V1DeleteOptions,
+      options?: Configuration
+    ): Promise<k8s.V1Status> {
+      return this.rawCrd.run(undefined, () =>
+        super.delete(
+          spec,
+          pretty,
+          dryRun,
+          gracePeriodSeconds,
+          orphanDependents,
+          propagationPolicy,
+          body,
+          options
+        )
+      );
+    }
+
+    override list<T extends k8s.KubernetesObject>(
+      apiVersion: string,
+      kind: string,
+      namespace?: string,
+      pretty?: string,
+      exact?: boolean,
+      exportt?: boolean,
+      fieldSelector?: string,
+      labelSelector?: string,
+      limit?: number,
+      continueToken?: string,
+      options?: Configuration
+    ): Promise<k8s.KubernetesListObject<T>> {
+      return this.rawCrd.run(undefined, () =>
+        super.list<T>(
+          apiVersion,
+          kind,
+          namespace,
+          pretty,
+          exact,
+          exportt,
+          fieldSelector,
+          labelSelector,
+          limit,
+          continueToken,
+          options
+        )
+      );
+    }
+
     protected override requestPromise<T extends k8s.KubernetesObject>(
       requestContext: RequestContext,
       type?: string,
