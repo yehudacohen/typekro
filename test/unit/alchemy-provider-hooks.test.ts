@@ -5,6 +5,7 @@ import { type } from 'arktype';
 import { Effect } from 'effect';
 import {
   KroResource,
+  type KroResourceEffectHooks,
   kroProviderWithHooks,
   materializeAlchemyResources,
 } from '../../src/alchemy/index.js';
@@ -175,40 +176,139 @@ describe('operation-scoped Alchemy Kubernetes gates', () => {
     );
   });
 
-  it('observes a direct resource without selecting guarded replacement', async () => {
-    const resource = simple.ConfigMap({
-      id: 'configuration',
-      name: 'observed-config',
-      namespace: 'default',
-      data: {},
-    });
-    const options = {
-      providers: kroProviderWithHooks({
-        guardsResource: () => false,
-        observesResource: () => true,
-        async beforeKubernetesEffect() {
-          return undefined;
-        },
-      }),
-    };
-    const scratch = Test.scratchStack(options, 'tk-alchemy-observed-direct');
-    const declaration = Effect.gen(function* () {
-      return yield* KroResource('observedConfig', {
-        resource,
-        namespace: 'default',
-        deploymentStrategy: 'direct',
-        deployer: {
-          async deploy() {
-            return resource;
+  for (const mode of ['observation-only', 'dynamic', 'ordinary'] as const) {
+    it(`preserves undefined authority for the ${mode} direct lifecycle`, async () => {
+      const api = inertObjectApi();
+      const options = {
+        providers: kroProviderWithHooks({
+          ...(mode === 'dynamic' ? {} : { guardsResource: () => false }),
+          observesResource: () => mode === 'observation-only',
+          async beforeKubernetesEffect(_props, { method }, context) {
+            api.events.push(`observe-${method}:${context?.id}`);
+            return undefined;
           },
-          async delete() {},
-        },
-      });
+        }),
+      };
+      const scratch = Test.scratchStack(options, `tk-undefined-authority-${mode}`);
+      const declaration = (value: string) =>
+        Effect.gen(function* () {
+          return yield* KroResource('observedConfig', {
+            resource: simple.ConfigMap({
+              id: 'configuration',
+              name: `observed-${mode}`,
+              namespace: 'default',
+              data: { value },
+            }),
+            namespace: 'default',
+            deploymentStrategy: 'direct',
+            kubeConfigOptions: inertConnection,
+            options: { timeout: 1000, conflictStrategy: 'patch' },
+          });
+        });
+      try {
+        await Test.run(scratch.deploy(declaration('original')), options);
+        await Test.run(scratch.deploy(declaration('updated')), options);
+        expect(api.live.get(`ConfigMap/default/observed-${mode}`)).toMatchObject({
+          data: { value: 'updated' },
+        });
+        await Test.run(scratch.destroy(), options);
+        expect(api.live.size).toBe(0);
+        for (const method of ['create', 'patch', 'delete']) {
+          expect(api.events).toContain(`${method}:observed-${mode}`);
+          if (mode === 'ordinary')
+            expect(api.events).not.toContain(`observe-${method}:observedConfig`);
+          else expect(api.events).toContain(`observe-${method}:observedConfig`);
+        }
+      } finally {
+        api.restore();
+      }
     });
-    await expect(Test.run(scratch.deploy(declaration), options)).rejects.toThrow(
-      'cannot use an injected deployer'
-    );
-  });
+  }
+
+  for (const denied of ['create', 'patch', 'delete', 'namespace', 'missing-hook'] as const) {
+    it(`rejects explicitly guarded ${denied} without effect authority`, async () => {
+      const api = inertObjectApi();
+      let reject = denied !== 'patch' && denied !== 'delete';
+      const beforeKubernetesEffect: NonNullable<
+        KroResourceEffectHooks['beforeKubernetesEffect']
+      > = async (_props, { method, resource }) => {
+        api.events.push(`admit-${method}:${resource.metadata?.name}`);
+        if (reject) return undefined;
+        const live = api.live.get(api.key(resource));
+        if (method === 'delete' && !live) return { skip: 'already-absent' };
+        if (method === 'create' || !live) return { operation: 'create' };
+        if (!live.metadata?.uid || !live.metadata.resourceVersion)
+          throw new Error('Missing inert update identity');
+        return {
+          operation: 'update',
+          uid: live.metadata.uid,
+          resourceVersion: live.metadata.resourceVersion,
+        };
+      };
+      const options = {
+        providers: kroProviderWithHooks({
+          guardsResource: () => true,
+          observesResource: () => false,
+          ...(denied === 'missing-hook' ? {} : { beforeKubernetesEffect }),
+        }),
+      };
+      if (denied === 'namespace')
+        api.afterWrite((value) => {
+          Object.assign(value, { status: { phase: 'Active' } });
+        });
+      const scratch = Test.scratchStack(options, `tk-missing-authority-${denied}`);
+      const declaration = (value: string) =>
+        Effect.gen(function* () {
+          return yield* KroResource('guardedResource', {
+            resource:
+              denied === 'namespace'
+                ? namespace({
+                    metadata: {
+                      name: 'guarded-namespace',
+                      annotations: { 'typekro.io/created-by-rgd': 'guarded-rgd' },
+                    },
+                  })
+                : simple.ConfigMap({
+                    id: 'configuration',
+                    name: `guarded-${denied}`,
+                    namespace: 'default',
+                    data: { value },
+                  }),
+            ...(denied === 'namespace'
+              ? { namespaceEmptyGate: true, namespaceOwnerRgd: 'guarded-rgd', retain: true }
+              : {}),
+            namespace: 'default',
+            deploymentStrategy: 'direct',
+            kubeConfigOptions: inertConnection,
+            options: {
+              timeout: 1000,
+              conflictStrategy: 'patch',
+              retryPolicy: { maxRetries: 0, initialDelay: 0, maxDelay: 0, backoffMultiplier: 1 },
+            },
+          });
+        });
+      try {
+        if (!reject) await Test.run(scratch.deploy(declaration('original')), options);
+        const before = JSON.stringify([...api.live]);
+        api.events.length = 0;
+        reject = true;
+        const effect =
+          denied === 'delete' ? scratch.destroy() : scratch.deploy(declaration('updated'));
+        await expect(Test.run(effect, options)).rejects.toThrow(
+          "Guarded resource 'guardedResource' received no Kubernetes effect authority."
+        );
+        expect(JSON.stringify([...api.live])).toBe(before);
+        expect(api.events.filter((event) => /^(create|patch|delete):/.test(event))).toEqual([]);
+        if (denied !== 'missing-hook') {
+          expect(api.events.some((event) => event.startsWith('admit-'))).toBe(true);
+          reject = false;
+          await Test.run(scratch.destroy(), options);
+        }
+      } finally {
+        api.restore();
+      }
+    });
+  }
 
   it('cannot suppress a guarded direct effect with observesResource false', async () => {
     const resource = simple.ConfigMap({

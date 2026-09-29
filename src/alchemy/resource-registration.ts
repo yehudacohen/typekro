@@ -280,15 +280,22 @@ export interface KroResourceEffectHooks {
 }
 
 function hooksForResource(hooks: KroResourceEffectHooks, id: string): KroResourceEffectHooks {
-  if (!hooks.beforeKubernetesEffect) return hooks;
-  if (hooks.guardsResource?.(id) === false && hooks.observesResource?.(id) !== true) {
+  const beforeEffect = hooks.beforeKubernetesEffect;
+  const guarded = hooks.guardsResource?.(id);
+  if (!beforeEffect && guarded !== true) return hooks;
+  if (guarded === false && hooks.observesResource?.(id) !== true) {
     const { beforeKubernetesEffect: _unused, ...remaining } = hooks;
     return remaining;
   }
   return {
     ...hooks,
-    beforeKubernetesEffect: (props, mutation) =>
-      hooks.beforeKubernetesEffect!(props, mutation, { id }),
+    beforeKubernetesEffect: async (props, mutation) => {
+      const decision = await beforeEffect?.(props, mutation, { id });
+      if (guarded === true && !decision) {
+        throw new Error(`Guarded resource '${id}' received no Kubernetes effect authority.`);
+      }
+      return decision;
+    },
   };
 }
 

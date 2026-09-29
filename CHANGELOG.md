@@ -472,6 +472,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after serialization and recovery. Hoisted Namespace ownership creation also
   uses the same effect-time gate; denied preparation stops before any write,
   preserving existing ownership/adoption and create-conflict recovery.
+  Explicitly guarded declarations fail closed on missing effect authority;
+  dynamic scope and unguarded observation-only behavior remain compatible.
 
 - Reconciled application integration contracts with current upstream lifecycle
   deadlines, direct forEach expansion and readiness. CEL dependency consumers

@@ -72,6 +72,11 @@ that direct resource while `guardsResource(id)` still controls replacement
 ordering. The callback can return `undefined` for a truly unrelated effect or
 reject the collision before the Kubernetes API call. Observation is mandatory
 for a guarded resource; `observesResource(id) === false` cannot remove its gate.
+An explicit `guardsResource(id) === true` classification requires an effect
+authority decision for every mutation. An absent callback or an `undefined`
+decision fails before any API write, including hoisted Namespace ownership
+creation. Dynamic scope without an explicit classifier and unguarded
+observation-only callbacks retain their `undefined` behavior.
 The host must ensure every resource requiring admission is a direct declaration;
 KRO-mode effects do not pass through this object API. TypeKro refuses an injected
 direct deployer or a preflight mutation precondition when this gate is installed.
