@@ -290,7 +290,7 @@ function hooksForResource(hooks: KroResourceEffectHooks, id: string): KroResourc
   return {
     ...hooks,
     beforeKubernetesEffect: async (props, mutation) => {
-      const decision = await beforeEffect?.(props, mutation, { id });
+      const decision = await beforeEffect?.call(hooks, props, mutation, { id });
       if (guarded === true && !decision) {
         throw new Error(`Guarded resource '${id}' received no Kubernetes effect authority.`);
       }

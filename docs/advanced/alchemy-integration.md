@@ -77,6 +77,7 @@ authority decision for every mutation. An absent callback or an `undefined`
 decision fails before any API write, including hoisted Namespace ownership
 creation. Dynamic scope without an explicit classifier and unguarded
 observation-only callbacks retain their `undefined` behavior.
+Method-style effect callbacks retain the supplied hooks object as their receiver.
 The host must ensure every resource requiring admission is a direct declaration;
 KRO-mode effects do not pass through this object API. TypeKro refuses an injected
 direct deployer or a preflight mutation precondition when this gate is installed.

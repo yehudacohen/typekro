@@ -179,16 +179,16 @@ describe('operation-scoped Alchemy Kubernetes gates', () => {
   for (const mode of ['observation-only', 'dynamic', 'ordinary'] as const) {
     it(`preserves undefined authority for the ${mode} direct lifecycle`, async () => {
       const api = inertObjectApi();
-      const options = {
-        providers: kroProviderWithHooks({
-          ...(mode === 'dynamic' ? {} : { guardsResource: () => false }),
-          observesResource: () => mode === 'observation-only',
-          async beforeKubernetesEffect(_props, { method }, context) {
-            api.events.push(`observe-${method}:${context?.id}`);
-            return undefined;
-          },
-        }),
+      const hooks: KroResourceEffectHooks = {
+        ...(mode === 'dynamic' ? {} : { guardsResource: () => false }),
+        observesResource: () => mode === 'observation-only',
+        async beforeKubernetesEffect(_props, { method }, context) {
+          expect(this).toBe(hooks);
+          api.events.push(`observe-${method}:${context?.id}`);
+          return undefined;
+        },
       };
+      const options = { providers: kroProviderWithHooks(hooks) };
       const scratch = Test.scratchStack(options, `tk-undefined-authority-${mode}`);
       const declaration = (value: string) =>
         Effect.gen(function* () {
@@ -202,7 +202,11 @@ describe('operation-scoped Alchemy Kubernetes gates', () => {
             namespace: 'default',
             deploymentStrategy: 'direct',
             kubeConfigOptions: inertConnection,
-            options: { timeout: 1000, conflictStrategy: 'patch' },
+            options: {
+              timeout: 1000,
+              conflictStrategy: 'patch',
+              retryPolicy: { maxRetries: 0, initialDelay: 0, maxDelay: 0, backoffMultiplier: 1 },
+            },
           });
         });
       try {

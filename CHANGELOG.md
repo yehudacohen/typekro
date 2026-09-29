@@ -9,12 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Operation-scoped Alchemy Kubernetes effect and rollback admission with fresh
-  UID/resourceVersion preconditions, retained resource scope and external
-  observation activation during durable direct-artifact rehydration.
-- Harbor Rook/Ceph credential projection as a typed graph dependency, plus
-  selected consumer qualification and bounded cleanup coverage.
-
 - **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal
   byte bounds: `storage.persistentQueue.compaction` and `storage.persistentQueue.sizer`.** The
   `file_storage` extension keeps each queue in a bbolt file, and a bbolt file keeps its high-water
@@ -463,27 +457,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of reaching generated configuration.
 
 ### Fixed
-
-- Guarded direct Alchemy identity replacement admits and deploys the successor
-  before deleting the incumbent, preserving the incumbent on admission failure
-  and converging after a failed old delete. Durable operation records slice
-  external observations by concrete iteration and preserve generated
-  prerequisites inherited through those observations, matching Alchemy scheduling
-  after serialization and recovery. Hoisted Namespace ownership creation also
-  uses the same effect-time gate; denied preparation stops before any write,
-  preserving existing ownership/adoption and create-conflict recovery.
-  Explicitly guarded declarations fail closed on missing effect authority;
-  dynamic scope and unguarded observation-only behavior remain compatible.
-
-- Reconciled application integration contracts with current upstream lifecycle
-  deadlines, direct forEach expansion and readiness. CEL dependency consumers
-  reuse the complete upstream literal/comment scanner. CRD transport preserves
-  canonical schemas, Jobs report terminal failure, and deterministic packages
-  exclude TypeScript build-info. Retained ClickStack naming follows the existing
-  upstream ownership/migration contract; no second naming mechanism is introduced.
-  Helm/Job portable readiness revisions advance to 3/2 respectively, so older
-  serialized strategy identities cannot silently select changed behavior.
-
 
 - **Direct-mode `toAlchemyResources()` now expands `forEach` collections.** A direct composition
   that iterated a spec array of two or more items threw `Declared spec reference regions.$item...
@@ -1799,6 +1772,39 @@ kubectl get crd <plural>.kro.run \
 It should print `object`. Deleting and recreating the RGD also works (KRO re-registers the CRD from scratch)
 but destroys existing custom resources, so prefer the annotation. Do not enable it globally: it disables a real
 safety check, and a genuinely lossy change (narrowing a type, dropping a field) can strand existing CRs.
+
+## [0.43.0] - 2026-09-29
+
+### Added
+
+- Operation-scoped Alchemy Kubernetes effect and rollback admission with fresh
+  UID/resourceVersion preconditions, retained resource scope and external
+  observation activation during durable direct-artifact rehydration.
+- Harbor Rook/Ceph credential projection as a typed graph dependency, plus
+  selected consumer qualification and bounded cleanup coverage.
+
+### Fixed
+
+- Guarded direct Alchemy identity replacement admits and deploys the successor
+  before deleting the incumbent, preserving the incumbent on admission failure
+  and converging after a failed old delete. Durable operation records slice
+  external observations by concrete iteration and preserve generated
+  prerequisites inherited through those observations, matching Alchemy scheduling
+  after serialization and recovery. Hoisted Namespace ownership creation also
+  uses the same effect-time gate; denied preparation stops before any write,
+  preserving existing ownership/adoption and create-conflict recovery.
+  Explicitly guarded declarations fail closed on missing effect authority;
+  dynamic scope, unguarded observation-only behavior and method-style callback
+  receivers remain compatible.
+
+- Reconciled application integration contracts with current upstream lifecycle
+  deadlines, direct forEach expansion and readiness. CEL dependency consumers
+  reuse the complete upstream literal/comment scanner. CRD transport preserves
+  canonical schemas, Jobs report terminal failure, and deterministic packages
+  exclude TypeScript build-info. Retained ClickStack naming follows the existing
+  upstream ownership/migration contract; no second naming mechanism is introduced.
+  Helm/Job portable readiness revisions advance to 3/2 respectively, so older
+  serialized strategy identities cannot silently select changed behavior.
 
 ## [0.21.0] - 2026-07-02
 
