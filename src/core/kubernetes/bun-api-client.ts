@@ -265,10 +265,13 @@ export function createBunCompatibleKubernetesObjectApi(
   // AsyncLocalStorage keeps concurrent object operations independent while the
   // SDK continues to own paths, query parameters, authentication and retries.
   class SchemaPreservingKubernetesObjectApi extends getKubernetesClientNode().KubernetesObjectApi {
-    private readonly rawCrd = new AsyncLocalStorage<{
-      apiVersion?: string | undefined;
-      kind?: string | undefined;
-    }>();
+    private readonly rawCrd = new AsyncLocalStorage<
+      | {
+          apiVersion?: string | undefined;
+          kind?: string | undefined;
+        }
+      | undefined
+    >();
 
     configureDefaultNamespace(config: k8s.KubeConfig): void {
       this.setDefaultNamespace(config);
@@ -278,10 +281,11 @@ export function createBunCompatibleKubernetesObjectApi(
       spec: { apiVersion?: string | undefined; kind?: string | undefined },
       operation: () => Promise<T>
     ): Promise<T> {
-      return spec.apiVersion === 'apiextensions.k8s.io/v1' &&
-        spec.kind === 'CustomResourceDefinition'
-        ? this.rawCrd.run(spec, operation)
-        : operation();
+      const rawSpec =
+        spec.apiVersion === 'apiextensions.k8s.io/v1' && spec.kind === 'CustomResourceDefinition'
+          ? spec
+          : undefined;
+      return this.rawCrd.run(rawSpec, operation);
     }
 
     override create<T extends k8s.KubernetesObject>(
