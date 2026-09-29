@@ -9,6 +9,7 @@ import {
   materializeAlchemyResources,
 } from '../../src/alchemy/index.js';
 import type { AlchemyResourceDeclaration } from '../../src/alchemy/types.js';
+import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 import { kubernetesComposition, observedResource, simple } from '../../src/index.js';
 
 // Mock only the inert Kubernetes transport. The real provider, direct engine and admission wrapper
@@ -24,6 +25,7 @@ function inertObjectApi() {
   let revision = 0;
   let onRead: ((value: KubernetesObject) => void) | undefined;
   let onWrite: ((value: KubernetesObject) => void) | undefined;
+  let onCreate: ((value: KubernetesObject) => void) | undefined;
   const read = spyOn(KubernetesObjectApi.prototype, 'read').mockImplementation(async (value) => {
     events.push(`read:${value.metadata?.name}`);
     onRead?.(JSON.parse(JSON.stringify(value)));
@@ -44,8 +46,15 @@ function inertObjectApi() {
     onWrite?.(result);
     return result;
   };
-  const create = spyOn(KubernetesObjectApi.prototype, 'create').mockImplementation(async (value) =>
-    write('create', value)
+  const create = spyOn(KubernetesObjectApi.prototype, 'create').mockImplementation(
+    async (value) => {
+      onCreate?.(value);
+      if (live.has(key(value))) {
+        events.push(`conflict:${value.metadata?.name}`);
+        throw Object.assign(new Error('Existing inert resource'), { statusCode: 409 });
+      }
+      return write('create', value);
+    }
   );
   const patch = spyOn(KubernetesObjectApi.prototype, 'patch').mockImplementation(async (value) =>
     write('patch', value)
@@ -63,6 +72,9 @@ function inertObjectApi() {
     key,
     beforeRead(callback: (value: KubernetesObject) => void) {
       onRead = callback;
+    },
+    beforeCreate(callback: (value: KubernetesObject) => void) {
+      onCreate = callback;
     },
     afterWrite(callback: (value: KubernetesObject) => void) {
       onWrite = callback;
@@ -381,6 +393,119 @@ describe('operation-scoped Alchemy Kubernetes gates', () => {
         expect(api.events.filter((event) => event === 'create:new-config')).toHaveLength(1);
         expect(api.events.filter((event) => event === 'delete:old-config')).toHaveLength(1);
         await run(scratch.destroy());
+      } finally {
+        api.restore();
+      }
+    });
+  }
+
+  for (const initial of ['denied', 'owned', 'adopted', 'conflict'] as const) {
+    it(`admits hoisted Namespace ownership and preserves ${initial} recovery`, async () => {
+      const api = inertObjectApi();
+      const name = `hoisted-${initial}`;
+      const owner = 'neutral-rgd';
+      const identity = `Namespace/default/${name}`;
+      const existing = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: {
+          name,
+          uid: 'external-uid',
+          resourceVersion: '7',
+          annotations: initial === 'owned' ? { 'typekro.io/created-by-rgd': owner } : {},
+        },
+        status: { phase: 'Active' },
+      };
+      if (initial === 'owned' || initial === 'adopted') api.live.set(identity, existing);
+      if (initial === 'conflict')
+        api.beforeCreate(() => {
+          api.live.set(identity, existing);
+        });
+      api.afterWrite((value) => {
+        Object.assign(value, { status: { phase: 'Active' } });
+      });
+      let deny = initial === 'denied';
+      const options = {
+        providers: kroProviderWithHooks({
+          async beforeKubernetesEffect(_props, { method, resource }) {
+            api.events.push(`admit-${method}:${resource.metadata?.name}`);
+            if (deny) throw new Error('namespace-creation-denied');
+            const live = api.live.get(api.key(resource));
+            if (method === 'create' || (method === 'patch' && !live)) {
+              return { operation: 'create' as const };
+            }
+            if (!live?.metadata?.uid || !live.metadata.resourceVersion)
+              throw new Error('Missing namespace authority');
+            return {
+              operation: 'update' as const,
+              uid: live.metadata.uid,
+              resourceVersion: live.metadata.resourceVersion,
+            };
+          },
+        }),
+      };
+      const scratch = Test.scratchStack(options, `tk-hoisted-namespace-${initial}`);
+      const declaration = Effect.gen(function* () {
+        return yield* KroResource('hoistedNamespace', {
+          resource: namespace({
+            metadata: {
+              name,
+              labels: { 'testing.typekro.dev/configuration': 'declared' },
+              annotations: { 'typekro.io/created-by-rgd': owner },
+            },
+          }),
+          namespace: name,
+          deploymentStrategy: 'direct',
+          namespaceEmptyGate: true,
+          namespaceOwnerRgd: owner,
+          kubeConfigOptions: inertConnection,
+          retain: true,
+          options: {
+            conflictStrategy: 'patch',
+            timeout: 1000,
+            retryPolicy: { maxRetries: 0, initialDelay: 0, maxDelay: 0, backoffMultiplier: 1 },
+          },
+        });
+      });
+      try {
+        if (deny) {
+          await expect(Test.run(scratch.deploy(declaration), options)).rejects.toThrow(
+            'namespace-creation-denied'
+          );
+          expect(
+            api.events.filter((event) => event.startsWith('create:') || event.startsWith('patch:'))
+          ).toEqual([]);
+          expect(api.live.has(identity)).toBe(false);
+          deny = false;
+        }
+        await Test.run(scratch.deploy(declaration), options);
+        const live = api.live.get(identity);
+        expect(live?.metadata?.namespace).toBeUndefined();
+        expect([...api.live.keys()]).toEqual([identity]);
+        const ownerStamp = live?.metadata?.annotations?.['typekro.io/created-by-rgd'];
+        if (initial === 'owned' || initial === 'denied') expect(ownerStamp).toBe(owner);
+        else expect(ownerStamp).toBeUndefined();
+        if (initial === 'denied') {
+          expect(api.events.filter((event) => event === `create:${name}`)).toHaveLength(1);
+          expect(api.events.indexOf(`admit-create:${name}`)).toBeLessThan(
+            api.events.indexOf(`create:${name}`)
+          );
+        } else {
+          expect(api.events).not.toContain(`create:${name}`);
+          if (initial === 'conflict') {
+            expect(api.events.indexOf(`admit-create:${name}`)).toBeLessThan(
+              api.events.indexOf(`conflict:${name}`)
+            );
+          } else {
+            // Existing objects need update authority only; an ownership probe cannot demand an
+            // impossible create-only permit for an object already observed to exist.
+            expect(api.events).not.toContain(`admit-create:${name}`);
+            expect(api.events).not.toContain(`conflict:${name}`);
+          }
+        }
+        if (initial !== 'denied') expect(api.events).toContain(`admit-patch:${name}`);
+        expect(live?.metadata?.labels?.['testing.typekro.dev/configuration']).toBe('declared');
+        await Test.run(scratch.destroy(), options);
       } finally {
         api.restore();
       }

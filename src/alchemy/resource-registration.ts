@@ -14,7 +14,7 @@
  * alchemy-version-agnostic and reused verbatim; only the registration glue changed.
  */
 
-import type { KubeConfig } from '@kubernetes/client-node';
+import type { KubeConfig, KubernetesObject } from '@kubernetes/client-node';
 import * as Diff from 'alchemy/Diff';
 import type { Input } from 'alchemy/Input';
 import * as Output from 'alchemy/Output';
@@ -606,9 +606,9 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   abortSignal?.throwIfAborted();
   // finding #2 (adopted-namespace): the hoisted workload Namespace is stamped
   // owned-by-this-RGD at BUILD time (cluster-free). READ the live namespace here and
-  // KEEP that stamp ONLY when typekro actually creates it (404) or already owns it;
+  // KEEP that stamp ONLY after an atomic create succeeds or it already owns it;
   // otherwise strip it so teardown never deletes a namespace typekro merely adopted.
-  const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger, abortSignal);
+  const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger, abortSignal, hooks);
   abortSignal?.throwIfAborted();
   const { deployer, dispose } = await _resolveDeployer(
     effectiveProps,
@@ -1331,20 +1331,51 @@ export const existingInstanceNamespacesAlchemyForTest = _existingInstanceNamespa
 async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  hooks: KroResourceEffectHooks = {}
 ): Promise<TypeKroResourceProps<T>> {
   if (props.namespaceEmptyGate !== true || props.namespaceOwnerRgd === undefined) return props;
+  const namespaceOwnerRgd = props.namespaceOwnerRgd;
+  if (props.resource.kind !== 'Namespace') {
+    throw new Error('Hoisted namespace ownership requires a Namespace resource.');
+  }
+  // This explicit hoisted role is cluster-scoped even after legacy Alchemy input serialization
+  // loses factory WeakMap metadata. Preserve it through adoption copies and subsequent apply.
+  const namespaceResource = { ...props.resource, scope: 'cluster' as const };
+  copyResourceMetadata(props.resource, namespaceResource);
+  setMetadataField(namespaceResource, 'scope', 'cluster');
+  props = { ...props, resource: namespaceResource };
   const name = props.resource.metadata?.name;
   if (typeof name !== 'string' || name.length === 0) return props;
 
   const kc = _createClientProvider(props, 'ownership-check');
-  const api = _boundClusterCalls(
+  const boundedApi = _boundClusterCalls(
     createBunCompatibleKubernetesObjectApi(kc, props.options?.httpTimeouts),
     props,
     'ownership-check',
     abortSignal,
     kc
   );
+  const effectGate = hooks.beforeKubernetesEffect;
+  const guarded = effectGate && props.deploymentStrategy === 'direct';
+  const api = guarded
+    ? guardKubernetesObjectApi(boundedApi, (mutation) => effectGate(props, mutation))
+    : boundedApi;
+  // Existing namespaces require no ownership-create attempt: keep only an already-present
+  // matching stamp. Absence never grants ownership; the admitted atomic create below does.
+  // A race still receives the established helper's 409/read/adopt decision.
+  let existingNamespace: KubernetesObject | undefined;
+  if (guarded) {
+    try {
+      existingNamespace = await api.read({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name },
+      });
+    } catch (error: unknown) {
+      if (!isNotFoundError(error)) throw error;
+    }
+  }
 
   // CREATE-FIRST ownership (finding #3), matching the imperative path: attempt to CREATE
   // the namespace WITH the build-time stamp. A 201 is atomic proof typekro created it
@@ -1355,20 +1386,26 @@ async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unk
   // (idempotent), so a 201 here is not the final apply — it is the ownership PROBE.
   let ownsNamespace: boolean;
   try {
-    const decision = await decideNamespaceOwnershipCreateFirst(
-      api,
-      props.resource as unknown as import('@kubernetes/client-node').KubernetesObject,
-      props.namespaceOwnerRgd
-    );
-    ownsNamespace = decision.owned;
+    ownsNamespace = existingNamespace
+      ? existingNamespace.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION] === namespaceOwnerRgd
+      : (
+          await decideNamespaceOwnershipCreateFirst(
+            api,
+            props.resource as unknown as KubernetesObject,
+            namespaceOwnerRgd
+          )
+        ).owned;
   } catch (error: unknown) {
+    // Guarded admission/API failures terminate this operation, never fall through to a
+    // differently shaped apply or consume another permit after a rejected preparation write.
+    if (guarded) throw error;
     // A non-conflict CREATE failure (or a failed conflict-read) — do NOT claim ownership
     // (conservative: a namespace we cannot provably create/own must not be stampable, or
     // teardown might delete an adopted one). The deployer's SSA apply below surfaces the
     // real error if the cluster is genuinely broken.
     logger.debug('Create-first ownership probe failed; treating as adopted (alchemy)', {
       namespace: name,
-      rgd: props.namespaceOwnerRgd,
+      rgd: namespaceOwnerRgd,
       error: ensureError(error).message,
     });
     ownsNamespace = false;
@@ -1378,7 +1415,7 @@ async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unk
 
   logger.debug('Preserving namespace adoption — stripping build-time ownership stamp (alchemy)', {
     namespace: name,
-    rgd: props.namespaceOwnerRgd,
+    rgd: namespaceOwnerRgd,
   });
   return { ...props, resource: _stripNamespaceOwnerAnnotation(props.resource) };
 }

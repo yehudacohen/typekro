@@ -88,6 +88,13 @@ consumes, using those observations' own iteration bindings. Its dependency ids
 match the actual concrete graph, including generated prerequisites inherited
 through observations. An unrelated observation never becomes a recovery
 requirement for that operation.
+The same gate covers create-first hoisted Namespace ownership preparation. A
+rejected create leaves an absent Namespace absent and stops reconciliation.
+Existing Namespaces are observed for their retained ownership stamp; subsequent
+writes under the selected apply policy use fresh authority. Absence itself never
+grants ownership. A create conflict
+uses the existing read/adopt decision, so a concurrent external Namespace is not
+stamped as TypeKro-owned.
 A namespace teardown that requires residual PVC
 cleanup through a separate CoreV1 API also fails closed until that cleanup has
 its own authorized effect path.

@@ -469,7 +469,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and converging after a failed old delete. Durable operation records slice
   external observations by concrete iteration and preserve generated
   prerequisites inherited through those observations, matching Alchemy scheduling
-  after serialization and recovery.
+  after serialization and recovery. Hoisted Namespace ownership creation also
+  uses the same effect-time gate; denied preparation stops before any write,
+  preserving existing ownership/adoption and create-conflict recovery.
 
 - Reconciled application integration contracts with current upstream lifecycle
   deadlines, direct forEach expansion and readiness. CEL dependency consumers
