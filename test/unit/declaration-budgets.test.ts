@@ -11,6 +11,7 @@ import {
   classifyEdges,
   createOwnerMatcher,
   type DeclarationHost,
+  deadOwnerPatterns,
   importChain,
   type OwnersConfig,
   parseDeclaration,
@@ -319,6 +320,26 @@ describe('attribute', () => {
     const alpha = attribution.entries.find((entry) => entry.export === './alpha');
     expect(alpha?.files).toBe(4);
     expect(alpha?.owners).toEqual(['alpha', 'beta', 'core']);
+  });
+});
+
+describe('deadOwnerPatterns', () => {
+  it('lists owner globs that match no reachable file', () => {
+    const graph = walkDeclarationGraph(entries, hostOf(fixture));
+    expect(
+      deadOwnerPatterns(graph, {
+        declarationRoot: 'dist',
+        owners: [
+          ...owners.owners,
+          // Matches only an unreachable file.
+          { owner: 'extra', paths: ['core/unused.d.ts', 'factories/gamma/**'] },
+        ],
+      })
+    ).toEqual([
+      { owner: 'extra', pattern: 'core/unused.d.ts' },
+      { owner: 'extra', pattern: 'factories/gamma/**' },
+    ]);
+    expect(deadOwnerPatterns(graph, owners)).toEqual([]);
   });
 });
 

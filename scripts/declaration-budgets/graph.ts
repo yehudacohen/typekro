@@ -299,6 +299,8 @@ export function importChain(graph: DeclarationGraph, target: string): string[] |
 
 export interface OwnerRule {
   owner: string;
+  /** Why these paths belong to this owner. Not used by the tool. */
+  $comment?: string;
   /** Glob patterns relative to the declaration root (`**` spans directories). */
   paths: string[];
 }
@@ -511,6 +513,30 @@ export function attribute(
     rootEntryViolations,
     barrelImports,
   };
+}
+
+/**
+ * Owner globs that match no reachable declaration file. The owners map should
+ * stay minimal, so a rule left behind by a refactor is reported.
+ */
+export function deadOwnerPatterns(
+  graph: DeclarationGraph,
+  config: Pick<OwnersConfig, 'declarationRoot' | 'owners'>
+): { owner: string; pattern: string }[] {
+  const reachable = [...graph.files.keys()];
+  const dead: { owner: string; pattern: string }[] = [];
+  for (const rule of config.owners) {
+    for (const pattern of rule.paths) {
+      const matches = createOwnerMatcher({
+        declarationRoot: config.declarationRoot,
+        owners: [{ owner: rule.owner, paths: [pattern] }],
+      });
+      if (!reachable.some((path) => matches(path) !== undefined)) {
+        dead.push({ owner: rule.owner, pattern });
+      }
+    }
+  }
+  return dead;
 }
 
 /** Splits observed edges into allowed, new (not allowlisted), and stale allowlist entries. */

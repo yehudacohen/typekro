@@ -14,6 +14,7 @@ export interface ReportInput {
   emitted: { files: number; rawBytes: number };
   missing: { from: string; specifier: string }[];
   failures: string[];
+  warnings: string[];
 }
 
 const kb = (bytes: number | undefined): string =>
@@ -64,6 +65,9 @@ export function renderReport(input: ReportInput): string {
 
   if (input.failures.length > 0) {
     lines.push('', '### Failures', '', ...input.failures.map((failure) => `- ${failure}`));
+  }
+  if (input.warnings.length > 0) {
+    lines.push('', '### Warnings', '', ...input.warnings.map((warning) => `- ${warning}`));
   }
 
   lines.push('', '### Owners', '');
@@ -116,7 +120,7 @@ export function renderReport(input: ReportInput): string {
   if (edges.stale.length > 0) {
     lines.push(
       '',
-      `Stale allowlist entries (no longer observed; remove them): ${edges.stale
+      `Stale allowlist entries (no longer observed; these fail the check): ${edges.stale
         .map((edge) => `${edge.from} -> ${edge.to}`)
         .join(', ')}.`
     );

@@ -6,6 +6,7 @@
   "owners": [
     {
       "owner": "core",
+      "$comment": "Core: src/core, src/utils, and the base factories kubernetes, helm, flux, kro and simple (typekro/containers lives in src/core/containers). Also core-like: shared/** holds the brand symbols that utils and core both build on; compositions/** is the typekro runtime bootstrap re-exported from the root, built only from core factories; aspects.d.ts is the typekro/aspects entry, a barrel over core/aspects; index.d.ts and factories/index.d.ts are the root barrels.",
       "paths": [
         "index.d.ts",
         "aspects.d.ts",
@@ -14,7 +15,6 @@
         "shared/**",
         "compositions/**",
         "factories/index.d.ts",
-        "factories/shared.d.ts",
         "factories/kubernetes/**",
         "factories/helm/**",
         "factories/flux/**",
