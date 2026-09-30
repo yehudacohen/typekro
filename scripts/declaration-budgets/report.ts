@@ -32,6 +32,8 @@ const statusLabel = (row: OwnerRow, mode: BudgetsConfig['mode']): string => {
       return mode === 'enforce' ? 'OVER' : 'over (report-only)';
     case 'ratchet':
       return `ratchet to ${kb(row.suggestedBudget)}`;
+    case 'pool':
+      return 'shared pool';
     case 'unbudgeted':
       return 'no budget';
     default:
@@ -57,7 +59,9 @@ export function renderReport(input: ReportInput): string {
       `Unreachable: ${attribution.unreachable.length} files, ${kb(unreachableBytes)}.`
   );
   lines.push(
-    `Global cap ${budgets.globalCapBytes} bytes; owner budgets sum to ${evaluation.budgetSum} bytes. ` +
+    `Global cap ${budgets.globalCapBytes} bytes; owner budgets sum to ${evaluation.budgetSum} bytes, ` +
+      `plus a shared pool of ${evaluation.pool.bytes} bytes, leaving ` +
+      `${budgets.globalCapBytes - evaluation.committedBytes} bytes unallocated. ` +
       (baseline
         ? `Deltas are against the committed baseline (typekro ${baseline.packageVersion}).`
         : 'No baseline found; deltas are unavailable.')
@@ -82,6 +86,15 @@ export function renderReport(input: ReportInput): string {
         `${kb(row.budget)} | ${kb(row.headroom)} | ${statusLabel(row, budgets.mode)} |`
     );
   }
+
+  const { pool } = evaluation;
+  lines.push(
+    '',
+    `**Shared pool:** ${kb(pool.usedBytes)} of ${kb(pool.bytes)} used` +
+      (pool.owners.length > 0
+        ? ` by ${pool.owners.join(', ')}.`
+        : '. No pooled owner has declarations yet.')
+  );
 
   if (evaluation.overruns.length > 0) {
     lines.push('', `**Budget overruns${budgets.mode === 'report' ? ' (report-only)' : ''}:**`);
