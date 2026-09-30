@@ -441,7 +441,7 @@ describe('structural type-shape hashes', () => {
   const expectChange = (before: string, after: string, symbol: string, changed = true) => {
     const first = hashesOf(before)[symbol];
     const second = hashesOf(after)[symbol];
-    expect(first).toBeDefined();
+    if (first === undefined) throw new Error(`${symbol} is not in the snapshot`);
     if (changed) expect(second).not.toBe(first);
     else expect(second).toBe(first);
   };
