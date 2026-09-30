@@ -24,8 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owner. It also lists cross-owner edges, `@internal` declarations in reachable files, files that
   import a root barrel, and the 96 declaration files (263 KiB) that no export reaches. Budget
   overruns only report for now. CI fails on a reachable file with no owner, an unresolved relative
-  declaration import, a cross-owner edge missing from the allowlist, or a new integration reachable
-  from the root `typekro` entry. The single packed-declaration budget is unchanged.
+  declaration import, a cross-owner edge missing from the allowlist, a stale allowlist entry, an
+  owner rule that matches nothing, or a new integration reachable from the root `typekro` entry.
+  The check warns when the baseline's version differs from `package.json`; refresh the baseline in
+  each release PR. The single packed-declaration budget is unchanged.
 
 - **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal
   byte bounds: `storage.persistentQueue.compaction` and `storage.persistentQueue.sizer`.** The

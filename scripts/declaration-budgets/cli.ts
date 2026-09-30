@@ -24,6 +24,7 @@ import {
   attribute,
   classifyEdges,
   type DeclarationHost,
+  deadOwnerPatterns,
   importChain,
   type OwnersConfig,
   walkDeclarationGraph,
@@ -150,7 +151,25 @@ for (const violation of attribution.rootEntryViolations) {
       'New integrations must ship as their own subpath export, not through src/factories/index.ts.'
   );
 }
+for (const edge of edges.stale) {
+  failures.push(
+    `Allowlisted edge ${edge.from} -> ${edge.to} is no longer observed. Remove it from allowedEdges.`
+  );
+}
+for (const dead of deadOwnerPatterns(graph, owners)) {
+  failures.push(
+    `Owner rule "${dead.pattern}" (${dead.owner}) matches no reachable declaration file. Remove it.`
+  );
+}
 failures.push(...evaluation.configErrors);
+
+const warnings: string[] = [];
+if (baseline && baseline.packageVersion !== packageJson.version) {
+  warnings.push(
+    `The baseline was recorded at typekro ${baseline.packageVersion}, but package.json is ${packageJson.version}. ` +
+      'Deltas include every change since then. Refresh it with `bun run check:declaration-budgets --write-baseline` in the release PR.'
+  );
+}
 
 const mode = args.has('--enforce') ? 'enforce' : budgets.mode;
 if (mode === 'enforce') failures.push(...evaluation.overruns);
@@ -168,7 +187,9 @@ const report = renderReport({
   },
   missing: graph.missing,
   failures,
+  warnings,
 });
+for (const warning of warnings) console.warn(`::warning title=Declaration baseline::${warning}`);
 
 console.log(report);
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;

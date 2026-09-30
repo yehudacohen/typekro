@@ -64,6 +64,9 @@ These checks fail CI now:
   re-exported when budgets were introduced. **Do not add new integrations to the root
   barrel.** Ship them as a subpath export only. Existing namespace re-exports stay for
   compatibility.
+- **Stale allowlist entry.** An `allowedEdges` entry that is no longer observed. Remove it,
+  so the allowlist lists only real dependencies.
+- **Dead owner rule.** An owner glob that matches no reachable declaration file.
 - **Budget configuration.** Every owner needs a budget, every budget needs an owner, and
   the sum of owner budgets must not exceed `globalCapBytes`.
 
@@ -101,8 +104,11 @@ Raise a budget only with a reason in the PR description. When an owner shrinks, 
 budget in the same PR. The report lists ratchet candidates.
 
 The baseline in `scripts/declaration-baseline.json` is a committed snapshot, not the base
-branch. Refresh it with `--write-baseline` whenever you change budgets, so the next PR's
-deltas start from zero.
+branch. It records the package version it was taken at. **Refresh it in every release PR**
+with `bun run check:declaration-budgets --write-baseline`, and whenever you change budgets.
+The next release's deltas then start from zero. When the baseline's version differs from
+`package.json`, the check emits a warning, because the deltas then include everything since
+that version.
 
 ## Adding a new integration
 
