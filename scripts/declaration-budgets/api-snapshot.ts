@@ -9,20 +9,21 @@
  *
  * Run after `bun run build:lib`.
  */
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { compareText } from './graph.js';
 import { measurePackage, packageRoot, scriptsDir } from './package.js';
+import { TypeShapeHasher } from './type-shape.js';
 
 /**
  * Builds the snapshot lines for the package at `root`: one
  * `<export>\t<symbol>\t<kind>\t<type hash>` line per exposed symbol.
  *
- * Type text is printed with fully qualified names, which embed absolute module
- * paths. Those paths are made relative before hashing, so the snapshot does not
- * depend on where the package or its dependencies are installed.
+ * The hash is structural and follows every type the symbol's signature depends
+ * on, recursively; see type-shape.ts. It contains no absolute paths, so the
+ * snapshot does not depend on where the package or its dependencies are
+ * installed.
  */
 export function buildApiSnapshot(root: string = packageRoot): string[] {
   const { entries } = measurePackage(root);
@@ -48,19 +49,23 @@ export function buildApiSnapshot(root: string = packageRoot): string[] {
     }
   );
   const checker = program.getTypeChecker();
-  const flags = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseFullyQualifiedType;
 
   const rootPrefixes = [...new Set([root, realpathSync(root)])]
     .map((prefix) => `${prefix.replace(/\\/g, '/').replace(/\/$/, '')}/`)
     .sort((a, b) => b.length - a.length);
-  // Package paths become relative to the root, and any dependency path is cut
-  // back to its node_modules segment, wherever node_modules lives.
-  const relativize = (text: string): string =>
-    rootPrefixes
-      .reduce((result, prefix) => result.split(prefix).join(''), text)
-      .replace(/"[^"]*\/node_modules\//g, '"node_modules/');
-  const print = (type: ts.Type, extra = ts.TypeFormatFlags.None): string =>
-    relativize(checker.typeToString(type, undefined, flags | extra));
+  const normalize = (fileName: string) => fileName.replace(/\\/g, '/');
+  const isPackageFile = (fileName: string) =>
+    !normalize(fileName).includes('/node_modules/') &&
+    rootPrefixes.some((prefix) => normalize(fileName).startsWith(prefix));
+  // A dependency path is cut back to its last node_modules segment, wherever
+  // node_modules lives; anything else keeps only its file name.
+  const externalModuleName = (fileName: string) => {
+    const normalized = normalize(fileName);
+    const cut = normalized.lastIndexOf('/node_modules/');
+    return cut >= 0
+      ? normalized.slice(cut + '/node_modules/'.length)
+      : normalized.slice(normalized.lastIndexOf('/') + 1);
+  };
 
   const kinds = (symbol: ts.Symbol): string => {
     if (symbol.flags & ts.SymbolFlags.Module) return 'namespace';
@@ -70,48 +75,50 @@ export function buildApiSnapshot(root: string = packageRoot): string[] {
     return result.length > 0 ? result.join('+') : 'unresolved';
   };
 
-  const typeHash = (symbol: ts.Symbol): string => {
-    const parts: string[] = [];
-    if (symbol.flags & ts.SymbolFlags.Module) {
-      parts.push('namespace');
-    } else {
-      if (symbol.flags & ts.SymbolFlags.Value) parts.push(print(checker.getTypeOfSymbol(symbol)));
-      if (symbol.flags & ts.SymbolFlags.Type) {
-        const declared = checker.getDeclaredTypeOfSymbol(symbol);
-        parts.push(print(declared, ts.TypeFormatFlags.InTypeAlias));
-        for (const property of checker.getPropertiesOfType(declared)) {
-          const optional = property.flags & ts.SymbolFlags.Optional ? '?' : '';
-          parts.push(`${property.name}${optional}: ${print(checker.getTypeOfSymbol(property))}`);
-        }
-      }
-    }
-    return createHash('sha256').update(parts.join('\n')).digest('hex').slice(0, 16);
-  };
-
   const resolveAlias = (symbol: ts.Symbol): ts.Symbol =>
     symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 
-  const lines: string[] = [];
+  // Pass 1: every public symbol, including namespace members at any depth.
+  const rows: { entryName: string; name: string; target: ts.Symbol }[] = [];
+  const unloaded: string[] = [];
   for (const [entryName, file] of entryFiles) {
     const sourceFile = program.getSourceFile(file);
     const moduleSymbol = sourceFile && checker.getSymbolAtLocation(sourceFile);
     if (!moduleSymbol) {
-      lines.push(`${entryName}\t(module did not load)`);
+      unloaded.push(`${entryName}\t(module did not load)`);
       continue;
     }
-    const visit = (symbols: ts.Symbol[], prefix: string, depth: number): void => {
+    const visit = (symbols: ts.Symbol[], prefix: string, path: ReadonlySet<ts.Symbol>): void => {
       for (const exported of [...symbols].sort((a, b) => compareText(a.name, b.name))) {
         const target = resolveAlias(exported);
         const name = `${prefix}${exported.name}`;
-        lines.push([entryName, name, kinds(target), typeHash(target)].join('\t'));
-        if (target.flags & ts.SymbolFlags.Module && depth === 0) {
-          visit(checker.getExportsOfModule(target), `${name}.`, depth + 1);
+        rows.push({ entryName, name, target });
+        if (target.flags & ts.SymbolFlags.Module && !path.has(target)) {
+          visit(checker.getExportsOfModule(target), `${name}.`, new Set([...path, target]));
         }
       }
     };
-    visit(checker.getExportsOfModule(moduleSymbol), '', 0);
+    visit(checker.getExportsOfModule(moduleSymbol), '', new Set([moduleSymbol]));
   }
-  return lines;
+
+  // Each public symbol is referenced by the first line that names it.
+  const publicNames = new Map<ts.Symbol, string>();
+  for (const row of rows) {
+    if (!publicNames.has(row.target)) publicNames.set(row.target, `${row.entryName}:${row.name}`);
+  }
+
+  // Pass 2: structural hashes.
+  const hasher = new TypeShapeHasher({ checker, publicNames, isPackageFile, externalModuleName });
+  const hashes = new Map<ts.Symbol, string>();
+  const lines = rows.map(({ entryName, name, target }) => {
+    let hash = hashes.get(target);
+    if (hash === undefined) {
+      hash = hasher.hashSymbol(target);
+      hashes.set(target, hash);
+    }
+    return [entryName, name, kinds(target), hash].join('\t');
+  });
+  return [...unloaded, ...lines];
 }
 
 /** Lines only in `expected` (removed) and only in `actual` (added). */

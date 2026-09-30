@@ -420,3 +420,123 @@ describe('buildApiSnapshot', () => {
     expect(added.map((line) => line.split('\t')[1])).toEqual(['NatsConfig']);
   });
 });
+
+describe('structural type-shape hashes', () => {
+  /**
+   * Hash of each public symbol for a single-file package. `export {}` makes
+   * unexported declarations module-private, as tsc's declaration emit does.
+   */
+  const hashesOf = (declarations: string): Record<string, string> => {
+    const root = writePackage(
+      { '.': { types: './dist/index.d.ts' } },
+      { 'dist/index.d.ts': `${declarations}export {};\n` }
+    );
+    return Object.fromEntries(
+      buildApiSnapshot(root).map((line) => {
+        const [, name, , hash] = line.split('\t');
+        return [name, hash];
+      })
+    );
+  };
+  const expectChange = (before: string, after: string, symbol: string, changed = true) => {
+    const first = hashesOf(before)[symbol];
+    const second = hashesOf(after)[symbol];
+    expect(first).toBeDefined();
+    if (changed) expect(second).not.toBe(first);
+    else expect(second).toBe(first);
+  };
+
+  it('follows a non-exported type reached through a property', () => {
+    expectChange(
+      'interface Hidden { value: string }\nexport interface Public { hidden: Hidden }\n',
+      'interface Hidden { value: number }\nexport interface Public { hidden: Hidden }\n',
+      'Public'
+    );
+  });
+
+  it('follows a non-exported type reached only through a method return type', () => {
+    expectChange(
+      'interface Result { ok: boolean }\nexport interface Api { get(id: string): Result }\n',
+      'interface Result { ok: boolean; reason?: string }\nexport interface Api { get(id: string): Result }\n',
+      'Api'
+    );
+  });
+
+  it('follows non-exported types used as generic type arguments', () => {
+    const source = (field: string) =>
+      `interface Item { ${field} }\nexport type Box<T> = { item: T };\nexport declare const box: Box<Item>;\nexport interface List { items: Array<Item>; byKey: Record<string, Item> }\n`;
+    expectChange(source('id: string'), source('id: number'), 'box');
+    expectChange(source('id: string'), source('id: number'), 'List');
+    // Box's own shape does not depend on Item.
+    expectChange(source('id: string'), source('id: number'), 'Box', false);
+  });
+
+  it('follows parameters, index signatures, unions, intersections and heritage', () => {
+    const source = (type: string) =>
+      [
+        `interface Hidden { v: ${type} }`,
+        'export declare function take(input: Hidden): void;',
+        'export interface Indexed { [key: string]: Hidden }',
+        'export type Either = Hidden | { other: true };',
+        'export type Both = Hidden & { extra: 1 };',
+        'export interface Derived extends Hidden { own: string }',
+        'export declare class Impl { constructor(seed: Hidden); make(): Hidden }',
+        '',
+      ].join('\n');
+    for (const symbol of ['take', 'Indexed', 'Either', 'Both', 'Derived', 'Impl']) {
+      expectChange(source('string'), source('string | number'), symbol);
+    }
+  });
+
+  it('refers to other public exports by name instead of expanding them', () => {
+    // Changing Shared changes Shared's own line, not the lines that reference it.
+    const source = (type: string) =>
+      `export interface Shared { v: ${type} }\nexport interface User { shared: Shared }\n`;
+    expectChange(source('string'), source('number'), 'Shared');
+    expectChange(source('string'), source('number'), 'User', false);
+  });
+
+  it('walks nested namespaces to any depth', () => {
+    const source = (type: string) =>
+      `export declare namespace outer { export namespace inner { export const value: ${type}; } }\n`;
+    const hashes = hashesOf(source('string'));
+    expect(Object.keys(hashes)).toContain('outer.inner.value');
+    expectChange(source('string'), source('number'), 'outer.inner.value');
+  });
+
+  it('terminates on recursive, mutually recursive and expanding generic types', () => {
+    const source = (type: string) =>
+      [
+        `interface TreeNode { label: ${type}; parent?: TreeNode; children: TreeNode[] }`,
+        'interface A { b: B }',
+        'interface B { a: A; tag: string }',
+        'interface Deep<T> { value: T; deeper: Deep<T[]> }',
+        'export interface Tree { root: TreeNode; cycle: A; deep: Deep<string> }',
+        '',
+      ].join('\n');
+    expectChange(source('string'), source('number'), 'Tree');
+  });
+
+  it('does not depend on which other symbols share the hidden types', () => {
+    const shared = [
+      'interface A { b: B; label: string }',
+      'interface B { a: A; items: A[] }',
+      'export interface Zed { a: A; b: B }',
+      '',
+    ].join('\n');
+    // Aardvark is hashed first and walks A and B from a different starting point.
+    const before = hashesOf(shared);
+    const after = hashesOf(`export interface Aardvark { b: B; list: B[] }\n${shared}`);
+    expect(after.Zed).toBe(before.Zed as string);
+  });
+
+  it('ignores a rename of a non-exported type whose structure is unchanged', () => {
+    // Consumers cannot name a non-exported type, so only its structure is hashed.
+    expectChange(
+      'interface Hidden { value: string }\nexport interface Public { hidden: Hidden }\n',
+      'interface Renamed { value: string }\nexport interface Public { hidden: Renamed }\n',
+      'Public',
+      false
+    );
+  });
+});

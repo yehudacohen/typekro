@@ -111,18 +111,40 @@ stale: run `bun run clean && bun run build:lib`.
 
 ## Public API snapshot
 
-[`scripts/public-api-snapshot.txt`](../public-api-snapshot.txt) has one line per symbol that
-an export exposes. Each line gives the export, the symbol, its kind (`value`, `type`,
-`value+type` or `namespace`), and a hash of its type shape. The hash covers the printed type
-and, for types, every member and whether it is optional. Namespace re-exports list their
-members as `traefik.traefikBootstrap`.
+[`scripts/public-api-snapshot.txt`](../public-api-snapshot.txt) has one line per public symbol:
+the export, the symbol, its kind (`value`, `type`, `value+type` or `namespace`), and a hash of
+its type shape. Namespace members are listed at any depth (`outer.inner.value`).
 
-CI fails when any line changes, so adding, removing, widening or narrowing a public type
-all need a reviewed snapshot update. If the change is intended, run
-`bun run check:public-api --update` and commit the diff. The printed types contain module
-paths. Those are made relative before hashing, so the snapshot is the same in any checkout
-location. A declaration-only change, such as a strip-down step, must leave the snapshot
-unchanged.
+The hash is structural. It follows every type the symbol's signature depends on, recursively
+([`type-shape.ts`](type-shape.ts)):
+
+- **Public exports** that have their own line are referenced by name. A change to one
+  changes its own line, not the lines that mention it.
+- **Dependency and TypeScript lib types** are referenced by module path and name, plus their
+  type arguments.
+- **Everything else is expanded.** That covers non-exported interfaces, classes, type aliases
+  and enums, anonymous object and function types, unions, intersections, tuples, and mapped,
+  conditional, indexed-access and template literal types. Expansion walks properties
+  (optional, readonly), methods, call and construct signatures (type parameters, parameters,
+  `this`, return types, type predicates), index signatures and type arguments. Inherited
+  members are part of a type's properties, so `extends` is covered.
+- **Recursive types terminate.** A type already being expanded is written as a
+  back-reference, and pathological generic expansion stops at a fixed depth.
+- **Names of non-exported types are not hashed.** Consumers cannot refer to them, so renaming
+  one without changing its structure leaves the snapshot unchanged. Parameter names are not
+  hashed either. Type parameter names are.
+
+So adding or removing a public symbol, or changing the structure of any type a public
+signature can observe (widening, narrowing, adding or removing a member, or changing
+optionality or readonly), changes the snapshot. CI fails until the change is reviewed and
+accepted with `bun run check:public-api --update`.
+
+The known limits are types owned by dependencies, which are pinned by the lockfile, and
+`implements` clauses, which do not change a class's shape.
+
+Hashes contain no absolute paths, and do not depend on the order symbols are visited in, so
+the snapshot is the same in every checkout. A declaration-only change, such as a strip-down
+step, must leave it unchanged.
 
 ## Budgets
 
