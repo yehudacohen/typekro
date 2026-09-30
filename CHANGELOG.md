@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exclusions). If any export or declaration import cannot be resolved, the prune step deletes
   nothing. A new public API snapshot, `scripts/public-api-snapshot.txt` (`bun run
   check:public-api`), runs in CI. It records every symbol each export exposes (namespace members
-  at any depth), its kind (type-only re-exports count as types), and a structural hash of its
+  at any depth), its kind (symbols reachable only through type-only exports, including
+  `export type *` chains, count as types), and a structural hash of its
   declaration. The hash follows every type the declaration depends on, recursively, including
   non-exported types, type arguments of mapped, conditional and generic alias types, member
   visibility and accessor shape, and enum identity. It does not depend on visiting order or on

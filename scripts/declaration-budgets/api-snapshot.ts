@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { compareText } from './graph.js';
 import { measurePackage, packageRoot, scriptsDir } from './package.js';
-import { symbolKinds, TypeShapeHasher } from './type-shape.js';
+import { missingTypeScriptInternal, symbolKinds, TypeShapeHasher } from './type-shape.js';
 
 /**
  * Builds the snapshot lines for the package at `root`: one
@@ -84,12 +84,15 @@ export function buildApiSnapshot(
   // Pass 1: every public symbol, including namespace members at any depth.
   const rows: { entryName: string; name: string; target: ts.Symbol; typeOnly: boolean }[] = [];
   // `export type { X }` and `export type * from` expose no value, even for a class.
-  const isTypeOnly = (symbol: ts.Symbol): boolean =>
-    (
-      checker as unknown as {
-        getTypeOnlyAliasDeclaration(symbol: ts.Symbol): ts.Declaration | undefined;
-      }
-    ).getTypeOnlyAliasDeclaration(symbol) !== undefined;
+  const typeOnlyAlias = (
+    checker as unknown as {
+      getTypeOnlyAliasDeclaration?: (symbol: ts.Symbol) => ts.Declaration | undefined;
+    }
+  ).getTypeOnlyAliasDeclaration;
+  if (typeof typeOnlyAlias !== 'function') {
+    throw missingTypeScriptInternal('checker.getTypeOnlyAliasDeclaration');
+  }
+  const exposure = createExposure(checker, (symbol) => typeOnlyAlias.call(checker, symbol));
   const unloaded: string[] = [];
   for (const [entryName, file] of entryFiles) {
     const sourceFile = program.getSourceFile(file);
@@ -99,6 +102,7 @@ export function buildApiSnapshot(
       continue;
     }
     const visit = (
+      owner: ts.Symbol,
       symbols: ts.Symbol[],
       prefix: string,
       path: ReadonlySet<ts.Symbol>,
@@ -107,10 +111,11 @@ export function buildApiSnapshot(
       for (const exported of [...symbols].sort((a, b) => compareText(a.name, b.name))) {
         const target = resolveAlias(exported);
         const name = `${prefix}${exported.name}`;
-        const typeOnly = parentTypeOnly || isTypeOnly(exported);
+        const typeOnly = parentTypeOnly || exposure(owner, exported.escapedName) === 'type';
         rows.push({ entryName, name, target, typeOnly });
         if (target.flags & ts.SymbolFlags.Module && !path.has(target)) {
           visit(
+            target,
             checker.getExportsOfModule(target),
             `${name}.`,
             new Set([...path, target]),
@@ -119,7 +124,13 @@ export function buildApiSnapshot(
         }
       }
     };
-    visit(checker.getExportsOfModule(moduleSymbol), '', new Set([moduleSymbol]), false);
+    visit(
+      moduleSymbol,
+      checker.getExportsOfModule(moduleSymbol),
+      '',
+      new Set([moduleSymbol]),
+      false
+    );
   }
 
   // Each public symbol is referenced by the first line that names it.
@@ -152,6 +163,80 @@ export function buildApiSnapshot(
     ].join('\t')
   );
   return [...unloaded, ...lines];
+}
+
+/**
+ * How a module exposes an export name: `value` when some path can be used as a
+ * value, `type` when every path is type-only, `none` when it is not exported.
+ *
+ * A name exported directly is type-only when its alias declaration is
+ * (`export type { X }`, or a re-export of something exported that way). A name
+ * that arrives through star exports is followed through every `export *` and
+ * `export type *` chain, nested to any depth; a chain with any `export type *`
+ * link is type-only. The checker does not record star re-exports as aliases,
+ * so this walks the export declarations itself.
+ */
+export function createExposure(
+  checker: ts.TypeChecker,
+  typeOnlyAliasDeclaration: (symbol: ts.Symbol) => ts.Declaration | undefined
+): (module: ts.Symbol, name: ts.__String) => 'value' | 'type' | 'none' {
+  type Exposure = 'value' | 'type' | 'none';
+  const cache = new Map<ts.Symbol, Map<ts.__String, Exposure>>();
+  // Returns the exposure and whether a star-export cycle cut the search short;
+  // only complete results are cached.
+  const exposure = (
+    module: ts.Symbol,
+    name: ts.__String,
+    visiting: ReadonlySet<ts.Symbol>
+  ): { result: Exposure; partial: boolean } => {
+    const cached = cache.get(module)?.get(name);
+    if (cached !== undefined) return { result: cached, partial: false };
+    if (visiting.has(module)) return { result: 'none', partial: true };
+
+    let result: Exposure = 'none';
+    let partial = false;
+    const direct = module.exports?.get(name);
+    if (direct) {
+      result =
+        direct.flags & ts.SymbolFlags.Alias && typeOnlyAliasDeclaration(direct) !== undefined
+          ? 'type'
+          : 'value';
+    } else {
+      const nextVisiting = new Set([...visiting, module]);
+      for (const declaration of module.declarations ?? []) {
+        const statements = ts.isSourceFile(declaration)
+          ? declaration.statements
+          : ts.isModuleDeclaration(declaration) &&
+              declaration.body &&
+              ts.isModuleBlock(declaration.body)
+            ? declaration.body.statements
+            : [];
+        for (const statement of statements) {
+          if (
+            !ts.isExportDeclaration(statement) ||
+            statement.exportClause ||
+            !statement.moduleSpecifier
+          ) {
+            continue;
+          }
+          const target = checker.getSymbolAtLocation(statement.moduleSpecifier);
+          if (!target) continue;
+          const through = exposure(target, name, nextVisiting);
+          partial ||= through.partial;
+          if (through.result === 'none') continue;
+          const viaThisStar = statement.isTypeOnly ? 'type' : through.result;
+          if (viaThisStar === 'value') result = 'value';
+          else if (result === 'none') result = 'type';
+        }
+      }
+    }
+    if (!partial) {
+      if (!cache.has(module)) cache.set(module, new Map());
+      cache.get(module)?.set(name, result);
+    }
+    return { result, partial };
+  };
+  return (module, name) => exposure(module, name, new Set()).result;
 }
 
 /** Lines only in `expected` (removed) and only in `actual` (added). */

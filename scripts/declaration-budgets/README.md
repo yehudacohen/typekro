@@ -114,8 +114,11 @@ stale: run `bun run clean && bun run build:lib`.
 [`scripts/public-api-snapshot.txt`](../public-api-snapshot.txt) has one line per public symbol.
 Each line gives the export, the symbol, its kind and a hash of its declared shape. The kind is
 `value`, `type` or `namespace`, joined with `+` for merges such as a function or class merged
-with a namespace. A type-only re-export (`export type { C as Y }`, `export type * from`) is
-listed as `type`, even for a class. Namespace members are listed at any depth
+with a namespace. A symbol that consumers can only reach through type-only exports is listed as
+`type`, even for a class or function. That covers `export type { C as Y }` and every `export *`
+/ `export type *` chain, nested or mixed, that has a type-only link; the checker does not record
+star re-exports as aliases, so the snapshot walks those chains itself. A test checks that the
+kind column matches what TypeScript lets a consumer use as a value. Namespace members are listed at any depth
 (`outer.inner.value`).
 
 The hash is structural ([`type-shape.ts`](type-shape.ts)). For each symbol it covers the value
@@ -123,7 +126,12 @@ type, the declared type with its type parameters, class abstractness, and the na
 a merge. It follows every type these depend on, recursively:
 
 - **Public exports** that have their own line are referenced by public name plus type
-  arguments. A change to one changes its own line, not the lines that mention it.
+  arguments. A change to one changes its own line, not the lines that mention it. A reference to
+  a public value's own type (`typeof C` for a class's constructor, an enum object or a function)
+  is tagged as such, so `f(): C` and `f(): typeof C` differ.
+  - This applies to named references only. `keyof X`, `X["a"]` and a mapped type over a public
+    `X` written inline are resolved eagerly by TypeScript into the resulting keys, property type
+    or members, so the referencing line does change when `X` changes.
 - **Dependency and TypeScript lib types** are referenced by module path and name plus type
   arguments. Their internals are not hashed; the lockfile pins them.
 - **Instantiations of non-exported generic aliases** are hashed as the alias body, expanded once
@@ -149,7 +157,8 @@ a merge. It follows every type these depend on, recursively:
 **What is deliberately not hashed:**
 
 - The names of non-exported types. Renaming one without changing its structure leaves the
-  snapshot unchanged.
+  snapshot unchanged. Private `#field` names are hashed, which is harmless: tsc emits them as a
+  single `#private;` member, so renaming one does not reach the declarations.
 - Parameter names. Type parameter names are hashed.
 - `implements` clauses, which don't change a class's shape.
 
@@ -160,6 +169,14 @@ a merge. It follows every type these depend on, recursively:
 - Expansion stops at a depth of 64 (`MAX_DEPTH`), which bounds generics that expand forever
   (`Deep<T[]>`). A structural change deeper than that inside one symbol's hash is not seen.
 - A module that uses `export =` gets no member lines. The package is ESM-only, so none do today.
+
+**TypeScript internals.** A few parts have no public TypeScript API: the instantiated branches
+of conditional types, the parameter, template, name and modifiers types of mapped types, the key
+of symbol-keyed properties, check flags of transient symbols, and type-only alias detection. The
+hasher asks the checker to build the type's node, which computes and caches those, then reads
+them. If a field is missing, it stops with an error that names the field and the TypeScript
+version, rather than hashing less. This depends on the TypeScript 5.x JavaScript API. TypeScript 7
+(the native port) will not expose it, so the hasher will need a rewrite then.
 
 **Stability.** Recursive types terminate: a type already being expanded is written as a
 back-reference. Only acyclic expansions below the depth cap are reused, so no hash depends on the

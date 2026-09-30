@@ -754,4 +754,156 @@ describe('structural type-shape hashes', () => {
       );
     });
   });
+
+  describe('type-only star exports', () => {
+    const kindsFor = (files: Record<string, string>) => {
+      const root = writePackage({ '.': { types: './dist/index.d.ts' } }, files);
+      return Object.fromEntries(
+        buildApiSnapshot(root).map((line) => {
+          const [, name, kind] = line.split('\t');
+          return [name, kind];
+        })
+      );
+    };
+    const core = {
+      'dist/core/types.d.ts':
+        'export declare class C { a: string }\nexport interface I { b: number }\nexport declare function hasId(x: unknown): boolean;\n',
+    };
+
+    it('lists a class reached through export type * as type-only', () => {
+      expect(
+        kindsFor({ 'dist/index.d.ts': "export * from './core/types.js';\n", ...core })
+      ).toEqual({
+        C: 'value+type',
+        I: 'type',
+        hasId: 'value',
+      });
+      expect(
+        kindsFor({ 'dist/index.d.ts': "export type * from './core/types.js';\n", ...core })
+      ).toEqual({ C: 'type', I: 'type', hasId: 'type' });
+    });
+
+    it('follows nested and mixed star chains', () => {
+      const middle = (statement: string) => ({
+        ...core,
+        'dist/core/index.d.ts': `${statement}\n`,
+      });
+      // type-only at the top, value star below
+      expect(
+        kindsFor({
+          'dist/index.d.ts': "export type * from './core/index.js';\n",
+          ...middle("export * from './types.js';"),
+        }).C
+      ).toBe('type');
+      // value star at the top, type-only below
+      expect(
+        kindsFor({
+          'dist/index.d.ts': "export * from './core/index.js';\n",
+          ...middle("export type * from './types.js';"),
+        }).C
+      ).toBe('type');
+      // value stars all the way down
+      expect(
+        kindsFor({
+          'dist/index.d.ts': "export * from './core/index.js';\n",
+          ...middle("export * from './types.js';"),
+        }).C
+      ).toBe('value+type');
+    });
+
+    it('agrees with what TypeScript lets a consumer use as a value', () => {
+      const root = writePackage(
+        { '.': { types: './dist/index.d.ts' } },
+        {
+          'dist/index.d.ts': [
+            "export type * from './core/index.js';",
+            "export { C } from './core/types.js';",
+            "export type { C as TypeOnlyC } from './core/types.js';",
+            "export * from './other.js';",
+            '',
+          ].join('\n'),
+          'dist/core/index.d.ts': "export * from './types.js';\n",
+          'dist/other.d.ts': "export type * from './more.js';\nexport declare const plain: 1;\n",
+          'dist/more.d.ts': 'export declare function deep(): void;\nexport declare class D {}\n',
+          ...core,
+        }
+      );
+      const rows = buildApiSnapshot(root).map((line) => line.split('\t'));
+      const consumer = join(root, 'consumer.ts');
+      writeFileSync(
+        consumer,
+        rows
+          .map(
+            ([, name], index) =>
+              `import { ${name} as v${index} } from './dist/index.js';\nvoid v${index};`
+          )
+          .join('\n')
+      );
+      const program = ts.createProgram([consumer], {
+        noEmit: true,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        types: [],
+      });
+      const source = program.getSourceFile(consumer);
+      const rejected = new Set(
+        program
+          .getSemanticDiagnostics(source)
+          .filter((diagnostic) => [1361, 1362, 2693].includes(diagnostic.code))
+          .map((diagnostic) => {
+            const line = source?.getLineAndCharacterOfPosition(diagnostic.start ?? 0).line ?? 0;
+            return Number(/v(\d+)/.exec(source?.text.split('\n')[line] ?? '')?.[1]);
+          })
+      );
+      const usable = rows.map((_, index) => !rejected.has(index));
+      expect(rows.map(([, , kind]) => kind?.includes('value'))).toEqual(usable);
+      expect(Object.fromEntries(rows.map(([, name, kind]) => [name, kind]))).toEqual({
+        C: 'value+type',
+        D: 'type',
+        I: 'type',
+        TypeOnlyC: 'type',
+        deep: 'type',
+        hasId: 'type',
+        plain: 'value',
+      });
+    });
+
+    it('keeps a symbol a value when a value path exists alongside a type-only star', () => {
+      // Real-package shape: a barrel re-exports a types module with export type *,
+      // and exports some of its runtime values explicitly.
+      const kinds = kindsFor({
+        'dist/index.d.ts':
+          "export type * from './core/index.js';\nexport { C } from './core/types.js';\n",
+        'dist/core/index.d.ts': "export * from './types.js';\n",
+        ...core,
+      });
+      expect(kinds).toEqual({ C: 'value+type', I: 'type', hasId: 'type' });
+    });
+  });
+
+  describe('value-side references', () => {
+    it('distinguishes a public class from its constructor type', () => {
+      const source = (type: string) =>
+        `export declare class C { a: string }\nexport declare function f(): ${type};\n`;
+      expectChange(source('C'), source('typeof C'), 'f');
+    });
+
+    it('distinguishes them as type arguments too', () => {
+      const source = (type: string) =>
+        `export declare class C { a: string }\ntype Box<T> = { value: T };\nexport declare const box: Box<${type}>;\n`;
+      expectChange(source('C'), source('typeof C'), 'box');
+    });
+  });
+
+  it('uses the instantiated branches of an anonymous conditional type', () => {
+    // m's return type is a deferred conditional instantiated through Box<Hidden>.
+    const source = (type: string) =>
+      [
+        `interface Hidden { v: ${type} }`,
+        'interface Box<T> { m<U>(u: U): U extends string ? T : never }',
+        'export declare const box: Box<Hidden>;',
+        '',
+      ].join('\n');
+    expectChange(source('string'), source('number'), 'box');
+  });
 });
