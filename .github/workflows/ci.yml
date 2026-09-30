@@ -55,6 +55,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:packed-imports
 
+      - name: Declaration budgets per owner
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bun run check:declaration-budgets
+
       - name: Randomized unit test isolation
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:randomized

@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-owner declaration budgets (report-only).** `bun run check:declaration-budgets` walks the
+  emitted `.d.ts` import graph from every `package.json` export. It charges each reachable file to
+  one owner from `scripts/declaration-owners.json`: core, or one integration. It then compares
+  each owner's bytes with `scripts/declaration-budgets.json`. The CI step summary shows raw, surface
+  and JSDoc bytes, the delta against a committed baseline, headroom, and ratchet candidates per
+  owner. It also lists cross-owner edges, `@internal` declarations in reachable files, files that
+  import a root barrel, and the 96 declaration files (263 KiB) that no export reaches. Budget
+  overruns only report for now. CI fails on a reachable file with no owner, an unresolved relative
+  declaration import, a cross-owner edge missing from the allowlist, or a new integration reachable
+  from the root `typekro` entry. The single packed-declaration budget is unchanged.
+
 - **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal
   byte bounds: `storage.persistentQueue.compaction` and `storage.persistentQueue.sizer`.** The
   `file_storage` extension keeps each queue in a bbolt file, and a bbolt file keeps its high-water

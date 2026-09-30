@@ -1,0 +1,3 @@
+# Declaration ownership and budgets change what each integration may ship.
+/scripts/declaration-owners.json @yehudacohen
+/scripts/declaration-budgets.json @yehudacohen
