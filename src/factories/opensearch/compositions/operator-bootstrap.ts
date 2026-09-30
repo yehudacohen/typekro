@@ -1,6 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { DEFAULT_OPENSEARCH_OPERATOR_NAMESPACE } from '../constants.js';
@@ -24,7 +25,10 @@ import { openSearchHelmRepositoryBootstrap } from './repository.js';
  * Explicitly owned operator installation. Deleting its KRO instance uninstalls
  * the operator; shared consumers should use openSearchOperatorBootstrap.
  */
-export const openSearchOperatorInstallation = kubernetesComposition(
+export const openSearchOperatorInstallation: CallableComposition<
+  typeof OpenSearchOperatorBootstrapConfigSchema.infer,
+  typeof OpenSearchOperatorBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'opensearch-operator-installation',
     kind: 'OpenSearchOperatorInstallation',
@@ -77,7 +81,10 @@ export const openSearchOperatorInstallation = kubernetesComposition(
  */
 export function makeOpenSearchOperatorBootstrap(
   options: OpenSearchOperatorBootstrapBuildOptions = {}
-) {
+): CallableComposition<
+  typeof OpenSearchOperatorReferenceConfigSchema.infer,
+  typeof OpenSearchOperatorBootstrapStatusSchema.infer
+> {
   const installation: OpenSearchOperatorBootstrapConfig = {
     name: options.name ?? 'opensearch-operator',
     namespace: options.namespace ?? DEFAULT_OPENSEARCH_OPERATOR_NAMESPACE,

@@ -3,6 +3,7 @@ import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import { observedResource } from '../../../core/references/external-refs.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { secret } from '../../kubernetes/config/secret.js';
 import { harborRookS3SecretData } from '../provider/rook-s3-binding.js';
 
@@ -24,7 +25,10 @@ export type HarborRookS3CredentialsConfig = typeof HarborRookS3CredentialsConfig
  * Only references enter the plan; encoded bytes are resolved at Kubernetes
  * reconciliation without decoding, logging or returning credential values.
  */
-export const harborRookS3Credentials = kubernetesComposition(
+export const harborRookS3Credentials: CallableComposition<
+  typeof HarborRookS3CredentialsConfigSchema.infer,
+  { ready: boolean; secretName: string }
+> = kubernetesComposition(
   {
     name: 'harbor-rook-s3-credentials',
     kind: 'HarborRookS3Credentials',

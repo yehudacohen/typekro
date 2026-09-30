@@ -2,6 +2,7 @@ import { type Type, type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
 import { secret } from '../../kubernetes/config/secret.js';
@@ -357,7 +358,10 @@ function isSchemaSpec(value: unknown): boolean {
   );
 }
 
-export const oryPlatformStack = kubernetesComposition(
+export const oryPlatformStack: CallableComposition<
+  OryPlatformStackConfig,
+  typeof OryPlatformStackStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'ory-platform-stack',
     kind: 'OryPlatformStack',

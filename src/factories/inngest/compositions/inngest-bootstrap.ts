@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
@@ -48,7 +49,10 @@ import { mapInngestConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * });
  * ```
  */
-export const inngestBootstrap = kubernetesComposition(
+export const inngestBootstrap: CallableComposition<
+  typeof InngestBootstrapConfigSchema.infer,
+  typeof InngestBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'inngest-bootstrap',
     kind: 'InngestBootstrap',

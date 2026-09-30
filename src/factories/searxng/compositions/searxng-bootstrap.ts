@@ -27,6 +27,7 @@ import { getIncludeWhen, setIncludeWhen } from '../../../core/metadata/resource-
 import type { StaticYamlMaterializationOptions } from '../../../core/planning/materialization.js';
 import { Cel } from '../../../core/references/cel.js';
 import type {
+  CallableComposition,
   DirectResourceFactory,
   KroResourceFactory,
   PublicFactoryOptions,
@@ -139,7 +140,10 @@ function withKroInstanceValidation(
   });
 }
 
-const searxngBootstrapComposition = kubernetesComposition(
+const searxngBootstrapComposition: CallableComposition<
+  typeof SearxngBootstrapConfigSchema.infer,
+  typeof SearxngBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'searxng-bootstrap',
     kind: 'SearxngBootstrap',

@@ -7,6 +7,7 @@ import {
 import { Cel } from '../../../core/references/cel.js';
 import { singleton, stableSerialize } from '../../../core/singleton/singleton.js';
 import type {
+  CallableComposition,
   DirectResourceFactory,
   KroResourceFactory,
   PublicFactoryOptions,
@@ -46,7 +47,12 @@ type NatsBootstrapSchemaStatus = typeof NatsBootstrapStatusSchema.infer;
  * NACK ownership is deliberately build-time. Every consumer of the singleton
  * must agree on an identical concrete controller spec.
  */
-export function makeNatsBootstrap(options: NatsBootstrapBuildOptions = {}) {
+export function makeNatsBootstrap(
+  options: NatsBootstrapBuildOptions = {}
+): CallableComposition<
+  typeof NatsBootstrapConfigSchema.infer,
+  typeof NatsBootstrapStatusSchema.infer
+> {
   const controllerSingletonId = options.controller?.singletonId ?? 'nack-controller';
   const controllerSpec: typeof NackControllerBootstrapConfigSchema.infer = {
     name: options.controller?.name ?? 'nack',

@@ -2,6 +2,7 @@ import { mergeValuesExpression } from '../../../core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import { observedResource } from '../../../core/references/external-refs.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
@@ -34,7 +35,10 @@ const HATCHET_WORKER_TOKEN_SECRET = 'hatchet-client-config';
  * Secrets and are mounted into Hatchet with chart-native `envFrom`; they are
  * never copied into Helm values, the KRO instance, or ResourceGraphDefinition.
  */
-export const hatchetInstallation = kubernetesComposition(
+export const hatchetInstallation: CallableComposition<
+  typeof HatchetInstallationConfigSchema.infer,
+  typeof HatchetInstallationStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'hatchet-installation',
     kind: 'HatchetInstallation',

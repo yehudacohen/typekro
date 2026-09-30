@@ -1,6 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { clusterRoleBinding } from '../../kubernetes/rbac/cluster-role-binding.js';
@@ -41,7 +42,10 @@ import { mapCnpgConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * });
  * ```
  */
-export const cnpgBootstrap = kubernetesComposition(
+export const cnpgBootstrap: CallableComposition<
+  typeof CnpgBootstrapConfigSchema.infer,
+  typeof CnpgBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'cnpg-bootstrap',
     kind: 'CnpgBootstrap',

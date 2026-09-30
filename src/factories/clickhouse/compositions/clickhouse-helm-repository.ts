@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { clickhouseHelmRepository } from '../resources/helm.js';
 import {
   ClickHouseHelmRepositorySingletonSpecSchema,
@@ -20,7 +21,10 @@ import {
  * the operator HelmRelease references it by the same `sourceRef`.
  * (Same pattern as the Dagster bootstrap's shared repository.)
  */
-export const clickhouseHelmRepositoryBootstrap = kubernetesComposition(
+export const clickhouseHelmRepositoryBootstrap: CallableComposition<
+  typeof ClickHouseHelmRepositorySingletonSpecSchema.infer,
+  typeof ClickHouseHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'clickhouse-helm-repository',
     kind: 'ClickHouseHelmRepository',

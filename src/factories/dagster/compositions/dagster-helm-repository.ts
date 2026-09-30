@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { dagsterHelmRepository } from '../resources/helm.js';
 import {
   DagsterHelmRepositorySingletonSpecSchema,
@@ -19,7 +20,10 @@ import {
  * shared HelmRepository is owned outside any single instance's ApplySet and
  * every instance's HelmRelease references it by the same `sourceRef`.
  */
-export const dagsterHelmRepositoryBootstrap = kubernetesComposition(
+export const dagsterHelmRepositoryBootstrap: CallableComposition<
+  typeof DagsterHelmRepositorySingletonSpecSchema.infer,
+  typeof DagsterHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'dagster-helm-repository',
     kind: 'DagsterHelmRepository',

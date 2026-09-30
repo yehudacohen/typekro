@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
@@ -55,7 +56,10 @@ const DEFAULT_VALKEY_OPERATOR_NAMESPACE = 'valkey-operator-system';
  * });
  * ```
  */
-export const valkeyBootstrap = kubernetesComposition(
+export const valkeyBootstrap: CallableComposition<
+  typeof ValkeyBootstrapConfigSchema.infer,
+  typeof ValkeyBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'valkey-bootstrap',
     kind: 'ValkeyBootstrap',

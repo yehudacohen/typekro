@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { valkeyHelmRepository } from '../resources/helm.js';
 import {
   ValkeyHelmRepositorySingletonSpecSchema,
@@ -14,7 +15,10 @@ import {
  * in direct factory YAML. OCI HelmRepositories do not consistently publish a
  * Ready condition, so existence is represented by its positive generation.
  */
-export const valkeyHelmRepositoryBootstrap = kubernetesComposition(
+export const valkeyHelmRepositoryBootstrap: CallableComposition<
+  typeof ValkeyHelmRepositorySingletonSpecSchema.infer,
+  typeof ValkeyHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'valkey-helm-repository',
     kind: 'ValkeyHelmRepository',

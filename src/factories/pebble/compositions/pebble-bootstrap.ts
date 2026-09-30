@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { pebbleHelmRelease, pebbleHelmRepository } from '../resources/helm.js';
 import { PebbleBootstrapConfigSchema, PebbleBootstrapStatusSchema } from '../types.js';
 import { createDefaultPebbleTestingValues } from '../utils/helm-values-mapper.js';
@@ -44,7 +45,10 @@ import { createDefaultPebbleTestingValues } from '../utils/helm-values-mapper.js
  * });
  * ```
  */
-export const pebbleBootstrap = kubernetesComposition(
+export const pebbleBootstrap: CallableComposition<
+  typeof PebbleBootstrapConfigSchema.infer,
+  typeof PebbleBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'pebble-bootstrap',
     apiVersion: 'pebble.typekro.dev/v1alpha1',

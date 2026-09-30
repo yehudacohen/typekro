@@ -1,6 +1,7 @@
 import { mergeValuesExpression } from '../../../core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -42,7 +43,10 @@ const NACK_VALUES_VALIDATION =
  * own NATS system through its typed connection fields, allowing one controller
  * to reconcile multiple NATS systems safely.
  */
-export const nackControllerBootstrap = kubernetesComposition(
+export const nackControllerBootstrap: CallableComposition<
+  typeof NackControllerBootstrapConfigSchema.infer,
+  typeof NackControllerBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'nack-controller-bootstrap',
     kind: 'NackControllerBootstrap',

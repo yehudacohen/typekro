@@ -2,6 +2,7 @@
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -27,7 +28,10 @@ import { mapRookCephOperatorConfigToHelmValues } from '../utils/helm-values-mapp
  * through `singleton(...)`; that owner boundary prevents consumer deletion
  * from uninstalling Rook.
  */
-export const rookCephOperatorBootstrap = kubernetesComposition(
+export const rookCephOperatorBootstrap: CallableComposition<
+  typeof RookCephOperatorBootstrapConfigSchema.infer,
+  typeof RookCephOperatorBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'rook-ceph-operator-bootstrap',
     kind: 'RookCephOperatorBootstrap',
