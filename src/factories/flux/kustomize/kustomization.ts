@@ -54,6 +54,21 @@ export interface KustomizationConfig {
   id?: string;
 }
 
+/** The spec `kustomization()` renders. Local, so it adds nothing to the public API. */
+type KustomizationResourceSpec = {
+  interval: string;
+  sourceRef: KustomizationConfig['source'];
+  path: string;
+  patches: KustomizationConfig['patches'];
+  images: KustomizationConfig['images'];
+  replicas: KustomizationConfig['replicas'];
+  patchesStrategicMerge: KustomizationConfig['patchesStrategicMerge'];
+  patchesJson6902: KustomizationConfig['patchesJson6902'];
+  prune: boolean;
+  wait: boolean;
+  timeout: string;
+};
+
 /**
  * Deploy Kubernetes manifests using Flux CD's Kustomization
  *
@@ -133,21 +148,6 @@ export interface KustomizationConfig {
  * })
  * ```
  */
-/** The spec `kustomization()` renders. Local, so it adds nothing to the public API. */
-type KustomizationResourceSpec = {
-  interval: string;
-  sourceRef: KustomizationConfig['source'];
-  path: string;
-  patches: KustomizationConfig['patches'];
-  images: KustomizationConfig['images'];
-  replicas: KustomizationConfig['replicas'];
-  patchesStrategicMerge: KustomizationConfig['patchesStrategicMerge'];
-  patchesJson6902: KustomizationConfig['patchesJson6902'];
-  prune: boolean;
-  wait: boolean;
-  timeout: string;
-};
-
 export function kustomization(
   config: KustomizationConfig
 ): Enhanced<KustomizationResourceSpec, object> {
