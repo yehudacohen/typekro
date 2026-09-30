@@ -2,7 +2,7 @@
  * Markdown rendering for the declaration budget report (GitHub step summary).
  */
 import type { Baseline, BudgetEvaluation, BudgetsConfig, OwnerRow } from './budgets.js';
-import type { Attribution, OwnerEdge, OwnersConfig } from './graph.js';
+import { type Attribution, compareText, type OwnerEdge, type OwnersConfig } from './graph.js';
 
 export interface ReportInput {
   attribution: Attribution;
@@ -139,7 +139,7 @@ export function renderReport(input: ReportInput): string {
     lines.push(
       `${attribution.barrelImports.length} files import a root barrel, so their entry reaches everything the root reaches: ` +
         [...barrelByOwner.entries()]
-          .sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+          .sort(([a, x], [b, y]) => y - x || compareText(a, b))
           .map(([owner, count]) => `${owner} ${count}`)
           .join(', ') +
         '. Usually an inferred return type; annotate it with a type imported from core.'

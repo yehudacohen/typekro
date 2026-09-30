@@ -59,6 +59,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run check:declaration-budgets
 
+      - name: Public API snapshot
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bun run check:public-api
+
       - name: Randomized unit test isolation
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:randomized

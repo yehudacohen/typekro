@@ -54,6 +54,10 @@ export interface DeclarationGraph {
   missing: MissingImport[];
 }
 
+/** Code-point order, so output is identical on every machine and locale. */
+export const compareText = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
 const utf8Bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
 
 /**
@@ -430,7 +434,7 @@ export function attribute(
   const edgeImports = new Map<string, OwnerEdge>();
   const barrelImports: Attribution['barrelImports'] = [];
 
-  for (const file of [...graph.files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const file of [...graph.files.values()].sort((a, b) => compareText(a.path, b.path))) {
     const owner = ownerOf(file.path);
     if (owner === undefined) {
       unowned.push(file.path);
@@ -464,7 +468,7 @@ export function attribute(
   const unreachable = emitted
     .filter((file) => !reachable.has(file.path))
     .map((file) => ({ ...file, owner: ownerOf(file.path) }))
-    .sort((a, b) => b.rawBytes - a.rawBytes || a.path.localeCompare(b.path));
+    .sort((a, b) => b.rawBytes - a.rawBytes || compareText(a.path, b.path));
 
   const entries: EntryUsage[] = [...graph.entries.entries()]
     .map(([name, set]) => {
@@ -476,7 +480,7 @@ export function attribute(
       }
       return { export: name, files: set.size, rawBytes, owners: [...entryOwners].sort() };
     })
-    .sort((a, b) => a.export.localeCompare(b.export));
+    .sort((a, b) => compareText(a.export, b.export));
 
   const rootEntryViolations: Attribution['rootEntryViolations'] = [];
   const rootSet = graph.entries.get(config.rootEntry.export);
@@ -488,14 +492,14 @@ export function attribute(
       if (allowed.has(owner)) continue;
       byOwner.set(owner, [...(byOwner.get(owner) ?? []), path]);
     }
-    for (const [owner, files] of [...byOwner.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [owner, files] of [...byOwner.entries()].sort(([a], [b]) => compareText(a, b))) {
       rootEntryViolations.push({ owner, files: files.sort() });
     }
   }
 
   const edges = [...edgeImports.values()]
     .map((edge) => ({ ...edge, imports: edge.imports.sort() }))
-    .sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+    .sort((a, b) => compareText(a.from, b.from) || compareText(a.to, b.to));
 
   return {
     owners,

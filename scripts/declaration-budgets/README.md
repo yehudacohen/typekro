@@ -13,9 +13,11 @@ bun run check:declaration-budgets --why dist/factories/ory/index.d.ts
 bun run check:declaration-budgets --list-unreachable
 bun run check:declaration-budgets --write-baseline    # refresh scripts/declaration-baseline.json
 bun run check:declaration-budgets --suggest-budgets   # reset budgets to usage + headroom
+bun run check:public-api                              # compare exports with the snapshot
+bun run check:public-api --update                     # accept an intended API change
 ```
 
-In CI it runs after the build and appends its report to the GitHub step summary.
+In CI both run after the build. The budget report goes to the GitHub step summary.
 
 ## How usage is measured
 
@@ -84,8 +86,36 @@ These are report-only for now:
   inferred type that the root barrel re-exports. The importing entry then reaches every file
   the root reaches. An explicit type annotation that imports from the defining core module
   avoids this.
-- **Unreachable files.** Emitted declarations that no entry reaches. They still ship in the
-  package.
+- **Unreachable files.** Emitted declarations that no entry reaches. `build:lib` prunes them
+  (see below), so this is normally zero.
+
+## Pruning unreachable declarations
+
+`bun run build:lib` runs `tsc` without incremental state, then
+[`prune.ts`](prune.ts). The prune step deletes every emitted `.d.ts` (and its `.d.ts.map`)
+that no public export reaches. Runtime `.js` files are never touched. A declaration file
+that no entry reaches cannot affect a consumer's types. The prune step refuses to run when a
+reachable file has an unresolved relative import. That points to a stale `dist/`: run
+`bun run clean && bun run build:lib`.
+
+`bun run dev` (watch mode) does not prune.
+
+## Public API snapshot
+
+[`scripts/public-api-snapshot.txt`](../public-api-snapshot.txt) lists every symbol that each
+export exposes, with its kind (`value`, `type`, `value+type` or `namespace`). Namespace
+re-exports list their members as `traefik.traefikBootstrap`. CI fails when the list changes.
+If the change is intended, run `bun run check:public-api --update` and commit the diff.
+
+To audit a declaration-only change such as a strip-down step, also compare type text:
+
+```bash
+bun run check:public-api --with-types --out before.txt   # on the base branch
+bun run check:public-api --with-types --out after.txt    # on your branch
+diff before.txt after.txt
+```
+
+`--with-types` adds a hash of each symbol's printed type, including interface members.
 
 ## Budgets
 

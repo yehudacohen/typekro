@@ -11,8 +11,8 @@
  *
  * See scripts/declaration-budgets/README.md.
  */
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type Baseline,
   type BudgetsConfig,
@@ -20,75 +20,30 @@ import {
   suggestBudget,
   toBaseline,
 } from './budgets.js';
-import {
-  attribute,
-  classifyEdges,
-  type DeclarationHost,
-  importChain,
-  type OwnersConfig,
-  walkDeclarationGraph,
-} from './graph.js';
+import { classifyEdges, compareText, importChain } from './graph.js';
+import { measurePackage, readJson, scriptsDir, toPackagePath } from './package.js';
 import { renderReport } from './report.js';
 
 const argv = process.argv.slice(2);
 const args = new Set(argv);
-const packageRoot = resolve(import.meta.dirname, '..', '..');
-const scriptsDir = join(packageRoot, 'scripts');
-const ownersPath = join(scriptsDir, 'declaration-owners.json');
 const budgetsPath = join(scriptsDir, 'declaration-budgets.json');
 const baselinePath = join(scriptsDir, 'declaration-baseline.json');
 
-const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8')) as T;
 const writeJson = (path: string, value: unknown): void =>
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 
-const packageJson = readJson<{
-  version: string;
-  exports: Record<string, { types?: string }>;
-}>(join(packageRoot, 'package.json'));
-const owners = readJson<OwnersConfig>(ownersPath);
 const budgets = readJson<BudgetsConfig>(budgetsPath);
 const baseline = existsSync(baselinePath) ? readJson<Baseline>(baselinePath) : undefined;
 
-const toPackagePath = (absolute: string): string =>
-  relative(packageRoot, absolute).split(sep).join('/');
-
-const textCache = new Map<string, string | undefined>();
-const host: DeclarationHost = {
-  readFile(path) {
-    if (!textCache.has(path)) {
-      const absolute = join(packageRoot, path);
-      textCache.set(path, existsSync(absolute) ? readFileSync(absolute, 'utf8') : undefined);
-    }
-    return textCache.get(path);
-  },
-};
-
-const declarationRoot = join(packageRoot, owners.declarationRoot);
-if (!existsSync(declarationRoot)) {
-  console.error(`${owners.declarationRoot}/ does not exist. Run \`bun run build:lib\` first.`);
+let measured: ReturnType<typeof measurePackage>;
+try {
+  measured = measurePackage();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : error);
   process.exit(1);
 }
-
-const emitted = [...new Bun.Glob('**/*.d.ts').scanSync({ cwd: declarationRoot, absolute: true })]
-  .map((absolute) => ({
-    path: toPackagePath(absolute),
-    rawBytes: Buffer.byteLength(host.readFile(toPackagePath(absolute)) ?? '', 'utf8'),
-  }))
-  .sort((a, b) => a.path.localeCompare(b.path));
-
-const entries: Record<string, string> = {};
-const failures: string[] = [];
-for (const [name, target] of Object.entries(packageJson.exports)) {
-  if (typeof target.types !== 'string') {
-    failures.push(`package.json exports[${JSON.stringify(name)}] has no types entry.`);
-    continue;
-  }
-  entries[name] = target.types.replace(/^\.\//, '');
-}
-
-const graph = walkDeclarationGraph(entries, host);
-const attribution = attribute(graph, emitted, owners);
+const { packageJson, owners, emitted, graph, attribution } = measured;
+const failures: string[] = [...measured.entryFailures];
 const edges = classifyEdges(attribution.edges, owners.allowedEdges);
 
 const whyIndex = argv.indexOf('--why');
@@ -112,7 +67,7 @@ if (args.has('--write-baseline')) {
 if (args.has('--suggest-budgets')) {
   const suggested: Record<string, number> = {};
   for (const [owner, usage] of [...attribution.owners.entries()].sort(([a], [b]) =>
-    a.localeCompare(b)
+    compareText(a, b)
   )) {
     suggested[owner] = suggestBudget(usage.rawBytes, budgets.headroom);
   }

@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Unreachable declaration files are no longer published.** `bun run build:lib` now prunes the
+  96 `.d.ts` files (263 KiB) and their maps that no `package.json` export reaches. Runtime
+  JavaScript is unchanged. Packed declarations drop from 2,499,949 to 2,230,423 bytes. A new
+  public API snapshot, `scripts/public-api-snapshot.txt` (`bun run check:public-api`), lists every
+  symbol each export exposes and runs in CI. The snapshot, and a type-text hash of all 3,787 exported
+  symbols, are identical before and after pruning. `build:lib` now runs `tsc` without incremental
+  state, so pruned files are always regenerated before they are pruned again.
+
 - **Per-owner declaration budgets (report-only).** `bun run check:declaration-budgets` walks the
   emitted `.d.ts` import graph from every `package.json` export. It charges each reachable file to
   one owner from `scripts/declaration-owners.json`: core, or one integration. It then compares
