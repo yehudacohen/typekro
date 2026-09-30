@@ -14,7 +14,8 @@ import { dirname, join, relative, resolve } from 'node:path';
 
 const workspace = resolve(import.meta.dirname, '..', '..');
 const dist = join(workspace, 'dist');
-const ROOT_BARRELS = ['index.d.ts', 'factories/index.d.ts'];
+/** The factories barrel, which the root entry re-exports. The root entry itself comes from package.json. */
+const FACTORIES_BARREL = 'factories/index.d.ts';
 /** Base factory directories under `dist/factories/` that belong to core, not to an integration. */
 const CORE_FACTORY_DIRS = new Set(['flux', 'helm', 'kro', 'kubernetes', 'simple']);
 
@@ -72,28 +73,31 @@ function reachableDeclarations(entry: string): Set<string> {
   return new Set([...seen].map((file) => relative(dist, file).split('\\').join('/')));
 }
 
-function subpathEntries(): Map<string, string> {
+function packageEntries(): { root: string; subpaths: Map<string, string> } {
   const packageJson = JSON.parse(readFileSync(join(workspace, 'package.json'), 'utf8')) as {
     exports: Record<string, { types?: string }>;
   };
-  const entries = new Map<string, string>();
+  const rootTypes = packageJson.exports['.']?.types;
+  if (typeof rootTypes !== 'string') throw new Error('package.json exports["."] has no types');
+  const subpaths = new Map<string, string>();
   for (const [name, target] of Object.entries(packageJson.exports)) {
     if (name !== '.' && typeof target.types === 'string') {
-      entries.set(name, join(workspace, target.types));
+      subpaths.set(name, join(workspace, target.types));
     }
   }
-  return entries;
+  return { root: relative(dist, join(workspace, rootTypes)).split('\\').join('/'), subpaths };
 }
 
 describe('declaration fan-out', () => {
   ensureBuiltDist();
-  const entries = subpathEntries();
+  const { root, subpaths: entries } = packageEntries();
+  const rootBarrels = [root, FACTORIES_BARREL];
 
   it('keeps every subpath export away from the root barrels', () => {
     const offenders: string[] = [];
     for (const [name, entry] of entries) {
       const reached = reachableDeclarations(entry);
-      for (const barrel of ROOT_BARRELS) {
+      for (const barrel of rootBarrels) {
         if (reached.has(barrel)) offenders.push(`${name} reaches dist/${barrel}`);
       }
     }
