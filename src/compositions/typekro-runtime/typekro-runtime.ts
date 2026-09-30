@@ -10,6 +10,7 @@ import {
 import { getComponentLogger } from '../../core/logging/index.js';
 import { Cel } from '../../core/references/cel.js';
 import { fixCRDSchemaForK8s133 } from '../../core/runtime-patches/crd-schema-fix.js';
+import type { CallableComposition } from '../../core/types/deployment.js';
 import { helmRelease } from '../../factories/helm/helm-release.js';
 import { helmRepository } from '../../factories/helm/helm-repository.js';
 import { labelPropagationGuard } from '../../factories/kubernetes/admission/label-propagation-guard.js';
@@ -64,7 +65,9 @@ const logger = getComponentLogger('typekro-runtime-bootstrap');
  */
 const KRO_NAMESPACE = 'kro-system';
 
-export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
+export function typeKroRuntimeBootstrap(
+  config: TypeKroRuntimeConfig = {}
+): CallableComposition<typeof TypeKroRuntimeSpec.infer, typeof TypeKroRuntimeStatus.infer> {
   // Use a specific stable Flux version by default to avoid schema validation issues
   // that can occur with 'latest' (e.g., 422 errors on CRD validation)
   const fluxVersion = config.fluxVersion || 'v2.7.5';

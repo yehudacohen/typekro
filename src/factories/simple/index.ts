@@ -36,7 +36,23 @@ import { YamlFile } from './yaml/index.js';
  * Usage: import { simple } from 'typekro'
  * Then: simple.Deployment({ name: 'app', image: 'nginx' })
  */
-export const simple = {
+export const simple: {
+  readonly Deployment: typeof Deployment;
+  readonly StatefulSet: typeof StatefulSet;
+  readonly Job: typeof Job;
+  readonly CronJob: typeof CronJob;
+  readonly DaemonSet: typeof DaemonSet;
+  readonly Service: typeof Service;
+  readonly Ingress: typeof Ingress;
+  readonly NetworkPolicy: typeof NetworkPolicy;
+  readonly ConfigMap: typeof ConfigMap;
+  readonly Secret: typeof Secret;
+  readonly Pvc: typeof Pvc;
+  readonly PersistentVolume: typeof PersistentVolume;
+  readonly Hpa: typeof Hpa;
+  readonly HelmChart: typeof HelmChart;
+  readonly YamlFile: typeof YamlFile;
+} = {
   // Workloads
   Deployment,
   StatefulSet,

@@ -3,7 +3,7 @@ import {
   registerPortableReadinessStrategy,
 } from '../../core/readiness/portable-strategies.js';
 import { readinessConfiguration } from '../../core/readiness/strategy-configuration.js';
-import type { KubernetesCondition, ResourceStatus } from '../../core/types/index.js';
+import type { Enhanced, KubernetesCondition, ResourceStatus } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 
 const GIT_REPOSITORY_READINESS_STRATEGY = 'typekro.readiness.flux.git-repository';
@@ -104,6 +104,14 @@ export interface GitRepositoryStatus {
   };
 }
 
+/** The spec `gitRepository()` renders. Local, so it adds nothing to the public API. */
+type GitRepositoryResourceSpec = {
+  url: string;
+  ref: GitRepositoryConfig['ref'];
+  interval: string;
+  secretRef: GitRepositoryConfig['secretRef'];
+};
+
 export interface GitRepositoryConfig {
   name: string;
   namespace?: string;
@@ -135,7 +143,9 @@ export interface GitRepositoryConfig {
  * })
  * ```
  */
-export function gitRepository(config: GitRepositoryConfig) {
+export function gitRepository(
+  config: GitRepositoryConfig
+): Enhanced<GitRepositoryResourceSpec, object> {
   return createResource({
     ...(config.id && { id: config.id }),
     apiVersion: 'source.toolkit.fluxcd.io/v1',

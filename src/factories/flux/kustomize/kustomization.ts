@@ -1,3 +1,4 @@
+import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import { kustomizationReadinessEvaluator } from './readiness-evaluators.js';
 
@@ -132,7 +133,24 @@ export interface KustomizationConfig {
  * })
  * ```
  */
-export function kustomization(config: KustomizationConfig) {
+/** The spec `kustomization()` renders. Local, so it adds nothing to the public API. */
+type KustomizationResourceSpec = {
+  interval: string;
+  sourceRef: KustomizationConfig['source'];
+  path: string;
+  patches: KustomizationConfig['patches'];
+  images: KustomizationConfig['images'];
+  replicas: KustomizationConfig['replicas'];
+  patchesStrategicMerge: KustomizationConfig['patchesStrategicMerge'];
+  patchesJson6902: KustomizationConfig['patchesJson6902'];
+  prune: boolean;
+  wait: boolean;
+  timeout: string;
+};
+
+export function kustomization(
+  config: KustomizationConfig
+): Enhanced<KustomizationResourceSpec, object> {
   const resource = createResource({
     ...(config.id && { id: config.id }),
     apiVersion: 'kustomize.toolkit.fluxcd.io/v1',
