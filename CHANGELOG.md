@@ -18,11 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Unreachable declaration files are no longer published.** `bun run build:lib` now prunes the
   96 `.d.ts` files (263 KiB) and their maps that no `package.json` export reaches. Runtime
-  JavaScript is unchanged. Packed declarations drop from 2,499,949 to 2,230,423 bytes. A new
-  public API snapshot, `scripts/public-api-snapshot.txt` (`bun run check:public-api`), lists every
-  symbol each export exposes and runs in CI. The snapshot, and a type-text hash of all 3,787 exported
-  symbols, are identical before and after pruning. `build:lib` now runs `tsc` without incremental
-  state, so pruned files are always regenerated before they are pruned again.
+  JavaScript is unchanged. Packed declarations drop from 2,499,949 to 2,230,423 bytes. Exports are
+  read through the full condition tree (nested conditions, fallbacks, wildcards with `null`
+  exclusions). If any export or declaration import cannot be resolved, the prune step deletes
+  nothing. A new public API snapshot, `scripts/public-api-snapshot.txt` (`bun run
+  check:public-api`), runs in CI. It records every symbol each export exposes, its kind, and a
+  location-independent hash of its type shape, so an added, removed, widened or narrowed public
+  type needs a reviewed snapshot update. The snapshot is identical before and after pruning. `build:lib`
+  now runs `tsc` without incremental state, so pruned files are always regenerated before they
+  are pruned again.
 
 - **Per-owner declaration budgets (report-only).** `bun run check:declaration-budgets` walks the
   emitted `.d.ts` import graph from every `package.json` export. It charges each reachable file to
@@ -30,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each owner's bytes with `scripts/declaration-budgets.json`. The CI step summary shows raw, surface
   and JSDoc bytes, the delta against a committed baseline, headroom, and ratchet candidates per
   owner. It also lists cross-owner edges, `@internal` declarations in reachable files, files that
-  import a root barrel, and the 96 declaration files (263 KiB) that no export reaches. Budget
+  import a root barrel, and any declaration files that no export reaches. Budget
   overruns only report for now. CI fails on a reachable file with no owner, an unresolved relative
   declaration import, a cross-owner edge missing from the allowlist, a stale allowlist entry, an
   owner rule that matches nothing, or a new integration reachable from the root `typekro` entry.

@@ -21,7 +21,7 @@ import {
   toBaseline,
 } from './budgets.js';
 import { classifyEdges, compareText, deadOwnerPatterns, importChain } from './graph.js';
-import { measurePackage, readJson, scriptsDir, toPackagePath } from './package.js';
+import { measurePackage, packageRoot, readJson, scriptsDir, toPackagePath } from './package.js';
 import { renderReport } from './report.js';
 
 const argv = process.argv.slice(2);
@@ -61,7 +61,7 @@ if (args.has('--list-unreachable')) {
 
 if (args.has('--write-baseline')) {
   writeJson(baselinePath, toBaseline(attribution, packageJson.version));
-  console.log(`Wrote ${toPackagePath(baselinePath)}.`);
+  console.log(`Wrote ${toPackagePath(packageRoot, baselinePath)}.`);
 }
 
 if (args.has('--suggest-budgets')) {
@@ -72,7 +72,9 @@ if (args.has('--suggest-budgets')) {
     suggested[owner] = suggestBudget(usage.rawBytes, budgets.headroom);
   }
   writeJson(budgetsPath, { ...budgets, owners: suggested });
-  console.log(`Wrote ${toPackagePath(budgetsPath)} with budgets set from current usage.`);
+  console.log(
+    `Wrote ${toPackagePath(packageRoot, budgetsPath)} with budgets set from current usage.`
+  );
 }
 
 const evaluation = evaluateBudgets(

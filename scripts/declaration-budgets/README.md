@@ -97,28 +97,29 @@ These are report-only for now:
 `bun run build:lib` runs `tsc` without incremental state, then
 [`prune.ts`](prune.ts). The prune step deletes every emitted `.d.ts` (and its `.d.ts.map`)
 that no public export reaches. Runtime `.js` files are never touched. A declaration file
-that no entry reaches cannot affect a consumer's types. The prune step refuses to run when a
-reachable file has an unresolved relative import. That points to a stale `dist/`: run
-`bun run clean && bun run build:lib`.
+that no entry reaches cannot affect a consumer's types. The prune step deletes nothing if any export cannot be resolved to its declarations, or if a
+reachable file has an unresolved relative import. A partial graph could otherwise delete a
+public entry's declarations. Exports are read through the full condition tree: `types`,
+`import`, `require`, `default` and other conditions, nested conditions, fallback arrays, and
+wildcard subpaths with `null` exclusions. An unresolved import usually means `dist/` is
+stale: run `bun run clean && bun run build:lib`.
 
 `bun run dev` (watch mode) does not prune.
 
 ## Public API snapshot
 
-[`scripts/public-api-snapshot.txt`](../public-api-snapshot.txt) lists every symbol that each
-export exposes, with its kind (`value`, `type`, `value+type` or `namespace`). Namespace
-re-exports list their members as `traefik.traefikBootstrap`. CI fails when the list changes.
-If the change is intended, run `bun run check:public-api --update` and commit the diff.
+[`scripts/public-api-snapshot.txt`](../public-api-snapshot.txt) has one line per symbol that
+an export exposes. Each line gives the export, the symbol, its kind (`value`, `type`,
+`value+type` or `namespace`), and a hash of its type shape. The hash covers the printed type
+and, for types, every member and whether it is optional. Namespace re-exports list their
+members as `traefik.traefikBootstrap`.
 
-To audit a declaration-only change such as a strip-down step, also compare type text:
-
-```bash
-bun run check:public-api --with-types --out before.txt   # on the base branch
-bun run check:public-api --with-types --out after.txt    # on your branch
-diff before.txt after.txt
-```
-
-`--with-types` adds a hash of each symbol's printed type, including interface members.
+CI fails when any line changes, so adding, removing, widening or narrowing a public type
+all need a reviewed snapshot update. If the change is intended, run
+`bun run check:public-api --update` and commit the diff. The printed types contain module
+paths. Those are made relative before hashing, so the snapshot is the same in any checkout
+location. A declaration-only change, such as a strip-down step, must leave the snapshot
+unchanged.
 
 ## Budgets
 

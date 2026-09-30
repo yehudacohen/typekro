@@ -46,8 +46,8 @@ export interface MissingImport {
 export interface DeclarationGraph {
   /** Every file reachable from at least one entry, keyed by path. */
   files: Map<string, DeclarationFile>;
-  /** Declaration path of each public entry. */
-  roots: Map<string, string>;
+  /** Declaration paths of each public entry (several when conditions differ). */
+  roots: Map<string, string[]>;
   /** Reachable file set for each public entry. */
   entries: Map<string, Set<string>>;
   /** Relative specifiers that did not resolve to an emitted declaration file. */
@@ -211,10 +211,10 @@ export function resolveSpecifier(
  * Walks the declaration import graph from every public entry.
  *
  * @param entries - map of export name (for example `"."` or `"./traefik"`) to its
- *   declaration path relative to the package root (for example `"dist/index.d.ts"`).
+ *   declaration path(s) relative to the package root (for example `"dist/index.d.ts"`).
  */
 export function walkDeclarationGraph(
-  entries: Record<string, string>,
+  entries: Record<string, string | readonly string[]>,
   host: DeclarationHost
 ): DeclarationGraph {
   const files = new Map<string, DeclarationFile>();
@@ -243,12 +243,14 @@ export function walkDeclarationGraph(
   };
 
   const entrySets = new Map<string, Set<string>>();
-  const roots = new Map<string, string>();
-  for (const [entryName, entryPath] of Object.entries(entries)) {
+  const roots = new Map<string, string[]>();
+  for (const [entryName, entryPaths] of Object.entries(entries)) {
     const seen = new Set<string>();
-    const root = posix.normalize(entryPath);
-    roots.set(entryName, root);
-    const queue = [root];
+    const entryRoots = (typeof entryPaths === 'string' ? [entryPaths] : [...entryPaths]).map(
+      (path) => posix.normalize(path)
+    );
+    roots.set(entryName, entryRoots);
+    const queue = [...entryRoots];
     while (queue.length > 0) {
       const path = queue.pop() as string;
       if (seen.has(path)) continue;
@@ -270,7 +272,7 @@ export function walkDeclarationGraph(
 export function importChain(graph: DeclarationGraph, target: string): string[] | undefined {
   const previous = new Map<string, string | null>();
   const queue: string[] = [];
-  for (const root of new Set(graph.roots.values())) {
+  for (const root of new Set([...graph.roots.values()].flat())) {
     if (!graph.files.has(root)) continue;
     previous.set(root, null);
     queue.push(root);

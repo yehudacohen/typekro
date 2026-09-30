@@ -8,26 +8,51 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { measurePackage, packageRoot } from './package.js';
 
-const { graph, attribution } = measurePackage();
-
-// A missing target means dist/ is stale or incomplete. Pruning on top of that
-// could hide the problem, so stop and ask for a clean build.
-if (graph.missing.length > 0) {
-  console.error('Refusing to prune: some declaration imports do not resolve.');
-  for (const missing of graph.missing) console.error(`- ${missing.from} -> ${missing.specifier}`);
-  console.error('Run `bun run clean && bun run build:lib`.');
-  process.exit(1);
+export interface PruneResult {
+  pruned: string[];
+  bytes: number;
 }
 
-let bytes = 0;
-for (const file of attribution.unreachable) {
-  for (const path of [file.path, `${file.path}.map`]) {
-    const absolute = join(packageRoot, path);
-    if (existsSync(absolute)) rmSync(absolute);
+/**
+ * Deletes unreachable declarations under `root`. Throws, without deleting
+ * anything, when the export entries or the declaration graph are incomplete:
+ * pruning against a partial graph could delete a public entry's declarations.
+ */
+export function pruneUnreachableDeclarations(root: string = packageRoot): PruneResult {
+  const { graph, attribution, entries, entryFailures } = measurePackage(root);
+
+  const problems = [
+    ...entryFailures,
+    ...graph.missing.map((missing) => `${missing.from} -> ${missing.specifier} does not resolve.`),
+  ];
+  if (Object.keys(entries).length === 0)
+    problems.push('package.json exposes no declaration entries.');
+  if (problems.length > 0) {
+    throw new Error(
+      `Refusing to prune declarations:\n${problems.map((problem) => `- ${problem}`).join('\n')}\n` +
+        'Fix package.json exports, or run `bun run clean && bun run build:lib` if dist/ is stale.'
+    );
   }
-  bytes += file.rawBytes;
+
+  let bytes = 0;
+  for (const file of attribution.unreachable) {
+    for (const path of [file.path, `${file.path}.map`]) {
+      const absolute = join(root, path);
+      if (existsSync(absolute)) rmSync(absolute);
+    }
+    bytes += file.rawBytes;
+  }
+  return { pruned: attribution.unreachable.map((file) => file.path), bytes };
 }
 
-console.log(
-  `Pruned ${attribution.unreachable.length} declaration files (${(bytes / 1024).toFixed(1)} KiB) that no public export reaches.`
-);
+if (import.meta.main) {
+  try {
+    const { pruned, bytes } = pruneUnreachableDeclarations();
+    console.log(
+      `Pruned ${pruned.length} declaration files (${(bytes / 1024).toFixed(1)} KiB) that no public export reaches.`
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+}
