@@ -23,9 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exclusions). If any export or declaration import cannot be resolved, the prune step deletes
   nothing. A new public API snapshot, `scripts/public-api-snapshot.txt` (`bun run
   check:public-api`), runs in CI. It records every symbol each export exposes (namespace members
-  at any depth), its kind, and a structural hash that follows every type the symbol's signature
-  depends on, including non-exported types, recursively. A public symbol that is added or removed,
-  or any structural change a public signature can observe, needs a reviewed snapshot update. The snapshot is identical before and after pruning. `build:lib`
+  at any depth), its kind (type-only re-exports count as types), and a structural hash of its
+  declaration. The hash follows every type the declaration depends on, recursively, including
+  non-exported types, type arguments of mapped, conditional and generic alias types, member
+  visibility and accessor shape, and enum identity. It does not depend on visiting order or on
+  unrelated exports. The README lists what it deliberately leaves out. An added or removed public
+  symbol, or a change to any hashed part, needs a reviewed snapshot update. The snapshot is identical before and after pruning. `build:lib`
   now runs `tsc` without incremental state, so pruned files are always regenerated before they
   are pruned again.
 

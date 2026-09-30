@@ -426,13 +426,16 @@ describe('structural type-shape hashes', () => {
    * Hash of each public symbol for a single-file package. `export {}` makes
    * unexported declarations module-private, as tsc's declaration emit does.
    */
-  const hashesOf = (declarations: string): Record<string, string> => {
+  const hashesOf = (
+    declarations: string,
+    hashOrder?: (rowCount: number) => number[]
+  ): Record<string, string> => {
     const root = writePackage(
       { '.': { types: './dist/index.d.ts' } },
       { 'dist/index.d.ts': `${declarations}export {};\n` }
     );
     return Object.fromEntries(
-      buildApiSnapshot(root).map((line) => {
+      buildApiSnapshot(root, hashOrder ? { hashOrder } : {}).map((line) => {
         const [, name, , hash] = line.split('\t');
         return [name, hash];
       })
@@ -538,5 +541,217 @@ describe('structural type-shape hashes', () => {
       'Public',
       false
     );
+  });
+
+  const reversed = (count: number) => [...Array(count).keys()].reverse();
+  /** Deterministic shuffle (xorshift), so a failure is reproducible. */
+  const shuffled = (count: number) => {
+    const order = [...Array(count).keys()];
+    let state = 0x9e3779b9;
+    for (let index = order.length - 1; index > 0; index -= 1) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      const pick = Math.abs(state) % (index + 1);
+      [order[index], order[pick]] = [order[pick] as number, order[index] as number];
+    }
+    return order;
+  };
+  const unrelated = 'export interface AAAUnrelated { a: { b: string } }\n';
+
+  describe('order independence', () => {
+    const branded = [
+      'declare const BRAND: unique symbol;',
+      'export declare const PUBLIC_BRAND: unique symbol;',
+      'declare class Secret { #hidden: string; value: number }',
+      'export interface Branded { [BRAND]: true; [PUBLIC_BRAND]: string; value: string }',
+      'export interface Holder { branded: Branded; inline: { [BRAND]: number }; secret: Secret }',
+      '',
+    ].join('\n');
+
+    it('hashes unique-symbol and private keys the same in any visiting order', () => {
+      const forward = hashesOf(branded);
+      expect(hashesOf(branded, reversed)).toEqual(forward);
+      expect(hashesOf(branded, shuffled)).toEqual(forward);
+    });
+
+    it('does not change unique-symbol keyed hashes when an unrelated export is added', () => {
+      const before = hashesOf(branded);
+      const after = hashesOf(`${unrelated}${branded}`);
+      expect(after.Branded).toBe(before.Branded as string);
+      expect(after.Holder).toBe(before.Holder as string);
+    });
+
+    it('does not let a memoized shallow expansion bypass the depth cap', () => {
+      // A chain of 70 hidden interfaces is deeper than the cap.
+      const chain = [...Array(70).keys()]
+        .map((index) =>
+          index === 69
+            ? `interface I${index} { value: string }`
+            : `interface I${index} { next: I${index + 1} }`
+        )
+        .join('\n');
+      const source = `${chain}\nexport interface Deep { head: I0 }\n`;
+      const before = hashesOf(source);
+      // AShallow sorts first, so it is hashed first and expands I30 from a shallow depth.
+      const after = hashesOf(`export interface AShallow { middle: I30 }\n${source}`);
+      expect(after.Deep).toBe(before.Deep as string);
+      expect(hashesOf(`export interface AShallow { middle: I30 }\n${source}`, reversed).Deep).toBe(
+        before.Deep as string
+      );
+    });
+  });
+
+  describe('mapped and conditional types keep their type arguments', () => {
+    const readonlyAlias = 'type RO<T> = { readonly [K in keyof T]: T[K] };\n';
+
+    it('follows arguments of a mapped alias', () => {
+      expectChange(
+        `${readonlyAlias}export interface P { x: RO<{ a: string }> }\n`,
+        `${readonlyAlias}export interface P { x: RO<{ a: number }> }\n`,
+        'P'
+      );
+      expectChange(
+        `${readonlyAlias}interface Hidden { v: string }\nexport interface P { x: RO<Hidden> }\n`,
+        `${readonlyAlias}interface Hidden { v: number }\nexport interface P { x: RO<Hidden> }\n`,
+        'P'
+      );
+    });
+
+    it('distinguishes alias instantiations over different public types', () => {
+      const source = (argument: string) =>
+        `type Opt<T> = { [K in keyof T]?: T[K] };\nexport interface Q { a: string }\nexport interface R { a: string }\nexport interface P { x: Opt<${argument}> }\n`;
+      expectChange(source('Q'), source('R'), 'P');
+    });
+
+    it('follows arguments of an alias to a library mapped type', () => {
+      const source = (argument: string) =>
+        `type Dict<T> = Record<string, T>;\nexport interface P { d: Dict<${argument}> }\n`;
+      expectChange(source('string'), source('number'), 'P');
+    });
+
+    it('follows hidden arguments of deferred conditional and mapped aliases', () => {
+      const source = (type: string) =>
+        [
+          `interface Hidden { v: ${type} }`,
+          'type Pick1<T, U> = T extends string ? U : never;',
+          'type M<T, U> = { [K in keyof T]: U };',
+          'export declare function f<T>(x: T): Pick1<T, Hidden>;',
+          'export declare function g<T>(x: T): M<T, Hidden>;',
+          '',
+        ].join('\n');
+      expectChange(source('string'), source('number'), 'f');
+      expectChange(source('string'), source('number'), 'g');
+    });
+
+    it('follows which type parameter a nested alias argument uses', () => {
+      const source = (argument: string) =>
+        [
+          'type NonOptional<T> = { [K in keyof T]-?: T[K] };',
+          'type MagicProxy<T> = T extends object ? T & { proxied: true } : T;',
+          `export interface Enhanced<TSpec, TStatus> { spec: TSpec; status: MagicProxy<NonOptional<${argument}>> }`,
+          '',
+        ].join('\n');
+      expectChange(source('TStatus'), source('TSpec'), 'Enhanced');
+    });
+
+    it('uses the instantiated template of an inline generic mapped type', () => {
+      const source = (type: string) =>
+        [
+          `interface Hidden { v: ${type} }`,
+          'interface Outer<A> { m<T>(): { [K in keyof T]: A } }',
+          'export declare const outer: Outer<Hidden>;',
+          '',
+        ].join('\n');
+      expectChange(source('string'), source('number'), 'outer');
+    });
+  });
+
+  describe('declaration shape beyond the type', () => {
+    it('hashes the value and type sides of namespace merges', () => {
+      const merged = (type: string) =>
+        [
+          `export declare function f(x: ${type}): void;`,
+          'export declare namespace f { const version: number; }',
+          `export declare class C { a: ${type} }`,
+          'export declare namespace C { const version: number; }',
+          '',
+        ].join('\n');
+      expectChange(merged('string'), merged('number'), 'f');
+      expectChange(merged('string'), merged('number'), 'C');
+    });
+
+    it('hashes member visibility, abstractness, constructor visibility and accessor shape', () => {
+      const distinct = (variants: string[], symbol: string) => {
+        const hashes = variants.map((variant) => hashesOf(variant)[symbol]);
+        expect(new Set(hashes).size).toBe(variants.length);
+      };
+      distinct(
+        [
+          'export declare class V { x: string }',
+          'export declare class V { protected x: string }',
+          'export declare class V { private x: string }',
+        ].map((line) => `${line}\n`),
+        'V'
+      );
+      distinct(['export declare class A { }\n', 'export declare abstract class A { }\n'], 'A');
+      distinct(
+        [
+          'export declare class K { constructor(); }\n',
+          'export declare class K { protected constructor(); }\n',
+          'export declare class K { private constructor(); }\n',
+        ],
+        'K'
+      );
+      distinct(
+        [
+          'export declare class G { v: string }\n',
+          'export declare class G { get v(): string; }\n',
+          'export declare class G { get v(): string; set v(value: string); }\n',
+          'export declare class G { get v(): string; set v(value: string | number); }\n',
+        ],
+        'G'
+      );
+      // The same holds for a hidden class reached through a public type.
+      expectChange(
+        'declare class H { protected x: string }\nexport interface U { h: H }\n',
+        'declare class H { private x: string }\nexport interface U { h: H }\n',
+        'U'
+      );
+    });
+
+    it('records type-only re-exports as type-only', () => {
+      const lineFor = (statement: string) => {
+        const root = writePackage(
+          { '.': { types: './dist/index.d.ts' } },
+          {
+            'dist/index.d.ts': `${statement}\n`,
+            'dist/core/types.d.ts': 'export declare class C { a: string }\n',
+          }
+        );
+        return buildApiSnapshot(root).find((line) => line.split('\t')[1] === 'Y');
+      };
+      const valueExport = lineFor("export { C as Y } from './core/types.js';");
+      const typeExport = lineFor("export type { C as Y } from './core/types.js';");
+      expect(valueExport?.split('\t')[2]).toBe('value+type');
+      expect(typeExport?.split('\t')[2]).toBe('type');
+      expect(typeExport?.split('\t')[3]).not.toBe(valueExport?.split('\t')[3]);
+    });
+
+    it('hashes enum literals by enum identity, member and value', () => {
+      const enums =
+        'export declare enum E { A = "a" }\nexport declare enum F { A = "a" }\ndeclare enum H { A = "a" }\n';
+      const hashes = ['"a"', 'E.A', 'F.A', 'H.A'].map(
+        (key) => hashesOf(`${enums}export interface P { k: ${key} }\n`).P
+      );
+      expect(new Set(hashes).size).toBe(4);
+      // A hidden enum is identified by structure, so renaming it changes nothing.
+      expectChange(
+        'declare enum H { A = "a" }\nexport interface P { k: H.A }\n',
+        'declare enum Renamed { A = "a" }\nexport interface P { k: Renamed.A }\n',
+        'P',
+        false
+      );
+    });
   });
 });

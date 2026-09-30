@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { compareText } from './graph.js';
 import { measurePackage, packageRoot, scriptsDir } from './package.js';
-import { TypeShapeHasher } from './type-shape.js';
+import { symbolKinds, TypeShapeHasher } from './type-shape.js';
 
 /**
  * Builds the snapshot lines for the package at `root`: one
@@ -25,7 +25,18 @@ import { TypeShapeHasher } from './type-shape.js';
  * snapshot does not depend on where the package or its dependencies are
  * installed.
  */
-export function buildApiSnapshot(root: string = packageRoot): string[] {
+export interface ApiSnapshotOptions {
+  /**
+   * Order to hash rows in, as a permutation of row indexes. Output order never
+   * changes; tests use this to prove hashes do not depend on visiting order.
+   */
+  hashOrder?: (rowCount: number) => number[];
+}
+
+export function buildApiSnapshot(
+  root: string = packageRoot,
+  options: ApiSnapshotOptions = {}
+): string[] {
   const { entries } = measurePackage(root);
   const entryFiles = Object.entries(entries)
     .flatMap(([name, paths]) =>
@@ -67,19 +78,18 @@ export function buildApiSnapshot(root: string = packageRoot): string[] {
       : normalized.slice(normalized.lastIndexOf('/') + 1);
   };
 
-  const kinds = (symbol: ts.Symbol): string => {
-    if (symbol.flags & ts.SymbolFlags.Module) return 'namespace';
-    const result: string[] = [];
-    if (symbol.flags & ts.SymbolFlags.Value) result.push('value');
-    if (symbol.flags & ts.SymbolFlags.Type) result.push('type');
-    return result.length > 0 ? result.join('+') : 'unresolved';
-  };
-
   const resolveAlias = (symbol: ts.Symbol): ts.Symbol =>
     symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 
   // Pass 1: every public symbol, including namespace members at any depth.
-  const rows: { entryName: string; name: string; target: ts.Symbol }[] = [];
+  const rows: { entryName: string; name: string; target: ts.Symbol; typeOnly: boolean }[] = [];
+  // `export type { X }` and `export type * from` expose no value, even for a class.
+  const isTypeOnly = (symbol: ts.Symbol): boolean =>
+    (
+      checker as unknown as {
+        getTypeOnlyAliasDeclaration(symbol: ts.Symbol): ts.Declaration | undefined;
+      }
+    ).getTypeOnlyAliasDeclaration(symbol) !== undefined;
   const unloaded: string[] = [];
   for (const [entryName, file] of entryFiles) {
     const sourceFile = program.getSourceFile(file);
@@ -88,17 +98,28 @@ export function buildApiSnapshot(root: string = packageRoot): string[] {
       unloaded.push(`${entryName}\t(module did not load)`);
       continue;
     }
-    const visit = (symbols: ts.Symbol[], prefix: string, path: ReadonlySet<ts.Symbol>): void => {
+    const visit = (
+      symbols: ts.Symbol[],
+      prefix: string,
+      path: ReadonlySet<ts.Symbol>,
+      parentTypeOnly: boolean
+    ): void => {
       for (const exported of [...symbols].sort((a, b) => compareText(a.name, b.name))) {
         const target = resolveAlias(exported);
         const name = `${prefix}${exported.name}`;
-        rows.push({ entryName, name, target });
+        const typeOnly = parentTypeOnly || isTypeOnly(exported);
+        rows.push({ entryName, name, target, typeOnly });
         if (target.flags & ts.SymbolFlags.Module && !path.has(target)) {
-          visit(checker.getExportsOfModule(target), `${name}.`, new Set([...path, target]));
+          visit(
+            checker.getExportsOfModule(target),
+            `${name}.`,
+            new Set([...path, target]),
+            typeOnly
+          );
         }
       }
     };
-    visit(checker.getExportsOfModule(moduleSymbol), '', new Set([moduleSymbol]));
+    visit(checker.getExportsOfModule(moduleSymbol), '', new Set([moduleSymbol]), false);
   }
 
   // Each public symbol is referenced by the first line that names it.
@@ -109,15 +130,27 @@ export function buildApiSnapshot(root: string = packageRoot): string[] {
 
   // Pass 2: structural hashes.
   const hasher = new TypeShapeHasher({ checker, publicNames, isPackageFile, externalModuleName });
-  const hashes = new Map<ts.Symbol, string>();
-  const lines = rows.map(({ entryName, name, target }) => {
-    let hash = hashes.get(target);
-    if (hash === undefined) {
-      hash = hasher.hashSymbol(target);
-      hashes.set(target, hash);
-    }
-    return [entryName, name, kinds(target), hash].join('\t');
-  });
+  const hashes = new Map<string, string>();
+  const symbolKeys = new Map<ts.Symbol, number>();
+  const keyOf = (target: ts.Symbol, typeOnly: boolean): string => {
+    if (!symbolKeys.has(target)) symbolKeys.set(target, symbolKeys.size);
+    return `${symbolKeys.get(target)}:${typeOnly}`;
+  };
+  const order = options.hashOrder?.(rows.length) ?? rows.map((_, index) => index);
+  for (const index of order) {
+    const row = rows[index];
+    if (!row) continue;
+    const key = keyOf(row.target, row.typeOnly);
+    if (!hashes.has(key)) hashes.set(key, hasher.hashSymbol(row.target, row.typeOnly));
+  }
+  const lines = rows.map(({ entryName, name, target, typeOnly }) =>
+    [
+      entryName,
+      name,
+      symbolKinds(target, typeOnly),
+      hashes.get(keyOf(target, typeOnly)) ?? hasher.hashSymbol(target, typeOnly),
+    ].join('\t')
+  );
   return [...unloaded, ...lines];
 }
 
