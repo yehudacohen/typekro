@@ -99,9 +99,12 @@ These are report-only for now:
 that no public export reaches. Runtime `.js` files are never touched. A declaration file
 that no entry reaches cannot affect a consumer's types. The prune step deletes nothing if any export cannot be resolved to its declarations, or if a
 reachable file has an unresolved relative import. A partial graph could otherwise delete a
-public entry's declarations. Exports are read through the full condition tree: `types`,
-`import`, `require`, `default` and other conditions, nested conditions, fallback arrays, and
-wildcard subpaths with `null` exclusions. An unresolved import usually means `dist/` is
+public entry's declarations. Exports are read through the full condition tree: nested
+conditions and fallback arrays. Every condition branch counts, whatever its order, because
+the branch TypeScript picks depends on the consumer's resolution mode and `customConditions`.
+Subpath keys follow Node's exports algorithm: an exact key beats any pattern, and the most
+specific pattern wins, including against a `null` pattern. A fixture test compares the result
+with TypeScript's own module resolution. An unresolved import usually means `dist/` is
 stale: run `bun run clean && bun run build:lib`.
 
 `bun run dev` (watch mode) does not prune.

@@ -39,42 +39,53 @@ export interface MeasuredPackage {
 }
 
 const DECLARATION = /\.d\.[mc]?ts$/;
+const TYPESCRIPT_SOURCE = /\.[mc]?tsx?$/;
 const RUNTIME = /\.([mc]?)js$/;
 
 /**
- * Collects the declaration targets of one export value, following the whole
- * condition tree: strings, fallback arrays, and nested condition objects
- * (`types`, `import`, `require`, `default`, `node`, ...). A condition object
- * without a `types` key contributes the declaration TypeScript infers next to
- * its JavaScript targets (`x.js` -> `x.d.ts`).
+ * Collects every declaration target one export value can resolve to.
+ *
+ * TypeScript picks the first condition key, in object order, that is in its
+ * active set (`types`, `import` or `require`, `node`, `default`, plus any
+ * `customConditions` the consumer configures), and takes the first usable entry
+ * of a fallback array. Which branch wins therefore depends on the consumer's
+ * resolution mode and settings, which this package cannot know. So this
+ * returns the union over every condition branch and every fallback entry.
+ * That is a superset of what any single resolver mode loads: the budget tool
+ * never under-counts, and the prune step never deletes a declaration some
+ * consumer could load. The cost is occasionally keeping a file only a
+ * shadowed branch names.
+ *
+ * A JavaScript target contributes the declaration TypeScript loads next to it
+ * (`x.js` -> `x.d.ts`, `x.mjs` -> `x.d.mts`, `x.cjs` -> `x.d.cts`).
+ * Targets may contain `*`; those are patterns expanded by the caller.
  */
 export function declarationTargets(value: unknown): string[] {
-  const targets = new Set<string>();
-  const visit = (node: unknown, underTypes: boolean): void => {
+  return [...collectTargets(value).keys()];
+}
+
+/** Target path to whether it was inferred from a JavaScript target. */
+function collectTargets(value: unknown): Map<string, boolean> {
+  const targets = new Map<string, boolean>();
+  const add = (target: string, inferred: boolean) => {
+    const path = posix.normalize(target.replace(/^\.\//, ''));
+    targets.set(path, inferred && (targets.get(path) ?? true));
+  };
+  const visit = (node: unknown): void => {
     if (typeof node === 'string') {
-      if (DECLARATION.test(node) || underTypes) targets.add(node);
-      else if (RUNTIME.test(node)) targets.add(node.replace(RUNTIME, '.d.$1ts'));
+      if (DECLARATION.test(node) || TYPESCRIPT_SOURCE.test(node)) add(node, false);
+      else if (RUNTIME.test(node)) add(node.replace(RUNTIME, '.d.$1ts'), true);
       return;
     }
     if (Array.isArray(node)) {
-      for (const item of node) visit(item, underTypes);
+      for (const item of node) visit(item);
       return;
     }
     if (node === null || typeof node !== 'object') return;
-    const conditions = node as Record<string, unknown>;
-    if ('types' in conditions) {
-      visit(conditions.types, true);
-      // Sibling branches can still carry their own `types` (for example `require.types`).
-      for (const [key, child] of Object.entries(conditions)) {
-        if (key !== 'types' && child !== null && typeof child === 'object')
-          visit(child, underTypes);
-      }
-      return;
-    }
-    for (const child of Object.values(conditions)) visit(child, underTypes);
+    for (const child of Object.values(node as Record<string, unknown>)) visit(child);
   };
-  visit(value, false);
-  return [...targets].map((target) => posix.normalize(target.replace(/^\.\//, '')));
+  visit(value);
+  return targets;
 }
 
 const isSubpathMap = (value: unknown): value is Record<string, unknown> =>
@@ -84,18 +95,66 @@ const isSubpathMap = (value: unknown): value is Record<string, unknown> =>
   Object.keys(value).length > 0 &&
   Object.keys(value).every((key) => key.startsWith('.'));
 
-const patternRegExp = (pattern: string): RegExp =>
-  new RegExp(
-    `^${pattern
-      .split('*')
-      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-      .join('(.+)')}$`
+/** Node's PATTERN_KEY_COMPARE: negative when `a` is the more specific key. */
+export function patternKeyCompare(a: string, b: string): number {
+  const aPatternIndex = a.indexOf('*');
+  const bPatternIndex = b.indexOf('*');
+  const baseLengthA = aPatternIndex === -1 ? a.length : aPatternIndex + 1;
+  const baseLengthB = bPatternIndex === -1 ? b.length : bPatternIndex + 1;
+  if (baseLengthA > baseLengthB) return -1;
+  if (baseLengthB > baseLengthA) return 1;
+  if (aPatternIndex === -1) return 1;
+  if (bPatternIndex === -1) return -1;
+  if (a.length > b.length) return -1;
+  if (b.length > a.length) return 1;
+  return 0;
+}
+
+/**
+ * The exports key Node uses for `subpath`, following PACKAGE_EXPORTS_RESOLVE:
+ * an exact key wins; otherwise the most specific single-`*` pattern that
+ * matches with a non-empty capture. The key's value may be `null` (blocked).
+ */
+export function matchExportKey(
+  subpath: string,
+  keys: readonly string[]
+): { key: string; capture: string | undefined } | undefined {
+  if (keys.includes(subpath) && !subpath.includes('*')) return { key: subpath, capture: undefined };
+  let best: { key: string; capture: string } | undefined;
+  for (const key of keys) {
+    const patternIndex = key.indexOf('*');
+    if (patternIndex === -1 || key.lastIndexOf('*') !== patternIndex) continue;
+    const prefix = key.slice(0, patternIndex);
+    const trailer = key.slice(patternIndex + 1);
+    if (
+      subpath.startsWith(prefix) &&
+      subpath.length >= key.length &&
+      subpath.endsWith(trailer) &&
+      (best === undefined || patternKeyCompare(best.key, key) === 1)
+    ) {
+      best = { key, capture: subpath.slice(patternIndex, subpath.length - trailer.length) };
+    }
+  }
+  return best;
+}
+
+/** Matches a target containing `*` (every `*` is the same capture). */
+const targetPattern = (target: string): RegExp => {
+  const parts = target.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(
+    `^${parts[0]}${parts
+      .slice(1)
+      .map((part, index) => `${index === 0 ? '(.+)' : '\\1'}${part}`)
+      .join('')}$`
   );
+};
 
 /**
  * Resolves `package.json` exports to the declaration files each public
- * subpath exposes. Wildcard subpaths (`"./x/*"`) are expanded against the
- * emitted files, and `null` subpaths exclude what they match.
+ * subpath exposes. Exact keys, `*` patterns and `null` exclusions interact as
+ * in Node's exports algorithm: an exact key beats any pattern, and the most
+ * specific pattern wins (see {@link patternKeyCompare}), including against a
+ * `null` pattern. Pattern keys are expanded against the emitted files.
  */
 export function resolveExportEntries(
   packageJson: Pick<PackageJson, 'exports' | 'types'>,
@@ -115,42 +174,43 @@ export function resolveExportEntries(
   const subpaths: Record<string, unknown> = isSubpathMap(exportsField)
     ? exportsField
     : { '.': exportsField };
-  const blocked = Object.entries(subpaths)
-    .filter(([, value]) => value === null)
-    .map(([key]) => patternRegExp(key));
-  const isBlocked = (subpath: string) => blocked.some((pattern) => pattern.test(subpath));
+  const keys = Object.keys(subpaths);
 
   for (const [subpath, value] of Object.entries(subpaths)) {
     if (value === null) continue;
-    const targets = declarationTargets(value);
+    const collected = collectTargets(value);
+    const targets = [...collected.keys()];
     if (targets.length === 0) {
       failures.push(`package.json exports[${JSON.stringify(subpath)}] has no types target.`);
       continue;
     }
 
     if (!subpath.includes('*')) {
-      if (isBlocked(subpath)) continue;
-      const missing = targets.filter((target) => !exists(target));
-      if (missing.length > 0) {
+      const present = targets.filter((target) => exists(target));
+      // A declaration inferred next to a JavaScript target may legitimately not exist
+      // (no resolver can load it then). A named declaration must exist, and so must
+      // at least one declaration for the subpath.
+      const missing = targets.filter((target) => !exists(target) && !collected.get(target));
+      if (missing.length > 0 || present.length === 0) {
         failures.push(
-          `package.json exports[${JSON.stringify(subpath)}] points at missing declarations: ${missing.join(', ')}.`
+          `package.json exports[${JSON.stringify(subpath)}] points at missing declarations: ${(missing.length > 0 ? missing : targets).join(', ')}.`
         );
       }
-      entries[subpath] = targets;
+      entries[subpath] = present;
       continue;
     }
 
-    // Wildcard: every emitted declaration that matches a target pattern is public,
-    // under the subpath its capture maps back to.
-    const expanded = new Map<string, string[]>();
+    // Pattern: each emitted declaration matching a target maps back to a concrete
+    // subpath. It is public under this key only if Node would pick this key for it.
+    const expanded = new Map<string, Set<string>>();
     for (const target of targets) {
-      const pattern = patternRegExp(target);
+      const pattern = targetPattern(target);
       for (const path of emitted) {
         const capture = pattern.exec(path)?.[1];
         if (capture === undefined) continue;
         const concrete = subpath.replace('*', capture);
-        if (isBlocked(concrete)) continue;
-        expanded.set(concrete, [...(expanded.get(concrete) ?? []), path]);
+        if (matchExportKey(concrete, keys)?.key !== subpath) continue;
+        expanded.set(concrete, (expanded.get(concrete) ?? new Set()).add(path));
       }
     }
     if (expanded.size === 0) {
@@ -158,7 +218,7 @@ export function resolveExportEntries(
         `package.json exports[${JSON.stringify(subpath)}] matches no emitted declarations.`
       );
     }
-    for (const [concrete, paths] of expanded) entries[concrete] = paths.sort(compareText);
+    for (const [concrete, paths] of expanded) entries[concrete] = [...paths].sort(compareText);
   }
   return { entries, failures };
 }

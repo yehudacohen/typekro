@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import ts from 'typescript';
 import { buildApiSnapshot, diffSnapshots } from '../../scripts/declaration-budgets/api-snapshot.js';
 import {
   declarationTargets,
+  matchExportKey,
   measurePackage,
+  patternKeyCompare,
   resolveExportEntries,
 } from '../../scripts/declaration-budgets/package.js';
 import { pruneUnreachableDeclarations } from '../../scripts/declaration-budgets/prune.js';
@@ -142,6 +145,181 @@ describe('resolveExportEntries', () => {
       'package.json exports["./gone"] points at missing declarations: dist/gone.d.ts.',
       'package.json exports["./none/*"] matches no emitted declarations.',
     ]);
+  });
+});
+
+describe('export key matching (Node PATTERN_KEY_COMPARE)', () => {
+  it('prefers exact keys, then the most specific pattern', () => {
+    expect(patternKeyCompare('./a/b/*', './a/*')).toBe(-1);
+    expect(patternKeyCompare('./a/*', './a/b/*')).toBe(1);
+    expect(patternKeyCompare('./a/*.js', './a/*')).toBe(-1);
+    const keys = [
+      './internal/*',
+      './internal/public',
+      './internal/public/*',
+      './f/*',
+      './f/hidden',
+    ];
+    expect(matchExportKey('./internal/public', keys)).toEqual({
+      key: './internal/public',
+      capture: undefined,
+    });
+    expect(matchExportKey('./internal/public/x', keys)).toEqual({
+      key: './internal/public/*',
+      capture: 'x',
+    });
+    expect(matchExportKey('./internal/secret', keys)?.key).toBe('./internal/*');
+    expect(matchExportKey('./f/hidden', keys)?.key).toBe('./f/hidden');
+    expect(matchExportKey('./other', keys)).toBeUndefined();
+  });
+});
+
+/**
+ * Exports maps that are easy to get wrong. For each subpath, the declarations
+ * TypeScript resolves in any mode must be a subset of what the resolver
+ * returns, and a subpath TypeScript cannot resolve in any mode must have no
+ * entry.
+ */
+const trickyExports: { name: string; exports: Record<string, unknown>; subpaths: string[] }[] = [
+  {
+    name: 'import listed before types',
+    exports: { './a': { import: './a.js', types: './b.d.ts' } },
+    subpaths: ['./a'],
+  },
+  {
+    name: 'types listed before import',
+    exports: { './a': { types: './b.d.ts', import: './a.js' } },
+    subpaths: ['./a'],
+  },
+  {
+    name: 'nested import and require conditions',
+    exports: {
+      '.': {
+        import: { types: './esm.d.ts', default: './esm.js' },
+        require: { types: './cjs.d.cts', default: './cjs.cjs' },
+      },
+    },
+    subpaths: ['.'],
+  },
+  {
+    name: 'node condition before default, and a fallback array',
+    exports: { './n': { node: './n-node.js', default: './n.js' }, './arr': ['./arr.js'] },
+    subpaths: ['./n', './arr'],
+  },
+  {
+    name: 'exact key beats a null pattern',
+    exports: { './internal/*': null, './internal/public': './internal/public.js' },
+    subpaths: ['./internal/public', './internal/secret'],
+  },
+  {
+    name: 'more specific pattern beats a null pattern',
+    exports: { './internal/*': null, './internal/public/*': './internal/public/*.js' },
+    subpaths: ['./internal/public/x', './internal/secret'],
+  },
+  {
+    name: 'null exact key beats a pattern',
+    exports: { './f/*': './f/*.js', './f/hidden': null },
+    subpaths: ['./f/a', './f/hidden'],
+  },
+];
+
+const trickyFiles = [
+  'a.d.ts',
+  'b.d.ts',
+  'esm.d.ts',
+  'cjs.d.cts',
+  'n-node.d.ts',
+  'n.d.ts',
+  'arr.d.ts',
+  'internal/public.d.ts',
+  'internal/secret.d.ts',
+  'internal/public/x.d.ts',
+  'f/a.d.ts',
+  'f/hidden.d.ts',
+];
+
+describe('resolveExportEntries agrees with TypeScript', () => {
+  for (const testCase of trickyExports) {
+    it(testCase.name, () => {
+      const root = mkdtempSync(join(tmpdir(), 'typekro-exports-'));
+      temporaryRoots.push(root);
+      const packageDir = join(root, 'node_modules', 'pkg');
+      for (const file of trickyFiles) {
+        mkdirSync(dirname(join(packageDir, file)), { recursive: true });
+        writeFileSync(join(packageDir, file), 'export declare const x: 1;\n');
+        const runtime = file.replace(/\.d\.ts$/, '.js').replace(/\.d\.cts$/, '.cjs');
+        writeFileSync(join(packageDir, runtime), 'export const x = 1;\n');
+      }
+      writeFileSync(
+        join(packageDir, 'package.json'),
+        JSON.stringify({ name: 'pkg', version: '1.0.0', type: 'module', exports: testCase.exports })
+      );
+      const importer = join(root, 'index.ts');
+      writeFileSync(importer, '');
+
+      const modes: [ts.CompilerOptions, ts.ResolutionMode][] = [
+        [
+          { module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler },
+          undefined,
+        ],
+        [
+          { module: ts.ModuleKind.Node16, moduleResolution: ts.ModuleResolutionKind.Node16 },
+          ts.ModuleKind.ESNext,
+        ],
+        [
+          { module: ts.ModuleKind.Node16, moduleResolution: ts.ModuleResolutionKind.Node16 },
+          ts.ModuleKind.CommonJS,
+        ],
+      ];
+      const { entries } = resolveExportEntries({ exports: testCase.exports }, trickyFiles, (path) =>
+        trickyFiles.includes(path)
+      );
+
+      for (const subpath of testCase.subpaths) {
+        const specifier = subpath === '.' ? 'pkg' : `pkg/${subpath.slice(2)}`;
+        const resolvedByTypeScript = new Set<string>();
+        for (const [options, mode] of modes) {
+          const resolved = ts.resolveModuleName(
+            specifier,
+            importer,
+            options,
+            ts.sys,
+            undefined,
+            undefined,
+            mode
+          ).resolvedModule?.resolvedFileName;
+          if (resolved)
+            resolvedByTypeScript.add(relative(realpathSync(packageDir), realpathSync(resolved)));
+        }
+        const ours = entries[subpath];
+        if (resolvedByTypeScript.size === 0) {
+          expect({ subpath, ours }).toEqual({ subpath, ours: undefined });
+        } else {
+          expect({
+            subpath,
+            missing: [...resolvedByTypeScript].filter((file) => !ours?.includes(file)),
+          }).toEqual({
+            subpath,
+            missing: [],
+          });
+        }
+      }
+    });
+  }
+
+  it('resolves both orderings of import and types conservatively', () => {
+    const emitted = ['a.d.ts', 'b.d.ts'];
+    const exists = (path: string) => emitted.includes(path);
+    for (const value of [
+      { import: './a.js', types: './b.d.ts' },
+      { types: './b.d.ts', import: './a.js' },
+    ]) {
+      // TypeScript picks a.d.ts for the first ordering and b.d.ts for the second;
+      // both are kept whichever order the keys are in.
+      const { entries } = resolveExportEntries({ exports: { './a': value } }, emitted, exists);
+      expect(entries['./a']?.sort()).toEqual(['a.d.ts', 'b.d.ts']);
+      expect(declarationTargets(value).sort()).toEqual(['a.d.ts', 'b.d.ts']);
+    }
   });
 });
 
