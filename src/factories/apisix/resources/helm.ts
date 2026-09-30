@@ -6,7 +6,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Enhanced, ReadinessEvaluator } from '../../../core/types/index.js';
 import type { TypeKroChartValues } from '../../../core/types/common.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -206,4 +206,5 @@ export function mapAPISixConfigToHelmValues(
  * Exported for backward compatibility — prefer using the shared evaluator
  * from `../../helm/readiness-evaluators.js` directly.
  */
-export const apisixHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('APISix');
+export const apisixHelmReleaseReadinessEvaluator: ReadinessEvaluator<unknown> =
+  createLabeledHelmReleaseEvaluator('APISix');
