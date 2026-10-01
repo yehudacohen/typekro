@@ -15,8 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TypeScript load about 1.7 MB of declarations. Exported compositions and factories now carry
   explicit return types imported from core. Each subpath loads only core, its own files and the
   integrations it deliberately borrows types from (`typekro/traefik`: 395 files and 1.73 MB before,
-  63 files and 0.55 MB after). The public types are unchanged. Emitted declarations shrink from
-  2,499,949 to 2,382,172 bytes. A unit test fails if a subpath export reaches a root barrel again.
+  63 files and 0.55 MB after). The public types are unchanged. Packed declarations shrink from
+  2,230,423 to 2,112,646 bytes. A unit test fails if a subpath export reaches a root barrel again.
+  The public API snapshot changes in one place: `apisixHelmReleaseReadinessEvaluator` and
+  `traefikHelmReleaseReadinessEvaluator` now name `ReadinessEvaluator<unknown>` from core instead of
+  an `import()` type through the root barrel. It is the same alias with the same argument, but the
+  hasher records an aliased reference and an `import()` type differently.
 
 - Pin the direct and transitive `js-yaml` dependency to 4.3.2 to close
   GHSA-2883-xcg3-v3hh: empty merge sources now count toward the existing parser
