@@ -223,25 +223,6 @@ describe('BunCompatibleHttpLibrary abort-listener lifetime', () => {
   });
 });
 
-/**
- * PREMATURE CLOSE — the promise must settle on EVERY terminal event.
- *
- * The failure these cover is a HANG, not a wrong answer: the request's wall-clock timer used to be
- * cleared by the request's 'close' event without the promise being settled, so once the timer was
- * gone nothing could ever reject. Bun makes that fatal because it emits the REQUEST's 'close' as soon
- * as the response HEADERS arrive — before the body — and then reports a mid-body socket drop only on
- * the RESPONSE ('aborted' / 'error' / 'close'), which nothing listened to. Node emits the request's
- * 'close' after the exchange ends, so the same code merely disarms the timer a little later and hangs
- * too; Bun just reaches the hang on every truncated response.
- *
- * Traced on bun 1.3.10 and node 22.22.0, with and without listeners on the response: for a TRUNCATED
- * response the request's own 'error' fires on NEITHER runtime, for a reset or a FIN alike. It fires
- * only when the peer drops before any headers — which is why that one case was already covered by the
- * old code, and the truncations were not.
- *
- * Each test therefore races the call against a watchdog FAR longer than the configured timeout: a
- * regression shows up as the watchdog winning, never as a slow pass.
- */
 describe('BunCompatibleHttpLibrary with a real client-node RequestContext', () => {
   /**
    * The other tests hand the library plain objects whose methods are arrow functions, which do not
@@ -284,6 +265,25 @@ describe('BunCompatibleHttpLibrary with a real client-node RequestContext', () =
   });
 });
 
+/**
+ * PREMATURE CLOSE — the promise must settle on EVERY terminal event.
+ *
+ * The failure these cover is a HANG, not a wrong answer: the request's wall-clock timer used to be
+ * cleared by the request's 'close' event without the promise being settled, so once the timer was
+ * gone nothing could ever reject. Bun makes that fatal because it emits the REQUEST's 'close' as soon
+ * as the response HEADERS arrive — before the body — and then reports a mid-body socket drop only on
+ * the RESPONSE ('aborted' / 'error' / 'close'), which nothing listened to. Node emits the request's
+ * 'close' after the exchange ends, so the same code merely disarms the timer a little later and hangs
+ * too; Bun just reaches the hang on every truncated response.
+ *
+ * Traced on bun 1.3.10 and node 22.22.0, with and without listeners on the response: for a TRUNCATED
+ * response the request's own 'error' fires on NEITHER runtime, for a reset or a FIN alike. It fires
+ * only when the peer drops before any headers — which is why that one case was already covered by the
+ * old code, and the truncations were not.
+ *
+ * Each test therefore races the call against a watchdog FAR longer than the configured timeout: a
+ * regression shows up as the watchdog winning, never as a slow pass.
+ */
 describe('BunCompatibleHttpLibrary premature close', () => {
   /** A raw TCP server, so a response can be truncated mid-flight (http.Server cannot do that). */
   async function rawServer(
