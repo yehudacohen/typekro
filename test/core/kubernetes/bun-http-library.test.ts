@@ -242,6 +242,48 @@ describe('BunCompatibleHttpLibrary abort-listener lifetime', () => {
  * Each test therefore races the call against a watchdog FAR longer than the configured timeout: a
  * regression shows up as the watchdog winning, never as a slow pass.
  */
+describe('BunCompatibleHttpLibrary with a real client-node RequestContext', () => {
+  /**
+   * The other tests hand the library plain objects whose methods are arrow functions, which do not
+   * need `this`. The SDK's real `RequestContext` uses prototype methods: in client-node 1.4
+   * `getSignal()` reads `this.signal`, so calling it detached threw on every request. Drive the
+   * library with the genuine class so a binding regression cannot hide behind a test double.
+   */
+  it('sends a request built as a client-node RequestContext, with and without a signal', async () => {
+    const { RequestContext, HttpMethod } = await import('@kubernetes/client-node');
+    const http = await import('node:http');
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const library = new BunCompatibleHttpLibrary({ default: 5_000 });
+      const url = `http://127.0.0.1:${port}/api/v1/namespaces/demo`;
+
+      const plain = new RequestContext(url, HttpMethod.GET);
+      const plainResponse = await library.send(plain).toPromise();
+      expect(plainResponse.httpStatusCode).toBe(200);
+
+      const withSignal = new RequestContext(url, HttpMethod.GET);
+      withSignal.setSignal(new AbortController().signal);
+      const signalResponse = await library.send(withSignal).toPromise();
+      expect(signalResponse.httpStatusCode).toBe(200);
+
+      const aborted = new RequestContext(url, HttpMethod.GET);
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled'));
+      aborted.setSignal(controller.signal);
+      await expect(library.send(aborted).toPromise()).rejects.toThrow('cancelled');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe('BunCompatibleHttpLibrary premature close', () => {
   /** A raw TCP server, so a response can be truncated mid-flight (http.Server cannot do that). */
   async function rawServer(
