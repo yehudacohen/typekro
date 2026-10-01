@@ -328,8 +328,9 @@ Add your factory to the appropriate index file:
 export * from './my-resource.js';
 ```
 
-New integrations get their own subpath export and a small declaration budget. Do not add them
-to `src/factories/index.ts`. See
+New integrations get their own subpath export and start in the shared declaration pool
+(`pooledOwners`) until they get a budget of their own. Do not add them to
+`src/factories/index.ts`. See
 [scripts/declaration-budgets/README.md](scripts/declaration-budgets/README.md#adding-a-new-integration).
 
 ### 5. Add Tests

@@ -4,6 +4,7 @@ import {
   type BudgetsConfig,
   evaluateBudgets,
   suggestBudget,
+  suggestOwnerBudgets,
 } from '../../scripts/declaration-budgets/budgets.js';
 import {
   analyzeComments,
@@ -367,6 +368,8 @@ describe('evaluateBudgets', () => {
     mode: 'report',
     globalCapBytes: 1_000_000,
     headroom: { minBytes: 100, fraction: 0.05 },
+    sharedPoolBytes: 10_000,
+    pooledOwners: [],
     docDropFraction: 0.2,
     owners: {
       core: suggestBudget(usage('core'), { minBytes: 100, fraction: 0.05 }),
@@ -388,18 +391,200 @@ describe('evaluateBudgets', () => {
     expect(evaluation.rows.every((row) => row.status === 'ok')).toBe(true);
   });
 
-  it('reports overruns, ratchet candidates, and missing budgets', () => {
+  it('applies the 4 KiB minimum to tiny owners and 2% to large ones', () => {
+    const headroom = { minBytes: 4096, fraction: 0.02 };
+    // 100 + 4096, rounded up to 256.
+    expect(suggestBudget(100, headroom)).toBe(4352);
+    expect(suggestBudget(0, headroom)).toBe(4096);
+    // At 200 KiB, 2% is exactly 4 KiB.
+    expect(suggestBudget(204_800, headroom)).toBe(208_896);
+    // 1,000,000 + 20,000, rounded up to 256.
+    expect(suggestBudget(1_000_000, headroom)).toBe(1_020_160);
+  });
+
+  it('reports overruns and ratchet candidates; a pooled owner uses the pool', () => {
     const evaluation = evaluateBudgets(
       attribution,
-      config({ owners: { core: 1, alpha: 100_000 } }),
+      config({ owners: { core: 1, alpha: 100_000 }, pooledOwners: ['beta'] }),
       undefined
     );
     const status = Object.fromEntries(evaluation.rows.map((row) => [row.owner, row.status]));
-    expect(status).toEqual({ core: 'over', alpha: 'ratchet', beta: 'unbudgeted' });
+    expect(status).toEqual({ core: 'over', alpha: 'ratchet', beta: 'pool' });
     expect(evaluation.overruns).toHaveLength(1);
-    expect(evaluation.configErrors).toEqual([
-      'Owner "beta" has no budget in declaration-budgets.json.',
+    expect(evaluation.configErrors).toEqual([]);
+  });
+
+  it('charges pooled owners to the shared pool', () => {
+    const { beta: _beta, ...listed } = config().owners;
+    const evaluation = evaluateBudgets(
+      attribution,
+      config({ owners: listed, pooledOwners: ['beta'] }),
+      undefined
+    );
+    expect(evaluation.pool).toEqual({ bytes: 10_000, usedBytes: usage('beta'), owners: ['beta'] });
+    const beta = evaluation.rows.find((row) => row.owner === 'beta');
+    expect(beta?.status).toBe('pool');
+    expect(beta?.budget).toBeUndefined();
+    expect(evaluation.configErrors).toEqual([]);
+    expect(evaluation.overruns).toEqual([]);
+  });
+
+  it('reports shared pool overflow as an overrun', () => {
+    const { alpha: _alpha, beta: _beta, ...listed } = config().owners;
+    const sharedPoolBytes = usage('alpha') + usage('beta') - 1;
+    const evaluation = evaluateBudgets(
+      attribution,
+      config({ owners: listed, pooledOwners: ['alpha', 'beta'], sharedPoolBytes }),
+      undefined
+    );
+    expect(evaluation.pool.usedBytes).toBe(sharedPoolBytes + 1);
+    expect(evaluation.pool.owners).toHaveLength(2);
+    expect(evaluation.configErrors).toEqual([]);
+    expect(evaluation.overruns).toEqual([
+      `Pooled owners (${evaluation.pool.owners.join(', ')}) use ${sharedPoolBytes + 1} bytes, ` +
+        `over the shared pool of ${sharedPoolBytes}. Give the largest one its own budget, remove ` +
+        'it from pooledOwners and shrink the pool by the same amount, or make room elsewhere.',
     ]);
+  });
+
+  it('passes when pooled owners fill the pool exactly', () => {
+    const { alpha: _alpha, ...listed } = config().owners;
+    const evaluation = evaluateBudgets(
+      attribution,
+      config({ owners: listed, pooledOwners: ['alpha'], sharedPoolBytes: usage('alpha') }),
+      undefined
+    );
+    expect(evaluation.pool.usedBytes).toBe(evaluation.pool.bytes);
+    expect(evaluation.overruns).toEqual([]);
+    expect(evaluation.configErrors).toEqual([]);
+  });
+
+  it('does not list an owner with no bytes as a pool user', () => {
+    const empty = attribute(graph, emittedOf(fixture), owners);
+    const alpha = empty.owners.get('alpha');
+    if (!alpha) throw new Error('fixture has no alpha usage');
+    empty.owners.set('alpha', { ...alpha, rawBytes: 0 });
+    const { alpha: _alpha, ...listed } = config().owners;
+    const evaluation = evaluateBudgets(
+      empty,
+      config({ owners: listed, pooledOwners: ['alpha'] }),
+      undefined
+    );
+    expect(evaluation.rows.find((row) => row.owner === 'alpha')?.status).toBe('pool');
+    expect(evaluation.pool).toEqual({ bytes: 10_000, usedBytes: 0, owners: [] });
+  });
+
+  it('rejects an owner with neither a budget nor a pool entry', () => {
+    const { beta: _beta, ...listed } = config().owners;
+    const evaluation = evaluateBudgets(attribution, config({ owners: listed }), undefined);
+    expect(evaluation.rows.find((row) => row.owner === 'beta')?.status).toBe('unbudgeted');
+    expect(evaluation.configErrors).toEqual([
+      'Owner "beta" has no budget. Add one to owners, or, for a new integration, list it in pooledOwners.',
+    ]);
+    expect(evaluation.pool.owners).toEqual([]);
+  });
+
+  it('rejects an owner with both a budget and a pool entry', () => {
+    const evaluation = evaluateBudgets(attribution, config({ pooledOwners: ['beta'] }), undefined);
+    expect(evaluation.configErrors).toEqual([
+      'Owner "beta" has its own budget and is also in pooledOwners. Keep only one.',
+    ]);
+    // The owner is still held to its own budget, not the pool.
+    expect(evaluation.rows.find((row) => row.owner === 'beta')?.status).toBe('ok');
+    expect(evaluation.pool.owners).toEqual([]);
+  });
+
+  it('rejects pool entries that name no owner, and a missing pooledOwners list', () => {
+    expect(
+      evaluateBudgets(attribution, config({ pooledOwners: ['ghost'] }), undefined).configErrors
+    ).toEqual(['Pooled owner "ghost" has no matching owner in the owners map.']);
+    const { pooledOwners: _pooled, ...withoutList } = config();
+    expect(
+      evaluateBudgets(attribution, withoutList as BudgetsConfig, undefined).configErrors
+    ).toEqual(['pooledOwners must be a list of owner names (use [] for none).']);
+  });
+
+  it('rejects a missing, fractional or negative shared pool', () => {
+    const { sharedPoolBytes: _pool, ...withoutPool } = config();
+    for (const [sharedPoolBytes, shown] of [
+      [undefined, 'undefined'],
+      [Number.NaN, 'null'],
+      [1.5, '1.5'],
+      [-1, '-1'],
+    ] as const) {
+      const evaluation = evaluateBudgets(
+        attribution,
+        { ...withoutPool, sharedPoolBytes } as BudgetsConfig,
+        undefined
+      );
+      expect(evaluation.configErrors).toContain(
+        `sharedPoolBytes must be a whole number of bytes, 0 or more; got ${shown}.`
+      );
+      expect(evaluation.pool.bytes).toBe(0);
+      expect(Number.isFinite(evaluation.committedBytes)).toBe(true);
+    }
+  });
+
+  it('still reports budgets over the cap when the pool is invalid', () => {
+    const { budgetSum } = evaluateBudgets(attribution, config(), undefined);
+    const evaluation = evaluateBudgets(
+      attribution,
+      config({ globalCapBytes: budgetSum - 1, sharedPoolBytes: -5_000_000 }),
+      undefined
+    );
+    expect(evaluation.configErrors.some((error) => error.includes('above the global cap'))).toBe(
+      true
+    );
+  });
+
+  it('suggests budgets only for owners that already have one', () => {
+    const { beta: _beta, ...listed } = config().owners;
+    const suggested = suggestOwnerBudgets(
+      attribution,
+      config({ owners: { ...listed, core: 1 }, pooledOwners: ['beta'] })
+    );
+    expect(Object.keys(suggested)).toEqual(['alpha', 'core']);
+    expect(suggested.core).toBe(suggestBudget(usage('core'), config().headroom));
+  });
+
+  it('rejects owner budgets plus the shared pool above the global cap', () => {
+    const { budgetSum } = evaluateBudgets(attribution, config(), undefined);
+    const evaluation = evaluateBudgets(
+      attribution,
+      config({ globalCapBytes: budgetSum + 10_000 - 1 }),
+      undefined
+    );
+    expect(evaluation.committedBytes).toBe(budgetSum + 10_000);
+    expect(evaluation.configErrors).toEqual([
+      `Owner budgets (${budgetSum} bytes) plus the shared pool (10000 bytes) sum to ` +
+        `${budgetSum + 10_000} bytes, above the global cap of ${budgetSum + 10_000 - 1}.`,
+    ]);
+  });
+
+  it('reports budgets that fit the cap only once unreachable files stop shipping', () => {
+    const { committedBytes, unreachableRawBytes } = evaluateBudgets(
+      attribution,
+      config(),
+      undefined
+    );
+    expect(unreachableRawBytes).toBe(Buffer.byteLength(fixture['dist/core/unused.d.ts'] ?? ''));
+    const evaluation = evaluateBudgets(
+      attribution,
+      config({ globalCapBytes: committedBytes + unreachableRawBytes - 1 }),
+      undefined
+    );
+    // Not a configuration error: the budgets fit once the unreachable files are pruned.
+    expect(evaluation.configErrors).toEqual([]);
+    expect(evaluation.overruns).toHaveLength(1);
+    expect(evaluation.overruns[0]).toContain('only if the 1 unreachable declaration files');
+    expect(evaluation.overruns[0]).toContain('overcommit the cap by 1 bytes');
+
+    const fits = evaluateBudgets(
+      attribution,
+      config({ globalCapBytes: committedBytes + unreachableRawBytes }),
+      undefined
+    );
+    expect(fits.overruns).toEqual([]);
   });
 
   it('rejects budgets that sum above the global cap or name unknown owners', () => {

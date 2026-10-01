@@ -17,10 +17,10 @@ import {
   type Baseline,
   type BudgetsConfig,
   evaluateBudgets,
-  suggestBudget,
+  suggestOwnerBudgets,
   toBaseline,
 } from './budgets.js';
-import { classifyEdges, compareText, deadOwnerPatterns, importChain } from './graph.js';
+import { classifyEdges, deadOwnerPatterns, importChain } from './graph.js';
 import { measurePackage, packageRoot, readJson, scriptsDir, toPackagePath } from './package.js';
 import { renderReport } from './report.js';
 
@@ -65,13 +65,8 @@ if (args.has('--write-baseline')) {
 }
 
 if (args.has('--suggest-budgets')) {
-  const suggested: Record<string, number> = {};
-  for (const [owner, usage] of [...attribution.owners.entries()].sort(([a], [b]) =>
-    compareText(a, b)
-  )) {
-    suggested[owner] = suggestBudget(usage.rawBytes, budgets.headroom);
-  }
-  writeJson(budgetsPath, { ...budgets, owners: suggested });
+  // Only owners that already have a budget are reset. Pooled owners stay in the shared pool.
+  writeJson(budgetsPath, { ...budgets, owners: suggestOwnerBudgets(attribution, budgets) });
   console.log(
     `Wrote ${toPackagePath(packageRoot, budgetsPath)} with budgets set from current usage.`
   );

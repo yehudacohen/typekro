@@ -4,7 +4,7 @@ TypeKro ships one package with many subpath exports (`typekro`, `typekro/traefik
 `typekro/ory`, ...). A single cap on total declaration bytes
 (`scripts/packed-artifact-budgets.json`) cannot tell you which part of the package grew. This
 tool measures declaration usage per owner, so each integration has its own small budget, and
-core has one of its own.
+core has one of its own. New integrations can start in a shared pool.
 
 ```bash
 bun run build:lib
@@ -12,7 +12,7 @@ bun run check:declaration-budgets                     # report, fail on structur
 bun run check:declaration-budgets --why dist/factories/ory/index.d.ts
 bun run check:declaration-budgets --list-unreachable
 bun run check:declaration-budgets --write-baseline    # refresh scripts/declaration-baseline.json
-bun run check:declaration-budgets --suggest-budgets   # reset budgets to usage + headroom
+bun run check:declaration-budgets --suggest-budgets   # reset listed budgets to usage + headroom
 bun run check:public-api                              # compare exports with the snapshot
 bun run check:public-api --update                     # accept an intended API change
 ```
@@ -40,7 +40,7 @@ For each owner the report shows:
 | Surface | Raw bytes minus all comments. This is the type surface itself. |
 | Doc | Bytes inside `/** ... */` JSDoc blocks. |
 | Δ raw, Δ doc | Change against `scripts/declaration-baseline.json`. |
-| Budget, Headroom | From `scripts/declaration-budgets.json`. |
+| Budget, Headroom | From `scripts/declaration-budgets.json`. Empty for a pooled owner. |
 
 ## Owners
 
@@ -69,14 +69,20 @@ These checks fail CI now:
 - **Stale allowlist entry.** An `allowedEdges` entry that is no longer observed. Remove it,
   so the allowlist lists only real dependencies.
 - **Dead owner rule.** An owner glob that matches no reachable declaration file.
-- **Budget configuration.** Every owner needs a budget, every budget needs an owner, and
-  the sum of owner budgets must not exceed `globalCapBytes`.
+- **Budget configuration.** Every owner is in exactly one of `owners` (its own budget) and
+  `pooledOwners` (the shared pool). Every budget and pool entry names a real owner.
+  `sharedPoolBytes` is a whole number of bytes, 0 or more. Owner budgets plus
+  `sharedPoolBytes` must not exceed `globalCapBytes`.
 
 These are report-only for now:
 
 - **Budget overruns.** When `mode` is `"report"`, an owner over budget is shown but does not
   fail. A later change sets `"mode": "enforce"` once the strip-down work has landed.
   `--enforce` previews that locally.
+- **Shared pool overflow.** The pooled owners together use more than `sharedPoolBytes`.
+- **Unreachable files overcommit the cap.** Owner budgets plus the pool fit
+  `globalCapBytes` only if unreachable declaration files stop shipping. `build:lib` prunes
+  them, so this only shows up if pruning is skipped.
 - **Ratchet candidates.** An owner whose headroom is more than twice the standard allowance
   is listed with a suggested lower budget. Lower it in the same PR that shrank the owner.
 - **Doc-byte drops.** An owner whose JSDoc bytes fall by more than `docDropFraction` (20%)
@@ -193,14 +199,22 @@ strip-down step, must leave the snapshot unchanged.
 
 `scripts/declaration-budgets.json` sets:
 
-- `globalCapBytes`: a cap on all reachable declarations. The owner budgets must sum to no
-  more than this.
-- `headroom`: a new budget is usage plus `max(minBytes, fraction × usage)`, rounded up to
-  256 bytes. The defaults are 8 KiB and 5%.
-- `owners`: the raw-byte budget for each owner.
+- `globalCapBytes`: a cap on all reachable declarations. The owner budgets plus the shared
+  pool must sum to no more than this.
+- `headroom`: a budget is usage plus `max(minBytes, fraction × usage)`, rounded up to
+  256 bytes. The settings are 4 KiB and 2%, so small owners get a flat 4 KiB and owners above
+  200 KiB get 2%.
+- `owners`: the raw-byte budget for each established owner.
+- `sharedPoolBytes` and `pooledOwners`: one pool for new integrations. Only owners listed in
+  `pooledOwners` draw from it, so an established owner cannot leave its budget by deleting
+  it; that fails the check. The report shows how much of the pool is used and by whom.
 
-Raise a budget only with a reason in the PR description. When an owner shrinks, lower its
-budget in the same PR. The report lists ratchet candidates.
+The pool is for new integrations only. Once a pooled integration stabilises, give it its own
+budget, remove it from `pooledOwners`, and lower `sharedPoolBytes` by the same amount.
+
+Raise a budget only with a reason in the PR description, and take the bytes from the pool
+or from another owner. When an owner shrinks, lower its budget in the same PR and return the
+bytes to the pool. The report lists ratchet candidates.
 
 The baseline in `scripts/declaration-baseline.json` is a committed snapshot, not the base
 branch. It records the package version it was taken at. **Refresh it in every release PR**
@@ -215,12 +229,12 @@ that version.
    `package.json`. Do not add it to `src/factories/index.ts` or `src/index.ts`.
 2. Add an owner rule to `scripts/declaration-owners.json`:
    `{ "owner": "<name>", "paths": ["factories/<name>/**"] }`.
-3. Build, then run `bun run check:declaration-budgets`. Add
-   `"<name>": <suggested budget>` to `scripts/declaration-budgets.json`. The suggested budget
-   is usage plus `max(8 KiB, 5%)`, rounded up to 256 bytes.
-4. If the owner budgets now sum to more than `globalCapBytes`, make room first. Ratchet
-   another owner down, or shrink declarations elsewhere. Raising the cap needs a maintainer
-   decision.
+3. Add `"<name>"` to `pooledOwners` in `scripts/declaration-budgets.json`. Build, then run
+   `bun run check:declaration-budgets`; the report shows how much of the pool it uses.
+4. Once the integration stabilises, or if the pool overflows, give it its own budget of usage
+   plus `max(4 KiB, 2%)`, rounded up to 256 bytes. Remove it from `pooledOwners` and lower
+   `sharedPoolBytes` by the same amount. If there is no room, ratchet another owner down or
+   shrink declarations elsewhere. Raising the cap needs a maintainer decision.
 5. If the new integration needs types from another integration, move those types into core.
    Add an `allowedEdges` entry only when the dependency is part of the design.
 6. Keep declarations small. Give inferred composition and factory return types an explicit
