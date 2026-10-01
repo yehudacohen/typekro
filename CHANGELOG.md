@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-01
+
 ### Changed
 
 - **Importing one integration subpath no longer loads the declarations of the whole library.**
@@ -19,12 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2,230,423 to 2,112,646 bytes. A unit test fails if a subpath export reaches a root barrel again.
   The public API snapshot changes in one place: `apisixHelmReleaseReadinessEvaluator` and
   `traefikHelmReleaseReadinessEvaluator` now name `ReadinessEvaluator<unknown>` from core instead of
-  an `import()` type through the root barrel. It is the same alias with the same argument, but the
-  hasher records an aliased reference and an `import()` type differently.
+  an `import()` type through the root barrel. It is the same alias with the same argument. Through
+  the `import()` form the type checker drops the alias name, because `ReadinessEvaluator` is an
+  indexed-access type, so the hasher expanded it to its call signature.
 
 - Pin the direct and transitive `js-yaml` dependency to 4.3.2 to close
   GHSA-2883-xcg3-v3hh: empty merge sources now count toward the existing parser
   budget. Ordinary YAML load/dump authoring is unchanged.
+
+### Fixed
 
 - **Use `@kubernetes/client-node` 1.4.0 while preserving canonical CRD transport.** The SDK
   removed the overridable serialization hook. TypeKro now keeps CRD wire fields such as `enum`
@@ -80,6 +85,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the check, so an established integration cannot leave its budget by deleting it. Owner budgets
   plus the pool must fit `globalCapBytes`, and `sharedPoolBytes` must be a whole number, 0 or
   more. The report shows pool usage and flags pool overflow.
+
+## [0.43.0] - 2026-09-29
+
+### Added
 
 - **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal
   byte bounds: `storage.persistentQueue.compaction` and `storage.persistentQueue.sizer`.** The
@@ -1845,8 +1854,6 @@ It should print `object`. Deleting and recreating the RGD also works (KRO re-reg
 but destroys existing custom resources, so prefer the annotation. Do not enable it globally: it disables a real
 safety check, and a genuinely lossy change (narrowing a type, dropping a field) can strand existing CRs.
 
-## [0.43.0] - 2026-09-29
-
 ### Added
 
 - Operation-scoped Alchemy Kubernetes effect and rollback admission with fresh
@@ -2278,7 +2285,9 @@ safety check, and a genuinely lossy change (narrowing a type, dropping a field) 
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.44.0...HEAD
+[0.44.0]: https://github.com/yehudacohen/typekro/compare/v0.43.0...v0.44.0
+[0.43.0]: https://github.com/yehudacohen/typekro/releases/tag/v0.43.0
 [0.21.0]: https://github.com/yehudacohen/typekro/compare/v0.20.3...v0.21.0
 [0.20.3]: https://github.com/yehudacohen/typekro/compare/v0.20.2...v0.20.3
 [0.20.2]: https://github.com/yehudacohen/typekro/compare/v0.20.1...v0.20.2
