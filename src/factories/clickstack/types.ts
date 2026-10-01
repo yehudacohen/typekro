@@ -348,6 +348,11 @@ export interface ClickStackPersistentQueueOptions {
   queueSize?: number;
   /** `sending_queue.sizer` (default `'requests'`); `'bytes'` caps each signal queue, see docs. */
   sizer?: 'requests' | 'bytes';
+  /**
+   * `sending_queue.num_consumers`: how many exports each signal queue runs at
+   * once, 1 to 100. Unset, the collector's default of 10 applies. See docs.
+   */
+  numConsumers?: number;
   /** bbolt file compaction (rebound on by default). */
   compaction?: ClickStackQueueCompactionOptions;
   /**

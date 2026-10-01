@@ -1058,6 +1058,7 @@ exporters:
 | `batch.sizer` | `'items'` | `'items'` or `'bytes'` |
 | `batch.processorTimeout` | `'200ms'` | `10ms`–`5s`, shorter than `flushTimeout` |
 | `queueSize` | see below | positive integer |
+| `numConsumers` | unset (the collector's 10) | `1`–`100`; see [Export workers](#export-workers) |
 
 **Two sizers.** `queueSize` is the number of upstream requests each queue keeps: the queue uses
 its default `requests` sizer, and the collector enforces that capacity itself. (`sizer: 'bytes'`
@@ -1100,6 +1101,32 @@ supervisor manages the pipelines, so TypeKro does not rewrite them.
   dropping the separate `batch` processor once `sending_queue.batch` is used. TypeKro keeps it, with
   a short timeout, for the reason above.
 - **The batch is also held in memory** while it fills. Set `maxSize` to cap it under heavy load.
+
+#### Export workers
+
+`persistentQueue.numConsumers` sets `sending_queue.num_consumers` on every queued exporter. It is
+the number of exports each signal queue runs at once, so it is also the number of concurrent
+inserts each queue can send to ClickHouse. When it is unset, TypeKro renders nothing and the
+collector's default of 10 applies.
+
+```typescript
+persistentQueue: {
+  enabled: true,
+  numConsumers: 2,
+  batch: { flushTimeout: '30s', minSize: 50_000 },
+},
+```
+
+Fewer workers matter most after an outage. Once ClickHouse is reachable again, every worker starts
+draining the backlog at the same time. With batching in the queue, each worker sends a large
+batch, and 10 at once can push ClickHouse into insert timeouts. A timed-out insert that ClickHouse
+still committed is retried, so the same rows are written twice. Fewer workers with larger batches
+put less concurrent load on ClickHouse while a backlog drains. The value must be an integer from 1
+to 100.
+
+The HyperDX remote configuration that the OpAMP supervisor merges over this overlay defines the
+ClickHouse exporters without a `sending_queue`, so it does not override `num_consumers`. This was
+checked against HyperDX 2.35.0.
 
 #### Queue storage and compaction
 
