@@ -65,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tighter per-owner declaration budgets and a shared pool for new integrations.** Each owner's
   budget is now usage plus `max(4 KiB, 2%)` instead of `max(8 KiB, 5%)`. The bytes freed go to
-  `sharedPoolBytes` (136 KiB). New integrations listed in `pooledOwners` draw from it instead of
+  `sharedPoolBytes` (253 KiB). New integrations listed in `pooledOwners` draw from it instead of
   needing their own budget. An owner with neither a budget nor a pool entry, or with both, fails
   the check, so an established integration cannot leave its budget by deleting it. Owner budgets
   plus the pool must fit `globalCapBytes`, and `sharedPoolBytes` must be a whole number, 0 or

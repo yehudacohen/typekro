@@ -18,8 +18,8 @@
     },
     "apisix": {
       "files": 10,
-      "rawBytes": 18764,
-      "surfaceBytes": 13128,
+      "rawBytes": 18995,
+      "surfaceBytes": 13359,
       "docBytes": 5234,
       "commentBytes": 5636
     },
@@ -32,57 +32,57 @@
     },
     "cert-manager": {
       "files": 9,
-      "rawBytes": 40232,
-      "surfaceBytes": 30565,
+      "rawBytes": 40333,
+      "surfaceBytes": 30666,
       "docBytes": 9322,
       "commentBytes": 9667
     },
     "cilium": {
       "files": 9,
-      "rawBytes": 42759,
-      "surfaceBytes": 28094,
+      "rawBytes": 40932,
+      "surfaceBytes": 26267,
       "docBytes": 14332,
       "commentBytes": 14665
     },
     "clickhouse": {
       "files": 22,
-      "rawBytes": 154782,
-      "surfaceBytes": 42692,
+      "rawBytes": 154708,
+      "surfaceBytes": 42618,
       "docBytes": 111187,
       "commentBytes": 112090
     },
     "clickstack": {
       "files": 17,
-      "rawBytes": 162215,
-      "surfaceBytes": 45182,
+      "rawBytes": 157477,
+      "surfaceBytes": 40444,
       "docBytes": 116328,
       "commentBytes": 117033
     },
     "cnpg": {
       "files": 12,
-      "rawBytes": 29530,
-      "surfaceBytes": 16657,
+      "rawBytes": 29191,
+      "surfaceBytes": 16318,
       "docBytes": 12417,
       "commentBytes": 12873
     },
     "core": {
       "files": 268,
-      "rawBytes": 886302,
-      "surfaceBytes": 409440,
-      "docBytes": 465788,
-      "commentBytes": 476862
+      "rawBytes": 885379,
+      "surfaceBytes": 408343,
+      "docBytes": 465962,
+      "commentBytes": 477036
     },
     "dagster": {
       "files": 9,
-      "rawBytes": 67884,
-      "surfaceBytes": 49143,
+      "rawBytes": 54983,
+      "surfaceBytes": 36242,
       "docBytes": 18384,
       "commentBytes": 18741
     },
     "envoy-ai-gateway": {
       "files": 10,
-      "rawBytes": 25929,
-      "surfaceBytes": 21946,
+      "rawBytes": 25648,
+      "surfaceBytes": 21665,
       "docBytes": 3618,
       "commentBytes": 3983
     },
@@ -95,8 +95,8 @@
     },
     "external-dns": {
       "files": 7,
-      "rawBytes": 11188,
-      "surfaceBytes": 7459,
+      "rawBytes": 11330,
+      "surfaceBytes": 7601,
       "docBytes": 3461,
       "commentBytes": 3729
     },
@@ -109,78 +109,78 @@
     },
     "harbor": {
       "files": 13,
-      "rawBytes": 36544,
-      "surfaceBytes": 33262,
+      "rawBytes": 28820,
+      "surfaceBytes": 25538,
       "docBytes": 2747,
       "commentBytes": 3282
     },
     "hatchet": {
       "files": 6,
-      "rawBytes": 5806,
-      "surfaceBytes": 5089,
+      "rawBytes": 4977,
+      "surfaceBytes": 4260,
       "docBytes": 493,
       "commentBytes": 717
     },
     "inngest": {
       "files": 8,
-      "rawBytes": 16238,
-      "surfaceBytes": 10578,
+      "rawBytes": 13758,
+      "surfaceBytes": 8098,
       "docBytes": 5356,
       "commentBytes": 5660
     },
     "nats": {
       "files": 8,
-      "rawBytes": 11903,
-      "surfaceBytes": 9393,
+      "rawBytes": 11323,
+      "surfaceBytes": 8813,
       "docBytes": 2198,
       "commentBytes": 2510
     },
     "opensearch": {
       "files": 10,
-      "rawBytes": 15589,
-      "surfaceBytes": 14010,
+      "rawBytes": 15699,
+      "surfaceBytes": 14120,
       "docBytes": 1204,
       "commentBytes": 1579
     },
     "ory": {
       "files": 19,
-      "rawBytes": 302360,
-      "surfaceBytes": 278426,
+      "rawBytes": 224415,
+      "surfaceBytes": 200481,
       "docBytes": 23180,
       "commentBytes": 23934
     },
     "pebble": {
       "files": 6,
-      "rawBytes": 10223,
-      "surfaceBytes": 5898,
+      "rawBytes": 10157,
+      "surfaceBytes": 5832,
       "docBytes": 4105,
       "commentBytes": 4325
     },
     "rook": {
       "files": 16,
-      "rawBytes": 41612,
-      "surfaceBytes": 33546,
+      "rawBytes": 34601,
+      "surfaceBytes": 26535,
       "docBytes": 7339,
       "commentBytes": 8066
     },
     "searxng": {
       "files": 7,
-      "rawBytes": 11033,
-      "surfaceBytes": 5677,
+      "rawBytes": 11083,
+      "surfaceBytes": 5727,
       "docBytes": 5086,
       "commentBytes": 5356
     },
     "traefik": {
       "files": 16,
-      "rawBytes": 144843,
-      "surfaceBytes": 87591,
+      "rawBytes": 144126,
+      "surfaceBytes": 86874,
       "docBytes": 56622,
       "commentBytes": 57252
     },
     "valkey": {
       "files": 10,
-      "rawBytes": 17084,
-      "surfaceBytes": 8162,
+      "rawBytes": 17108,
+      "surfaceBytes": 8186,
       "docBytes": 8531,
       "commentBytes": 8922
     },
@@ -194,7 +194,7 @@
   },
   "reachable": {
     "files": 526,
-    "rawBytes": 2230423
+    "rawBytes": 2112646
   },
   "unreachable": {
     "files": 0,
