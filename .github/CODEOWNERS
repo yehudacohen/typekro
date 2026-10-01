@@ -1,0 +1,6 @@
+# Declaration ownership, budgets, the baseline, and the tool that enforces
+# them change what each integration may ship.
+/scripts/declaration-owners.json @yehudacohen
+/scripts/declaration-budgets.json @yehudacohen
+/scripts/declaration-baseline.json @yehudacohen
+/scripts/declaration-budgets/ @yehudacohen

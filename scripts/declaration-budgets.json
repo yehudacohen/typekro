@@ -1,0 +1,40 @@
+{
+  "$comment": "Per-owner raw-byte budgets for reachable declaration files. See scripts/declaration-budgets/README.md.",
+  "schemaVersion": 1,
+  "mode": "report",
+  "globalCapBytes": 2500000,
+  "headroom": {
+    "minBytes": 8192,
+    "fraction": 0.05
+  },
+  "docDropFraction": 0.2,
+  "owners": {
+    "advanced": 12544,
+    "alchemy": 101888,
+    "apisix": 27136,
+    "caddy": 19712,
+    "cert-manager": 48640,
+    "cilium": 51200,
+    "clickhouse": 163072,
+    "clickstack": 170496,
+    "cnpg": 37888,
+    "core": 930816,
+    "dagster": 76288,
+    "envoy-ai-gateway": 34304,
+    "experimental/planning": 12288,
+    "external-dns": 19456,
+    "gateway-api": 60160,
+    "harbor": 44800,
+    "hatchet": 14080,
+    "inngest": 24576,
+    "nats": 20224,
+    "opensearch": 23808,
+    "ory": 317696,
+    "pebble": 18432,
+    "rook": 49920,
+    "searxng": 19456,
+    "traefik": 153088,
+    "valkey": 25344,
+    "webapp": 20736
+  }
+}

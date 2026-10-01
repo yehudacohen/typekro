@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "packageVersion": "0.43.0",
+  "owners": {
+    "advanced": {
+      "files": 1,
+      "rawBytes": 4259,
+      "surfaceBytes": 3113,
+      "docBytes": 1111,
+      "commentBytes": 1146
+    },
+    "alchemy": {
+      "files": 16,
+      "rawBytes": 93690,
+      "surfaceBytes": 36838,
+      "docBytes": 56227,
+      "commentBytes": 56852
+    },
+    "apisix": {
+      "files": 10,
+      "rawBytes": 18764,
+      "surfaceBytes": 13128,
+      "docBytes": 5234,
+      "commentBytes": 5636
+    },
+    "caddy": {
+      "files": 6,
+      "rawBytes": 11508,
+      "surfaceBytes": 3941,
+      "docBytes": 7345,
+      "commentBytes": 7567
+    },
+    "cert-manager": {
+      "files": 9,
+      "rawBytes": 40232,
+      "surfaceBytes": 30565,
+      "docBytes": 9322,
+      "commentBytes": 9667
+    },
+    "cilium": {
+      "files": 9,
+      "rawBytes": 42759,
+      "surfaceBytes": 28094,
+      "docBytes": 14332,
+      "commentBytes": 14665
+    },
+    "clickhouse": {
+      "files": 22,
+      "rawBytes": 154782,
+      "surfaceBytes": 42692,
+      "docBytes": 111187,
+      "commentBytes": 112090
+    },
+    "clickstack": {
+      "files": 17,
+      "rawBytes": 162215,
+      "surfaceBytes": 45182,
+      "docBytes": 116328,
+      "commentBytes": 117033
+    },
+    "cnpg": {
+      "files": 12,
+      "rawBytes": 29530,
+      "surfaceBytes": 16657,
+      "docBytes": 12417,
+      "commentBytes": 12873
+    },
+    "core": {
+      "files": 268,
+      "rawBytes": 886302,
+      "surfaceBytes": 409440,
+      "docBytes": 465788,
+      "commentBytes": 476862
+    },
+    "dagster": {
+      "files": 9,
+      "rawBytes": 67884,
+      "surfaceBytes": 49143,
+      "docBytes": 18384,
+      "commentBytes": 18741
+    },
+    "envoy-ai-gateway": {
+      "files": 10,
+      "rawBytes": 25929,
+      "surfaceBytes": 21946,
+      "docBytes": 3618,
+      "commentBytes": 3983
+    },
+    "experimental/planning": {
+      "files": 1,
+      "rawBytes": 3899,
+      "surfaceBytes": 3323,
+      "docBytes": 525,
+      "commentBytes": 576
+    },
+    "external-dns": {
+      "files": 7,
+      "rawBytes": 11188,
+      "surfaceBytes": 7459,
+      "docBytes": 3461,
+      "commentBytes": 3729
+    },
+    "gateway-api": {
+      "files": 6,
+      "rawBytes": 51773,
+      "surfaceBytes": 38769,
+      "docBytes": 12784,
+      "commentBytes": 13004
+    },
+    "harbor": {
+      "files": 13,
+      "rawBytes": 36544,
+      "surfaceBytes": 33262,
+      "docBytes": 2747,
+      "commentBytes": 3282
+    },
+    "hatchet": {
+      "files": 6,
+      "rawBytes": 5806,
+      "surfaceBytes": 5089,
+      "docBytes": 493,
+      "commentBytes": 717
+    },
+    "inngest": {
+      "files": 8,
+      "rawBytes": 16238,
+      "surfaceBytes": 10578,
+      "docBytes": 5356,
+      "commentBytes": 5660
+    },
+    "nats": {
+      "files": 8,
+      "rawBytes": 11903,
+      "surfaceBytes": 9393,
+      "docBytes": 2198,
+      "commentBytes": 2510
+    },
+    "opensearch": {
+      "files": 10,
+      "rawBytes": 15589,
+      "surfaceBytes": 14010,
+      "docBytes": 1204,
+      "commentBytes": 1579
+    },
+    "ory": {
+      "files": 19,
+      "rawBytes": 302360,
+      "surfaceBytes": 278426,
+      "docBytes": 23180,
+      "commentBytes": 23934
+    },
+    "pebble": {
+      "files": 6,
+      "rawBytes": 10223,
+      "surfaceBytes": 5898,
+      "docBytes": 4105,
+      "commentBytes": 4325
+    },
+    "rook": {
+      "files": 16,
+      "rawBytes": 41612,
+      "surfaceBytes": 33546,
+      "docBytes": 7339,
+      "commentBytes": 8066
+    },
+    "searxng": {
+      "files": 7,
+      "rawBytes": 11033,
+      "surfaceBytes": 5677,
+      "docBytes": 5086,
+      "commentBytes": 5356
+    },
+    "traefik": {
+      "files": 16,
+      "rawBytes": 144843,
+      "surfaceBytes": 87591,
+      "docBytes": 56622,
+      "commentBytes": 57252
+    },
+    "valkey": {
+      "files": 10,
+      "rawBytes": 17084,
+      "surfaceBytes": 8162,
+      "docBytes": 8531,
+      "commentBytes": 8922
+    },
+    "webapp": {
+      "files": 4,
+      "rawBytes": 12474,
+      "surfaceBytes": 5636,
+      "docBytes": 6680,
+      "commentBytes": 6838
+    }
+  },
+  "reachable": {
+    "files": 526,
+    "rawBytes": 2230423
+  },
+  "unreachable": {
+    "files": 96,
+    "rawBytes": 269526
+  },
+  "edges": [
+    "apisix -> cert-manager",
+    "core -> alchemy",
+    "envoy-ai-gateway -> gateway-api",
+    "external-dns -> cert-manager",
+    "ory -> cert-manager",
+    "traefik -> cert-manager",
+    "traefik -> gateway-api",
+    "webapp -> valkey"
+  ]
+}

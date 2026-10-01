@@ -59,6 +59,7 @@ bun run typecheck      # TypeScript type checking
 bun run lint           # Lint code
 bun run format         # Format code with Biome
 bun run quality        # Run all quality checks
+bun run check:declaration-budgets  # Per-owner declaration budgets (after build:lib)
 
 # Examples
 bun run build:examples # Build example files
@@ -326,6 +327,10 @@ Add your factory to the appropriate index file:
 // src/factories/kubernetes/workloads/index.ts
 export * from './my-resource.js';
 ```
+
+New integrations get their own subpath export and a small declaration budget. Do not add them
+to `src/factories/index.ts`. See
+[scripts/declaration-budgets/README.md](scripts/declaration-budgets/README.md#adding-a-new-integration).
 
 ### 5. Add Tests
 

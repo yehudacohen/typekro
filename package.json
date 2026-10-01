@@ -157,6 +157,7 @@
     "build": "bun run clean && bun run lint && bun run typecheck && bun run build:lib && bun run build:examples",
     "build:lib": "bun tsc",
     "build:examples": "bun tsc --project tsconfig.examples.json",
+    "check:declaration-budgets": "bun run scripts/declaration-budgets/cli.ts",
     "check:effect-cohort": "bun run scripts/check-effect-cohort.ts",
     "dev": "bun tsc --watch",
     "test": "./scripts/run-unit-tests.sh",

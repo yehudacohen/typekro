@@ -1,0 +1,195 @@
+{
+  "$comment": "Reviewed ownership map for emitted declaration files. See scripts/declaration-budgets/README.md.",
+  "schemaVersion": 1,
+  "declarationRoot": "dist",
+  "coreOwner": "core",
+  "owners": [
+    {
+      "owner": "core",
+      "$comment": "Core: src/core, src/utils, and the base factories kubernetes, helm, flux, kro and simple (typekro/containers lives in src/core/containers). Also core-like: shared/** holds the brand symbols that utils and core both build on; compositions/** is the typekro runtime bootstrap re-exported from the root, built only from core factories; aspects.d.ts is the typekro/aspects entry, a barrel over core/aspects; index.d.ts and factories/index.d.ts are the root barrels.",
+      "paths": [
+        "index.d.ts",
+        "aspects.d.ts",
+        "core/**",
+        "utils/**",
+        "shared/**",
+        "compositions/**",
+        "factories/index.d.ts",
+        "factories/kubernetes/**",
+        "factories/helm/**",
+        "factories/flux/**",
+        "factories/kro/**",
+        "factories/simple/**"
+      ]
+    },
+    {
+      "owner": "alchemy",
+      "paths": ["alchemy/**"]
+    },
+    {
+      "owner": "advanced",
+      "paths": ["advanced/**"]
+    },
+    {
+      "owner": "experimental/planning",
+      "paths": ["experimental-planning.d.ts"]
+    },
+    {
+      "owner": "apisix",
+      "paths": ["factories/apisix/**"]
+    },
+    {
+      "owner": "caddy",
+      "paths": ["factories/caddy/**"]
+    },
+    {
+      "owner": "cert-manager",
+      "paths": ["factories/cert-manager/**"]
+    },
+    {
+      "owner": "cilium",
+      "paths": ["factories/cilium/**"]
+    },
+    {
+      "owner": "clickhouse",
+      "paths": ["factories/clickhouse/**"]
+    },
+    {
+      "owner": "clickstack",
+      "paths": ["factories/clickstack/**"]
+    },
+    {
+      "owner": "cnpg",
+      "paths": ["factories/cnpg/**"]
+    },
+    {
+      "owner": "dagster",
+      "paths": ["factories/dagster/**"]
+    },
+    {
+      "owner": "envoy-ai-gateway",
+      "paths": ["factories/envoy-ai-gateway/**"]
+    },
+    {
+      "owner": "external-dns",
+      "paths": ["factories/external-dns/**"]
+    },
+    {
+      "owner": "gateway-api",
+      "paths": ["factories/gateway-api/**"]
+    },
+    {
+      "owner": "harbor",
+      "paths": ["factories/harbor/**"]
+    },
+    {
+      "owner": "hatchet",
+      "paths": ["factories/hatchet/**"]
+    },
+    {
+      "owner": "inngest",
+      "paths": ["factories/inngest/**"]
+    },
+    {
+      "owner": "nats",
+      "paths": ["factories/nats/**"]
+    },
+    {
+      "owner": "opensearch",
+      "paths": ["factories/opensearch/**"]
+    },
+    {
+      "owner": "ory",
+      "paths": ["factories/ory/**"]
+    },
+    {
+      "owner": "pebble",
+      "paths": ["factories/pebble/**"]
+    },
+    {
+      "owner": "rook",
+      "paths": ["factories/rook/**"]
+    },
+    {
+      "owner": "searxng",
+      "paths": ["factories/searxng/**"]
+    },
+    {
+      "owner": "traefik",
+      "paths": ["factories/traefik/**"]
+    },
+    {
+      "owner": "valkey",
+      "paths": ["factories/valkey/**"]
+    },
+    {
+      "owner": "webapp",
+      "paths": ["factories/webapp/**"]
+    }
+  ],
+  "rootBarrels": ["index.d.ts", "factories/index.d.ts"],
+  "rootEntry": {
+    "$comment": "Core plus the integrations src/factories/index.ts re-exported when per-owner budgets were introduced (alchemy is reached through core deployment types). Do not add new integrations here: ship them as their own subpath export.",
+    "export": ".",
+    "allowedOwners": [
+      "core",
+      "alchemy",
+      "apisix",
+      "cert-manager",
+      "cilium",
+      "clickstack",
+      "envoy-ai-gateway",
+      "external-dns",
+      "gateway-api",
+      "harbor",
+      "hatchet",
+      "nats",
+      "ory",
+      "pebble",
+      "rook",
+      "traefik"
+    ]
+  },
+  "allowedEdges": [
+    {
+      "from": "apisix",
+      "to": "cert-manager",
+      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core."
+    },
+    {
+      "from": "core",
+      "to": "alchemy",
+      "reason": "Deployment option types reference the alchemy scope types."
+    },
+    {
+      "from": "envoy-ai-gateway",
+      "to": "gateway-api",
+      "reason": "Envoy AI Gateway builds on Gateway API resources."
+    },
+    {
+      "from": "external-dns",
+      "to": "cert-manager",
+      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core."
+    },
+    {
+      "from": "ory",
+      "to": "cert-manager",
+      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core."
+    },
+    {
+      "from": "traefik",
+      "to": "cert-manager",
+      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core."
+    },
+    {
+      "from": "traefik",
+      "to": "gateway-api",
+      "reason": "Traefik's Gateway API provider wraps gateway-api resources."
+    },
+    {
+      "from": "webapp",
+      "to": "valkey",
+      "reason": "The webapp composition can provision a Valkey cache."
+    }
+  ]
+}

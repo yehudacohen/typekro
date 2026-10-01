@@ -656,6 +656,10 @@ because it passes when invoked directly. It must participate in the repository h
 Also update:
 - `docs/.vitepress/config.ts` — sidebar nav entry (alphabetical in Ecosystems)
 - `package.json` — `"./{name}"` export with `import` and `types` paths
+- `scripts/declaration-owners.json` and `scripts/declaration-budgets.json` — an owner rule and a
+  small declaration budget for `factories/{name}/**` (see `scripts/declaration-budgets/README.md`)
+- Do **not** re-export the integration from `src/factories/index.ts`; new integrations are
+  subpath-only
 
 #### Step 8: Build, lint, and self-review checklist
 
@@ -768,6 +772,7 @@ Then verify each item:
 - [ ] Direct-only options are explicitly labeled; docs do not promise KRO behavior for instance shapes the KRO factory rejects
 - [ ] Sidebar nav entry added (alphabetical order)
 - [ ] `package.json` export added
+- [ ] Declaration owner rule and budget added; `bun run check:declaration-budgets` passes
 - [ ] JSDoc on all public APIs with `@example`
 - [ ] JSDoc version strings match the `DEFAULT_*_VERSION` constant exactly (no `v` prefix mismatch)
 
