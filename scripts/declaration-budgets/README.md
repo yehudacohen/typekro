@@ -13,9 +13,11 @@ bun run check:declaration-budgets --why dist/factories/ory/index.d.ts
 bun run check:declaration-budgets --list-unreachable
 bun run check:declaration-budgets --write-baseline    # refresh scripts/declaration-baseline.json
 bun run check:declaration-budgets --suggest-budgets   # reset budgets to usage + headroom
+bun run check:public-api                              # compare exports with the snapshot
+bun run check:public-api --update                     # accept an intended API change
 ```
 
-In CI it runs after the build and appends its report to the GitHub step summary.
+In CI both run after the build. The budget report goes to the GitHub step summary.
 
 ## How usage is measured
 
@@ -87,8 +89,105 @@ These are report-only for now:
   inferred type that the root barrel re-exports. The importing entry then reaches every file
   the root reaches. An explicit type annotation that imports from the defining core module
   avoids this.
-- **Unreachable files.** Emitted declarations that no entry reaches. They still ship in the
-  package.
+- **Unreachable files.** Emitted declarations that no entry reaches. `build:lib` prunes them
+  (see below), so this is normally zero.
+
+## Pruning unreachable declarations
+
+`bun run build:lib` runs `tsc` without incremental state, then
+[`prune.ts`](prune.ts). The prune step deletes every emitted `.d.ts` (and its `.d.ts.map`)
+that no public export reaches. Runtime `.js` files are never touched. A declaration file
+that no entry reaches cannot affect a consumer's types. The prune step deletes nothing if any export cannot be resolved to its declarations, or if a
+reachable file has an unresolved relative import. A partial graph could otherwise delete a
+public entry's declarations. Exports are read through the full condition tree: nested
+conditions and fallback arrays. Every condition branch counts, whatever its order, because
+the branch TypeScript picks depends on the consumer's resolution mode and `customConditions`.
+Subpath keys follow Node's exports algorithm: an exact key beats any pattern, and the most
+specific pattern wins, including against a `null` pattern. A fixture test compares the result
+with TypeScript's own module resolution. An unresolved import usually means `dist/` is
+stale: run `bun run clean && bun run build:lib`.
+
+`bun run dev` (watch mode) does not prune.
+
+## Public API snapshot
+
+[`scripts/public-api-snapshot.txt`](../public-api-snapshot.txt) has one line per public symbol.
+Each line gives the export, the symbol, its kind and a hash of its declared shape. The kind is
+`value`, `type` or `namespace`, joined with `+` for merges such as a function or class merged
+with a namespace. A symbol that consumers can only reach through type-only exports is listed as
+`type`, even for a class or function. That covers `export type { C as Y }` and every `export *`
+/ `export type *` chain, nested or mixed, that has a type-only link; the checker does not record
+star re-exports as aliases, so the snapshot walks those chains itself. A test checks that the
+kind column matches what TypeScript lets a consumer use as a value. Namespace members are listed at any depth
+(`outer.inner.value`).
+
+The hash is structural ([`type-shape.ts`](type-shape.ts)). For each symbol it covers the value
+type, the declared type with its type parameters, class abstractness, and the namespace side of
+a merge. It follows every type these depend on, recursively:
+
+- **Public exports** that have their own line are referenced by public name plus type
+  arguments. A change to one changes its own line, not the lines that mention it. A reference to
+  a public value's own type (`typeof C` for a class's constructor, an enum object or a function)
+  is tagged as such, so `f(): C` and `f(): typeof C` differ.
+  - This applies to named references only. `keyof X`, `X["a"]` and a mapped type over a public
+    `X` written inline are resolved eagerly by TypeScript into the resulting keys, property type
+    or members, so the referencing line does change when `X` changes.
+- **Dependency and TypeScript lib types** are referenced by module path and name plus type
+  arguments. Their internals are not hashed; the lockfile pins them.
+- **Instantiations of non-exported generic aliases** are hashed as the alias body, expanded once
+  generically, plus the hashed type arguments. So `Opt<Q>` and `Opt<R>` differ even when `Q` and
+  `R` are public types with the same members.
+- **Everything else is expanded**: non-exported interfaces, classes and enums, anonymous object
+  and function types, unions, intersections, tuples, and indexed-access and template literal
+  types.
+  - Generic mapped and deferred conditional types use the checker's instantiated type parameter,
+    constraint, template and branch types, so their type arguments count.
+  - Members carry their name and modifiers: optional, readonly, public, protected or private,
+    abstract, and method or accessor shape (getter, setter and setter parameter type). Keys that
+    are unique symbols or private names (`#x`) are named by their declaration, never by
+    TypeScript's internal symbol ids.
+  - Call and construct signatures carry type parameters with constraints and defaults, parameter
+    types with optional and rest markers, `this`, return types and type predicates. Construct
+    signatures also carry constructor visibility and class abstractness.
+  - Index signatures are hashed with their key and value types and readonly flag.
+  - An enum literal is hashed by its enum's identity (public name, or the hidden enum's members),
+    its member name and its value. So `"a"`, `E.A` and `F.A` all differ.
+  - Inherited members are part of a type's members, so `extends` is covered.
+
+**What is deliberately not hashed:**
+
+- The names of non-exported types. Renaming one without changing its structure leaves the
+  snapshot unchanged. Private `#field` names are hashed, which is harmless: tsc emits them as a
+  single `#private;` member, so renaming one does not reach the declarations.
+- Parameter names. Type parameter names are hashed.
+- `implements` clauses, which don't change a class's shape.
+
+**Known limits:**
+
+- A setter's parameter type is taken from its declaration, so in an instantiated generic class it
+  is hashed uninstantiated. Getter and property types are instantiated.
+- Expansion stops at a depth of 64 (`MAX_DEPTH`), which bounds generics that expand forever
+  (`Deep<T[]>`). A structural change deeper than that inside one symbol's hash is not seen.
+- A module that uses `export =` gets no member lines. The package is ESM-only, so none do today.
+
+**TypeScript internals.** A few parts have no public TypeScript API: the instantiated branches
+of conditional types, the parameter, template, name and modifiers types of mapped types, the key
+of symbol-keyed properties, check flags of transient symbols, and type-only alias detection. The
+hasher asks the checker to build the type's node, which computes and caches those, then reads
+them. If a field is missing, it stops with an error that names the field and the TypeScript
+version, rather than hashing less. This depends on the TypeScript 5.x JavaScript API. TypeScript 7
+(the native port) will not expose it, so the hasher will need a rewrite then.
+
+**Stability.** Recursive types terminate: a type already being expanded is written as a
+back-reference. Only acyclic expansions below the depth cap are reused, so no hash depends on the
+order symbols are visited in or on unrelated exports. Hashes contain no absolute paths, so the
+snapshot is the same in every checkout. Tests check hashing in reversed and shuffled order, with
+an unrelated export added, and from a relocated copy.
+
+Adding or removing a public symbol, changing its kind, or changing any hashed part of a public
+declaration (as listed above) changes the snapshot. CI fails until you review the change and
+accept it with `bun run check:public-api --update`. A declaration-only change, such as a
+strip-down step, must leave the snapshot unchanged.
 
 ## Budgets
 

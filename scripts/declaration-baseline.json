@@ -197,8 +197,8 @@
     "rawBytes": 2230423
   },
   "unreachable": {
-    "files": 96,
-    "rawBytes": 269526
+    "files": 0,
+    "rawBytes": 0
   },
   "edges": [
     "apisix -> cert-manager",

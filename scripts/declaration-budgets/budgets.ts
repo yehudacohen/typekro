@@ -1,7 +1,7 @@
 /**
  * Budget evaluation for per-owner declaration usage. Pure functions only.
  */
-import type { Attribution, ByteStats, OwnerUsage } from './graph.js';
+import { type Attribution, type ByteStats, compareText, type OwnerUsage } from './graph.js';
 
 export interface BudgetsConfig {
   /** `report` never fails on budget overruns; `enforce` does. */
@@ -135,7 +135,7 @@ export function evaluateBudgets(
     );
   }
 
-  rows.sort((a, b) => b.usage.rawBytes - a.usage.rawBytes || a.owner.localeCompare(b.owner));
+  rows.sort((a, b) => b.usage.rawBytes - a.usage.rawBytes || compareText(a.owner, b.owner));
   return { rows, reachableRawBytes, budgetSum, configErrors, overruns, docDrops };
 }
 
@@ -144,7 +144,7 @@ export function toBaseline(attribution: Attribution, packageVersion: string): Ba
   let files = 0;
   let rawBytes = 0;
   for (const [owner, usage] of [...attribution.owners.entries()].sort(([a], [b]) =>
-    a.localeCompare(b)
+    compareText(a, b)
   )) {
     owners[owner] = {
       files: usage.files,

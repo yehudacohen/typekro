@@ -155,10 +155,11 @@
   ],
   "scripts": {
     "build": "bun run clean && bun run lint && bun run typecheck && bun run build:lib && bun run build:examples",
-    "build:lib": "bun tsc",
+    "build:lib": "bun tsc --incremental false && bun run scripts/declaration-budgets/prune.ts",
     "build:examples": "bun tsc --project tsconfig.examples.json",
     "check:declaration-budgets": "bun run scripts/declaration-budgets/cli.ts",
     "check:effect-cohort": "bun run scripts/check-effect-cohort.ts",
+    "check:public-api": "bun run scripts/declaration-budgets/api-snapshot.ts",
     "dev": "bun tsc --watch",
     "test": "./scripts/run-unit-tests.sh",
     "test:coverage": "rm -rf coverage && bun test --randomize --seed=117 --coverage --coverage-reporter=lcov --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",

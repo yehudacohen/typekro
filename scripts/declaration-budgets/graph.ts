@@ -46,13 +46,17 @@ export interface MissingImport {
 export interface DeclarationGraph {
   /** Every file reachable from at least one entry, keyed by path. */
   files: Map<string, DeclarationFile>;
-  /** Declaration path of each public entry. */
-  roots: Map<string, string>;
+  /** Declaration paths of each public entry (several when conditions differ). */
+  roots: Map<string, string[]>;
   /** Reachable file set for each public entry. */
   entries: Map<string, Set<string>>;
   /** Relative specifiers that did not resolve to an emitted declaration file. */
   missing: MissingImport[];
 }
+
+/** Code-point order, so output is identical on every machine and locale. */
+export const compareText = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
 
 const utf8Bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
 
@@ -207,10 +211,10 @@ export function resolveSpecifier(
  * Walks the declaration import graph from every public entry.
  *
  * @param entries - map of export name (for example `"."` or `"./traefik"`) to its
- *   declaration path relative to the package root (for example `"dist/index.d.ts"`).
+ *   declaration path(s) relative to the package root (for example `"dist/index.d.ts"`).
  */
 export function walkDeclarationGraph(
-  entries: Record<string, string>,
+  entries: Record<string, string | readonly string[]>,
   host: DeclarationHost
 ): DeclarationGraph {
   const files = new Map<string, DeclarationFile>();
@@ -239,12 +243,14 @@ export function walkDeclarationGraph(
   };
 
   const entrySets = new Map<string, Set<string>>();
-  const roots = new Map<string, string>();
-  for (const [entryName, entryPath] of Object.entries(entries)) {
+  const roots = new Map<string, string[]>();
+  for (const [entryName, entryPaths] of Object.entries(entries)) {
     const seen = new Set<string>();
-    const root = posix.normalize(entryPath);
-    roots.set(entryName, root);
-    const queue = [root];
+    const entryRoots = (typeof entryPaths === 'string' ? [entryPaths] : [...entryPaths]).map(
+      (path) => posix.normalize(path)
+    );
+    roots.set(entryName, entryRoots);
+    const queue = [...entryRoots];
     while (queue.length > 0) {
       const path = queue.pop() as string;
       if (seen.has(path)) continue;
@@ -266,7 +272,7 @@ export function walkDeclarationGraph(
 export function importChain(graph: DeclarationGraph, target: string): string[] | undefined {
   const previous = new Map<string, string | null>();
   const queue: string[] = [];
-  for (const root of new Set(graph.roots.values())) {
+  for (const root of new Set([...graph.roots.values()].flat())) {
     if (!graph.files.has(root)) continue;
     previous.set(root, null);
     queue.push(root);
@@ -432,7 +438,7 @@ export function attribute(
   const edgeImports = new Map<string, OwnerEdge>();
   const barrelImports: Attribution['barrelImports'] = [];
 
-  for (const file of [...graph.files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const file of [...graph.files.values()].sort((a, b) => compareText(a.path, b.path))) {
     const owner = ownerOf(file.path);
     if (owner === undefined) {
       unowned.push(file.path);
@@ -466,7 +472,7 @@ export function attribute(
   const unreachable = emitted
     .filter((file) => !reachable.has(file.path))
     .map((file) => ({ ...file, owner: ownerOf(file.path) }))
-    .sort((a, b) => b.rawBytes - a.rawBytes || a.path.localeCompare(b.path));
+    .sort((a, b) => b.rawBytes - a.rawBytes || compareText(a.path, b.path));
 
   const entries: EntryUsage[] = [...graph.entries.entries()]
     .map(([name, set]) => {
@@ -478,7 +484,7 @@ export function attribute(
       }
       return { export: name, files: set.size, rawBytes, owners: [...entryOwners].sort() };
     })
-    .sort((a, b) => a.export.localeCompare(b.export));
+    .sort((a, b) => compareText(a.export, b.export));
 
   const rootEntryViolations: Attribution['rootEntryViolations'] = [];
   const rootSet = graph.entries.get(config.rootEntry.export);
@@ -490,14 +496,14 @@ export function attribute(
       if (allowed.has(owner)) continue;
       byOwner.set(owner, [...(byOwner.get(owner) ?? []), path]);
     }
-    for (const [owner, files] of [...byOwner.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [owner, files] of [...byOwner.entries()].sort(([a], [b]) => compareText(a, b))) {
       rootEntryViolations.push({ owner, files: files.sort() });
     }
   }
 
   const edges = [...edgeImports.values()]
     .map((edge) => ({ ...edge, imports: edge.imports.sort() }))
-    .sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+    .sort((a, b) => compareText(a.from, b.from) || compareText(a.to, b.to));
 
   return {
     owners,
