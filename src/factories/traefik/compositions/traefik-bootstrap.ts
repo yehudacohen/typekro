@@ -38,6 +38,7 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { service } from '../../kubernetes/networking/service.js';
@@ -158,7 +159,12 @@ function chartVersionExpression(resourceId: string): string {
  * });
  * ```
  */
-export function makeTraefikBootstrap(options: TraefikBootstrapBuildOptions = {}) {
+export function makeTraefikBootstrap(
+  options: TraefikBootstrapBuildOptions = {}
+): CallableComposition<
+  typeof TraefikBootstrapConfigSchema.infer,
+  typeof TraefikBootstrapStatusSchema.infer
+> {
   const ownsNamespace = (options.namespaceOwnership ?? 'owned') === 'owned';
   const redirectWebToWebsecure = options.redirectWebToWebsecure ?? true;
   const defaultTlsOption = options.defaultTlsOption;

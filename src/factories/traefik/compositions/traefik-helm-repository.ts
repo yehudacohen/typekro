@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { traefikHelmRepository } from '../resources/helm.js';
 import {
   TraefikHelmRepositorySingletonSpecSchema,
@@ -14,7 +15,10 @@ import {
  * deleting or relabeling the repository another `HelmRelease` still resolves
  * against.
  */
-export const traefikHelmRepositoryBootstrap = kubernetesComposition(
+export const traefikHelmRepositoryBootstrap: CallableComposition<
+  typeof TraefikHelmRepositorySingletonSpecSchema.infer,
+  typeof TraefikHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'traefik-helm-repository',
     kind: 'TraefikHelmRepository',

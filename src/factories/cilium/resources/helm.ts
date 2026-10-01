@@ -7,6 +7,7 @@
  * while reusing existing readiness evaluators.
  */
 
+import type { Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   type HelmRepositorySpec,
@@ -59,7 +60,9 @@ import type {
 /** Cilium HelmRepository readiness evaluator (delegates to shared implementation) */
 const ciliumHelmRepositoryReadinessEvaluator = createHelmRepositoryReadinessEvaluator('Cilium');
 
-export function ciliumHelmRepository(config: CiliumHelmRepositoryConfig) {
+export function ciliumHelmRepository(
+  config: CiliumHelmRepositoryConfig
+): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   // For Kro deployments, we need to avoid status expectations that conflict with actual Flux status
   // Create the resource directly without status template to avoid Kro controller conflicts
   return createResource<HelmRepositorySpec, HelmRepositoryStatus>({
@@ -121,7 +124,9 @@ export function ciliumHelmRepository(config: CiliumHelmRepositoryConfig) {
  * });
  * ```
  */
-export function ciliumHelmRelease(config: CiliumHelmReleaseConfig) {
+export function ciliumHelmRelease(
+  config: CiliumHelmReleaseConfig
+): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({

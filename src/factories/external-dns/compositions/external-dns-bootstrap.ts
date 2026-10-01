@@ -3,6 +3,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { getInnerCelPath } from '../../../core/serialization/cel-references.js';
 import type { CelExpression } from '../../../core/types/common.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -170,7 +171,10 @@ function buildHelmValues(config: ExternalDnsHelmValues): ExternalDnsHelmValueInp
  * });
  * ```
  */
-export const externalDnsBootstrap = kubernetesComposition(
+export const externalDnsBootstrap: CallableComposition<
+  typeof ExternalDnsBootstrapConfigSchema.infer,
+  typeof ExternalDnsBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'external-dns-bootstrap',
     // apiVersion defaults to 'v1alpha1' and Kro adds kro.run group automatically

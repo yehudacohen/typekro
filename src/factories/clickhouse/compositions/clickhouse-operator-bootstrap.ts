@@ -2,6 +2,7 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
@@ -58,7 +59,10 @@ import { clickhouseHelmRepositoryBootstrap } from './clickhouse-helm-repository.
  * });
  * ```
  */
-export const clickhouseOperatorBootstrap = kubernetesComposition(
+export const clickhouseOperatorBootstrap: CallableComposition<
+  typeof ClickHouseOperatorBootstrapConfigSchema.infer,
+  typeof ClickHouseOperatorBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'clickhouse-operator-bootstrap',
     kind: 'ClickHouseOperatorBootstrap',

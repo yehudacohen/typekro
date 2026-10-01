@@ -2,6 +2,7 @@
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { objectBucketClaim } from '../resources/object-bucket-claim.js';
 import {
@@ -22,7 +23,10 @@ import {
  * KRO's continuous server-side apply races the OBC provisioner's metadata and
  * status updates, even for fixed-name buckets.
  */
-export const rookObjectStorageClaim = kubernetesComposition(
+export const rookObjectStorageClaim: CallableComposition<
+  typeof RookObjectStorageClaimConfigSchema.infer,
+  typeof RookObjectStorageClaimStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'rook-object-storage-claim',
     kind: 'RookObjectStorageClaim',

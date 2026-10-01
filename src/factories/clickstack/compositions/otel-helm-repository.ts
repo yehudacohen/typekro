@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { otelHelmRepository } from '../resources/helm.js';
 import {
   OtelHelmRepositorySingletonSpecSchema,
@@ -16,7 +17,10 @@ import {
  * same ApplySet-ownership reason documented on
  * `clickstackHelmRepositoryBootstrap`.
  */
-export const otelHelmRepositoryBootstrap = kubernetesComposition(
+export const otelHelmRepositoryBootstrap: CallableComposition<
+  typeof OtelHelmRepositorySingletonSpecSchema.infer,
+  typeof OtelHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'opentelemetry-helm-repository',
     kind: 'OpenTelemetryHelmRepository',

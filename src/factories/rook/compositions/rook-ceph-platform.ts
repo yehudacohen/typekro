@@ -6,6 +6,7 @@ import {
 } from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
 import { observedResource } from '../../../core/references/external-refs.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { cephObjectStore } from '../resources/ceph-object-store.js';
@@ -43,7 +44,10 @@ type CephClusterSpec = Record<string, never>;
  * This profile is deliberately replication-one and not highly available. It owns the operator and
  * cluster lifecycle but leaves OBC claims and retained buckets outside consumer graphs.
  */
-export const rookCephSingleNodePlatform = kubernetesComposition(
+export const rookCephSingleNodePlatform: CallableComposition<
+  typeof RookCephSingleNodePlatformConfigSchema.infer,
+  typeof RookCephPlatformStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'rook-ceph-single-node-platform',
     kind: 'RookCephSingleNodePlatform',
@@ -192,7 +196,10 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
 );
 
 /** Complete multi-node production Rook/Ceph platform with mandatory safety decisions. */
-export const rookCephProductionPlatform = kubernetesComposition(
+export const rookCephProductionPlatform: CallableComposition<
+  typeof RookCephProductionPlatformConfigSchema.infer,
+  typeof RookCephPlatformStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'rook-ceph-production-platform',
     kind: 'RookCephProductionPlatform',
@@ -334,7 +341,10 @@ export const rookCephProductionPlatform = kubernetesComposition(
  * keep it running until this cluster and any operator-owned CSI descendants
  * have completed deletion.
  */
-export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
+export const rookCephExternalOperatorSingleNodePlatform: CallableComposition<
+  typeof RookCephExternalOperatorSingleNodePlatformConfigSchema.infer,
+  typeof RookCephPlatformStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'rook-ceph-external-operator-single-node-platform',
     kind: 'RookCephExternalOperatorSingleNodePlatform',

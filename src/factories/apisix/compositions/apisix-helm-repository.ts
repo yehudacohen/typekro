@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { apisixHelmRepository } from '../resources/helm.js';
 import {
   APISixHelmRepositorySingletonSpecSchema,
@@ -13,7 +14,10 @@ import {
  * source outside consumer ownership prevents one instance from deleting or
  * relabeling the repository used by another installation.
  */
-export const apisixHelmRepositoryBootstrap = kubernetesComposition(
+export const apisixHelmRepositoryBootstrap: CallableComposition<
+  typeof APISixHelmRepositorySingletonSpecSchema.infer,
+  typeof APISixHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'apisix-helm-repository',
     kind: 'APISixHelmRepository',

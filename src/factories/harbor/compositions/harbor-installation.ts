@@ -1,6 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import { observedResource } from '../../../core/references/external-refs.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { certificate } from '../../cert-manager/resources/certificates.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
@@ -30,7 +31,10 @@ import {
 const DEFAULT_HARBOR_NAMESPACE = 'harbor-system';
 
 /** Install the official Harbor chart with a bounded, explicitly non-HA development profile. */
-export const harborLocalInstallation = kubernetesComposition(
+export const harborLocalInstallation: CallableComposition<
+  typeof HarborLocalInstallationConfigSchema.infer,
+  typeof HarborInstallationStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'harbor-local-installation',
     kind: 'HarborLocalInstallation',
@@ -41,7 +45,10 @@ export const harborLocalInstallation = kubernetesComposition(
 );
 
 /** Install the official Harbor chart with external state and HA component requirements. */
-export const harborProductionInstallation = kubernetesComposition(
+export const harborProductionInstallation: CallableComposition<
+  typeof HarborProductionInstallationConfigSchema.infer,
+  typeof HarborInstallationStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'harbor-production-installation',
     kind: 'HarborProductionInstallation',

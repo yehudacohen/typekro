@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { ensureVersionPrefix } from '../../../utils/string.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -53,7 +54,10 @@ import { mapCertManagerConfigToHelmValues } from '../utils/helm-values-mapper.js
  * });
  * ```
  */
-export const certManagerBootstrap = kubernetesComposition(
+export const certManagerBootstrap: CallableComposition<
+  typeof CertManagerBootstrapConfigSchema.infer,
+  typeof CertManagerBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'cert-manager-bootstrap',
     // apiVersion defaults to 'v1alpha1' and Kro adds kro.run group automatically

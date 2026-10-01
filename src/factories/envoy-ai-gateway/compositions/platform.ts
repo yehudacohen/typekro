@@ -3,6 +3,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { singletonSpecFingerprintAnnotationValue } from '../../../core/deployment/singleton-owner-drift.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton, stableSerialize } from '../../../core/singleton/singleton.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -38,7 +39,10 @@ import { envoyProxyHelmRepositoryBootstrap } from './repository.js';
  */
 export function makeEnvoyAIGatewayPlatformInstallation(
   options: EnvoyAIGatewayPlatformBuildOptions = {}
-) {
+): CallableComposition<
+  typeof EnvoyAIGatewayPlatformInstallationSpecSchema.infer,
+  typeof EnvoyAIGatewayPlatformStatusSchema.infer
+> {
   const profile = options.profile ?? 'production';
   const mcpSessionEncryptionSeedSecret = validateMcpSessionEncryptionSeedSecret(options, profile);
   return kubernetesComposition(
@@ -205,7 +209,10 @@ export const envoyAIGatewayPlatformInstallation = makeEnvoyAIGatewayPlatformInst
 
 export function makeEnvoyAIGatewayPlatformBootstrap(
   options: EnvoyAIGatewayPlatformBuildOptions = {}
-) {
+): CallableComposition<
+  typeof EnvoyAIGatewayPlatformReferenceSpecSchema.infer,
+  typeof EnvoyAIGatewayPlatformStatusSchema.infer
+> {
   const installationGraph = makeEnvoyAIGatewayPlatformInstallation(options);
   const installation: EnvoyAIGatewayPlatformInstallationSpec = {
     name: options.name ?? 'envoy-ai-gateway',

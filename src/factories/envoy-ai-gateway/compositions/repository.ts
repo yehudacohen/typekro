@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { envoyProxyHelmRepository } from '../resources/helm.js';
 import {
   EnvoyProxyHelmRepositorySingletonSpecSchema,
@@ -11,7 +12,10 @@ import {
  * installations reference this resource without competing for ApplySet
  * ownership.
  */
-export const envoyProxyHelmRepositoryBootstrap = kubernetesComposition(
+export const envoyProxyHelmRepositoryBootstrap: CallableComposition<
+  typeof EnvoyProxyHelmRepositorySingletonSpecSchema.infer,
+  typeof EnvoyProxyHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'envoyproxy-helm-repository',
     kind: 'EnvoyProxyHelmRepository',

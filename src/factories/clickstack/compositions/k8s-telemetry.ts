@@ -47,6 +47,7 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -73,7 +74,12 @@ import { otelHelmRepositoryBootstrap } from './otel-helm-repository.js';
  * chart values per collector instance; everything per-instance stays in the
  * runtime spec.
  */
-export function makeClickstackK8sTelemetry(options: ClickStackK8sTelemetryBuildOptions = {}) {
+export function makeClickstackK8sTelemetry(
+  options: ClickStackK8sTelemetryBuildOptions = {}
+): CallableComposition<
+  typeof ClickStackK8sTelemetryConfigSchema.infer,
+  typeof ClickStackK8sTelemetryStatusSchema.infer
+> {
   // Build-time options must be CONCRETE (see makeClickstackBootstrap): per-instance values belong
   // in the runtime spec.
   if (containsKubernetesRefs(options)) {

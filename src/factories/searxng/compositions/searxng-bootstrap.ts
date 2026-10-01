@@ -1,32 +1,10 @@
-/**
- * SearXNG Bootstrap Composition
- *
- * Deploys a complete SearXNG instance: optional Namespace + ConfigMap + Deployment + Service.
- * Settings are built from typed spec fields — no proxy objects pass through to YAML.
- *
- * @example
- * ```typescript
- * import { searxngBootstrap } from 'typekro/searxng';
- *
- * const factory = searxngBootstrap.factory('direct', {
- *   namespace: 'search',
- *   waitForReady: true,
- * });
- *
- * await factory.deploy({
- *   name: 'searxng',
- *   search: { formats: ['html', 'json'] },
- *   server: { limiter: false, secret_key: process.env.SEARXNG_SECRET_KEY! },
- * });
- * ```
- */
-
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getIncludeWhen, setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
 import type { StaticYamlMaterializationOptions } from '../../../core/planning/materialization.js';
 import { Cel } from '../../../core/references/cel.js';
 import type {
+  CallableComposition,
   DirectResourceFactory,
   KroResourceFactory,
   PublicFactoryOptions,
@@ -139,7 +117,10 @@ function withKroInstanceValidation(
   });
 }
 
-const searxngBootstrapComposition = kubernetesComposition(
+const searxngBootstrapComposition: CallableComposition<
+  typeof SearxngBootstrapConfigSchema.infer,
+  typeof SearxngBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'searxng-bootstrap',
     kind: 'SearxngBootstrap',
@@ -511,4 +492,26 @@ Object.defineProperty(searxngBootstrapComposition, 'factory', {
   configurable: true,
 });
 
+/**
+ * SearXNG Bootstrap Composition
+ *
+ * Deploys a complete SearXNG instance: optional Namespace + ConfigMap + Deployment + Service.
+ * Settings are built from typed spec fields — no proxy objects pass through to YAML.
+ *
+ * @example
+ * ```typescript
+ * import { searxngBootstrap } from 'typekro/searxng';
+ *
+ * const factory = searxngBootstrap.factory('direct', {
+ *   namespace: 'search',
+ *   waitForReady: true,
+ * });
+ *
+ * await factory.deploy({
+ *   name: 'searxng',
+ *   search: { formats: ['html', 'json'] },
+ *   server: { limiter: false, secret_key: process.env.SEARXNG_SECRET_KEY! },
+ * });
+ * ```
+ */
 export const searxngBootstrap = searxngBootstrapComposition;

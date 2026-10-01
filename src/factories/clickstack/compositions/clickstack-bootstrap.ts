@@ -83,6 +83,7 @@ import { registerPortableReadinessEvaluator } from '../../../core/readiness/port
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import type { TypeKroValue } from '../../../core/types/common.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import type { HelmReleasePostRenderer } from '../../helm/types.js';
@@ -1581,7 +1582,12 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
   };
 }
 
-function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBuildOptions) {
+function buildInternalInlineComposition(
+  options: ClickStackInlineInternalMongoBuildOptions
+): CallableComposition<
+  typeof ClickStackBootstrapConfigSchema.infer,
+  typeof ClickStackBootstrapStatusSchema.infer
+> {
   const build = resolveInternalBuild(options);
   return kubernetesComposition(
     {
@@ -1597,7 +1603,10 @@ function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBu
 
 function buildInternalSecretValuesComposition(
   options: ClickStackSecretValuesInternalMongoBuildOptions
-) {
+): CallableComposition<
+  typeof ClickStackSecretValuesBootstrapConfigSchema.infer,
+  typeof ClickStackBootstrapStatusSchema.infer
+> {
   const build: ResolvedBuildConfig = {
     ...resolveInternalBuild(options),
     credentialSource: 'secretValues',
@@ -1614,7 +1623,12 @@ function buildInternalSecretValuesComposition(
   );
 }
 
-function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBuildOptions) {
+function buildExternalInlineComposition(
+  options: ClickStackInlineExternalMongoBuildOptions
+): CallableComposition<
+  typeof ClickStackExternalMongoBootstrapConfigSchema.infer,
+  typeof ClickStackBootstrapStatusSchema.infer
+> {
   const build = resolveExternalBuild(options);
   return kubernetesComposition(
     {
@@ -1630,7 +1644,10 @@ function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBu
 
 function buildExternalSecretValuesComposition(
   options: ClickStackSecretValuesExternalMongoBuildOptions
-) {
+): CallableComposition<
+  typeof ClickStackSecretValuesExternalMongoBootstrapConfigSchema.infer,
+  typeof ClickStackBootstrapStatusSchema.infer
+> {
   const build: ResolvedBuildConfig = {
     ...resolveExternalBuild(options),
     credentialSource: 'secretValues',

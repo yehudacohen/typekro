@@ -4,6 +4,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import type {
+  CallableComposition,
   DirectResourceFactory,
   KroResourceFactory,
   PublicFactoryOptions,
@@ -60,7 +61,12 @@ import { apisixHelmRepositoryBootstrap } from './apisix-helm-repository.js';
  * });
  * ```
  */
-function createApisixBootstrap(requireDefinitionCredentials = false) {
+function createApisixBootstrap(
+  requireDefinitionCredentials = false
+): CallableComposition<
+  typeof APISixBootstrapConfigSchema.infer,
+  typeof APISixBootstrapStatusSchema.infer
+> {
   return kubernetesComposition(
   {
     name: 'apisix-bootstrap',

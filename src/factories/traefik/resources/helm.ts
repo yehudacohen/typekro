@@ -8,7 +8,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Composable, Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced, ReadinessEvaluator } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   type HelmRepositorySpec,
@@ -41,7 +41,8 @@ const traefikHelmRepositoryReadinessEvaluator = createHelmRepositoryReadinessEva
  * Exported so a consumer graph that adopts an externally created release can
  * reuse the same readiness contract.
  */
-export const traefikHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('Traefik');
+export const traefikHelmReleaseReadinessEvaluator: ReadinessEvaluator<unknown> =
+  createLabeledHelmReleaseEvaluator('Traefik');
 
 /**
  * Create the Flux `HelmRepository` for the official Traefik chart repository.

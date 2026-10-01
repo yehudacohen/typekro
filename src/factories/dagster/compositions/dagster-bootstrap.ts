@@ -3,6 +3,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import type { TypeKroValueTreeObject } from '../../../core/types/common.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
@@ -52,7 +53,10 @@ const DEFAULT_DAEMON_LIVENESS_PROBE_CEL =
  * Creates the target Namespace, official Dagster HelmRepository, and Dagster
  * HelmRelease. Status is derived only from owned Flux Helm resources.
  */
-export const dagsterBootstrap = kubernetesComposition(
+export const dagsterBootstrap: CallableComposition<
+  typeof DagsterBootstrapConfigSchema.infer,
+  typeof DagsterBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'dagster-bootstrap',
     kind: 'DagsterBootstrap',

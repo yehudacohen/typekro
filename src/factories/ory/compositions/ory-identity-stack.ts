@@ -5,6 +5,7 @@ import {
 } from '../../../core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -533,7 +534,10 @@ function isSchemaSpec(value: unknown): boolean {
  * Creates the target namespace, official Ory Helm repository, Hydra/Kratos/Keto/Oathkeeper
  * HelmReleases, optional starter Maester resources, and status fields used by direct and KRO modes.
  */
-export const oryIdentityStack = kubernetesComposition(
+export const oryIdentityStack: CallableComposition<
+  typeof OryIdentityStackConfigSchema.infer,
+  typeof OryIdentityStackStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'ory-identity-stack',
     kind: 'OryIdentityStack',

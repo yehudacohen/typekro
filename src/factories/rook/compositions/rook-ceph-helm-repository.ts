@@ -2,6 +2,7 @@
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { rookCephHelmRepository } from '../resources/helm.js';
 import {
   RookCephHelmRepositorySingletonSpecSchema,
@@ -11,7 +12,10 @@ import {
 /**
  * Own the cluster-wide Rook HelmRepository outside any consumer ApplySet.
  */
-export const rookCephHelmRepositoryBootstrap = kubernetesComposition(
+export const rookCephHelmRepositoryBootstrap: CallableComposition<
+  typeof RookCephHelmRepositorySingletonSpecSchema.infer,
+  typeof RookCephHelmRepositorySingletonStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'rook-ceph-helm-repository',
     kind: 'RookCephHelmRepository',

@@ -9,6 +9,7 @@ import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import {
   ciliumHelmRelease,
   ciliumHelmRepository,
@@ -163,7 +164,10 @@ export const CiliumBootstrapStatusSchema = type({
  * Creates a complete Cilium deployment using Helm with comprehensive configuration
  * options and status outputs for integration with other systems.
  */
-export const ciliumBootstrap = kubernetesComposition(
+export const ciliumBootstrap: CallableComposition<
+  typeof CiliumBootstrapSpecSchema.infer,
+  typeof CiliumBootstrapStatusSchema.infer
+> = kubernetesComposition(
   {
     name: 'cilium-bootstrap',
     apiVersion: 'cilium.io/v1alpha1',
