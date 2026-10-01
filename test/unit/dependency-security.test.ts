@@ -1,21 +1,31 @@
 import { describe, expect, it } from 'bun:test';
+import { load } from 'js-yaml';
 
 const lockfileUrl = new URL('../../bun.lock', import.meta.url);
 const packageUrl = new URL('../../package.json', import.meta.url);
 
 function atLeastJsYamlPatch(version: string): boolean {
   const [major = 0, minor = 0, patch = 0] = version.split('.').map(Number);
-  return major > 4 || (major === 4 && (minor > 3 || (minor === 3 && patch >= 1)));
+  return major > 4 || (major === 4 && (minor > 3 || (minor === 3 && patch >= 2)));
 }
 
 describe('dependency security invariants', () => {
-  it('pins every frozen js-yaml installation to 4.3.1 or newer', async () => {
+  it('bounds repeated empty YAML merge sources', () => {
+    const sources = Array.from({ length: 100 }, () => '{}').join(',');
+    const targets = Array.from({ length: 101 }, () => '  - <<: *sources').join('\n');
+    expect(() => load(`sources: &sources [${sources}]\ntargets:\n${targets}\n`))
+      .toThrow(/maxTotalMergeKeys/);
+    expect(load('defaults: &defaults { replicas: 2 }\nservice: { <<: *defaults, name: sample }'))
+      .toEqual({ defaults: { replicas: 2 }, service: { replicas: 2, name: 'sample' } });
+  });
+
+  it('pins every frozen js-yaml installation to 4.3.2 or newer', async () => {
     const manifest = (await Bun.file(packageUrl).json()) as {
       dependencies?: Record<string, string>;
       overrides?: Record<string, string>;
     };
-    expect(manifest.dependencies?.['js-yaml']).toBe('4.3.1');
-    expect(manifest.overrides?.['js-yaml']).toBe('4.3.1');
+    expect(manifest.dependencies?.['js-yaml']).toBe('4.3.2');
+    expect(manifest.overrides?.['js-yaml']).toBe('4.3.2');
 
     const lockfile = await Bun.file(lockfileUrl).text();
     const installedVersions = [
