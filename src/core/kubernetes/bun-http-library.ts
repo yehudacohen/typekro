@@ -440,8 +440,14 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // attached, growing the signal's listener list for the life of the operation. Detaching is
       // therefore done by the latch, which every terminal path goes through, with `{ once: true }`
       // kept as belt and braces for the firing case.
-      const getSignal = Reflect.get(request, 'getSignal') as (() => AbortSignal) | undefined;
-      const signal = getSignal?.();
+      // Call it ON the request: in @kubernetes/client-node >= 1.4 `RequestContext.getSignal()` is a
+      // prototype method that reads `this.signal`, so a detached call throws "undefined is not an
+      // object (evaluating 'this.signal')" on every request. (Before 1.4 the method did not exist,
+      // which is why a detached `getSignal?.()` used to be a harmless no-op.)
+      const getSignal = Reflect.get(request, 'getSignal') as
+        | ((this: unknown) => AbortSignal | undefined)
+        | undefined;
+      const signal = typeof getSignal === 'function' ? getSignal.call(request) : undefined;
       if (signal) {
         const onAbort = () => {
           settle(() => reject(signal.reason ?? new Error('Request aborted')));

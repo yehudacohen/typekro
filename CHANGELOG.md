@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Kubernetes requests under Bun failed on `@kubernetes/client-node` 1.4.** `BunCompatibleHttpLibrary`
+  called the request's `getSignal()` detached from the request. In client-node 1.4 that method reads
+  `this.signal`, so every request threw `undefined is not an object (evaluating 'this.signal')`, which
+  broke every read and apply made through the Bun HTTP library (0.44.0 is affected). It is now called on
+  the request, and a test drives the library with the SDK's real `RequestContext` so a test double can't
+  hide a binding regression again.
+
 ## [0.44.0] - 2026-10-01
 
 ### Changed
