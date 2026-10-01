@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-10-01
+
 ### Fixed
 
 - **Kubernetes requests under Bun failed on `@kubernetes/client-node` 1.4.** `BunCompatibleHttpLibrary`
@@ -2298,7 +2300,8 @@ safety check, and a genuinely lossy change (narrowing a type, dropping a field) 
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.44.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.44.1...HEAD
+[0.44.1]: https://github.com/yehudacohen/typekro/compare/v0.44.0...v0.44.1
 [0.44.0]: https://github.com/yehudacohen/typekro/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/yehudacohen/typekro/compare/v0.42.0...v0.43.0
 [0.22.0 – 0.42.0]: https://github.com/yehudacohen/typekro/compare/v0.21.0...v0.42.0
