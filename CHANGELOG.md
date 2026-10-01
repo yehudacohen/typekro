@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pin the direct and transitive `js-yaml` dependency to 4.3.2 to close
+  GHSA-2883-xcg3-v3hh: empty merge sources now count toward the existing parser
+  budget. Ordinary YAML load/dump authoring is unchanged.
+
 - **Use `@kubernetes/client-node` 1.4.0 while preserving canonical CRD transport.** The SDK
   removed the overridable serialization hook. TypeKro now keeps CRD wire fields such as `enum`
   and `x-kubernetes-validations` intact on create, patch, replace and read without changing
