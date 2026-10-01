@@ -441,6 +441,7 @@ describeOrSkip('ClickStack queue storage against the collector binary', () => {
       },
       'compaction-off': { compaction: { onStart: false, onRebound: false } },
       bytes: { sizer: 'bytes', batch: { flushTimeout: '30s', sizer: 'bytes', minSize: 1 << 20 } },
+      consumers: { numConsumers: 2, batch: { flushTimeout: '30s' } },
     };
     for (const [name, options] of Object.entries(variants)) {
       const file = `overlay-${name}.yaml`;

@@ -207,6 +207,15 @@ export function defaultBatchedQueueSize(processorMs: number): number {
   );
 }
 
+/**
+ * Bounds of `persistentQueue.numConsumers` (`sending_queue.num_consumers`).
+ * Each consumer is one concurrent export, so one ClickHouse insert at a time
+ * per signal queue. The collector's default, used when the option is unset,
+ * is 10. The upper bound catches a mistyped value that would open hundreds of
+ * concurrent inserts when a backlog drains.
+ */
+export const QUEUE_NUM_CONSUMERS_RANGE = { min: 1, max: 100 } as const;
+
 /** Default `sending_queue.batch.min_size`: the collector's own default. */
 export const DEFAULT_QUEUE_BATCH_MIN_SIZE = 8192;
 
@@ -600,6 +609,8 @@ export interface ResolvedClickStackStorage {
     /** Exporter-side batching, when requested. Defaults already applied. */
     readonly batch?: ResolvedQueueBatch;
     readonly sizer?: 'bytes';
+    /** `sending_queue.num_consumers`, when the caller set it. */
+    readonly numConsumers?: number;
     readonly compaction?: Required<ClickStackQueueCompactionOptions>;
   };
 }
@@ -803,6 +814,8 @@ export function resolveClickStackStorage(
       : (batched?.queueSize ?? requestedQueueSize);
   const compaction =
     queue?.enabled === true ? resolveQueueCompaction(context, queue.compaction) : undefined;
+  const numConsumers =
+    queue?.enabled === true ? resolveQueueNumConsumers(context, queue.numConsumers) : undefined;
 
   return {
     mode,
@@ -828,10 +841,33 @@ export function resolveClickStackStorage(
         ...(queueSize !== undefined && { queueSize }),
         ...(batch !== undefined && { batch }),
         ...(sizer !== undefined && { sizer }),
+        ...(numConsumers !== undefined && { numConsumers }),
         ...(compaction !== undefined && { compaction }),
       },
     }),
   };
+}
+
+/**
+ * Validate `persistentQueue.numConsumers`: unset stays unset, so the collector's
+ * own default applies and an install that does not set it renders unchanged.
+ */
+function resolveQueueNumConsumers(context: string, numConsumers: unknown): number | undefined {
+  if (numConsumers === undefined) return undefined;
+  const { min, max } = QUEUE_NUM_CONSUMERS_RANGE;
+  if (
+    typeof numConsumers !== 'number' ||
+    !Number.isInteger(numConsumers) ||
+    numConsumers < min ||
+    numConsumers > max
+  ) {
+    throw new Error(
+      `${context}: 'storage.persistentQueue.numConsumers' must be an integer from ${min} to ` +
+        `${max} (concurrent exports per signal queue). Got ${JSON.stringify(numConsumers)}. ` +
+        `Omit it to keep the collector's default of 10.`
+    );
+  }
+  return numConsumers;
 }
 
 /**
@@ -1315,8 +1351,8 @@ function renderCompaction(
 
 /**
  * One exporter's `sending_queue`: the persistent storage, plus the sizer, the
- * queue size and the batch when the caller set them. A fresh object per
- * exporter.
+ * queue size, the consumer count and the batch when the caller set them. A
+ * fresh object per exporter.
  */
 function renderSendingQueue(
   queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>
@@ -1327,6 +1363,7 @@ function renderSendingQueue(
     storage: QUEUE_EXTENSION_NAME,
     ...(queue.sizer !== undefined && { sizer: queue.sizer }),
     ...(queue.queueSize !== undefined && { queue_size: queue.queueSize }),
+    ...(queue.numConsumers !== undefined && { num_consumers: queue.numConsumers }),
     ...(batch !== undefined && {
       batch: {
         flush_timeout: batch.flushTimeout,

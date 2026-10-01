@@ -42,6 +42,7 @@ import {
 import {
   CLICKSTACK_RETENTION_TABLES,
   COLLECTOR_DEFAULT_QUEUE_CAPACITY,
+  QUEUE_NUM_CONSUMERS_RANGE,
   DEFAULT_QUEUE_EXPORTER_NAMES,
   DEFAULT_QUEUE_FS_GROUP,
   clickStackQueueClaimName,
@@ -2038,6 +2039,103 @@ describe('persistentQueue.batch: batching inside the persistent queue', () => {
     ).find((document) => document?.kind === 'HelmRelease');
     const fromDirect = customConfigOf(release?.spec?.values);
     expect(fromDirect).toEqual(fromRgd);
+  });
+});
+
+describe('persistentQueue.numConsumers: concurrent exports per signal queue', () => {
+  type Overlay = { exporters?: Record<string, { sending_queue?: Record<string, unknown> }> };
+
+  function resolveWith(options: Partial<ClickStackPersistentQueueOptions>) {
+    return resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true, ...options },
+    });
+  }
+
+  function sendingQueuesWith(options: Partial<ClickStackPersistentQueueOptions>) {
+    const queue = resolveWith(options).persistentQueue;
+    if (queue === undefined) throw new Error('expected a queue');
+    const overlay = yaml.load(
+      renderCollectorConfig([CLICKSTACK_INGEST_PIPELINES_FRAGMENT, persistentQueueConfigFragment(queue)])
+    ) as Overlay;
+    return overlay.exporters ?? {};
+  }
+
+  it('leaves num_consumers unrendered by default, so the collector default of 10 applies', () => {
+    expect(resolveWith({}).persistentQueue?.numConsumers).toBeUndefined();
+    expect(sendingQueuesWith({}).clickhouse?.sending_queue).toEqual({
+      enabled: true,
+      storage: 'file_storage/hyperdx',
+    });
+  });
+
+  it('renders num_consumers on every queued exporter, next to the batch', () => {
+    const exporters = sendingQueuesWith({
+      exporterNames: ['clickhouse', 'clickhouse/rrweb'],
+      numConsumers: 2,
+      batch: { flushTimeout: '30s', minSize: 50_000 },
+    });
+    for (const name of ['clickhouse', 'clickhouse/rrweb']) {
+      expect(exporters[name]?.sending_queue).toEqual({
+        enabled: true,
+        storage: 'file_storage/hyperdx',
+        queue_size: 25_000,
+        num_consumers: 2,
+        batch: { flush_timeout: '30s', min_size: 50_000, sizer: 'items' },
+      });
+    }
+  });
+
+  it('renders num_consumers without batching too', () => {
+    expect(sendingQueuesWith({ numConsumers: 4 }).clickhouse?.sending_queue).toEqual({
+      enabled: true,
+      storage: 'file_storage/hyperdx',
+      num_consumers: 4,
+    });
+  });
+
+  it('accepts the bounds and rejects anything outside them or not an integer', () => {
+    expect(QUEUE_NUM_CONSUMERS_RANGE).toEqual({ min: 1, max: 100 });
+    expect(resolveWith({ numConsumers: 1 }).persistentQueue?.numConsumers).toBe(1);
+    expect(resolveWith({ numConsumers: 100 }).persistentQueue?.numConsumers).toBe(100);
+    for (const numConsumers of [0, -1, 101, 2.5, Number.NaN, Number.POSITIVE_INFINITY, '2']) {
+      expect(
+        () => resolveWith({ numConsumers: numConsumers as number }),
+        String(numConsumers)
+      ).toThrow(/'storage\.persistentQueue\.numConsumers' must be an integer from 1 to 100/);
+    }
+  });
+
+  it('ignores numConsumers when the queue is disabled', () => {
+    const resolved = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: false, numConsumers: 0 },
+    });
+    expect(resolved.persistentQueue).toBeUndefined();
+  });
+
+  it('carries num_consumers into the KRO RGD and the direct-mode HelmRelease', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-consumers',
+      kind: 'ClickStackS3QueueConsumers',
+      storage: { mode: 's3', persistentQueue: { enabled: true, numConsumers: 2 } },
+    });
+
+    const customConfigOf = (values: Record<string, unknown> | undefined): Overlay => {
+      const global = values?.global as { otelCollector?: { customConfig?: string } } | undefined;
+      const text = global?.otelCollector?.customConfig;
+      if (typeof text !== 'string') throw new Error('expected a customConfig string');
+      return yaml.load(text) as Overlay;
+    };
+
+    const fromRgd = customConfigOf(helmReleaseSpec(bootstrap.toYaml()).values);
+    expect(fromRgd.exporters?.clickhouse?.sending_queue?.num_consumers).toBe(2);
+
+    const direct = bootstrap.factory('direct', { namespace: SPEC.namespace }).toYaml(SPEC as never);
+    const release = (
+      yaml.loadAll(direct) as Array<{ kind?: string; spec?: { values?: Record<string, unknown> } }>
+    ).find((document) => document?.kind === 'HelmRelease');
+    expect(customConfigOf(release?.spec?.values)).toEqual(fromRgd);
   });
 });
 

@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`storage.persistentQueue.numConsumers` on the ClickStack gateway's persistent queue.** It
+  renders `sending_queue.num_consumers` on every queued exporter: the number of exports, and so
+  ClickHouse inserts, that each signal queue runs at once. It takes an integer from 1 to 100. When
+  it is unset, nothing is rendered and the collector's default of 10 still applies, so existing
+  overlays are unchanged. With batching in the queue, 10 workers draining a backlog after an outage
+  can push ClickHouse into insert timeouts, and retried inserts that ClickHouse had already committed
+  write duplicate rows. A lower value spreads that load. The HyperDX 2.35.0 remote configuration
+  defines the ClickHouse exporters without a `sending_queue`, so the setting is not overridden. See
+  "Export workers" in the ClickStack docs.
+
 - **Unreachable declaration files are no longer published.** `bun run build:lib` now prunes the
   96 `.d.ts` files (263 KiB) and their maps that no `package.json` export reaches. Runtime
   JavaScript is unchanged. Packed declarations drop from 2,499,949 to 2,230,423 bytes. Exports are
