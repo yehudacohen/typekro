@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.43.0",
+  "packageVersion": "0.44.0",
   "owners": {
     "advanced": {
       "files": 1,
@@ -53,10 +53,10 @@
     },
     "clickstack": {
       "files": 17,
-      "rawBytes": 157477,
-      "surfaceBytes": 40444,
-      "docBytes": 116328,
-      "commentBytes": 117033
+      "rawBytes": 158251,
+      "surfaceBytes": 40623,
+      "docBytes": 116923,
+      "commentBytes": 117628
     },
     "cnpg": {
       "files": 12,
@@ -194,7 +194,7 @@
   },
   "reachable": {
     "files": 526,
-    "rawBytes": 2112646
+    "rawBytes": 2113420
   },
   "unreachable": {
     "files": 0,

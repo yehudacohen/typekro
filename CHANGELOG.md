@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-01
+
 ### Changed
 
 - **Importing one integration subpath no longer loads the declarations of the whole library.**
@@ -19,8 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2,230,423 to 2,112,646 bytes. A unit test fails if a subpath export reaches a root barrel again.
   The public API snapshot changes in one place: `apisixHelmReleaseReadinessEvaluator` and
   `traefikHelmReleaseReadinessEvaluator` now name `ReadinessEvaluator<unknown>` from core instead of
-  an `import()` type through the root barrel. It is the same alias with the same argument, but the
-  hasher records an aliased reference and an `import()` type differently.
+  an `import()` type through the root barrel. It is the same alias with the same argument. Through
+  the `import()` form the type checker drops the alias name, because `ReadinessEvaluator` is an
+  indexed-access type, so the hasher expanded it to its call signature.
+
+### Fixed
 
 - Pin the direct and transitive `js-yaml` dependency to 4.3.2 to close
   GHSA-2883-xcg3-v3hh: empty merge sources now count toward the existing parser
@@ -80,6 +85,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the check, so an established integration cannot leave its budget by deleting it. Owner budgets
   plus the pool must fit `globalCapBytes`, and `sharedPoolBytes` must be a whole number, 0 or
   more. The report shows pool usage and flags pool overflow.
+
+## [0.43.0] - 2026-09-29
+
+### Added
+
+- Operation-scoped Alchemy Kubernetes effect and rollback admission with fresh
+  UID/resourceVersion preconditions, retained resource scope and external
+  observation activation during durable direct-artifact rehydration.
+- Harbor Rook/Ceph credential projection as a typed graph dependency, plus
+  selected consumer qualification and bounded cleanup coverage.
+
+### Fixed
+
+- Guarded direct Alchemy identity replacement admits and deploys the successor
+  before deleting the incumbent, preserving the incumbent on admission failure
+  and converging after a failed old delete. Durable operation records slice
+  external observations by concrete iteration and preserve generated
+  prerequisites inherited through those observations, matching Alchemy scheduling
+  after serialization and recovery. Hoisted Namespace ownership creation also
+  uses the same effect-time gate; denied preparation stops before any write,
+  preserving existing ownership/adoption and create-conflict recovery.
+  Explicitly guarded declarations fail closed on missing effect authority;
+  dynamic scope, unguarded observation-only behavior and method-style callback
+  receivers remain compatible.
+
+- Reconciled application integration contracts with current upstream lifecycle
+  deadlines, direct forEach expansion and readiness. CEL dependency consumers
+  reuse the complete upstream literal/comment scanner. CRD transport preserves
+  canonical schemas, Jobs report terminal failure, and deterministic packages
+  exclude TypeScript build-info. Retained ClickStack naming follows the existing
+  upstream ownership/migration contract; no second naming mechanism is introduced.
+  Helm/Job portable readiness revisions advance to 3/2 respectively, so older
+  serialized strategy identities cannot silently select changed behavior.
+
+## [0.22.0 – 0.42.0]
+
+Releases 0.22.0 through 0.42.0 were not split by version in this file; see the [GitHub releases](https://github.com/yehudacohen/typekro/releases) for per-version notes.
+
+### Added
 
 - **Online compaction of the ClickStack persistent queue's storage, on by default, and per-signal
   byte bounds: `storage.persistentQueue.compaction` and `storage.persistentQueue.sizer`.** The
@@ -1845,39 +1889,6 @@ It should print `object`. Deleting and recreating the RGD also works (KRO re-reg
 but destroys existing custom resources, so prefer the annotation. Do not enable it globally: it disables a real
 safety check, and a genuinely lossy change (narrowing a type, dropping a field) can strand existing CRs.
 
-## [0.43.0] - 2026-09-29
-
-### Added
-
-- Operation-scoped Alchemy Kubernetes effect and rollback admission with fresh
-  UID/resourceVersion preconditions, retained resource scope and external
-  observation activation during durable direct-artifact rehydration.
-- Harbor Rook/Ceph credential projection as a typed graph dependency, plus
-  selected consumer qualification and bounded cleanup coverage.
-
-### Fixed
-
-- Guarded direct Alchemy identity replacement admits and deploys the successor
-  before deleting the incumbent, preserving the incumbent on admission failure
-  and converging after a failed old delete. Durable operation records slice
-  external observations by concrete iteration and preserve generated
-  prerequisites inherited through those observations, matching Alchemy scheduling
-  after serialization and recovery. Hoisted Namespace ownership creation also
-  uses the same effect-time gate; denied preparation stops before any write,
-  preserving existing ownership/adoption and create-conflict recovery.
-  Explicitly guarded declarations fail closed on missing effect authority;
-  dynamic scope, unguarded observation-only behavior and method-style callback
-  receivers remain compatible.
-
-- Reconciled application integration contracts with current upstream lifecycle
-  deadlines, direct forEach expansion and readiness. CEL dependency consumers
-  reuse the complete upstream literal/comment scanner. CRD transport preserves
-  canonical schemas, Jobs report terminal failure, and deterministic packages
-  exclude TypeScript build-info. Retained ClickStack naming follows the existing
-  upstream ownership/migration contract; no second naming mechanism is introduced.
-  Helm/Job portable readiness revisions advance to 3/2 respectively, so older
-  serialized strategy identities cannot silently select changed behavior.
-
 ## [0.21.0] - 2026-07-02
 
 ### Added
@@ -2278,7 +2289,10 @@ safety check, and a genuinely lossy change (narrowing a type, dropping a field) 
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.44.0...HEAD
+[0.44.0]: https://github.com/yehudacohen/typekro/compare/v0.43.0...v0.44.0
+[0.43.0]: https://github.com/yehudacohen/typekro/compare/v0.42.0...v0.43.0
+[0.22.0 – 0.42.0]: https://github.com/yehudacohen/typekro/compare/v0.21.0...v0.42.0
 [0.21.0]: https://github.com/yehudacohen/typekro/compare/v0.20.3...v0.21.0
 [0.20.3]: https://github.com/yehudacohen/typekro/compare/v0.20.2...v0.20.3
 [0.20.2]: https://github.com/yehudacohen/typekro/compare/v0.20.1...v0.20.2
