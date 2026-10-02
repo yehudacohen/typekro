@@ -7,6 +7,7 @@
  * while reusing existing readiness evaluators.
  */
 
+import { withChartValueDefaults } from '../../../core/aspects/values-merge.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
@@ -116,9 +117,9 @@ export function certManagerHelmRepository(
  *   namespace: 'cert-manager',
  *   repositoryName: 'cert-manager-repo',
  *   values: {
- *     installCRDs: false,
+ *     crds: { enabled: false },
  *     replicaCount: 2,
- *     webhook: { enabled: true }
+ *     webhook: { replicaCount: 2 }
  *   }
  * });
  * ```
@@ -133,33 +134,31 @@ export function certManagerHelmRelease(
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
 
-  // CRITICAL: Helm values MUST be static - they cannot contain KubernetesRef objects
-  // from schema proxies because Kro/Flux cannot handle CEL expressions inside spec.values.
-  // The HelmRelease spec.values field is an arbitrary object without a defined schema,
-  // so any KubernetesRef objects will serialize incorrectly (as empty objects or strings).
+  // Values are graph-aware: schema references and CEL expressions in them are
+  // serialized by the core proxy system, so a KRO-mode bootstrap keeps every
+  // per-instance setting. (They used to be stripped here, which rendered KRO
+  // instances with the chart's defaults: 1 replica, a kube-system lease.)
   //
-  // We set these critical values with sensible defaults to ensure cert-manager installs correctly:
-  // 1. installCRDs: true — required for cert-manager to function
-  // 2. startupapicheck.enabled: true — validates webhook readiness before marking ready
-  //
-  // NOTE: config.values may already be the result of mapCertManagerConfigToHelmValues()
-  // from the bootstrap composition (see utils/helm-values-mapper.ts).
-  // We just sanitize the values to remove any proxy references.
-  // The bootstrap composition's startupapicheck settings take precedence via the spread.
-  const baseValues = config.values ? sanitizeHelmValues(config.values) : {};
-  const finalValues = {
-    // Always install CRDs — required for cert-manager to function
-    installCRDs: true,
-    // Enable startupapicheck by default with increased timeout to ensure webhook is ready.
-    // This prevents "webhook not found" errors when deploying cert-manager CRDs.
-    startupapicheck: {
-      enabled: true,
-      timeout: '5m',
+  // Defaults sit UNDER the caller's values:
+  // - `crds: { enabled: true, keep: true }` installs the CRDs cert-manager
+  //   needs. It replaces the deprecated `installCRDs: true`; chart v1.17+
+  //   refuses both at once, so it is left out when the caller still sets
+  //   `installCRDs` themselves.
+  // - the startup API check gates readiness on the webhook answering, which
+  //   prevents "webhook not found" errors for resources applied right after.
+  const callerSetsInstallCRDs =
+    typeof config.values === 'object' &&
+    config.values !== null &&
+    !isKubernetesRef(config.values) &&
+    !isCelExpression(config.values) &&
+    Object.hasOwn(config.values, 'installCRDs');
+  const finalValues = withChartValueDefaults(
+    {
+      ...(callerSetsInstallCRDs ? {} : { crds: { enabled: true, keep: true } }),
+      startupapicheck: { enabled: true, timeout: '5m' },
     },
-    // Spread baseValues LAST so caller-provided values (including from the bootstrap
-    // composition) take precedence over our defaults above
-    ...baseValues,
-  };
+    config.values
+  ) as HelmReleaseSpec['values'];
 
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
@@ -185,30 +184,6 @@ export function certManagerHelmRelease(
       values: finalValues,
     },
   }).withReadinessEvaluator(certManagerHelmReleaseReadinessEvaluator);
-}
-
-/**
- * Sanitizes Helm values by removing any KubernetesRef objects or other non-serializable values.
- * This is necessary because Helm values must be static - they cannot contain CEL expressions
- * or schema proxy references.
- *
- * @param values - The Helm values object to sanitize
- * @returns A sanitized copy of the values with only primitive types, arrays, and plain objects
- */
-function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(
-    JSON.stringify(values, (_key, value) => {
-      // Skip KubernetesRef objects — schema proxy references can't be used in Helm values
-      if (isKubernetesRef(value)) {
-        return undefined;
-      }
-      // Skip CelExpression objects — CEL expressions can't be used in Helm values
-      if (isCelExpression(value)) {
-        return undefined;
-      }
-      return value;
-    })
-  );
 }
 
 // =============================================================================
@@ -239,8 +214,9 @@ export function validateCertManagerHelmValues(values: CertManagerHelmValues): {
 } {
   const errors: string[] = [];
 
-  // Note: installCRDs defaults to true for TypeKro comprehensive deployment
-  // This ensures TypeKro can replace kubectl for complete deployments
+  if (values.installCRDs === true && values.crds?.enabled === true) {
+    errors.push('installCRDs and crds.enabled cannot both be true (cert-manager chart v1.17+)');
+  }
 
   // Validate replica counts
   if (values.replicaCount !== undefined && values.replicaCount < 1) {

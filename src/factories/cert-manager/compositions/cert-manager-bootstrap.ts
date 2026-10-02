@@ -1,7 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { Cel } from '../../../core/references/cel.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
-import { ensureVersionPrefix } from '../../../utils/string.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { certManagerHelmRelease, certManagerHelmRepository } from '../resources/helm.js';
@@ -10,7 +10,11 @@ import {
   CertManagerBootstrapConfigSchema,
   CertManagerBootstrapStatusSchema,
 } from '../types.js';
-import { mapCertManagerConfigToHelmValues } from '../utils/helm-values-mapper.js';
+import {
+  DEFAULT_CERT_MANAGER_NAMESPACE,
+  DEFAULT_CERT_MANAGER_VERSION,
+  mapCertManagerConfigToHelmValues,
+} from '../utils/helm-values-mapper.js';
 
 /**
  * Cert-Manager Bootstrap Composition
@@ -36,16 +40,18 @@ import { mapCertManagerConfigToHelmValues } from '../utils/helm-values-mapper.js
  *   name: 'cert-manager',
  *   namespace: 'cert-manager',
  *   version: '1.19.3',
- *   installCRDs: true,
+ *   crds: { enabled: true, keep: true },
+ *   replicaCount: 2,
  *   controller: {
  *     resources: {
  *       requests: { cpu: '100m', memory: '128Mi' },
  *       limits: { cpu: '500m', memory: '512Mi' }
- *     }
+ *     },
+ *     podDisruptionBudget: { enabled: true }
  *   },
  *   webhook: {
- *     enabled: true,
- *     replicaCount: 2
+ *     replicaCount: 2,
+ *     podDisruptionBudget: { enabled: true }
  *   },
  *   prometheus: {
  *     enabled: true,
@@ -66,217 +72,25 @@ export const certManagerBootstrap: CallableComposition<
     status: CertManagerBootstrapStatusSchema,
   },
   (spec: CertManagerBootstrapConfig) => {
-    // TODO: Future Enhancement - Create a full cert-manager composition that includes:
-    // 1. Direct Kubernetes resources (Deployments, Services, etc.) for status references
-    // 2. CRD queries for real-time certificate/issuer counts
-    // 3. Service status references for dynamic endpoint URLs
-    //
-    // For now, this bootstrap composition focuses on Helm-based deployment
-    // Apply default configuration values
-    const fullConfig: CertManagerBootstrapConfig = {
-      // Basic defaults
-      namespace: spec.namespace || 'cert-manager',
-      version: spec.version || '1.19.3',
-      installCRDs: spec.installCRDs !== undefined ? spec.installCRDs : true, // TypeKro installs CRDs by default
-      replicaCount: spec.replicaCount || 1,
-
-      // Global defaults
-      global: {
-        leaderElection: {
-          namespace: spec.global?.leaderElection?.namespace || spec.namespace || 'cert-manager',
-        },
-        logLevel: spec.global?.logLevel || 2,
-        podSecurityPolicy: {
-          enabled: spec.global?.podSecurityPolicy?.enabled || false,
-          useAppArmor: spec.global?.podSecurityPolicy?.useAppArmor || true,
-        },
-      },
-
-      // Strategy defaults
-      strategy: {
-        type: spec.strategy?.type || 'RollingUpdate',
-        rollingUpdate: {
-          maxSurge: spec.strategy?.rollingUpdate?.maxSurge || '25%',
-          maxUnavailable: spec.strategy?.rollingUpdate?.maxUnavailable || '25%',
-        },
-      },
-
-      // Controller defaults
-      // NOTE: Each field is explicitly handled with a fallback default.
-      // Do NOT spread ...spec.controller at the end — it would overwrite
-      // the carefully-built nested objects (image, resources, serviceAccount).
-      controller: {
-        image: {
-          repository:
-            spec.controller?.image?.repository || 'quay.io/jetstack/cert-manager-controller',
-          tag: spec.controller?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
-          pullPolicy: spec.controller?.image?.pullPolicy || 'IfNotPresent',
-        },
-        resources: {
-          requests: {
-            cpu: spec.controller?.resources?.requests?.cpu || '10m',
-            memory: spec.controller?.resources?.requests?.memory || '32Mi',
-          },
-          limits: {
-            cpu: spec.controller?.resources?.limits?.cpu || '100m',
-            memory: spec.controller?.resources?.limits?.memory || '128Mi',
-          },
-        },
-        serviceAccount: {
-          create:
-            spec.controller?.serviceAccount?.create !== undefined
-              ? spec.controller.serviceAccount.create
-              : true,
-          name: spec.controller?.serviceAccount?.name || '',
-          annotations: spec.controller?.serviceAccount?.annotations || {},
-        },
-        nodeSelector: spec.controller?.nodeSelector || {},
-      },
-
-      // Webhook defaults
-      // NOTE: cert-manager 1.19+ removed 'enabled', 'mutatingAdmissionWebhooks',
-      // and 'validatingAdmissionWebhooks' from the webhook section.
-      // Webhook is always enabled; admission webhooks are configured via
-      // 'mutatingWebhookConfiguration' and 'validatingWebhookConfiguration'.
-      webhook: {
-        replicaCount: spec.webhook?.replicaCount || 1,
-        image: {
-          repository: spec.webhook?.image?.repository || 'quay.io/jetstack/cert-manager-webhook',
-          tag: spec.webhook?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
-          pullPolicy: spec.webhook?.image?.pullPolicy || 'IfNotPresent',
-        },
-        resources: {
-          requests: {
-            cpu: spec.webhook?.resources?.requests?.cpu || '10m',
-            memory: spec.webhook?.resources?.requests?.memory || '32Mi',
-          },
-          limits: {
-            cpu: spec.webhook?.resources?.limits?.cpu || '100m',
-            memory: spec.webhook?.resources?.limits?.memory || '128Mi',
-          },
-        },
-        serviceAccount: {
-          create:
-            spec.webhook?.serviceAccount?.create !== undefined
-              ? spec.webhook.serviceAccount.create
-              : true,
-          name: spec.webhook?.serviceAccount?.name || '',
-          annotations: spec.webhook?.serviceAccount?.annotations || {},
-        },
-        nodeSelector: spec.webhook?.nodeSelector || {},
-      },
-
-      // CA Injector defaults
-      cainjector: {
-        enabled: spec.cainjector?.enabled !== undefined ? spec.cainjector.enabled : true,
-        replicaCount: spec.cainjector?.replicaCount || 1,
-        image: {
-          repository:
-            spec.cainjector?.image?.repository || 'quay.io/jetstack/cert-manager-cainjector',
-          tag: spec.cainjector?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
-          pullPolicy: spec.cainjector?.image?.pullPolicy || 'IfNotPresent',
-        },
-        resources: {
-          requests: {
-            cpu: spec.cainjector?.resources?.requests?.cpu || '10m',
-            memory: spec.cainjector?.resources?.requests?.memory || '32Mi',
-          },
-          limits: {
-            cpu: spec.cainjector?.resources?.limits?.cpu || '100m',
-            memory: spec.cainjector?.resources?.limits?.memory || '128Mi',
-          },
-        },
-        serviceAccount: {
-          create:
-            spec.cainjector?.serviceAccount?.create !== undefined
-              ? spec.cainjector.serviceAccount.create
-              : true,
-          name: spec.cainjector?.serviceAccount?.name || '',
-          annotations: spec.cainjector?.serviceAccount?.annotations || {},
-        },
-        nodeSelector: spec.cainjector?.nodeSelector || {},
-      },
-
-      // ACME solver defaults
-      // NOTE: cert-manager 1.19+ only supports 'image' in acmesolver section.
-      // 'resources' and 'nodeSelector' were removed from the chart schema.
-      acmesolver: {
-        image: {
-          repository:
-            spec.acmesolver?.image?.repository || 'quay.io/jetstack/cert-manager-acmesolver',
-          tag: spec.acmesolver?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
-          pullPolicy: spec.acmesolver?.image?.pullPolicy || 'IfNotPresent',
-        },
-        ...spec.acmesolver,
-      },
-
-      // Startup API check defaults
-      // IMPORTANT: startupapicheck validates the webhook is working before marking cert-manager as ready
-      // This is ENABLED by default to ensure accurate readiness reporting and prevent
-      // "webhook not found" errors when deploying cert-manager CRDs (Certificate, ClusterIssuer, etc.)
-      // It runs as a post-install Helm hook that verifies the cert-manager API is responding
-      // Set enabled: false to disable if you have custom readiness requirements
-      // Timeout increased to 5m to handle slower environments (configurable via startupapicheck.timeout)
-      startupapicheck: {
-        enabled: spec.startupapicheck?.enabled !== false, // Enabled by default, disable only if explicitly set to false
-        ...(spec.startupapicheck?.enabled !== false && {
-          image: {
-            repository:
-              spec.startupapicheck?.image?.repository || 'quay.io/jetstack/cert-manager-ctl',
-            tag: spec.startupapicheck?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
-            pullPolicy: spec.startupapicheck?.image?.pullPolicy || 'IfNotPresent',
-          },
-          resources: {
-            requests: {
-              cpu: spec.startupapicheck?.resources?.requests?.cpu || '10m',
-              memory: spec.startupapicheck?.resources?.requests?.memory || '32Mi',
-            },
-            limits: {
-              cpu: spec.startupapicheck?.resources?.limits?.cpu || '100m',
-              memory: spec.startupapicheck?.resources?.limits?.memory || '128Mi',
-            },
-          },
-          nodeSelector: spec.startupapicheck?.nodeSelector || {},
-          timeout: spec.startupapicheck?.timeout || '5m', // Increased from 1m to handle slower environments
-          backoffLimit: spec.startupapicheck?.backoffLimit || 4,
-        }),
-      },
-
-      // Prometheus defaults
-      prometheus: {
-        enabled: spec.prometheus?.enabled || false,
-        servicemonitor: {
-          enabled: spec.prometheus?.servicemonitor?.enabled || false,
-          prometheusInstance: spec.prometheus?.servicemonitor?.prometheusInstance || 'default',
-          targetPort: spec.prometheus?.servicemonitor?.targetPort || 9402,
-          path: spec.prometheus?.servicemonitor?.path || '/metrics',
-          interval: spec.prometheus?.servicemonitor?.interval || '60s',
-          scrapeTimeout: spec.prometheus?.servicemonitor?.scrapeTimeout || '30s',
-          honorLabels: spec.prometheus?.servicemonitor?.honorLabels || false,
-        },
-        ...spec.prometheus,
-      },
-
-      // Note: We do NOT spread ...spec here. Each field above already handles
-      // spec values with proper fallbacks. A final ...spec would overwrite all
-      // carefully-constructed defaults (e.g., spec.controller = { extraArgs: ['--flag'] }
-      // would wipe out all default image/resources/serviceAccount config).
-      // Any additional spec fields not explicitly handled above are passed through
-      // via the nested ...spec.X spreads within each section.
-      name: spec.name || 'cert-manager',
-    };
+    // Every optional spec field is a schema proxy in KRO mode, so defaults are
+    // applied with Cel.default (plain `??` for direct-mode values) and the
+    // values mapper places fields without branching on them. JavaScript `||`
+    // here used to collapse KRO renders to static defaults: replicas stayed at
+    // 1 and the leader-election lease fell back to the chart's kube-system.
+    const installNamespace = Cel.default(spec.namespace, DEFAULT_CERT_MANAGER_NAMESPACE);
+    const version = Cel.default(spec.version, DEFAULT_CERT_MANAGER_VERSION);
 
     // Map configuration to Helm values
-    const helmValues = mapCertManagerConfigToHelmValues(fullConfig);
+    const helmValues = mapCertManagerConfigToHelmValues(spec);
 
     // Create namespace for cert-manager (required before HelmRelease)
     const _certManagerNamespace = namespace({
       metadata: {
-        name: spec.namespace || 'cert-manager',
+        name: installNamespace,
         labels: {
           'app.kubernetes.io/name': 'cert-manager',
           'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/version': spec.version || '1.19.3',
+          'app.kubernetes.io/version': version,
           'app.kubernetes.io/managed-by': 'typekro',
         },
       },
@@ -293,8 +107,8 @@ export const certManagerBootstrap: CallableComposition<
     // Create HelmRelease for cert-manager deployment
     const _helmRelease = certManagerHelmRelease({
       name: spec.name,
-      namespace: spec.namespace || 'cert-manager',
-      version: spec.version || '1.19.3',
+      namespace: installNamespace,
+      version,
       values: helmValues,
       repositoryName: 'cert-manager-repo', // Match the repository name
       id: 'certManagerHelmRelease',
@@ -308,7 +122,7 @@ export const certManagerBootstrap: CallableComposition<
     return {
       ready: releaseStatus.ready,
       phase: releaseStatus.phase,
-      version: spec.version || '1.19.3',
+      version,
       controllerReady: releaseStatus.ready,
       webhookReady: releaseStatus.ready,
       cainjectorReady: releaseStatus.ready,
@@ -320,7 +134,7 @@ export const certManagerBootstrap: CallableComposition<
         // when deployed in direct mode. Fix: implement nested CEL resolution in ReferenceResolver
         // before exposing cert-manager direct-mode deployments in production workflows.
         installed: true,
-        version: spec.version || '1.19.3',
+        version,
       },
     };
   }
