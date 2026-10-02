@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Traefik behind an AWS NLB, with TLS from cert-manager.** The bootstrap can now front a public
+  API with a TCP-passthrough NLB, with TLS terminated in Traefik.
+  - `service.loadBalancerClass`, `service.externalTrafficPolicy` and
+    `service.loadBalancerSourceRanges` on the owned entrypoint Service. Each is emitted only when
+    set (guarded with `omit()` in KRO mode), so a `ClusterIP` Service stays valid.
+  - `awsNlbServiceAnnotations({ scheme, targetType, proxyProtocol, crossZone, ... })` returns AWS
+    Load Balancer Controller annotations for IP targets with PROXY protocol v2 by default. It has
+    no certificate inputs, and it throws on the conflicts the controller would only reject at
+    reconcile time.
+  - `entrypoints.{web,websecure}.proxyProtocol.trustedIPs` and `.forwardedHeaders.trustedIPs`.
+    A `/0` range is refused: in direct mode when the values are mapped, and in KRO mode by
+    `x-kubernetes-validations` on the generated CRD. An `insecure` proxy-protocol or
+    forwarded-header flag in raw `values` or `additionalArguments` throws too. The escape hatch is
+    the build option `dangerouslyTrustAnySource`.
+  - `validateTraefikHelmValues(values, { serviceAnnotations })` warns when the NLB sends PROXY
+    headers to an entrypoint that does not accept them.
+  - `traefikTlsCertificate({ name, namespace, hostnames, issuerRef })` creates a cert-manager
+    `Certificate` (ECDSA P-256, `rotationPolicy: Always`) for an `IngressRoute`'s
+    `tls.secretName`. `defaultTlsStore.certificate` makes the bootstrap own the `Certificate`
+    behind the default `TLSStore`.
+  - The Traefik docs describe the HTTP-01 flow with an Ingress or Gateway solver.
+
 ### Fixed
 
 - **The Traefik `web` → `websecure` redirect blocked ACME HTTP-01 challenges.** Traefik gives the

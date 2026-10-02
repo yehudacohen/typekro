@@ -22,8 +22,10 @@ import {
   DEFAULT_TRAEFIK_WEB_PORT,
   DEFAULT_TRAEFIK_WEBSECURE_PORT,
   TRAEFIK_POD_NAME_LABEL_VALUE,
+  TRAEFIK_WEB_ENTRYPOINT,
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
+import { assertTraefikProxyTrust } from './proxy-trust.js';
 import type {
   TraefikBootstrapConfig,
   TraefikContainerSecurityContext,
@@ -83,29 +85,26 @@ export const TRAEFIK_SECURITY_PINS = {
   global: { checkNewVersion: false, sendAnonymousUsage: false },
 } satisfies TraefikManagedHelmValues;
 
-/**
- * Values that hand ownership of the entrypoint Service to TypeKro.
- *
- * The chart would otherwise create the Service itself, and a composition can
- * only project a resource's status if that resource is part of its graph.
- * Observing the chart's Service instead made every fresh direct deployment fail
- * before it started: the direct engine resolves external references BEFORE it
- * applies anything, and a `404` on the not-yet-created Service is fatal.
- *
- * Three pins make the owned Service possible. Two are constants and live here;
- * the third takes the release name, so {@link applyTraefikOwnershipPins} adds
- * it.
- *
- * - `service.enabled: false` — the chart skips its whole Service template.
- * - `nameOverride` — fixes the chart's `app.kubernetes.io/name` pod label.
- * - `instanceLabelOverride` — fixes `app.kubernetes.io/instance`, which the
- *   chart otherwise derives from the Helm release name. `traefikHelmRelease`
- *   pins `spec.releaseName` to the same name, so the two agree; the pin keeps
- *   the selector exact even if a release ever arrives under another name.
- *
- * Together those two labels are exactly the chart's own pod selector, so the
- * owned Service front-ends the same pods the chart's Service would have.
- */
+// The chart would otherwise create the Service itself, and a composition can
+// only project a resource's status if that resource is part of its graph.
+// Observing the chart's Service instead made every fresh direct deployment fail
+// before it started: the direct engine resolves external references BEFORE it
+// applies anything, and a `404` on the not-yet-created Service is fatal.
+//
+// Three pins make the owned Service possible. Two are constants and live here;
+// the third takes the release name, so {@link applyTraefikOwnershipPins} adds
+// it.
+//
+// - `service.enabled: false` — the chart skips its whole Service template.
+// - `nameOverride` — fixes the chart's `app.kubernetes.io/name` pod label.
+// - `instanceLabelOverride` — fixes `app.kubernetes.io/instance`, which the
+//   chart otherwise derives from the Helm release name. `traefikHelmRelease`
+//   pins `spec.releaseName` to the same name, so the two agree; the pin keeps
+//   the selector exact even if a release ever arrives under another name.
+//
+// Together those two labels are exactly the chart's own pod selector, so the
+// owned Service front-ends the same pods the chart's Service would have.
+/** Values that hand ownership of the entrypoint Service to TypeKro. */
 export const TRAEFIK_OWNERSHIP_PINS = {
   service: { enabled: false },
   nameOverride: TRAEFIK_POD_NAME_LABEL_VALUE,
@@ -120,6 +119,11 @@ export interface TraefikHelmValuesMapperOptions {
    * boundary is {@link TraefikRawHelmValues} rather than the managed type.
    */
   readonly baseValues?: TraefikRawHelmValues;
+  /**
+   * Skip the check that refuses `/0` trusted ranges and `insecure` proxy trust.
+   * @default false
+   */
+  readonly dangerouslyTrustAnySource?: boolean;
   /**
    * Emit a permanent `web` → `websecure` redirect that leaves
    * `/.well-known/acme-challenge/` unredirected. @default true
@@ -290,6 +294,7 @@ export function mapTraefikConfigToHelmValues(
   const webPort: TraefikPortValues = {
     exposedPort: Cel.default(config.entrypoints?.web?.exposedPort, DEFAULT_TRAEFIK_WEB_PORT),
     expose: { default: true },
+    ...entrypointTrust(config.entrypoints?.web),
     ...(redirect
       ? {
           // The redirect router Traefik generates for an entrypoint redirection
@@ -328,6 +333,7 @@ export function mapTraefikConfigToHelmValues(
       DEFAULT_TRAEFIK_WEBSECURE_PORT
     ),
     expose: { default: true },
+    ...entrypointTrust(config.entrypoints?.websecure),
     // TLS lives under `http` in chart 41.5.0 — `ports.websecure.tls` is
     // rejected outright by the chart's values.schema.json.
     http: { tls: { enabled: true } },
@@ -419,7 +425,29 @@ export function mapTraefikConfigToHelmValues(
   };
 
   const merged = mergeSections(options.baseValues ?? {}, mapped);
-  return applyTraefikSecurityPins(applyTraefikOwnershipPins(merged, config.name));
+  const pinned = applyTraefikSecurityPins(applyTraefikOwnershipPins(merged, config.name));
+  if (!options.dangerouslyTrustAnySource) assertTraefikProxyTrust(pinned);
+  return pinned;
+}
+
+/**
+ * The PROXY protocol and forwarded-header trust of one entrypoint.
+ *
+ * A block is emitted only when the spec carries it. In KRO mode the spec is a
+ * schema proxy, so the block is always emitted and its `trustedIPs` reference
+ * is wrapped in `has() ? ... : omit()` by serialization.
+ */
+function entrypointTrust(
+  entrypoint: NonNullable<TraefikBootstrapConfig['entrypoints']>['web']
+): Pick<TraefikPortValues, 'proxyProtocol' | 'forwardedHeaders'> {
+  return {
+    ...(entrypoint?.proxyProtocol !== undefined && {
+      proxyProtocol: { trustedIPs: entrypoint.proxyProtocol.trustedIPs },
+    }),
+    ...(entrypoint?.forwardedHeaders !== undefined && {
+      forwardedHeaders: { trustedIPs: entrypoint.forwardedHeaders.trustedIPs },
+    }),
+  };
 }
 
 /** Facts about the owned entrypoint Service that the chart values no longer carry. */
@@ -429,6 +457,8 @@ export interface TraefikHelmValuesValidationContext {
    * entrypoint Service is a TypeKro-owned resource, not a chart value.
    */
   readonly serviceType?: TraefikServiceType;
+  /** Annotations on the owned Service, e.g. from `awsNlbServiceAnnotations`. */
+  readonly serviceAnnotations?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -487,6 +517,21 @@ export function validateTraefikHelmValues(
     warnings.push(
       'No resource requests specified for Traefik. Set CPU and memory requests so the edge is not evicted first under pressure.'
     );
+  }
+  // An NLB with PROXY protocol prepends a header to every connection, health
+  // checks included. An entrypoint that does not expect it parses the header
+  // as the start of a TLS handshake or HTTP request and drops the connection.
+  if (
+    context.serviceAnnotations?.['service.beta.kubernetes.io/aws-load-balancer-proxy-protocol'] !==
+    undefined
+  ) {
+    for (const name of [TRAEFIK_WEB_ENTRYPOINT, TRAEFIK_WEBSECURE_ENTRYPOINT]) {
+      if (!values.ports?.[name]?.proxyProtocol?.trustedIPs) {
+        warnings.push(
+          `The load balancer sends PROXY protocol headers, but the \`${name}\` entrypoint has no proxyProtocol.trustedIPs. Every connection to it will fail; set entrypoints.${name}.proxyProtocol.trustedIPs to the load balancer's source ranges.`
+        );
+      }
+    }
   }
   if (values.ports?.traefik?.expose?.default === true) {
     warnings.push(

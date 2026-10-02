@@ -179,7 +179,7 @@
     {
       "from": "traefik",
       "to": "cert-manager",
-      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core."
+      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core. traefikTlsCertificate also returns a cert-manager Certificate by design."
     },
     {
       "from": "traefik",
