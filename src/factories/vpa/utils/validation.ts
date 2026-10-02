@@ -16,7 +16,11 @@ import { getCurrentCompositionContext } from '../../../core/composition/context.
 import { TypeKroError } from '../../../core/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
-import type { VerticalPodAutoscalerSpec, VpaBootstrapConfig } from '../types.js';
+import type {
+  VerticalPodAutoscalerSpec,
+  VpaBootstrapConfig,
+  VpaContainerPolicy,
+} from '../types.js';
 
 /** One finding from a VPA validator. */
 export interface VpaValidationIssue {
@@ -184,17 +188,25 @@ function scaledObjectResources(spec: Record<string, unknown>): ScaledResource[] 
   return RESOURCES.filter((name) => triggers.some((trigger) => trigger.type === name));
 }
 
-/** Resources the VPA sets: cpu and memory unless every active policy narrows them. */
+/**
+ * Resources the VPA sets. Containers without a policy of their own follow the
+ * `'*'` policy, or get cpu and memory when there is none, so only a `'*'`
+ * policy can narrow them; named policies can only add.
+ */
 function vpaResources(spec: VerticalPodAutoscalerSpec): ScaledResource[] {
-  const policies = concrete(spec.resourcePolicy?.containerPolicies);
-  if (!Array.isArray(policies) || policies.length === 0) return [...RESOURCES];
-  const controlled = new Set<ScaledResource>();
+  const list = concrete(spec.resourcePolicy?.containerPolicies);
+  const policies = Array.isArray(list) ? list : [];
+  const controlledBy = (policy: VpaContainerPolicy): readonly ScaledResource[] => {
+    if (concrete(policy?.mode) === 'Off') return [];
+    const resources = concrete(policy?.controlledResources);
+    return Array.isArray(resources) ? resources : RESOURCES;
+  };
+  const star = policies.find((policy) => concrete(policy?.containerName) === '*');
+  const controlled = new Set<ScaledResource>(star ? controlledBy(star) : RESOURCES);
   for (const policy of policies) {
-    if (concrete(policy?.mode) === 'Off') continue;
-    const list = concrete(policy?.controlledResources);
-    for (const name of Array.isArray(list) ? list : RESOURCES) controlled.add(name);
+    if (policy !== star) for (const name of controlledBy(policy)) controlled.add(name);
   }
-  return [...controlled];
+  return RESOURCES.filter((name) => controlled.has(name));
 }
 
 /**

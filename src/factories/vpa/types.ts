@@ -90,7 +90,7 @@ export interface VpaEvictionRequirement {
 export interface VerticalPodAutoscalerSpec {
   targetRef: VpaTargetRef;
   updatePolicy?: {
-    /** @default 'Recreate' (CRD default) */
+    /** The CRD sets no default; the VPA treats an unset mode as `'Recreate'`. */
     updateMode?: VpaUpdateMode;
     /** Minimum live replicas before the updater evicts; overrides `--min-replicas`. */
     minReplicas?: number;

@@ -287,6 +287,54 @@ describe('HPA / ScaledObject conflicts', () => {
     ).toEqual([]);
   });
 
+  it('still warns when only named containers are narrowed', () => {
+    // The usual sidecar exclusion leaves the main container on cpu and memory.
+    expect(
+      conflictsIn(() => {
+        cpuHpa();
+        return {
+          targetRef: target,
+          resourcePolicy: { containerPolicies: [{ containerName: 'istio-proxy', mode: 'Off' }] },
+        };
+      })
+    ).toHaveLength(1);
+    expect(
+      conflictsIn(() => {
+        cpuHpa();
+        return {
+          targetRef: target,
+          resourcePolicy: {
+            containerPolicies: [{ containerName: 'app', controlledResources: ['memory'] }],
+          },
+        };
+      })
+    ).toHaveLength(1);
+    // A named policy can add cpu back under a memory-only '*'.
+    expect(
+      conflictsIn(() => {
+        cpuHpa();
+        return {
+          targetRef: target,
+          resourcePolicy: {
+            containerPolicies: [
+              { containerName: '*', controlledResources: ['memory'] },
+              { containerName: 'app', controlledResources: ['cpu'] },
+            ],
+          },
+        };
+      })
+    ).toHaveLength(1);
+    expect(
+      conflictsIn(() => {
+        cpuHpa();
+        return {
+          targetRef: target,
+          resourcePolicy: { containerPolicies: [{ containerName: '*', mode: 'Off' }] },
+        };
+      })
+    ).toEqual([]);
+  });
+
   it('is logged by the factory', () => {
     const logger = getComponentLogger('vpa-validation');
     const warn = spyOn(Object.getPrototypeOf(logger), 'warn');

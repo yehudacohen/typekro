@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-
-import * as root from '../../../src/index.js';
 import * as vpa from '../../../src/factories/vpa/index.js';
+import * as root from '../../../src/index.js';
 
 describe('typekro/vpa exports', () => {
   it('exports the compositions, factories, helpers and constants', () => {

@@ -102,7 +102,9 @@ would work in parallel. The admission controller is stateless and can run more.
 ### Recommender flags
 
 Every flag is rendered, with its default when unset, so the Deployment shows the full
-configuration.
+configuration. A default is therefore pinned to the version below; when bumping the chart,
+re-check `VPA_DEFAULT_RECOMMENDER_FLAGS` and `VPA_DEFAULT_UPDATER_FLAGS` against that VPA
+version's [flags.md](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/flags.md).
 
 | Field | Flag | Default |
 |---|---|---|
@@ -181,8 +183,13 @@ sees.
 The chart ships the CRDs in `crds/`, which Helm installs but never upgrades. The `HelmRelease`
 sets `install.crds` and `upgrade.crds` to `CreateReplace`, so Flux replaces them on every chart
 upgrade. Helm never deletes `crds/` CRDs, so uninstalling the bootstrap keeps every VPA object.
-The chart's ClusterRoles have fixed names (`vpa-actor`, ...), so install one bootstrap per
-cluster.
+### One install per cluster
+
+The chart's ClusterRoles and ClusterRoleBindings have fixed names (`vpa-actor`,
+`vpa-checkpoint-actor`, `vpa-evictioner`, ...), not names derived from the release. Only one
+bootstrap can run per cluster, and it clashes with a VPA the platform already manages, such as
+GKE's built-in vertical Pod autoscaling or a VPA add-on. Use the managed one there, and declare
+only `verticalPodAutoscaler` objects.
 
 ### Teardown
 
@@ -229,7 +236,7 @@ verticalPodAutoscaler({
 | Field | Notes |
 |---|---|
 | `targetRef` | `kind` and `name` of a Deployment, StatefulSet, DaemonSet, Job, CronJob, ReplicaSet or any resource with a `scale` subresource |
-| `updatePolicy.updateMode` | `Off`, `Initial`, `Recreate` (CRD default), `InPlaceOrRecreate`, `InPlace`; `Auto` is a deprecated alias of `Recreate` |
+| `updatePolicy.updateMode` | `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate`, `InPlace`; `Auto` is a deprecated alias of `Recreate`. The CRD sets no default; the VPA treats an unset mode as `Recreate` |
 | `updatePolicy.minReplicas` | Overrides the updater's `--min-replicas` for this VPA |
 | `updatePolicy.evictionRequirements` | Only evict when the target moved up (`TargetHigherThanRequests`) or down |
 | `resourcePolicy.containerPolicies` | Per container (`'*'` for all): `mode`, `minAllowed`, `maxAllowed`, `controlledResources` (`cpu`, `memory`), `controlledValues` (`RequestsAndLimits` keeps the limit/request ratio, `RequestsOnly` leaves limits alone) |
@@ -299,7 +306,9 @@ Safe combinations:
 
 `verticalPodAutoscaler` checks the other resources already declared in the same composition and
 logs a warning when an `autoscaling` HPA or a `keda.sh` ScaledObject scales its target on a
-resource the VPA sets. Autoscalers created elsewhere, or targets named by a schema reference,
+resource the VPA sets. Containers without a policy of their own follow the `'*'` policy, or get
+both resources when there is none, so a policy list that only excludes a sidecar
+(`[{ containerName: 'istio-proxy', mode: 'Off' }]`) still counts. Autoscalers created elsewhere, or targets named by a schema reference,
 are not visible to the check. `findVpaAutoscalerConflicts(spec, namespace)` returns the same
 findings.
 

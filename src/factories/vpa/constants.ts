@@ -5,6 +5,10 @@
 // community chart; the kubernetes/autoscaler `vertical-pod-autoscaler` chart
 // (0.13.0) still describes itself as not ready for production use.
 //
+// Bumping the chart: re-check VPA_DEFAULT_RECOMMENDER_FLAGS and
+// VPA_DEFAULT_UPDATER_FLAGS against the new VPA version's docs/flags.md and
+// the chart's default `extraArgs`, since every flag is rendered explicitly.
+//
 // @see https://github.com/FairwindsOps/charts/tree/master/stable/vpa
 // @see https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler
 
