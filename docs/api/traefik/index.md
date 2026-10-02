@@ -70,6 +70,8 @@ const edge = await factory.deploy({
 | `traefikMiddleware` | The whole OSS middleware set as a discriminated union |
 | `traefikForwardAuthMiddleware` … `traefikChainMiddleware` | Typed builders carrying the secure defaults |
 | `traefikTLSOption` / `traefikTLSStore` | TLS policy and the default certificate |
+| `traefikTlsCertificate` | A cert-manager `Certificate` whose Secret Traefik serves |
+| `awsNlbServiceAnnotations` | AWS Load Balancer Controller annotations for a TCP-passthrough NLB with PROXY protocol v2 |
 | `traefikGatewayClass` / `traefikGateway` / `traefikHTTPRoute` / `traefikGRPCRoute` | Gateway API, via the shared `gateway-api` module |
 | `mapTraefikConfigToHelmValues` / `validateTraefikHelmValues` | Values mapping and edge-configuration warnings |
 | `validateTraefikMiddlewareSpec` | The exactly-one-middleware rule, callable directly |
@@ -91,20 +93,49 @@ interface TraefikBootstrapConfig {
   service?: {
     type?: 'LoadBalancer' | 'NodePort' | 'ClusterIP';
     annotations?: Record<string, string>;
+    loadBalancerClass?: string; // LoadBalancer only, e.g. 'service.k8s.aws/nlb'
+    externalTrafficPolicy?: 'Cluster' | 'Local'; // not valid on ClusterIP
+    loadBalancerSourceRanges?: string[]; // LoadBalancer only
   };
   // Both entrypoints are always published by the Service the bootstrap owns:
   // whether a port EXISTS is structural, so it cannot come from a value that
   // may be a schema reference.
   entrypoints?: {
-    web?: { exposedPort?: number };
+    web?: {
+      exposedPort?: number;
+      proxyProtocol?: { trustedIPs: string[] };
+      forwardedHeaders?: { trustedIPs: string[] };
+      requestAcceptGraceTimeout?: string; // default '10s'
+      graceTimeOut?: string; // default '30s'
+    };
     websecure?: {
       exposedPort?: number;
+      proxyProtocol?: { trustedIPs: string[] };
+      forwardedHeaders?: { trustedIPs: string[] };
+      requestAcceptGraceTimeout?: string;
+      graceTimeOut?: string;
       readTimeout?: string;
       writeTimeout?: string;
       idleTimeout?: string;
     };
   };
-  providers?: { crd?: boolean; gatewayApi?: boolean; kubernetesIngress?: boolean };
+  providers?: {
+    crd?: boolean;
+    gatewayApi?: boolean;
+    kubernetesIngress?: boolean;
+    allowEmptyServices?: boolean; // default false
+    namespaces?: string[]; // default: all namespaces
+    allowCrossNamespace?: boolean; // default false
+  };
+  terminationGracePeriodSeconds?: number; // default 60
+  podDisruptionBudget?: { enabled?: boolean; maxUnavailable?: number }; // default on, 1
+  scheduling?: {
+    nodeSelector?: Record<string, string>;
+    tolerations?: Toleration[];
+    priorityClassName?: string;
+    zoneSpread?: 'DoNotSchedule' | 'ScheduleAnyway'; // default 'ScheduleAnyway'
+    nodeSpread?: 'DoNotSchedule' | 'ScheduleAnyway'; // default 'ScheduleAnyway'
+  };
   accessLogs?: boolean;
   logLevel?: 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL' | 'PANIC';
   otlp?: { endpoint: string; insecure?: boolean; serviceName?: string };
@@ -145,14 +176,18 @@ const edge = traefik.makeTraefikBootstrap({
   kind: 'TraefikEdge',
   // 'external' when a parent graph already establishes the namespace
   namespaceOwnership: 'owned',
-  // The chart disables the redirect by OMITTING the redirection block
+  // The chart disables the redirect by OMITTING the redirection block.
+  // ACME HTTP-01 challenge paths are exempt (see "TLS via cert-manager").
   redirectWebToWebsecure: true,
   defaultTlsOption: { minVersion: 'VersionTLS13' },
   defaultTlsStore: { defaultCertificateSecretName: 'edge-wildcard-tls' },
   // Flux CRD policy, applied to install AND upgrade. 'Skip' only when the
   // traefik.io CRDs are managed by something else.
   crds: 'CreateReplace',
+  // JSON access-log field policy; see "Access logs".
+  accessLog: { preset: 'default' },
   // Chart surface this factory does not model. The security pins still win.
+  // A raw podDisruptionBudget replaces the default one.
   values: { podDisruptionBudget: { enabled: true, minAvailable: 1 } },
 });
 ```
@@ -254,6 +289,163 @@ consequences worth knowing:
   created itself. The chart's Gateway API `statusAddress.service` wiring has no
   such override and is skipped; set `providers.kubernetesGateway.statusAddress`
   through `values` if a Gateway needs a published address.
+
+## Production defaults
+
+| Default | Why |
+|---------|-----|
+| `requestAcceptGraceTimeout: 10s`, `graceTimeOut: 30s` on both entrypoints | On SIGTERM Traefik keeps accepting for 10s, while the load balancer deregisters the pod, then drains in-flight requests for up to 30s. |
+| `terminationGracePeriodSeconds: 60` | Covers both. `validateTraefikHelmValues` warns when an entrypoint's accept + drain time reaches the grace period. |
+| PodDisruptionBudget, `maxUnavailable: 1` | A node drain can't evict every replica at once, and the budget never blocks a drain, even at one replica. |
+| Soft zone and node spread (`ScheduleAnyway`, `maxSkew: 1`) | Replicas land in different zones and on different nodes when the cluster allows it. The selector is the chart's exact pod selector, and `matchLabelKeys: [pod-template-hash]` counts skew per ReplicaSet so a rolling update spreads the new pods. Set `zoneSpread: 'DoNotSchedule'` to make the zone spread hard. |
+| `allowEmptyServices: false`, `allowCrossNamespace: false` | Traefik's own defaults, stated explicitly. With `allowEmptyServices: true`, a route whose Service has no ready endpoints answers `503` instead of disappearing (`404`). |
+| Prometheus on the internal `metrics` entrypoint (9100) | The owned Service never publishes it, and `ports.metrics.expose` stays `false` even if the raw values set it. |
+
+**Behind an AWS NLB with IP targets**, size the shutdown to the NLB:
+
+- Raise `requestAcceptGraceTimeout` to cover the time the NLB takes to stop
+  sending new connections to a deregistered target. That is often more than
+  10s, so 20s to 30s is a safer start.
+- Set the target group's `deregistration_delay.timeout_seconds` (through
+  `awsNlbServiceAnnotations({ targetGroupAttributes })`) at or above
+  `graceTimeOut`, so the NLB keeps draining connections as long as Traefik
+  does.
+- Keep `terminationGracePeriodSeconds` above the sum of the two.
+- Enable the AWS Load Balancer Controller's pod readiness gate by labelling the
+  install namespace `elbv2.k8s.aws/pod-readiness-gate-inject: enabled`. A
+  rolling update then waits for each new pod to be healthy in the target group
+  before it removes an old one.
+
+Raw `values` take precedence over these defaults in a few places:
+
+- A raw `podDisruptionBudget` replaces the default PDB. Merging the two could
+  set `minAvailable` and `maxUnavailable` together, which the API server
+  rejects.
+- Raw `topologySpreadConstraints` replace the default spread.
+- A raw `nodeSelector`, `tolerations`, `priorityClassName` or
+  `deployment.terminationGracePeriodSeconds` is used when the spec does not
+  set it. The spec field wins when both are set, in both modes.
+- Other `metrics.prometheus` keys (router labels, the chart's metrics Service,
+  a ServiceMonitor) pass through. Only `entryPoint` is pinned.
+
+### Access logs
+
+Access logs are JSON. The build option `accessLog` controls which fields and
+request headers they carry:
+
+```typescript
+const edge = traefik.makeTraefikBootstrap({
+  name: 'public-edge',
+  kind: 'PublicEdge',
+  accessLog: {
+    preset: 'crowdsec', // or 'default'
+    headers: { Referer: 'keep', 'X-Request-Id': 'keep' },
+    queryParameters: 'keep',
+  },
+});
+```
+
+Every field is kept and every request header is dropped unless listed.
+`User-Agent` is kept. `Authorization`, `Proxy-Authorization`, `Cookie` and
+`Set-Cookie` are always dropped. The policy covers request headers and the
+response headers Traefik can log (`downstream_*`, `origin_*`) alike. Overriding any of them to `keep`, in any letter case, throws,
+while `redact` is allowed. The `crowdsec` preset also pins every field that
+CrowdSec's `crowdsecurity/traefik-logs` parser reads from a JSON line
+(`ClientHost`, `RequestHost`, `RequestPath`, `DownstreamStatus`, `Duration`,
+`RouterName` and the others in `TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS`), along
+with `User-Agent`. Dropping one of them throws. `ClientHost` is the real client
+only when the proxy trust described below is set, so configure that too
+before CrowdSec acts on it.
+
+The policy replaces any `accessLog.fields` in the raw values.
+
+## A public edge behind an AWS NLB
+
+For a public API the usual shape is an AWS Network Load Balancer passing TCP 80
+and 443 straight to Traefik, with Traefik terminating TLS using certificates
+from cert-manager. The NLB never sees plaintext and never holds a certificate,
+so Traefik keeps SNI, ALPN and client certificates.
+
+```typescript
+import * as traefik from 'typekro/traefik';
+
+const VPC_CIDR = '10.0.0.0/16';
+
+const edge = traefik.makeTraefikBootstrap({
+  name: 'public-edge',
+  kind: 'PublicEdge',
+  defaultTlsStore: {
+    defaultCertificateSecretName: 'edge-default-tls',
+    // The bootstrap also owns the cert-manager Certificate behind it.
+    certificate: { hostnames: ['api.example.com'], issuerRef: { name: 'letsencrypt' } },
+  },
+});
+
+await edge.factory('direct', { namespace: 'flux-system', waitForReady: true, kubeConfig }).deploy({
+  name: 'traefik',
+  namespace: 'traefik',
+  replicas: 3,
+  service: {
+    type: 'LoadBalancer',
+    loadBalancerClass: 'service.k8s.aws/nlb',
+    annotations: traefik.awsNlbServiceAnnotations({
+      scheme: 'internet-facing',
+      targetType: 'ip', // the default
+      proxyProtocol: true, // the default: PROXY protocol v2 to every target port
+      crossZone: true,
+      targetGroupAttributes: { 'deregistration_delay.timeout_seconds': '30' },
+    }),
+  },
+  entrypoints: {
+    // The NLB connects from its own private addresses, so trust the VPC.
+    web: { proxyProtocol: { trustedIPs: [VPC_CIDR] } },
+    websecure: { proxyProtocol: { trustedIPs: [VPC_CIDR] } },
+  },
+  providers: { crd: true, kubernetesIngress: true }, // Ingress: for the HTTP-01 solver
+});
+```
+
+`awsNlbServiceAnnotations` emits AWS Load Balancer Controller v2 annotations:
+`aws-load-balancer-type: external`, the scheme, the target type,
+`aws-load-balancer-proxy-protocol: "*"`, and, when given, load-balancer and
+target-group attributes, subnets, the name, tags and health-check settings. It
+has no certificate or SSL-port inputs, because TLS is not terminated on the
+NLB. It throws on ambiguous or malformed input: `proxy_protocol_v2.enabled` in
+`targetGroupAttributes` (use `proxyProtocol`) or `crossZone` together with the
+cross-zone attribute, where the controller would silently let one source win;
+and a `,` in a value, a name over 32 characters, or a health-check `path` on a
+TCP check.
+
+**PROXY protocol has to be on at both ends.** With it on, the NLB prepends a
+PROXY v2 header to every connection, health checks included. An entrypoint
+without `proxyProtocol.trustedIPs` reads that header as the start of a TLS
+handshake and drops the connection. `validateTraefikHelmValues(values,
+{ serviceAnnotations })` warns about this mismatch. Keep the NLB health check
+on TCP (the controller's default). An HTTP check sends the header too, so it
+needs an entrypoint that accepts it.
+
+**Trusted ranges.** `proxyProtocol.trustedIPs` lists the sources allowed to
+send a PROXY header, and `forwardedHeaders.trustedIPs` lists the sources whose
+`X-Forwarded-*` headers Traefik keeps. Behind an NLB with PROXY protocol, the
+client address comes from the PROXY header. Leave `forwardedHeaders` unset
+unless another proxy, such as a CDN, sits in front and sets `X-Forwarded-For`.
+A range with a `/0` prefix (`0.0.0.0/0`, `::/0`) would let any client set its
+own source address, so it is refused. Direct mode refuses it when the
+composition runs, and KRO mode refuses it at admission through
+`x-kubernetes-validations` on the generated CRD. An `insecure` flag that
+reaches the final values throws as well, whether it comes through `values`
+(`ports.*.proxyProtocol.insecure`), `additionalArguments` (`=true`, `=1` or
+bare) or a `TRAEFIK_ENTRYPOINTS_*_INSECURE` entry in `env`. A range that is
+legal but very broad, with an IPv4 prefix shorter than `/8` or an IPv6 prefix
+shorter than `/16`, gets a `validateTraefikHelmValues` warning instead. The
+escape hatch is
+`makeTraefikBootstrap({ dangerouslyTrustAnySource: true })`, for a Traefik that
+no client can reach directly.
+
+With `targetType: 'ip'` the NLB sends traffic straight to pod IPs, so
+`externalTrafficPolicy` has no effect. It matters for `instance` targets and
+`NodePort` Services. `loadBalancerSourceRanges` limits which client CIDRs the
+NLB admits.
 
 ## Routing with typed CRDs
 
@@ -432,6 +624,43 @@ rate limit so the budget is keyed on an authenticated principal.
 
 ## TLS via cert-manager
 
+`traefikTlsCertificate` creates a cert-manager `Certificate` for a set of
+hostnames, with an ECDSA P-256 key that rotates on every renewal. Its Secret
+(`<name>-tls` by default) is what an `IngressRoute` serves through
+`tls.secretName`. The Secret must be in the route's namespace.
+
+```typescript
+const cert = traefik.traefikTlsCertificate({
+  name: 'orders-api',
+  namespace: 'orders',
+  hostnames: ['api.example.com'],
+  issuerRef: { name: 'letsencrypt' }, // kind defaults to ClusterIssuer
+  id: 'ordersCertificate',
+});
+
+traefik.traefikIngressRoute({
+  name: 'orders-api',
+  namespace: 'orders',
+  spec: {
+    entryPoints: ['websecure'],
+    ingressClassName: 'traefik',
+    tls: { secretName: 'orders-api-tls' },
+    routes: [{ match: 'Host(`api.example.com`)', services: [{ name: 'orders', port: 8080 }] }],
+  },
+  id: 'ordersRoute',
+});
+```
+
+For the certificate served when SNI matches no route, give the bootstrap a
+`defaultTlsStore` and, optionally, `defaultTlsStore.certificate`. The bootstrap
+then owns the `Certificate` too, in the install namespace. The `TLSStore` does
+not wait for it: Traefik serves its self-signed default until cert-manager
+writes the Secret. A `waitForReady` deploy does wait for the `Certificate`, so
+with HTTP-01 the hostname's DNS must reach the NLB before the deploy times out.
+External-DNS, driven by an annotation on the Service, can arrange that.
+
+The same pieces can be composed by hand with the cert-manager factories:
+
 ```typescript
 import * as certManager from 'typekro/cert-manager';
 
@@ -466,6 +695,60 @@ An omitted `minVersion` becomes `VersionTLS12` and an omitted `sniStrict`
 becomes `true`. `sniStrict` rejects handshakes that would otherwise fall back
 to Traefik's self-signed default certificate — a fallback that turns a
 certificate misconfiguration into a silently insecure connection.
+
+### HTTP-01 with Let's Encrypt
+
+An HTTP-01 `ClusterIssuer` needs a solver that Traefik routes on `web`. Either:
+
+- **Ingress solver.** Enable Traefik's Ingress provider
+  (`providers: { kubernetesIngress: true }`) and point the solver at Traefik's
+  class. cert-manager creates an `Ingress` for
+  `/.well-known/acme-challenge/<token>`. It names no entrypoint, so Traefik
+  attaches it to `web` as well.
+
+  ```typescript
+  import * as certManager from 'typekro/cert-manager';
+
+  certManager.clusterIssuer({
+    name: 'letsencrypt',
+    spec: {
+      acme: {
+        server: 'https://acme-v02.api.letsencrypt.org/directory',
+        email: 'ops@example.com',
+        privateKeySecretRef: { name: 'letsencrypt-account' },
+        // Sets the Ingress class cert-manager stamps on its solver Ingress.
+        solvers: [{ http01: { ingress: { class: 'traefik' } } }],
+      },
+    },
+    id: 'letsencrypt',
+  });
+  ```
+
+- **Gateway solver.** Enable `providers: { gatewayApi: true }`, run cert-manager
+  with Gateway API support, and use `http01.gatewayHTTPRoute` with a
+  `parentRefs` entry naming the Traefik `Gateway`'s HTTP listener.
+
+DNS for each hostname must already point at the NLB, because Let's Encrypt
+connects to it on port 80.
+
+### HTTP-01 and the `web` redirect
+
+The default `web` → `websecure` redirect does **not** apply to
+`/.well-known/acme-challenge/`. The bootstrap sets Traefik's
+`allowACMEByPass` on `web`, which narrows the generated redirect rule to
+``HostRegexp(`^.+$`) && !PathPrefix(`/.well-known/acme-challenge/`)``. A
+cert-manager HTTP-01 solver route on `web` therefore answers the challenge,
+and every other path on `web` is still redirected.
+
+Without the bypass the redirect wins every time: Traefik gives the router it
+generates for an entrypoint redirection priority `MaxInt - 1`, above any rule
+length. The redirect's priority is deliberately left alone. A route that names
+no entrypoint attaches to all of them, so a low-priority redirect would serve
+those routes over plain HTTP instead of redirecting them.
+
+A challenge path with no solver route answers `404`, not `301`. Let's Encrypt
+only fetches `/.well-known/acme-challenge/<token>` while an order is pending,
+so this changes nothing for normal traffic.
 
 `TLSStore` and `TLSOption` named `default` are cluster-wide singletons in
 Traefik, so only one namespace should own them. Chart 41.5.0 can restrict which
@@ -536,6 +819,8 @@ Traefik's controller name for `BackendTLSPolicy`.
 | `readOnlyRootFilesystem`, no privilege escalation, all capabilities dropped | Traefik needs no writable root; ACME storage gets an explicit volume. |
 | `ingressClass.isDefaultClass: false` | Claiming the cluster-default class would silently capture every class-less `Ingress`. |
 | `global.checkNewVersion: false`, `global.sendAnonymousUsage: false` | No phone-home from an edge. |
+| Access logs drop `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` | A bearer token in a log line is a live credential for as long as the log is kept. |
+| `/0` trusted ranges and `insecure` proxy trust refused | Either lets any client set its own source address. |
 
 The `api.*` and security-context pins are applied **after** every other values
 source, including `makeTraefikBootstrap({ values })`. Re-enabling them means not

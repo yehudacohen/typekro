@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Traefik behind an AWS NLB, with TLS from cert-manager.** The bootstrap can now front a public
+  API with a TCP-passthrough NLB, with TLS terminated in Traefik.
+  - `service.loadBalancerClass`, `service.externalTrafficPolicy` and
+    `service.loadBalancerSourceRanges` on the owned entrypoint Service. Each is emitted only when
+    set (guarded with `omit()` in KRO mode), so a `ClusterIP` Service stays valid.
+  - `awsNlbServiceAnnotations({ scheme, targetType, proxyProtocol, crossZone, ... })` returns AWS
+    Load Balancer Controller annotations for IP targets with PROXY protocol v2 by default. It has
+    no certificate inputs, and it throws on ambiguous attribute combinations the controller would
+    silently resolve, and on malformed values.
+  - `entrypoints.{web,websecure}.proxyProtocol.trustedIPs` and `.forwardedHeaders.trustedIPs`.
+    A `/0` range is refused: in direct mode when the values are mapped, and in KRO mode by
+    `x-kubernetes-validations` on the generated CRD. An `insecure` proxy-protocol or
+    forwarded-header flag in raw `values`, `additionalArguments` or `env` throws too. The escape
+    hatch is the build option `dangerouslyTrustAnySource`.
+  - `validateTraefikHelmValues(values, { serviceAnnotations })` warns when the NLB sends PROXY
+    headers to an entrypoint that does not accept them, and about trusted ranges broader than
+    `/8` (IPv4) or `/16` (IPv6).
+  - `traefikTlsCertificate({ name, namespace, hostnames, issuerRef })` creates a cert-manager
+    `Certificate` (ECDSA P-256, `rotationPolicy: Always`) for an `IngressRoute`'s
+    `tls.secretName`. `defaultTlsStore.certificate` makes the bootstrap own the `Certificate`
+    behind the default `TLSStore`.
+  - The Traefik docs describe the HTTP-01 flow with an Ingress or Gateway solver.
+- **Traefik production options.**
+  - Entrypoint shutdown timing (`requestAcceptGraceTimeout`, `graceTimeOut`) and
+    `terminationGracePeriodSeconds`. `validateTraefikHelmValues` warns when Kubernetes would kill
+    Traefik mid-drain.
+  - `podDisruptionBudget`, plus `scheduling.{nodeSelector,tolerations,priorityClassName,zoneSpread,nodeSpread}`.
+  - `providers.allowEmptyServices` (a route with no endpoints answers 503), `providers.namespaces`
+    and `providers.allowCrossNamespace`.
+  - The build option `accessLog` (`preset: 'default' | 'crowdsec'`, per-header and per-field
+    modes, `queryParameters`). `TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS` lists the fields the CrowdSec
+    preset pins.
+
+### Changed
+
+- **Traefik bootstrap production defaults.** These change a default deployment:
+  - Both entrypoints now accept for 10s and drain for 30s on shutdown (Traefik's default is no
+    accept grace and a 10s drain), inside a pinned 60s termination grace period (the chart's
+    default, now stated explicitly).
+  - A PodDisruptionBudget with `maxUnavailable: 1` is created.
+  - Replicas spread softly across zones and nodes, counted per ReplicaSet (`matchLabelKeys:
+    [pod-template-hash]`).
+  - Prometheus is pinned to the internal `metrics` entrypoint, which is never exposed.
+  - JSON access logs keep `User-Agent` and always drop `Authorization`, `Proxy-Authorization`,
+    `Cookie` and `Set-Cookie`. Before, every header was dropped by the chart's default.
+  - `allowEmptyServices: false` and `allowCrossNamespace: false` are now stated explicitly. These
+    are Traefik's defaults.
+
+  Raw `values` that already set `podDisruptionBudget` or `topologySpreadConstraints` keep them.
+  Raw `accessLog.fields` are replaced by the access-log policy.
+
+### Fixed
+
+- **The Traefik `web` → `websecure` redirect blocked ACME HTTP-01 challenges.** Traefik gives the
+  router it generates for an entrypoint redirection priority `MaxInt - 1`, so it outranked the route
+  cert-manager's HTTP-01 solver creates on `web` and answered `/.well-known/acme-challenge/<token>`
+  with a 301. Certificates could not be issued over HTTP-01 while `redirectWebToWebsecure` was on,
+  which is the default. The bootstrap now sets Traefik's `allowACMEByPass` on `web` whenever it
+  emits the redirect. Traefik then leaves `/.well-known/acme-challenge/` to the routers on `web` and
+  still redirects every other path. The redirect's priority is unchanged, so a route that names no
+  entrypoint is still redirected instead of served over plain HTTP. `TraefikPortValues` gains
+  `allowACMEByPass`. The integration suite proves the challenge path reaches a solver route on `web`
+  while a sibling path still gets a 301.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed
