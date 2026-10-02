@@ -94,7 +94,7 @@ describeOrSkip(`helm template crowdsec ${DEFAULT_CROWDSEC_CHART_VERSION}`, () =>
     const manifests = render({
       bouncers: [{ name: 'traefik', keySecretRef: { name: 'crowdsec-bouncer', key: 'api-key' } }],
       allowlist: { cidrs: ['198.51.100.0/24'] },
-      simulation: { global: true, exclusions: ['crowdsecurity/http-cve-probing'] },
+      simulation: { global: true, enforce: ['crowdsecurity/http-cve-probing'] },
       appsec: { exclusions: [{ ruleId: 942100, pathPrefix: '/upload' }] },
       metrics: { serviceMonitor: false },
     });

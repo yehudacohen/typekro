@@ -13,7 +13,11 @@ import { dump } from 'js-yaml';
 import { TypeKroError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
-import { CROWDSEC_APPSEC_PORT, DEFAULT_CROWDSEC_COLLECTIONS } from '../constants.js';
+import {
+  CROWDSEC_APPSEC_PORT,
+  CROWDSEC_KUBECTL_IMAGE_TAG,
+  DEFAULT_CROWDSEC_COLLECTIONS,
+} from '../constants.js';
 import type {
   CrowdsecAcquisition,
   CrowdsecAppsecExclusion,
@@ -23,19 +27,20 @@ import type {
   CrowdsecResources,
 } from '../types.js';
 
-// Defaults sized from a kind run with the Traefik collections and CRS loaded;
-// requests are always set so no CrowdSec pod is BestEffort.
+// Defaults sized from a kind run with the Traefik collections and CRS loaded.
+// Requests are always set so no CrowdSec pod is BestEffort. No CPU limits:
+// AppSec sits on the request path, and throttling LAPI delays every pull.
 const DEFAULT_LAPI_RESOURCES: CrowdsecResources = {
   requests: { cpu: '100m', memory: '256Mi' },
-  limits: { cpu: '1', memory: '512Mi' },
+  limits: { memory: '512Mi' },
 };
 const DEFAULT_AGENT_RESOURCES: CrowdsecResources = {
   requests: { cpu: '100m', memory: '192Mi' },
-  limits: { cpu: '1', memory: '384Mi' },
+  limits: { memory: '384Mi' },
 };
 const DEFAULT_APPSEC_RESOURCES: CrowdsecResources = {
   requests: { cpu: '200m', memory: '384Mi' },
-  limits: { cpu: '1', memory: '768Mi' },
+  limits: { memory: '768Mi' },
 };
 
 // The chart's own default for `api.server.auto_registration.allowed_ranges`.
@@ -68,6 +73,28 @@ function fail(message: string, context?: Record<string, unknown>): never {
   throw new TypeKroError(message, 'CROWDSEC_INVALID_OPTIONS', context);
 }
 
+// Every option string lands in the values tree, where KRO would read `${` as CEL.
+function assertNoCel(options: CrowdsecBootstrapOptions): void {
+  const strings: (string | undefined)[] = [
+    options.allowlist?.reason,
+    options.centralApi?.enrollment?.instanceName,
+    ...(options.centralApi?.enrollment?.tags ?? []),
+    ...(options.collections ?? []),
+    ...(options.simulation?.global ? (options.simulation.enforce ?? []) : []),
+    ...(options.simulation && !options.simulation.global
+      ? (options.simulation.simulate ?? [])
+      : []),
+    ...(options.lapi?.autoRegistrationRanges ?? []),
+    ...(options.appsec?.exclusions ?? []).flatMap((e) => [e.ruleName, e.ruleTag, e.pathPrefix]),
+    ...(options.storage?.type === 'postgres'
+      ? [options.storage.host, options.storage.database, options.storage.user]
+      : []),
+  ];
+  for (const value of strings) {
+    if (value?.includes('${')) fail(`"${value}" contains "\${", which KRO would parse as CEL.`);
+  }
+}
+
 function isIp(value: string): boolean {
   return (
     (IPV4.test(value) && value.split('.').every((o) => Number(o) <= 255)) ||
@@ -91,6 +118,7 @@ function isCidr(value: string): boolean {
  * @throws {TypeKroError} `CROWDSEC_INVALID_OPTIONS`
  */
 export function assertCrowdsecBootstrapOptions(options: CrowdsecBootstrapOptions): void {
+  assertNoCel(options);
   const storage = options.storage ?? { type: 'sqlite' };
   const replicas = options.lapi?.replicas ?? 1;
   if (!Number.isInteger(replicas) || replicas < 1) {
@@ -241,7 +269,10 @@ export function renderCrowdsecSimulation(
   simulation: CrowdsecBootstrapOptions['simulation']
 ): string {
   if (!simulation) return '';
-  return yaml({ simulation: simulation.global, exclusions: [...(simulation.exclusions ?? [])] });
+  // CrowdSec's `exclusions` invert the global flag: under global simulation
+  // they enforce, otherwise they are the only scenarios simulated.
+  const exclusions = simulation.global ? simulation.enforce : simulation.simulate;
+  return yaml({ simulation: simulation.global, exclusions: [...(exclusions ?? [])] });
 }
 
 function exclusionCall(exclusion: CrowdsecAppsecExclusion, band: 'InBand' | 'OutBand'): string {
@@ -343,7 +374,7 @@ export function mapCrowdsecConfigToHelmValues(
     podMonitor: { enabled: options.metrics?.podMonitor ?? false },
   };
 
-  const lapiEnv: Record<string, unknown>[] = [];
+  const lapiEnv: object[] = [];
   if (!capi) lapiEnv.push({ name: 'DISABLE_ONLINE_API', value: 'true' });
   const enrollment = options.centralApi?.enrollment;
   if (enrollment) {
@@ -359,9 +390,12 @@ export function mapCrowdsecConfigToHelmValues(
   }
   if (storage.type === 'postgres')
     lapiEnv.push(secretEnv('DB_PASSWORD', storage.passwordSecretRef));
+  lapiEnv.push(...(options.lapi?.env ?? []));
 
   const mapped: Record<string, unknown> = {
     container_runtime: options.agent?.containerRuntime ?? 'containerd',
+    // Upstream defaults the register Jobs' kubectl image to `latest`.
+    image: { kubectl: { tag: CROWDSEC_KUBECTL_IMAGE_TAG } },
     config: {
       parsers: {
         's02-enrich': allowlist ? { [CROWDSEC_GENERATED_FILES.allowlist]: allowlist } : {},

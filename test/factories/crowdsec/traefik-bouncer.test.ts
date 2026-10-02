@@ -87,15 +87,35 @@ describe('crowdsecBouncerMiddleware', () => {
     });
   });
 
-  it('blocks on any failure with failOpen: false', () => {
+  it('blocks after four failed pulls with failOpen: false', () => {
     const config = crowdsecBouncerMiddleware({ ...BASE, appsecHost: 'a:7422', failOpen: false })
       .plugin.crowdsec;
     expect(config).toMatchObject({
-      updateMaxFailure: 0,
+      updateMaxFailure: 4,
       crowdsecAppsecUnreachableBlock: true,
       crowdsecAppsecFailureBlock: true,
       crowdsecAppsecUnreadableBodyBlock: true,
     });
+    expect(
+      crowdsecBouncerMiddleware({ ...BASE, failOpen: false, failClosedAfter: 0 }).plugin.crowdsec
+        ?.updateMaxFailure
+    ).toBe(0);
+    expect(() => crowdsecBouncerMiddleware({ ...BASE, failClosedAfter: -1 })).toThrow(
+      /non-negative/
+    );
+  });
+
+  it('reads the key from a file instead of a Secret URN', () => {
+    const config = crowdsecBouncerMiddleware({
+      lapiHost: BASE.lapiHost,
+      apiKeyFile: '/etc/crowdsec-bouncer/api-key',
+    }).plugin.crowdsec;
+    expect(config?.crowdsecLapiKeyFile).toBe('/etc/crowdsec-bouncer/api-key');
+    expect(config?.crowdsecLapiKey).toBeUndefined();
+    expect(() => crowdsecBouncerMiddleware({ lapiHost: BASE.lapiHost })).toThrow(/exactly one/);
+    expect(() =>
+      crowdsecBouncerMiddleware({ ...BASE, apiKeyFile: '/etc/crowdsec-bouncer/api-key' })
+    ).toThrow(/exactly one/);
   });
 
   it('honours the plugin name and trusted proxies', () => {

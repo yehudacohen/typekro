@@ -5,10 +5,12 @@ import { singleton } from '../../../core/singleton/singleton.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { networkPolicy } from '../../kubernetes/networking/network-policy.js';
 import { podDisruptionBudget } from '../../kubernetes/policy/pod-disruption-budget.js';
 import {
   CROWDSEC_APPSEC_PORT,
   CROWDSEC_LAPI_PORT,
+  CROWDSEC_METRICS_PORT,
   DEFAULT_CROWDSEC_CHART_VERSION,
   DEFAULT_CROWDSEC_NAMESPACE,
   DEFAULT_CROWDSEC_REPOSITORY_NAME,
@@ -123,6 +125,59 @@ export function makeCrowdsecBootstrap(
       if (options.lapi?.pdb ?? true) disruptionBudget('lapi', 'crowdsecLapiPdb');
       if (options.appsec && (options.appsec.pdb ?? true)) {
         disruptionBudget('appsec', 'crowdsecAppsecPdb');
+      }
+
+      const policy = options.networkPolicy;
+      if (policy) {
+        const inNamespace = (name: string) => ({
+          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': name } },
+        });
+        const metricsRule = {
+          _from: [
+            policy.metricsNamespace
+              ? inNamespace(policy.metricsNamespace)
+              : { namespaceSelector: {} },
+          ],
+          ports: [{ port: CROWDSEC_METRICS_PORT, protocol: 'TCP' }],
+        };
+        const component = (type: string) => ({ matchLabels: { 'k8s-app': spec.name, type } });
+        networkPolicy({
+          metadata: { name: `${spec.name}-lapi`, namespace: installNamespace, labels },
+          spec: {
+            podSelector: component('lapi'),
+            policyTypes: ['Ingress'],
+            ingress: [
+              {
+                // Agents and AppSec push alerts; the bouncer pulls decisions.
+                _from: [
+                  { podSelector: component('agent') },
+                  { podSelector: component('appsec') },
+                  inNamespace(policy.traefikNamespace),
+                ],
+                ports: [{ port: CROWDSEC_LAPI_PORT, protocol: 'TCP' }],
+              },
+              metricsRule,
+            ],
+          },
+          id: 'crowdsecLapiNetworkPolicy',
+        });
+        if (options.appsec) {
+          networkPolicy({
+            metadata: { name: `${spec.name}-appsec`, namespace: installNamespace, labels },
+            spec: {
+              podSelector: component('appsec'),
+              policyTypes: ['Ingress'],
+              ingress: [
+                {
+                  _from: [inNamespace(policy.traefikNamespace)],
+                  ports: [{ port: CROWDSEC_APPSEC_PORT, protocol: 'TCP' }],
+                },
+                metricsRule,
+              ],
+            },
+            id: 'crowdsecAppsecNetworkPolicy',
+          });
+        }
       }
 
       const summary = helmReleaseConditionSummary(release);

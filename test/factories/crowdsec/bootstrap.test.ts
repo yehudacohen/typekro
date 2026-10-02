@@ -16,7 +16,9 @@ import {
   DEFAULT_CROWDSEC_REPOSITORY_NAME,
   makeCrowdsecBootstrap,
   mapCrowdsecConfigToHelmValues,
+  CROWDSEC_KUBECTL_IMAGE_TAG,
   renderCrowdsecAppsecPolicy,
+  renderCrowdsecSimulation,
 } from '../../../src/factories/crowdsec/index.js';
 
 const ORIGINAL_STRICT = process.env.TYPEKRO_STRICT_CEL;
@@ -74,7 +76,7 @@ function directValues(options: CrowdsecBootstrapOptions = {}): { all: Doc[]; val
 const POLICY: CrowdsecBootstrapOptions = {
   bouncers: [{ name: 'traefik', keySecretRef: { name: 'crowdsec-bouncer', key: 'api-key' } }],
   allowlist: { ips: ['192.0.2.10'], cidrs: ['198.51.100.0/24', '2001:db8::/32'] },
-  simulation: { global: true, exclusions: ['crowdsecurity/http-cve-probing'] },
+  simulation: { global: true, enforce: ['crowdsecurity/http-cve-probing'] },
   collections: ['crowdsecurity/whitelist-good-actors'],
   appsec: {
     maxBodySize: 1_048_576,
@@ -129,8 +131,16 @@ describe('crowdsecBootstrap defaults', () => {
       expect(values[component].resources.requests.cpu).toBeString();
       expect(values[component].resources.requests.memory).toBeString();
       expect(values[component].metrics.enabled).toBe(true);
+      // Memory limits only: CPU throttling would sit on the request path.
+      expect(values[component].resources.limits.memory).toBeString();
+      expect(values[component].resources.limits.cpu).toBeUndefined();
     }
     expect(values.appsec).toEqual({ enabled: false, service: { type: 'ClusterIP' } });
+  });
+
+  it('pins the kubectl image of the register Jobs and creates no NetworkPolicy', () => {
+    expect(values.image.kubectl.tag).toBe(CROWDSEC_KUBECTL_IMAGE_TAG);
+    expect(all.some((d) => d.kind === 'NetworkPolicy')).toBe(false);
   });
 
   it('creates a non-blocking LAPI PDB and spreads LAPI across nodes', () => {
@@ -176,6 +186,26 @@ describe('crowdsecBootstrap policy options', () => {
     });
     expect(values.appsec.extraVolumeMounts[0].mountPath).toBe('/etc/crowdsec/simulation.yaml');
     expect(values.appsec.extraVolumes[0].configMap.name).toBe('crowdsec-simulation');
+  });
+
+  it('renders simulate-only scenarios when global simulation is off', () => {
+    expect(
+      load(
+        renderCrowdsecSimulation({
+          global: false,
+          simulate: ['crowdsecurity/http-crawl-non_statics'],
+        })
+      )
+    ).toEqual({ simulation: false, exclusions: ['crowdsecurity/http-crawl-non_statics'] });
+    expect(load(renderCrowdsecSimulation({ global: false }))).toEqual({
+      simulation: false,
+      exclusions: [],
+    });
+    // Only global simulation keeps AppSec in-band from blocking.
+    const policy = load(
+      renderCrowdsecAppsecPolicy({ appsec: {}, simulation: { global: false, simulate: ['x/y'] } })
+    ) as Values;
+    expect(policy.default_remediation).toBe('ban');
   });
 
   it('appends extra collections once', () => {
@@ -283,6 +313,54 @@ describe('crowdsecBootstrap storage, CAPI and agents', () => {
     expect(local.api.server.online_client).toEqual({ pull: { community: false } });
   });
 
+  it('appends lapi.env and agent.env after the env this factory sets', () => {
+    const { values } = directValues({
+      lapi: { env: [{ name: 'LEVEL_DEBUG', value: 'true' }] },
+      agent: { env: [{ name: 'DISABLE_PARSERS', value: 'crowdsecurity/whitelists' }] },
+    });
+    expect(values.lapi.env.at(-1)).toEqual({ name: 'LEVEL_DEBUG', value: 'true' });
+    expect(values.lapi.env[0]).toEqual({ name: 'DISABLE_ONLINE_API', value: 'true' });
+    expect(values.agent.env.map((e: { name: string }) => e.name)).toEqual([
+      'COLLECTIONS',
+      'DISABLE_PARSERS',
+    ]);
+  });
+
+  it('restricts LAPI and AppSec ingress with the optional NetworkPolicies', () => {
+    const { all } = directValues({
+      appsec: {},
+      networkPolicy: { traefikNamespace: 'edge', metricsNamespace: 'monitoring' },
+    });
+    const policies = all.filter((d) => d.kind === 'NetworkPolicy') as (Doc & {
+      spec: Values;
+    })[];
+    expect(policies.map((d) => d.metadata?.name).sort()).toEqual([
+      'crowdsec-appsec',
+      'crowdsec-lapi',
+    ]);
+    const lapi = policies.find((d) => d.metadata?.name === 'crowdsec-lapi')?.spec as Values;
+    expect(lapi.podSelector).toEqual({ matchLabels: { 'k8s-app': 'crowdsec', type: 'lapi' } });
+    expect(lapi.ingress[0]).toEqual({
+      from: [
+        { podSelector: { matchLabels: { 'k8s-app': 'crowdsec', type: 'agent' } } },
+        { podSelector: { matchLabels: { 'k8s-app': 'crowdsec', type: 'appsec' } } },
+        { namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'edge' } } },
+      ],
+      ports: [{ port: 8080, protocol: 'TCP' }],
+    });
+    expect(lapi.ingress[1]).toEqual({
+      from: [
+        { namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'monitoring' } } },
+      ],
+      ports: [{ port: 6060, protocol: 'TCP' }],
+    });
+    const appsec = policies.find((d) => d.metadata?.name === 'crowdsec-appsec')?.spec as Values;
+    expect(appsec.ingress[0]).toEqual({
+      from: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'edge' } } }],
+      ports: [{ port: 7422, protocol: 'TCP' }],
+    });
+  });
+
   it('lets raw values fill gaps but never re-expose LAPI', () => {
     const { values } = directValues({
       values: {
@@ -308,6 +386,13 @@ describe('assertCrowdsecBootstrapOptions', () => {
       { acquisitions: [{ namespace: 'traefik', podName: 'traefik-*/../x' }] },
       /pod-name glob/
     );
+  });
+
+  it('rejects strings KRO would parse as CEL', () => {
+    rejects({ appsec: { exclusions: [{ ruleId: 1, pathPrefix: '/${x}' }] } }, /parse as CEL/);
+    rejects({ allowlist: { ips: ['192.0.2.1'], reason: '${schema.spec.name}' } }, /parse as CEL/);
+    rejects({ simulation: { global: true, enforce: ['${a}'] } }, /parse as CEL/);
+    rejects({ collections: ['${a}'] }, /parse as CEL/);
   });
 
   it('rejects malformed policy', () => {

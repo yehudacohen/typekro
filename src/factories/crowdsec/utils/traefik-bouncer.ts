@@ -95,17 +95,33 @@ export function crowdsecBouncerMiddleware(
 ): CrowdsecBouncerMiddlewareSpec {
   const failOpen = options.failOpen ?? true;
   const appsec = options.appsecHost !== undefined;
+  if ((options.apiKeySecret === undefined) === (options.apiKeyFile === undefined)) {
+    throw new TypeKroError(
+      'Set exactly one of apiKeySecret and apiKeyFile.',
+      'CROWDSEC_INVALID_SECRET_REF'
+    );
+  }
+  const tolerance = options.failClosedAfter ?? 4;
+  if (!Number.isInteger(tolerance) || tolerance < 0) {
+    throw new TypeKroError(
+      `failClosedAfter must be a non-negative integer, got ${tolerance}.`,
+      'CROWDSEC_INVALID_OPTIONS'
+    );
+  }
   const config: Record<string, unknown> = {
     enabled: true,
     logLevel: options.logLevel ?? 'INFO',
     crowdsecMode: 'stream',
     crowdsecLapiScheme: 'http',
     crowdsecLapiHost: options.lapiHost,
-    crowdsecLapiKey: crowdsecSecretUrn(options.apiKeySecret),
+    ...(options.apiKeySecret
+      ? { crowdsecLapiKey: crowdsecSecretUrn(options.apiKeySecret) }
+      : { crowdsecLapiKeyFile: options.apiKeyFile }),
     updateIntervalSeconds: options.updateIntervalSeconds ?? 15,
     // -1: a failed pull keeps the last decisions and never blocks everyone.
-    // 0 (fail-closed): the first failed pull blocks all traffic until LAPI is back.
-    updateMaxFailure: failOpen ? -1 : 0,
+    // Fail-closed: after `failClosedAfter` failed pulls in a row (about a
+    // minute at 15s), all traffic is blocked until a pull succeeds.
+    updateMaxFailure: failOpen ? -1 : tolerance,
     // The first pull runs before Traefik serves, so known bans apply at once.
     streamStartupBlock: true,
     crowdsecAppsecEnabled: appsec,

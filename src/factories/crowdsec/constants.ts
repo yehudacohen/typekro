@@ -19,6 +19,9 @@ export const DEFAULT_CROWDSEC_REPOSITORY_NAME = 'crowdsec-repo';
 /** Namespace CrowdSec is installed into by default. */
 export const DEFAULT_CROWDSEC_NAMESPACE = 'crowdsec';
 
+/** `alpine/kubectl` tag for the chart's register Jobs, pinned instead of `latest`. */
+export const CROWDSEC_KUBECTL_IMAGE_TAG = '1.36.4';
+
 /** Port of the Local API (LAPI) Service. */
 export const CROWDSEC_LAPI_PORT = 8080;
 /** Port of the AppSec (WAF) Service. */

@@ -54,7 +54,7 @@ export const exampleCrowdsec = makeCrowdsecBootstrap({
   // Office egress and the uptime checker never get banned.
   allowlist: { cidrs: ['198.51.100.0/24'], ips: ['203.0.113.7'], reason: 'office and probes' },
   // Rollout step 1: everything alerts, nothing bans except known CVE exploits.
-  simulation: { global: true, exclusions: ['crowdsecurity/http-cve-probing'] },
+  simulation: { global: true, enforce: ['crowdsecurity/http-cve-probing'] },
   appsec: {
     maxBodySize: 1_048_576,
     // CRS rule 942100 (SQL injection) misfires on binary upload bodies.

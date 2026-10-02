@@ -16,7 +16,10 @@
  * 4. The agent reads Traefik's access logs: a burst of 404 probes from one
  *    client raises `crowdsecurity/http-probing`, and that client is banned.
  * 5. AppSec in-band virtual patching blocks a request for `/.env`.
- * 6. Fail-open: with LAPI and AppSec scaled to zero, requests still pass.
+ * 6. The optional NetworkPolicies let the Traefik namespace reach LAPI and
+ *    AppSec, and drop other clients (kindnet enforces NetworkPolicy).
+ *    The drop needs #285: before it, direct mode dropped `ingress[].from`.
+ * 7. Fail-open: with LAPI and AppSec scaled to zero, requests still pass.
  */
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { randomBytes } from 'node:crypto';
@@ -105,6 +108,7 @@ describeOrSkip('CrowdSec bootstrap + Traefik bouncer integration', () => {
     // the base install) allowlists as private ranges. A real edge sees public IPs.
     agent: { env: [{ name: 'DISABLE_PARSERS', value: 'crowdsecurity/whitelists' }] },
     appsec: { crs: false },
+    networkPolicy: { traefikNamespace: traefikNs },
   });
 
   const traefik = makeTraefikBootstrap({
@@ -195,20 +199,19 @@ describeOrSkip('CrowdSec bootstrap + Traefik bouncer integration', () => {
       `cscli lapi register --machine e2e-${runId}-${probe} -u ${lapiUrl} --token "$REGISTRATION_TOKEN" >/dev/null 2>&1`,
       ...commands.map((command) => `cscli ${command}`),
     ].join('\n');
+    const secret = await createCoreV1ApiClient(kubeConfig).readNamespacedSecret({
+      namespace: crowdsecNs,
+      name: 'crowdsec-lapi-secrets',
+    });
+    const token = Buffer.from(secret.data?.registrationToken ?? '', 'base64').toString();
+    // From the Traefik namespace: the NetworkPolicy admits it to LAPI.
     return runTestPodAndReadLogs(
       {
         name: `cscli-${runId}-${probe}`,
-        namespace: crowdsecNs,
+        namespace: traefikNs,
         image: `crowdsecurity/crowdsec:${DEFAULT_CROWDSEC_APP_VERSION}`,
         command: ['sh', '-c', script],
-        env: [
-          {
-            name: 'REGISTRATION_TOKEN',
-            valueFrom: {
-              secretKeyRef: { name: 'crowdsec-lapi-secrets', key: 'registrationToken' },
-            },
-          },
-        ],
+        env: [{ name: 'REGISTRATION_TOKEN', value: token }],
         timeoutMs: 240_000,
       },
       kubeConfig
@@ -460,6 +463,35 @@ describeOrSkip('CrowdSec bootstrap + Traefik bouncer integration', () => {
 
   it('blocks a virtual-patching match in-band through AppSec', async () => {
     expect(await curl(['/.env'])).toEqual(['403']);
+  });
+
+  it('admits the Traefik namespace to LAPI and AppSec and drops other clients', async () => {
+    const probeFrom = async (namespace: string) => {
+      probe += 1;
+      const logs = await runTestPodAndReadLogs(
+        {
+          name: `netpol-${runId}-${probe}`,
+          namespace,
+          image: 'curlimages/curl:8.11.1',
+          command: [
+            'sh',
+            '-c',
+            [`http://${lapiHost}/health`, `http://${appsecHost}/`]
+              .map((url) => `curl -s -o /dev/null -w '%{http_code}\\n' -m 5 '${url}' || true`)
+              .join('; '),
+          ],
+          timeoutMs: 120_000,
+        },
+        kubeConfig
+      );
+      return logs.trim().split('\n');
+    };
+    const [lapiAllowed, appsecAllowed] = await probeFrom(traefikNs);
+    // Any HTTP answer proves the connection was admitted.
+    expect(lapiAllowed).toBe('200');
+    expect(appsecAllowed).not.toBe('000');
+    // An unlabelled pod next to CrowdSec is neither an agent nor AppSec.
+    expect(await probeFrom(crowdsecNs)).toEqual(['000', '000']);
   });
 
   it('fails open while LAPI and AppSec are down', async () => {

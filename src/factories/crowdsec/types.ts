@@ -167,6 +167,22 @@ export interface CrowdsecAppsecOptions {
   readonly placement?: CrowdsecPlacement;
 }
 
+/**
+ * Simulation: everything simulated except `enforce`, or nothing simulated
+ * except `simulate`. Both render as CrowdSec's `exclusions`.
+ */
+export type CrowdsecSimulation =
+  | { readonly global: true; readonly enforce?: readonly string[] }
+  | { readonly global: false; readonly simulate?: readonly string[] };
+
+/** Ingress allowed to LAPI (`:8080`) and AppSec (`:7422`). */
+export interface CrowdsecNetworkPolicyOptions {
+  /** Namespace of the Traefik pods running the bouncer. */
+  readonly traefikNamespace: string;
+  /** Namespace allowed to scrape `:6060`. @default any namespace */
+  readonly metricsNamespace?: string;
+}
+
 /** Build-time options of {@link makeCrowdsecBootstrap}. */
 export interface CrowdsecBootstrapOptions {
   /** @default 'crowdsec-bootstrap' */
@@ -185,6 +201,8 @@ export interface CrowdsecBootstrapOptions {
     readonly placement?: CrowdsecPlacement;
     /** Pod CIDRs allowed to auto-register agents. @default the RFC 1918 ranges */
     readonly autoRegistrationRanges?: readonly string[];
+    /** Extra LAPI env, appended after the env this factory sets. */
+    readonly env?: readonly V1EnvVar[];
   };
   readonly agent?: {
     /** @default 'containerd' */
@@ -218,8 +236,10 @@ export interface CrowdsecBootstrapOptions {
     readonly cidrs?: readonly string[];
     readonly reason?: string;
   };
-  /** Scenarios alert but do not remediate. `exclusions` keep enforcing. */
-  readonly simulation?: { readonly global: boolean; readonly exclusions?: readonly string[] };
+  /** Simulated scenarios alert but do not remediate. */
+  readonly simulation?: CrowdsecSimulation;
+  /** NetworkPolicies for LAPI and AppSec ingress. Absent means none. */
+  readonly networkPolicy?: CrowdsecNetworkPolicyOptions;
   readonly appsec?: CrowdsecAppsecOptions;
   /** Prometheus Operator objects. Metrics are always served on port 6060. */
   readonly metrics?: { readonly serviceMonitor?: boolean; readonly podMonitor?: boolean };
@@ -242,11 +262,15 @@ export interface CrowdsecBouncerMiddlewareOptions {
   /** LAPI `host:port`, e.g. the bootstrap's `status.lapiHost`. */
   readonly lapiHost: string;
   /** Secret in the Middleware's namespace holding this bouncer's key. */
-  readonly apiKeySecret: CrowdsecSecretKeyRef;
+  readonly apiKeySecret?: CrowdsecSecretKeyRef;
+  /** Path of the key in the Traefik pods, instead of `apiKeySecret`. */
+  readonly apiKeyFile?: string;
   /** AppSec `host:port`. Omit to skip the WAF. */
   readonly appsecHost?: string;
   /** Let traffic through when LAPI or AppSec is unreachable. @default true */
   readonly failOpen?: boolean;
+  /** Failed pulls tolerated before fail-closed blocks traffic. @default 4 */
+  readonly failClosedAfter?: number;
   /** Key of the plugin in `experimental.plugins`. @default 'crowdsec' */
   readonly pluginName?: string;
   /** Seconds between decision pulls. @default 15 */
