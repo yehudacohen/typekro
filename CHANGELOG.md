@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ones the generic `helmRelease` already takes: install and upgrade `timeout`, the CRD policy
   (`crds`: `Skip`, `Create` or `CreateReplace`), `remediation` (`retries`, `remediateLastFailure`,
   `ignoreTestFailures`, and `strategy` on upgrade), `install.createNamespace`, and drift detection.
-  Each field you set overrides the factory's default for that field. A cert-manager or other
-  integration release can now set `crds: CreateReplace` directly instead of patching the
-  HelmRelease with an aspect. They all share one helper, `helmReleaseLifecycle`, which
+  Each field you set overrides the factory's default for that field. A release whose chart ships
+  CRDs in its `crds/` directory can now set `upgrade.crds: CreateReplace` directly instead of
+  patching the HelmRelease with an aspect. (cert-manager's CRDs are chart templates, so the Flux
+  CRD policy does not affect them; its chart value `crds.enabled` does.) They all share one helper, `helmReleaseLifecycle`, which
   `typekro/helm` exports for custom integration factories, together with the
   `HelmReleaseLifecycleOptions`, `HelmReleaseInstallPolicy`, `HelmReleaseUpgradePolicy` and
   `HelmReleaseCrdsPolicy` types. See "Install, upgrade and CRD policy" in the Flux docs.
@@ -29,9 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generic `helmRelease` defaults.** These are `install.timeout` and `upgrade.timeout` of `10m` and
   `remediation.retries: 3` for each. They rendered no install or upgrade policy before, so Flux
   used a 5m timeout with no retries, and a slow first install stayed Stalled until someone ran
-  `flux reconcile --reset`. Existing releases pick up the new policy on their next reconcile. The
-  chart and its values do not change. Every other factory renders the same output as before
-  when the new options are not set.
+  `flux reconcile --reset`. With `retries` above 0, Flux also remediates every failure, the last
+  one included: a failed install is uninstalled and tried again, and a failed upgrade is rolled
+  back and tried again. Existing releases pick up the new policy on their next reconcile. The
+  chart and its values do not change. Every other factory renders the same fields with the same
+  values as before when the new options are not set. In the APISix and Traefik releases,
+  `createNamespace` and `crds` now come after `remediation`, so their YAML and RGD text change
+  while the objects stay identical.
 
 ### Fixed
 

@@ -44,6 +44,11 @@ type FieldBag = Readonly<Record<string, unknown>>;
 // a proxy, and spreading a proxy enumerates nothing, so the caller's setting
 // would silently vanish. Reading a named field from it yields a field reference
 // that serializes as CEL.
+//
+// Known gap: when a whole `install`/`upgrade` object is one schema reference,
+// every field read from it is a reference too (never `undefined`), so the
+// defaults do not fill the fields an instance leaves unset. Callers should pass
+// individual fields in KRO mode; the Flux docs say so.
 function mergeFields(
   keys: readonly string[],
   remediationKeys: readonly string[],

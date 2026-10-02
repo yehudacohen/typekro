@@ -119,14 +119,24 @@ Each field you set overrides the factory's default for that field, and
 default as a whole.
 
 ```typescript
-import { certManagerHelmRelease } from 'typekro/cert-manager';
+import { traefikHelmRelease } from 'typekro/traefik';
 
-const release = certManagerHelmRelease({
-  name: 'cert-manager',
-  install: { timeout: '20m', crds: 'CreateReplace' },
-  upgrade: { crds: 'CreateReplace', remediation: { remediateLastFailure: true } },
+const release = traefikHelmRelease({
+  name: 'traefik',
+  install: { timeout: '20m' },
+  upgrade: { crds: 'CreateReplace', remediation: { retries: 5 } },
 });
 ```
+
+With `remediation.retries` above 0, Flux remediates every failure, the last one
+included: a failed install is uninstalled and tried again, and a failed upgrade
+is rolled back (or uninstalled, with `strategy: 'uninstall'`) and tried again.
+Set `retries: 0` for a chart that must never be rolled back automatically.
+
+In KRO mode, pass individual fields (`install: { timeout: spec.installTimeout }`).
+An `install` or `upgrade` object passed as one schema reference is read field by
+field, so every field becomes a reference to the instance's spec, and the
+factory's defaults no longer fill the fields the instance leaves unset.
 
 Unless a factory sets its own policy, it uses the defaults of the generic
 `helmRelease`: `install.timeout` and `upgrade.timeout` of `10m`, and 3
@@ -146,6 +156,9 @@ policy:
 Flux's own CRD defaults are `Create` on install and `Skip` on upgrade. A chart
 that ships CRDs in its `crds/` directory therefore keeps the CRDs of the version
 it was first installed at, until you set `upgrade.crds: CreateReplace`.
+The CRD policy applies only to files in a chart's `crds/` directory. Charts
+that render their CRDs as templates, such as cert-manager (`crds.enabled`),
+ignore it.
 
 A custom integration factory can reuse the same merge through
 `helmReleaseLifecycle` from `typekro/helm`:

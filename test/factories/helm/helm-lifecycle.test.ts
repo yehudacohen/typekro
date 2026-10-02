@@ -216,7 +216,7 @@ describe('factory-specific lifecycle defaults', () => {
     }
   );
 
-  it('cert-manager can opt into CreateReplace CRDs without an aspect', () => {
+  it('renders a caller CRD policy on a release that had no lifecycle policy (cert-manager)', () => {
     const release = certManagerHelmRelease({
       name: 'cert-manager',
       install: { crds: 'CreateReplace' },
