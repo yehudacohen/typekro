@@ -41,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The build option `accessLog` (`preset: 'default' | 'crowdsec'`, per-header and per-field
     modes, `queryParameters`). `TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS` lists the fields the CrowdSec
     preset pins.
-
 - **Traefik plugins and the forwardAuth secure pair.**
   - The build options `plugins` (`moduleName`, exact `version`, and a required SHA-256 `hash`,
     which Traefik verifies), `localPlugins` (`inlinePlugin` or `localPath`, mounted at
@@ -53,8 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `authResponseHeaders` from the client's request in front of the `forwardAuth`, so a client
     can't hand the authorizer its own identity headers.
   - `validateTraefikHelmValues` warns about raw-values plugins that carry no hash.
+  - `entrypoints.{web,websecure}.aliasHeadersStrategy` (`keep`, `delete` or `reject`).
   - The integration suite pins how the Redis-backed rate limit fails: 500 while Valkey is down,
-    then recovery.
+    then recovery. The docs list mitigations.
 
 ### Changed
 
@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Cookie` and `Set-Cookie`. Before, every header was dropped by the chart's default.
   - `allowEmptyServices: false` and `allowCrossNamespace: false` are now stated explicitly. These
     are Traefik's defaults.
+  - Both entrypoints delete request headers whose names alias another (`X_Auth_User`,
+    `X.Auth.User`) through `aliasHeadersStrategy: delete`. Traefik's default keeps them. Without
+    this, a client could get an identity header past the forwardAuth strip step to a backend that
+    folds `_` into `-`. Headers with `_` or `.` in their names are now dropped; set the strategy
+    to `keep` per entrypoint to restore them.
 
   Raw `values` that already set `podDisruptionBudget` or `topologySpreadConstraints` keep them.
   Raw `accessLog.fields` are replaced by the access-log policy.

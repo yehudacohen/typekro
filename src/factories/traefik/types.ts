@@ -1339,6 +1339,7 @@ export interface TraefikPortValues {
     };
     middlewares?: string[];
     maxHeaderBytes?: number;
+    aliasHeadersStrategy?: 'keep' | 'delete' | 'reject';
     sanitizePath?: boolean;
     /**
      * TLS termination for the entrypoint. Nested under `http`, which is where
@@ -1687,6 +1688,18 @@ const traefikEntrypointLifecycleShape = {
   'graceTimeOut?': 'string > 0',
 } as const;
 
+// What an entrypoint does with a request header whose name aliases another:
+// any name with a character that is not a letter, digit or dash, such as
+// `X_Auth_User` or `X.Auth.User`. Backends that turn header names into
+// variable names (CGI, WSGI, PHP, NGINX) read those as `X-Auth-User`, so a
+// client could slip an identity header past the forwardAuth secure pair, which
+// strips only the canonical name. `delete` removes them before routing,
+// `reject` answers 400, and `keep` forwards them. Traefik v3.7.12+.
+const traefikEntrypointAliasShape = {
+  /** Headers whose names alias another (`X_Auth_User`). @default 'delete' */
+  'aliasHeadersStrategy?': '"keep" | "delete" | "reject"',
+} as const;
+
 // Which upstream sources an entrypoint believes. `trustedIPs` is required
 // inside each block: an empty block would read as "configured" while trusting
 // nothing. A `/0` range is rejected unless the build-time escape hatch
@@ -1735,11 +1748,13 @@ export const TraefikBootstrapConfigSchema = type({
       'exposedPort?': kubernetesPort,
       ...traefikEntrypointTrustShape,
       ...traefikEntrypointLifecycleShape,
+      ...traefikEntrypointAliasShape,
     },
     'websecure?': {
       'exposedPort?': kubernetesPort,
       ...traefikEntrypointTrustShape,
       ...traefikEntrypointLifecycleShape,
+      ...traefikEntrypointAliasShape,
       /** Entrypoint responding timeouts, for requests longer than 60s. */
       'readTimeout?': 'string > 0',
       'writeTimeout?': 'string > 0',

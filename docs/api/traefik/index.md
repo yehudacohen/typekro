@@ -109,6 +109,7 @@ interface TraefikBootstrapConfig {
       forwardedHeaders?: { trustedIPs: string[] };
       requestAcceptGraceTimeout?: string; // default '10s'
       graceTimeOut?: string; // default '30s'
+      aliasHeadersStrategy?: 'keep' | 'delete' | 'reject'; // default 'delete'
     };
     websecure?: {
       exposedPort?: number;
@@ -116,6 +117,7 @@ interface TraefikBootstrapConfig {
       forwardedHeaders?: { trustedIPs: string[] };
       requestAcceptGraceTimeout?: string;
       graceTimeOut?: string;
+      aliasHeadersStrategy?: 'keep' | 'delete' | 'reject';
       readTimeout?: string;
       writeTimeout?: string;
       idleTimeout?: string;
@@ -575,6 +577,16 @@ chain that reads those headers. Listing a returned identity header in
 `authRequestHeaders` throws. Header names must be concrete values, because
 they become keys of the strip Middleware.
 
+The strip step removes only the canonical spelling. `X_Edge_Principal` or
+`X.Edge.Principal` would get past it, and backends that turn header names into
+variable names (CGI, WSGI, PHP, NGINX) read those as `X-Edge-Principal`. So
+both entrypoints default to `aliasHeadersStrategy: 'delete'`, which removes any
+request header whose name contains a character other than a letter, digit or
+dash before routing. Set `entrypoints.<name>.aliasHeadersStrategy` to
+`'reject'` to answer `400` instead, or to `'keep'` to forward such headers as
+before. `delete` and `reject` also affect legitimate headers with `_` or `.`
+in their names, so check your clients before you deploy.
+
 ### Header-keyed rate limit with the Redis backend
 
 ```typescript
@@ -605,8 +617,17 @@ hold for the whole edge. The `secret` names a Secret with `username` /
 `500 Could not insert/update bucket` for every request through the middleware,
 and recovers on its own once Redis is back. The integration suite pins this
 behavior. A Valkey outage is therefore an outage of every route behind the
-limit, so run Valkey with the same availability as the edge, and keep
-`dialTimeout` / `readTimeout` short so requests fail fast instead of hanging.
+limit. Traefik has no setting that makes it fail open. To reduce the risk:
+
+- Run Valkey highly available and list every node in `redis.endpoints`, so the
+  client can reach another node while one is down.
+- Keep `dialTimeout` and `readTimeout` short, around a second, so requests fail
+  fast instead of hanging.
+- Alert on the `Could not insert/update bucket` error in Traefik's logs, and
+  on a rise in 500 responses from routes behind the limiter.
+- Where availability matters more than an exact shared budget, leave out
+  `redis` and use the in-memory limiter. Each replica then counts on its own,
+  so the effective limit is `average × replicas`.
 
 ## Plugins
 
@@ -653,6 +674,10 @@ const bouncer = traefik.traefikPluginMiddleware({
 - `abortOnPluginFailure` defaults to `true` when any plugin is declared. If a
   security plugin fails to load, Traefik refuses to start, so the previous
   replicas keep serving. Otherwise Traefik would start without the plugin.
+  With it on, the plugin registry becomes a startup dependency: while
+  plugins.traefik.io is unreachable, new Traefik pods can't start, which
+  blocks rollouts and scale-ups. Vendor critical plugins, such as a security
+  bouncer, through `localPlugins` so they load from the pod itself.
 - `traefikSecretValue(secret, key)` returns
   `urn:k8s:secret:<secret>:<key>`. Traefik resolves these strings at any depth
   of a **plugin** middleware's configuration, and nowhere else.
@@ -914,6 +939,7 @@ Traefik's controller name for `BackendTLSPolicy`.
 | `global.checkNewVersion: false`, `global.sendAnonymousUsage: false` | No phone-home from an edge. |
 | Access logs drop `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` | A bearer token in a log line is a live credential for as long as the log is kept. |
 | `/0` trusted ranges and `insecure` proxy trust refused | Either lets any client set its own source address. |
+| `aliasHeadersStrategy: delete` on both entrypoints | `X_Auth_User` would reach a CGI/WSGI/PHP/NGINX backend as `X-Auth-User`, past the forwardAuth strip step. |
 | Registry plugins need an archive `hash`; `abortOnPluginFailure` on | Traefik runs only the plugin code that was reviewed, and never starts without a declared plugin. |
 
 The `api.*` and security-context pins are applied **after** every other values

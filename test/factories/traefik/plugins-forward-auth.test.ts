@@ -138,6 +138,42 @@ describe('plugin middleware and Secret references', () => {
   });
 });
 
+describe('alias headers', () => {
+  it('deletes headers whose names alias another on both entrypoints by default', () => {
+    const values = mapTraefikConfigToHelmValues({ name: 'traefik' });
+
+    expect(values.ports?.web?.http?.aliasHeadersStrategy).toBe('delete');
+    expect(values.ports?.websecure?.http?.aliasHeadersStrategy).toBe('delete');
+    // The redirect and TLS sit beside it, untouched.
+    expect(values.ports?.web?.http?.redirections?.entryPoint?.to).toBe('websecure');
+    expect(values.ports?.websecure?.http?.tls?.enabled).toBe(true);
+  });
+
+  it('can keep or reject them per entrypoint, with or without the redirect', () => {
+    const values = mapTraefikConfigToHelmValues(
+      {
+        name: 'traefik',
+        entrypoints: {
+          web: { aliasHeadersStrategy: 'keep' },
+          websecure: { aliasHeadersStrategy: 'reject' },
+        },
+      },
+      { redirectWebToWebsecure: false }
+    );
+
+    expect(values.ports?.web?.http).toEqual({ aliasHeadersStrategy: 'keep' });
+    expect(values.ports?.websecure?.http?.aliasHeadersStrategy).toBe('reject');
+  });
+
+  it('defaults to delete in the KRO RGD too', () => {
+    const yaml = makeTraefikBootstrap({ name: 'traefik-alias', kind: 'TraefikAlias' }).toYaml();
+
+    expect(yaml).toContain(
+      'aliasHeadersStrategy: \'${has(schema.spec.entrypoints) && has(schema.spec.entrypoints.websecure) && has(schema.spec.entrypoints.websecure.aliasHeadersStrategy) && dyn(schema.spec.entrypoints.websecure.aliasHeadersStrategy) != null ? schema.spec.entrypoints.websecure.aliasHeadersStrategy : "delete"}\''
+    );
+  });
+});
+
 describe('traefikForwardAuthSecurePair', () => {
   const config = {
     name: 'orders-authz',
