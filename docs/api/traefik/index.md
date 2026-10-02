@@ -297,9 +297,24 @@ consequences worth knowing:
 | `requestAcceptGraceTimeout: 10s`, `graceTimeOut: 30s` on both entrypoints | On SIGTERM Traefik keeps accepting for 10s, while the load balancer deregisters the pod, then drains in-flight requests for up to 30s. |
 | `terminationGracePeriodSeconds: 60` | Covers both. `validateTraefikHelmValues` warns when an entrypoint's accept + drain time reaches the grace period. |
 | PodDisruptionBudget, `maxUnavailable: 1` | A node drain can't evict every replica at once, and the budget never blocks a drain, even at one replica. |
-| Soft zone and node spread (`ScheduleAnyway`, `maxSkew: 1`) | Replicas land in different zones and on different nodes when the cluster allows it. The selector is the chart's exact pod selector. Set `zoneSpread: 'DoNotSchedule'` to make the zone spread hard. |
+| Soft zone and node spread (`ScheduleAnyway`, `maxSkew: 1`) | Replicas land in different zones and on different nodes when the cluster allows it. The selector is the chart's exact pod selector, and `matchLabelKeys: [pod-template-hash]` counts skew per ReplicaSet so a rolling update spreads the new pods. Set `zoneSpread: 'DoNotSchedule'` to make the zone spread hard. |
 | `allowEmptyServices: false`, `allowCrossNamespace: false` | Traefik's own defaults, stated explicitly. With `allowEmptyServices: true`, a route whose Service has no ready endpoints answers `503` instead of disappearing (`404`). |
 | Prometheus on the internal `metrics` entrypoint (9100) | The owned Service never publishes it, and `ports.metrics.expose` stays `false` even if the raw values set it. |
+
+**Behind an AWS NLB with IP targets**, size the shutdown to the NLB:
+
+- Raise `requestAcceptGraceTimeout` to cover the time the NLB takes to stop
+  sending new connections to a deregistered target. That is often more than
+  10s, so 20s to 30s is a safer start.
+- Set the target group's `deregistration_delay.timeout_seconds` (through
+  `awsNlbServiceAnnotations({ targetGroupAttributes })`) at or above
+  `graceTimeOut`, so the NLB keeps draining connections as long as Traefik
+  does.
+- Keep `terminationGracePeriodSeconds` above the sum of the two.
+- Enable the AWS Load Balancer Controller's pod readiness gate by labelling the
+  install namespace `elbv2.k8s.aws/pod-readiness-gate-inject: enabled`. A
+  rolling update then waits for each new pod to be healthy in the target group
+  before it removes an old one.
 
 Raw `values` take precedence over these defaults in a few places:
 
@@ -331,8 +346,9 @@ const edge = traefik.makeTraefikBootstrap({
 ```
 
 Every field is kept and every request header is dropped unless listed.
-`User-Agent` is kept. `Authorization`, `Proxy-Authorization` and `Cookie` are
-always dropped. Overriding any of them to `keep`, in any letter case, throws,
+`User-Agent` is kept. `Authorization`, `Proxy-Authorization`, `Cookie` and
+`Set-Cookie` are always dropped. The policy covers request headers and the
+response headers Traefik can log (`downstream_*`, `origin_*`) alike. Overriding any of them to `keep`, in any letter case, throws,
 while `redact` is allowed. The `crowdsec` preset also pins every field that
 CrowdSec's `crowdsecurity/traefik-logs` parser reads from a JSON line
 (`ClientHost`, `RequestHost`, `RequestPath`, `DownstreamStatus`, `Duration`,
@@ -839,7 +855,7 @@ Traefik's controller name for `BackendTLSPolicy`.
 | `readOnlyRootFilesystem`, no privilege escalation, all capabilities dropped | Traefik needs no writable root; ACME storage gets an explicit volume. |
 | `ingressClass.isDefaultClass: false` | Claiming the cluster-default class would silently capture every class-less `Ingress`. |
 | `global.checkNewVersion: false`, `global.sendAnonymousUsage: false` | No phone-home from an edge. |
-| Access logs drop `Authorization`, `Proxy-Authorization` and `Cookie` | A bearer token in a log line is a live credential for as long as the log is kept. |
+| Access logs drop `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` | A bearer token in a log line is a live credential for as long as the log is kept. |
 | `/0` trusted ranges and `insecure` proxy trust refused | Either lets any client set its own source address. |
 
 The `api.*` and security-context pins are applied **after** every other values

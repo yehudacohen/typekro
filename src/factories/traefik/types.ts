@@ -1853,7 +1853,7 @@ export const TraefikHelmRepositorySingletonStatusSchema = type({
 /**
  * Access-log field and header policy for the JSON access log.
  *
- * `Authorization`, `Proxy-Authorization` and `Cookie` are always dropped.
+ * `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` are always dropped.
  */
 export interface TraefikAccessLogOptions {
   /** `crowdsec` keeps every field CrowdSec's Traefik parser reads. @default 'default' */

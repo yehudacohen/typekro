@@ -9,7 +9,10 @@
 //
 // - `User-Agent` is kept. It is what bot and scanner detection keys on, and it
 //   carries no credential.
-// - `Authorization`, `Proxy-Authorization` and `Cookie` are always dropped. A
+// - `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` are
+//   always dropped. The header policy covers request headers (`request_<Name>`)
+//   and response headers (`downstream_<Name>`, `origin_<Name>`) alike, and a
+//   `Set-Cookie` on a response carries the session it creates. A
 //   log pipeline is not a secret store, and a bearer token in a log line is a
 //   live credential for as long as the log is retained. They are listed
 //   explicitly as well as covered by the `drop` default, so the policy still
@@ -26,11 +29,12 @@ import type {
   TraefikManagedHelmValues,
 } from '../types.js';
 
-/** Request headers the access log never keeps. */
+/** Request and response headers the access log never keeps. */
 export const TRAEFIK_ACCESS_LOG_DROPPED_HEADERS = [
   'Authorization',
   'Proxy-Authorization',
   'Cookie',
+  'Set-Cookie',
 ] as const;
 
 /** Access-log fields CrowdSec's `crowdsecurity/traefik-logs` parser reads from JSON. */

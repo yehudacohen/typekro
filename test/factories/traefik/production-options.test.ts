@@ -104,12 +104,14 @@ describe('disruption and placement', () => {
         topologyKey: 'topology.kubernetes.io/zone',
         whenUnsatisfiable: 'DoNotSchedule',
         labelSelector: selector,
+        matchLabelKeys: ['pod-template-hash'],
       },
       {
         maxSkew: 1,
         topologyKey: 'kubernetes.io/hostname',
         whenUnsatisfiable: 'ScheduleAnyway',
         labelSelector: selector,
+        matchLabelKeys: ['pod-template-hash'],
       },
     ]);
     const custom = [
@@ -198,6 +200,7 @@ describe('access log policy', () => {
           Authorization: 'drop',
           'Proxy-Authorization': 'drop',
           Cookie: 'drop',
+          'Set-Cookie': 'drop',
         },
       },
     });
@@ -209,6 +212,9 @@ describe('access log policy', () => {
     );
     expect(() => traefikAccessLogFields({ headers: { cookie: 'keep' } })).toThrow(
       /header cookie is Cookie/
+    );
+    expect(() => traefikAccessLogFields({ headers: { 'Set-Cookie': 'keep' } })).toThrow(
+      /Set-Cookie carries credentials/
     );
     // Redacting is fine: the header is logged without its value.
     expect(traefikAccessLogFields({ headers: { Cookie: 'redact' } }).headers?.names?.Cookie).toBe(

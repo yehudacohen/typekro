@@ -61,10 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     accept grace and a 10s drain), inside a pinned 60s termination grace period (the chart's
     default, now stated explicitly).
   - A PodDisruptionBudget with `maxUnavailable: 1` is created.
-  - Replicas spread softly across zones and nodes.
+  - Replicas spread softly across zones and nodes, counted per ReplicaSet (`matchLabelKeys:
+    [pod-template-hash]`).
   - Prometheus is pinned to the internal `metrics` entrypoint, which is never exposed.
-  - JSON access logs keep `User-Agent` and always drop `Authorization`, `Proxy-Authorization` and
-    `Cookie`. Before, every header was dropped by the chart's default.
+  - JSON access logs keep `User-Agent` and always drop `Authorization`, `Proxy-Authorization`,
+    `Cookie` and `Set-Cookie`. Before, every header was dropped by the chart's default.
   - `allowEmptyServices: false` and `allowCrossNamespace: false` are now stated explicitly. These
     are Traefik's defaults.
 
