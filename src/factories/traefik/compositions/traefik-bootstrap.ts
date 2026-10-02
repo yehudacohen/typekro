@@ -212,6 +212,11 @@ export function makeTraefikBootstrap(
         redirectWebToWebsecure,
         dangerouslyTrustAnySource,
         ...(options.accessLog ? { accessLog: options.accessLog } : {}),
+        ...(options.plugins ? { plugins: options.plugins } : {}),
+        ...(options.localPlugins ? { localPlugins: options.localPlugins } : {}),
+        ...(options.abortOnPluginFailure === undefined
+          ? {}
+          : { abortOnPluginFailure: options.abortOnPluginFailure }),
         targetNamespace: installNamespace,
         ...(options.values ? { baseValues: options.values } : {}),
       });

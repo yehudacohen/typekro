@@ -43,3 +43,9 @@ export {
   TRAEFIK_TRUSTED_RANGE_PATTERN,
   type TraefikTrustedRange,
 } from './trusted-range.js';
+export {
+  assertTraefikPlugins,
+  traefikLocalPluginMountPath,
+  traefikPluginIssues,
+  traefikSecretValue,
+} from './plugins.js';

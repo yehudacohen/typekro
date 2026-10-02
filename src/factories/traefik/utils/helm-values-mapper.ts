@@ -27,6 +27,7 @@ import {
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
 import { traefikAccessLogFields } from './access-log.js';
+import { assertTraefikPlugins, traefikLocalPluginMountPath } from './plugins.js';
 import {
   assertTraefikProxyTrust,
   traefikBroadTrustWarnings,
@@ -37,7 +38,9 @@ import type {
   TraefikBootstrapConfig,
   TraefikContainerSecurityContext,
   TraefikHelmValues,
+  TraefikLocalPluginDeclaration,
   TraefikManagedHelmValues,
+  TraefikPluginDeclaration,
   TraefikPodSecurityContext,
   TraefikPortValues,
   TraefikRawHelmValues,
@@ -129,6 +132,11 @@ export interface TraefikHelmValuesMapperOptions {
   readonly baseValues?: TraefikRawHelmValues;
   /** Access-log field and header policy. */
   readonly accessLog?: TraefikAccessLogOptions;
+  /** Registry plugins; see `TraefikBootstrapBuildOptions.plugins`. */
+  readonly plugins?: Readonly<Record<string, TraefikPluginDeclaration>>;
+  readonly localPlugins?: Readonly<Record<string, TraefikLocalPluginDeclaration>>;
+  /** @default true when any plugin is declared */
+  readonly abortOnPluginFailure?: boolean;
   /**
    * Skip the check that refuses `/0` trusted ranges and `insecure` proxy trust.
    * @default false
@@ -522,10 +530,55 @@ export function mapTraefikConfigToHelmValues(
     },
   };
 
+  const experimental = pluginValues(options, base);
+  if (experimental) mapped.experimental = experimental;
+
   const merged = mergeSections(options.baseValues ?? {}, mapped);
   const pinned = applyTraefikSecurityPins(applyTraefikOwnershipPins(merged, config.name));
   if (!options.dangerouslyTrustAnySource) assertTraefikProxyTrust(pinned);
   return pinned;
+}
+
+/**
+ * The `experimental` plugin section, or `undefined` when no plugin is declared.
+ *
+ * Raw-values plugins are kept beside the typed ones; `validateTraefikHelmValues`
+ * warns about any that carry no hash.
+ */
+function pluginValues(
+  options: TraefikHelmValuesMapperOptions,
+  base: TraefikRawHelmValues
+): NonNullable<TraefikManagedHelmValues['experimental']> | undefined {
+  const plugins = options.plugins ?? {};
+  const localPlugins = options.localPlugins ?? {};
+  if (Object.keys(plugins).length === 0 && Object.keys(localPlugins).length === 0) {
+    return undefined;
+  }
+  assertTraefikPlugins(plugins, localPlugins);
+  const baseExperimental = sectionOf(base.experimental);
+  return {
+    plugins: {
+      ...sectionOf(baseExperimental.plugins),
+      ...Object.fromEntries(
+        Object.entries(plugins).map(([name, { moduleName, version, hash }]) => [
+          name,
+          { moduleName, version, hash },
+        ])
+      ),
+    },
+    localPlugins: {
+      ...sectionOf(baseExperimental.localPlugins),
+      ...Object.fromEntries(
+        Object.entries(localPlugins).map(([name, plugin]) => [
+          name,
+          { ...plugin, mountPath: traefikLocalPluginMountPath(plugin.moduleName) },
+        ])
+      ),
+    },
+    // A security plugin that silently fails to load leaves its routes
+    // unprotected. Refusing to start keeps the previous replicas serving.
+    abortOnPluginFailure: options.abortOnPluginFailure ?? true,
+  };
 }
 
 /**
@@ -712,6 +765,13 @@ export function validateTraefikHelmValues(
           `The \`${name}\` entrypoint needs ${accept + drain}s to shut down (requestAcceptGraceTimeout + graceTimeOut), but terminationGracePeriodSeconds is ${terminationGrace}. Kubernetes will kill Traefik before in-flight requests finish.`
         );
       }
+    }
+  }
+  for (const [name, plugin] of Object.entries(values.experimental?.plugins ?? {})) {
+    if (isPlainObject(plugin) && typeof plugin.hash !== 'string') {
+      warnings.push(
+        `Traefik plugin ${name} has no hash, so Traefik runs whatever archive the registry serves for its version. Declare it through the plugins build option, which requires one.`
+      );
     }
   }
   if (values.ports?.traefik?.expose?.default === true) {
