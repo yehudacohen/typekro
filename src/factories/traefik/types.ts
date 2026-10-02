@@ -1,38 +1,36 @@
-/**
- * Traefik type definitions.
- *
- * **ArkType is the single source of truth.** Every configuration type in this
- * file — the `traefik.io/v1alpha1` CRD specs, the middleware set, and the
- * bootstrap composition's spec — is INFERRED from the ArkType schema declared
- * next to it (`typeof XSchema.infer`), per `docs/advanced/integration-skill.md`
- * Step 2. One declaration then validates at runtime, generates the KRO
- * SimpleSchema, and types the factory, so the three cannot drift. Only STATUS
- * types stay hand-written: they describe what a controller publishes rather
- * than user input.
- *
- * Three layers live here:
- *
- * 1. **CRD spec schemas** — verified field-by-field against the
- *    `traefik.io/v1alpha1` CRDs shipped by chart 41.5.0 (Traefik v3.7.13), read
- *    back from a live API server with
- *    `kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec}'`.
- *    None of the Traefik CRDs has a `status` subresource, which is why the
- *    resource factories register an always-ready evaluator (see
- *    `resources/routing.ts`). Where a schema is stricter than the CRD it is
- *    deliberate and noted inline.
- * 2. **Helm chart values** — {@link TraefikManagedHelmValues} is a CLOSED,
- *    precise description of the chart paths this factory maps, pins or reads
- *    back (verified against chart 41.5.0's `values.schema.json`). It carries no
- *    index signatures at any depth; {@link TraefikRawHelmValues} is the single,
- *    explicitly named raw-passthrough boundary for the rest of the chart.
- * 3. **Bootstrap contract** — the runtime spec/status of the bootstrap
- *    composition. Following the ClickStack convention these carry only
- *    proxy-safe VALUES (names, namespaces, versions, ports, endpoints) that
- *    serialize cleanly as CEL refs in KRO mode. Choices that decide WHICH
- *    resources exist are build-time options on `makeTraefikBootstrap(...)`.
- *
- * @see https://doc.traefik.io/traefik/reference/routing-configuration/kubernetes/crd/
- */
+// Traefik type definitions.
+//
+// **ArkType is the single source of truth.** Every configuration type in this
+// file — the `traefik.io/v1alpha1` CRD specs, the middleware set, and the
+// bootstrap composition's spec — is INFERRED from the ArkType schema declared
+// next to it (`typeof XSchema.infer`), per `docs/advanced/integration-skill.md`
+// Step 2. One declaration then validates at runtime, generates the KRO
+// SimpleSchema, and types the factory, so the three cannot drift. Only STATUS
+// types stay hand-written: they describe what a controller publishes rather
+// than user input.
+//
+// Three layers live here:
+//
+// 1. **CRD spec schemas** — verified field-by-field against the
+//    `traefik.io/v1alpha1` CRDs shipped by chart 41.5.0 (Traefik v3.7.13), read
+//    back from a live API server with
+//    `kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec}'`.
+//    None of the Traefik CRDs has a `status` subresource, which is why the
+//    resource factories register an always-ready evaluator (see
+//    `resources/routing.ts`). Where a schema is stricter than the CRD it is
+//    deliberate and noted inline.
+// 2. **Helm chart values** — {@link TraefikManagedHelmValues} is a CLOSED,
+//    precise description of the chart paths this factory maps, pins or reads
+//    back (verified against chart 41.5.0's `values.schema.json`). It carries no
+//    index signatures at any depth; {@link TraefikRawHelmValues} is the single,
+//    explicitly named raw-passthrough boundary for the rest of the chart.
+// 3. **Bootstrap contract** — the runtime spec/status of the bootstrap
+//    composition. Following the ClickStack convention these carry only
+//    proxy-safe VALUES (names, namespaces, versions, ports, endpoints) that
+//    serialize cleanly as CEL refs in KRO mode. Choices that decide WHICH
+//    resources exist are build-time options on `makeTraefikBootstrap(...)`.
+//
+// @see https://doc.traefik.io/traefik/reference/routing-configuration/kubernetes/crd/
 
 import { type } from 'arktype';
 import {
@@ -524,6 +522,28 @@ export const TraefikTLSStoreSpecSchema = type({
 
 /** `TLSStore.spec`. */
 export type TraefikTLSStoreSpec = typeof TraefikTLSStoreSpecSchema.infer;
+
+/** Configuration for `traefikTlsCertificate`. */
+export const TraefikTlsCertificateConfigSchema = type({
+  name: 'string > 0',
+  namespace: 'string > 0',
+  /** DNS names the certificate covers, e.g. `api.example.com`. */
+  hostnames: type('string > 0').array().atLeastLength(1),
+  issuerRef: {
+    name: 'string > 0',
+    /** @default 'ClusterIssuer' */
+    'kind?': '"Issuer" | "ClusterIssuer"',
+  },
+  /** Secret cert-manager writes and Traefik serves. @default '<name>-tls' */
+  'secretName?': 'string > 0',
+  /** Go duration, e.g. `'2160h'`. Let's Encrypt ignores it. */
+  'duration?': 'string > 0',
+  'renewBefore?': 'string > 0',
+  'id?': 'string > 0',
+});
+
+/** Configuration for `traefikTlsCertificate`. */
+export type TraefikTlsCertificateConfig = typeof TraefikTlsCertificateConfigSchema.infer;
 
 // ============================================================================
 // Middleware — the OSS middleware set as a discriminated union
@@ -1086,6 +1106,18 @@ export const TraefikForwardAuthMiddlewareConfigSchema = type({
 export type TraefikForwardAuthMiddlewareConfig =
   typeof TraefikForwardAuthMiddlewareConfigSchema.infer;
 
+/** Configuration for `traefikPluginMiddleware`. */
+export const TraefikPluginMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  /** The plugin's name as declared in the bootstrap's `plugins` or `localPlugins`. */
+  plugin: /^[A-Za-z][A-Za-z0-9_-]*$/,
+  /** The plugin's own configuration. Strings may be `traefikSecretValue(...)` references. */
+  config: 'Record<string, unknown>',
+});
+
+/** Configuration for `traefikPluginMiddleware`. */
+export type TraefikPluginMiddlewareConfig = typeof TraefikPluginMiddlewareConfigSchema.infer;
+
 /** Every way a rate/concurrency budget can be keyed. Exactly one, or none. */
 const middlewareBudgetKeyShape = {
   /**
@@ -1205,6 +1237,9 @@ export type TraefikChainMiddlewareConfig = typeof TraefikChainMiddlewareConfigSc
 // raw passthrough.
 // ============================================================================
 
+/** What the access log does with a field or header: keep it, drop it, or redact its value. */
+export type TraefikAccessLogFieldMode = 'keep' | 'drop' | 'redact';
+
 /** Kubernetes Service type usable for the Traefik entrypoint Service. */
 export type TraefikServiceType = 'LoadBalancer' | 'NodePort' | 'ClusterIP';
 
@@ -1290,6 +1325,8 @@ export interface TraefikPortValues {
   nodePort?: number;
   protocol?: 'TCP' | 'UDP';
   asDefault?: boolean;
+  /** Let routers on this entrypoint serve `/.well-known/acme-challenge/` despite a redirection. */
+  allowACMEByPass?: boolean;
   expose?: { default?: boolean };
   http?: {
     redirections?: {
@@ -1302,6 +1339,7 @@ export interface TraefikPortValues {
     };
     middlewares?: string[];
     maxHeaderBytes?: number;
+    aliasHeadersStrategy?: 'keep' | 'delete' | 'reject';
     sanitizePath?: boolean;
     /**
      * TLS termination for the entrypoint. Nested under `http`, which is where
@@ -1436,19 +1474,36 @@ export interface TraefikManagedHelmValues {
     filePath?: string;
     addInternals?: boolean;
     bufferingSize?: number;
+    fields?: {
+      defaultMode?: TraefikAccessLogFieldMode;
+      names?: Record<string, TraefikAccessLogFieldMode>;
+      headers?: {
+        defaultMode?: TraefikAccessLogFieldMode;
+        names?: Record<string, TraefikAccessLogFieldMode>;
+      };
+      queryParameters?: { defaultMode?: 'keep' | 'drop' };
+    };
     otlp?: TraefikOtlpValues;
   };
   metrics?: {
     addInternals?: boolean;
+    /** Pinned to the internal `metrics` entrypoint; other keys pass through. */
+    prometheus?: { entryPoint?: string };
     otlp?: TraefikOtlpValues;
   };
+  podDisruptionBudget?: { enabled?: boolean; maxUnavailable?: number; minAvailable?: number };
   tracing?: {
     addInternals?: boolean;
     serviceName?: string;
     sampleRate?: number;
     otlp?: TraefikOtlpValues;
   };
-  experimental?: { otlpLogs?: boolean; plugins?: TraefikPluginChartConfig };
+  experimental?: {
+    otlpLogs?: boolean;
+    plugins?: TraefikPluginChartConfig;
+    localPlugins?: Record<string, unknown>;
+    abortOnPluginFailure?: boolean;
+  };
   ports?: Record<string, TraefikPortValues>;
   service?: {
     /**
@@ -1599,22 +1654,19 @@ export const TraefikHelmReleaseConfigSchema = type({
   'id?': 'string > 0',
 });
 
-/**
- * Configuration for the Traefik `HelmRelease`.
- *
- * **Accepted exception to schema-first inference, for `values` only.** Every
- * other field is inferred from {@link TraefikHelmReleaseConfigSchema}. `values`
- * is typed {@link TraefikMappedHelmValues}, which is
- * `TypeKroChartValues<TraefikHelmValues>` — a union of the chart values with
- * `KubernetesRef`/`CelExpression` PROXY types. Those describe graph wiring
- * that exists only at build time, not data an ArkType schema could validate at
- * runtime: by the time this object reaches Flux the refs are resolved, and
- * while it is being built the tree is deliberately not plain JSON. A schema
- * field here could only be `unknown`, which would erase the typed chart
- * surface the mapper exists to provide. The values themselves ARE schema-
- * checked — one level down, by {@link TraefikManagedHelmValues} and the
- * mapper's own tests.
- */
+// **Accepted exception to schema-first inference, for `values` only.** Every
+// other field is inferred from {@link TraefikHelmReleaseConfigSchema}. `values`
+// is typed {@link TraefikMappedHelmValues}, which is
+// `TypeKroChartValues<TraefikHelmValues>` — a union of the chart values with
+// `KubernetesRef`/`CelExpression` PROXY types. Those describe graph wiring
+// that exists only at build time, not data an ArkType schema could validate at
+// runtime: by the time this object reaches Flux the refs are resolved, and
+// while it is being built the tree is deliberately not plain JSON. A schema
+// field here could only be `unknown`, which would erase the typed chart
+// surface the mapper exists to provide. The values themselves ARE schema-
+// checked — one level down, by {@link TraefikManagedHelmValues} and the
+// mapper's own tests.
+/** Configuration for the Traefik `HelmRelease`. */
 export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.infer & {
   readonly values?: TraefikMappedHelmValues;
 };
@@ -1624,6 +1676,40 @@ export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.inf
 // ============================================================================
 
 const traefikServiceTypeSchema = '"LoadBalancer" | "NodePort" | "ClusterIP"';
+
+// Shutdown timing of one entrypoint. On SIGTERM Traefik keeps accepting for
+// `requestAcceptGraceTimeout` (long enough for a load balancer to stop sending
+// new connections) and then drains in-flight requests for `graceTimeOut`. The
+// pod's `terminationGracePeriodSeconds` must cover both.
+const traefikEntrypointLifecycleShape = {
+  /** Keep accepting requests this long after SIGTERM. @default '10s' */
+  'requestAcceptGraceTimeout?': 'string > 0',
+  /** Then drain in-flight requests for up to this long. @default '30s' */
+  'graceTimeOut?': 'string > 0',
+} as const;
+
+// What an entrypoint does with a request header whose name aliases another:
+// any name with a character that is not a letter, digit or dash, such as
+// `X_Auth_User` or `X.Auth.User`. Backends that turn header names into
+// variable names (CGI, WSGI, PHP, NGINX) read those as `X-Auth-User`, so a
+// client could slip an identity header past the forwardAuth secure pair, which
+// strips only the canonical name. `delete` removes them before routing,
+// `reject` answers 400, and `keep` forwards them. Traefik v3.7.12+.
+const traefikEntrypointAliasShape = {
+  /** Headers whose names alias another (`X_Auth_User`). @default 'delete' */
+  'aliasHeadersStrategy?': '"keep" | "delete" | "reject"',
+} as const;
+
+// Which upstream sources an entrypoint believes. `trustedIPs` is required
+// inside each block: an empty block would read as "configured" while trusting
+// nothing. A `/0` range is rejected unless the build-time escape hatch
+// `dangerouslyTrustAnySource` is set (see `utils/proxy-trust.ts`).
+const traefikEntrypointTrustShape = {
+  /** Sources allowed to send a PROXY protocol header, e.g. the VPC CIDR behind an NLB. */
+  'proxyProtocol?': { trustedIPs: 'string[]' },
+  /** Sources whose `X-Forwarded-*` headers Traefik keeps instead of overwriting. */
+  'forwardedHeaders?': { trustedIPs: 'string[]' },
+} as const;
 
 /**
  * Runtime spec of the `traefikBootstrap` composition.
@@ -1640,8 +1726,14 @@ export const TraefikBootstrapConfigSchema = type({
   'ingressClass?': kubernetesDnsLabel,
   'service?': {
     'type?': traefikServiceTypeSchema,
-    /** Cloud load-balancer annotations. */
+    /** Cloud load-balancer annotations, e.g. from `awsNlbServiceAnnotations`. */
     'annotations?': 'Record<string, string>',
+    /** Load-balancer implementation, e.g. `service.k8s.aws/nlb`. `LoadBalancer` only. */
+    'loadBalancerClass?': 'string > 0',
+    /** `Local` keeps the client source IP for node-port traffic. Not valid on `ClusterIP`. */
+    'externalTrafficPolicy?': '"Cluster" | "Local"',
+    /** Client CIDRs the load balancer admits. `LoadBalancer` only. */
+    'loadBalancerSourceRanges?': 'string[]',
   },
   /**
    * Published ports and timeouts of the two entrypoints this edge exposes.
@@ -1654,9 +1746,15 @@ export const TraefikBootstrapConfigSchema = type({
   'entrypoints?': {
     'web?': {
       'exposedPort?': kubernetesPort,
+      ...traefikEntrypointTrustShape,
+      ...traefikEntrypointLifecycleShape,
+      ...traefikEntrypointAliasShape,
     },
     'websecure?': {
       'exposedPort?': kubernetesPort,
+      ...traefikEntrypointTrustShape,
+      ...traefikEntrypointLifecycleShape,
+      ...traefikEntrypointAliasShape,
       /** Entrypoint responding timeouts, for requests longer than 60s. */
       'readTimeout?': 'string > 0',
       'writeTimeout?': 'string > 0',
@@ -1667,6 +1765,34 @@ export const TraefikBootstrapConfigSchema = type({
     'crd?': 'boolean',
     'gatewayApi?': 'boolean',
     'kubernetesIngress?': 'boolean',
+    /** Keep routes whose Service has no endpoints, answering 503 instead of 404. @default false */
+    'allowEmptyServices?': 'boolean',
+    /** Namespaces the CRD and Ingress providers watch. Omit to watch all. */
+    'namespaces?': 'string[]',
+    /** Let an IngressRoute reference Services and Middlewares in other namespaces. @default false */
+    'allowCrossNamespace?': 'boolean',
+  },
+  /** Pod shutdown budget. Must exceed the entrypoints' grace timeouts. @default 60 */
+  'terminationGracePeriodSeconds?': 'number.integer >= 1',
+  /** @default { enabled: true, maxUnavailable: 1 }. Raw `values.podDisruptionBudget` replaces it. */
+  'podDisruptionBudget?': {
+    'enabled?': 'boolean',
+    'maxUnavailable?': 'number.integer >= 1',
+  },
+  'scheduling?': {
+    'nodeSelector?': 'Record<string, string>',
+    'tolerations?': type({
+      'key?': 'string',
+      'operator?': '"Exists" | "Equal"',
+      'value?': 'string',
+      'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
+      'tolerationSeconds?': 'number.integer',
+    }).array(),
+    'priorityClassName?': 'string > 0',
+    /** Spread replicas across zones. @default 'ScheduleAnyway' */
+    'zoneSpread?': '"DoNotSchedule" | "ScheduleAnyway"',
+    /** Spread replicas across nodes. @default 'ScheduleAnyway' */
+    'nodeSpread?': '"DoNotSchedule" | "ScheduleAnyway"',
   },
   'accessLogs?': 'boolean',
   'logLevel?': '"TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL" | "PANIC"',
@@ -1691,27 +1817,27 @@ export const TraefikBootstrapConfigSchema = type({
 /** Inferred runtime spec of {@link TraefikBootstrapConfigSchema}. */
 export type TraefikBootstrapConfig = typeof TraefikBootstrapConfigSchema.infer;
 
+// `loadBalancer` mirrors the entrypoint Service's
+// `status.loadBalancer.ingress[0]` and stays empty for `ClusterIP` /
+// `NodePort` services or while a cloud controller is still provisioning an
+// address.
+//
+// `version` is the chart version Flux actually installed, read back from the
+// owned `HelmRelease`'s `status.history[]` — an OBSERVED value rather than the
+// requested one, so a pinned-but-unavailable version can never be reported as
+// though it were live. It is empty until Flux records its first release.
+//
+// EVERY field here is a projection of a resource this composition owns, so it
+// hydrates identically in direct and KRO mode. That rules out literals: KRO
+// drops literal status fields, so declaring one would require a field the
+// instance never carries (#188). The entrypoint NAMES are therefore not in
+// this contract — they are fixed by this composition and exported as
+// `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
+// live port names off the Service named by `serviceName` if a consumer needs
+// them at runtime.
 /**
- * Status contract of the `traefikBootstrap` composition.
- *
- * `loadBalancer` mirrors the entrypoint Service's
- * `status.loadBalancer.ingress[0]` and stays empty for `ClusterIP` /
- * `NodePort` services or while a cloud controller is still provisioning an
- * address.
- *
- * `version` is the chart version Flux actually installed, read back from the
- * owned `HelmRelease`'s `status.history[]` — an OBSERVED value rather than the
- * requested one, so a pinned-but-unavailable version can never be reported as
- * though it were live. It is empty until Flux records its first release.
- *
- * EVERY field here is a projection of a resource this composition owns, so it
- * hydrates identically in direct and KRO mode. That rules out literals: KRO
- * drops literal status fields, so declaring one would require a field the
- * instance never carries (#188). The entrypoint NAMES are therefore not in
- * this contract — they are fixed by this composition and exported as
- * `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
- * live port names off the Service named by `serviceName` if a consumer needs
- * them at runtime.
+ * Status contract of the `traefikBootstrap` composition. `loadBalancer` is empty
+ * until a controller assigns an address; `version` is the chart Flux installed.
  */
 export const TraefikBootstrapStatusSchema = type({
   ready: 'boolean',
@@ -1744,6 +1870,52 @@ export const TraefikHelmRepositorySingletonStatusSchema = type({
 // Build-time options (construction, NOT runtime spec)
 // ============================================================================
 
+/** A registry plugin, pinned by version and archive hash. */
+export interface TraefikPluginDeclaration {
+  /** e.g. `github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin`. */
+  readonly moduleName: string;
+  /** Exact release, e.g. `v1.4.2`. */
+  readonly version: string;
+  /** SHA-256 of the plugin archive, 64 lowercase hex digits. Traefik refuses a mismatch. */
+  readonly hash: string;
+}
+
+/**
+ * A plugin loaded from the pod's filesystem instead of the registry.
+ *
+ * `inlinePlugin` ships the source in a ConfigMap the chart creates;
+ * `localPath` mounts a volume named in raw `values.deployment.additionalVolumes`.
+ */
+export type TraefikLocalPluginDeclaration =
+  | {
+      readonly moduleName: string;
+      readonly type: 'inlinePlugin';
+      /** File name to content, e.g. `{ '.traefik.yml': ..., 'plugin.go': ... }`. */
+      readonly source: Readonly<Record<string, string>>;
+    }
+  | {
+      readonly moduleName: string;
+      readonly type: 'localPath';
+      readonly volumeName: string;
+      readonly subPath?: string;
+    };
+
+/**
+ * Access-log field and header policy for the JSON access log.
+ *
+ * `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` are always dropped.
+ */
+export interface TraefikAccessLogOptions {
+  /** `crowdsec` keeps every field CrowdSec's Traefik parser reads. @default 'default' */
+  readonly preset?: 'default' | 'crowdsec';
+  /** Per-header modes, merged over the preset. Headers not listed are dropped. */
+  readonly headers?: Readonly<Record<string, TraefikAccessLogFieldMode>>;
+  /** Per-field modes (`ClientHost`, `RequestPath`, ...), merged over the preset. */
+  readonly fields?: Readonly<Record<string, TraefikAccessLogFieldMode>>;
+  /** Keep or drop query strings in `RequestPath`. @default Traefik's, which keeps them */
+  readonly queryParameters?: 'keep' | 'drop';
+}
+
 /** A default `TLSOption` owned by the bootstrap composition. */
 export interface TraefikDefaultTlsOptionOptions {
   /** @default TRAEFIK_DEFAULT_TLS_OPTION_NAME */
@@ -1766,6 +1938,17 @@ export interface TraefikDefaultTlsStoreOptions {
   readonly defaultCertificateSecretName: string;
   /** @default TRAEFIK_DEFAULT_TLS_STORE_NAME */
   readonly name?: string;
+  /** Also own the cert-manager `Certificate` that writes the Secret. */
+  readonly certificate?: TraefikDefaultCertificateOptions;
+}
+
+/** The cert-manager `Certificate` behind the default `TLSStore`. */
+export interface TraefikDefaultCertificateOptions {
+  /** DNS names the certificate covers. */
+  readonly hostnames: readonly string[];
+  readonly issuerRef: TraefikTlsCertificateConfig['issuerRef'];
+  /** @default `defaultCertificateSecretName` */
+  readonly name?: string;
 }
 
 /**
@@ -1787,15 +1970,37 @@ export interface TraefikBootstrapBuildOptions {
   readonly namespaceOwnership?: 'owned' | 'external';
   /**
    * Emit a permanent `web` → `websecure` redirect on the `web` entrypoint.
-   *
-   * Build-time rather than runtime spec because the chart disables the
-   * redirect by the ABSENCE of `ports.web.http.redirections.entryPoint`, not by
-   * a boolean — so it decides which configuration exists rather than what a
-   * value is, and a schema reference could not express "no redirect".
+   * ACME HTTP-01 challenge paths (`/.well-known/acme-challenge/`) are exempt,
+   * so a cert-manager solver route on `web` still answers them.
    *
    * @default true
    */
+  // Build-time rather than runtime spec because the chart disables the
+  // redirect by the ABSENCE of `ports.web.http.redirections.entryPoint`, not by
+  // a boolean — so it decides which configuration exists rather than what a
+  // value is, and a schema reference could not express "no redirect".
   readonly redirectWebToWebsecure?: boolean;
+  /**
+   * Accept trusted ranges with a `/0` prefix and `insecure` proxy-protocol or
+   * forwarded-header trust. Only for a Traefik that no client can reach
+   * directly. @default false
+   */
+  // Without it, a `/0` range in `entrypoints.*.{proxyProtocol,forwardedHeaders}
+  // .trustedIPs` is refused at build time (direct mode) and by the generated
+  // CRD's `x-kubernetes-validations` (KRO mode), and an `insecure` flag reaching
+  // the final values (through `values` or `additionalArguments`) throws.
+  readonly dangerouslyTrustAnySource?: boolean;
+  /** JSON access-log field and header policy. */
+  readonly accessLog?: TraefikAccessLogOptions;
+  /** Registry plugins, keyed by the name `Middleware.spec.plugin` uses. */
+  readonly plugins?: Readonly<Record<string, TraefikPluginDeclaration>>;
+  /** Plugins loaded from the pod's filesystem. */
+  readonly localPlugins?: Readonly<Record<string, TraefikLocalPluginDeclaration>>;
+  /**
+   * Refuse to start when a declared plugin fails to load, instead of starting
+   * without it. @default true when any plugin is declared
+   */
+  readonly abortOnPluginFailure?: boolean;
   /** Create a cluster-default `TLSOption` alongside the release. */
   readonly defaultTlsOption?: TraefikDefaultTlsOptionOptions;
   /** Create a cluster-default `TLSStore` fed by a cert-manager Secret. */
@@ -1813,34 +2018,33 @@ export interface TraefikBootstrapBuildOptions {
    * @default DEFAULT_TRAEFIK_CRDS_POLICY (`'CreateReplace'`)
    */
   readonly crds?: HelmReleaseCrdsPolicy;
+  // This is the raw boundary, so it is typed as {@link TraefikRawHelmValues}
+  // rather than as the managed surface: an override often has to reach a
+  // SIBLING of a path TypeKro maps (`metrics.prometheus` next to the mapped
+  // `metrics.otlp`, say), which a closed type would reject. Type safety on
+  // this side of the boundary would be a fiction anyway — the shape belongs to
+  // whichever chart version is installed. What TypeKro writes is checked
+  // precisely; what a caller passes through is not, and the security pins
+  // still overwrite it.
+  //
+  // **Build-time only, on purpose.** The guide's per-instance passthrough
+  // pattern (a `spec.values` field serialized as
+  // `json.unmarshal(json.marshal(schema.spec.values))` and merged last) does
+  // not apply to this composition, because KRO's `map.merge()` is SHALLOW:
+  // - merging raw values LAST would let any KRO instance re-enable
+  //   `api.dashboard` / `api.insecure` or hand the entrypoint Service back to
+  //   the chart, which this factory's contract (#172) forbids; and
+  // - merging the pins last to prevent that would replace whole top-level
+  //   sections, silently discarding a user's sibling keys under `api`,
+  //   `ingressRoute`, `securityContext`, `podSecurityContext`, `service` and
+  //   `global`.
+  //
+  // A values contract with non-negotiable pins therefore has to resolve
+  // precedence at build time, where the merge can be deep and auditable. Pass
+  // chart surface this factory does not model here, at construction.
   /**
    * Raw chart values, merged BEFORE the mapped values and the security pins —
    * both of which win.
-   *
-   * This is the raw boundary, so it is typed as {@link TraefikRawHelmValues}
-   * rather than as the managed surface: an override often has to reach a
-   * SIBLING of a path TypeKro maps (`metrics.prometheus` next to the mapped
-   * `metrics.otlp`, say), which a closed type would reject. Type safety on
-   * this side of the boundary would be a fiction anyway — the shape belongs to
-   * whichever chart version is installed. What TypeKro writes is checked
-   * precisely; what a caller passes through is not, and the security pins
-   * still overwrite it.
-   *
-   * **Build-time only, on purpose.** The guide's per-instance passthrough
-   * pattern (a `spec.values` field serialized as
-   * `json.unmarshal(json.marshal(schema.spec.values))` and merged last) does
-   * not apply to this composition, because KRO's `map.merge()` is SHALLOW:
-   * - merging raw values LAST would let any KRO instance re-enable
-   *   `api.dashboard` / `api.insecure` or hand the entrypoint Service back to
-   *   the chart, which this factory's contract (#172) forbids; and
-   * - merging the pins last to prevent that would replace whole top-level
-   *   sections, silently discarding a user's sibling keys under `api`,
-   *   `ingressRoute`, `securityContext`, `podSecurityContext`, `service` and
-   *   `global`.
-   *
-   * A values contract with non-negotiable pins therefore has to resolve
-   * precedence at build time, where the merge can be deep and auditable. Pass
-   * chart surface this factory does not model here, at construction.
    */
   readonly values?: TraefikRawHelmValues;
 }
