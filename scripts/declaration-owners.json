@@ -39,6 +39,10 @@
       "paths": ["factories/apisix/**"]
     },
     {
+      "owner": "aws-load-balancer-controller",
+      "paths": ["factories/aws-load-balancer-controller/**"]
+    },
+    {
       "owner": "caddy",
       "paths": ["factories/caddy/**"]
     },
