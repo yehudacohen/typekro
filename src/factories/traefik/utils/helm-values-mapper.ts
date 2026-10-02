@@ -121,10 +121,13 @@ export interface TraefikHelmValuesMapperOptions {
    */
   readonly baseValues?: TraefikRawHelmValues;
   /**
-   * Emit a permanent `web` → `websecure` redirect. The chart disables the
-   * redirect by omitting `ports.web.http.redirections.entryPoint`, so this is
-   * structural rather than a value. @default true
+   * Emit a permanent `web` → `websecure` redirect that leaves
+   * `/.well-known/acme-challenge/` unredirected. @default true
    */
+  // The chart disables the redirect by omitting
+  // `ports.web.http.redirections.entryPoint`, so this is structural rather than
+  // a value. See `webPort` in `mapTraefikConfigToHelmValues` for the ACME
+  // bypass.
   readonly redirectWebToWebsecure?: boolean;
   /**
    * Namespace Traefik is installed into.
@@ -289,6 +292,23 @@ export function mapTraefikConfigToHelmValues(
     expose: { default: true },
     ...(redirect
       ? {
+          // The redirect router Traefik generates for an entrypoint redirection
+          // has priority `MaxInt - 1`, so it outranks every other router on
+          // `web` — including the one cert-manager's HTTP-01 solver creates for
+          // `/.well-known/acme-challenge/<token>`. The challenge would then be
+          // answered with a 301 to `websecure`, where no solver route exists.
+          //
+          // `allowACMEByPass` is Traefik's own fix (v3, `pkg/provider/traefik/
+          // internal.go`): the generated redirect rule becomes
+          // ``HostRegexp(`^.+$`) && !PathPrefix(`/.well-known/acme-challenge/`)``,
+          // so ONLY the challenge path falls through to the routers on `web`.
+          //
+          // Lowering the redirect's priority instead would have been wrong: a
+          // router that names no entrypoint attaches to every entrypoint, so a
+          // low-priority redirect would serve every such route over plain HTTP
+          // rather than redirecting it. Excluding the one path keeps everything
+          // else redirected.
+          allowACMEByPass: true,
           http: {
             redirections: {
               entryPoint: {

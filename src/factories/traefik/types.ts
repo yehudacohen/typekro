@@ -1290,6 +1290,8 @@ export interface TraefikPortValues {
   nodePort?: number;
   protocol?: 'TCP' | 'UDP';
   asDefault?: boolean;
+  /** Let routers on this entrypoint serve `/.well-known/acme-challenge/` despite a redirection. */
+  allowACMEByPass?: boolean;
   expose?: { default?: boolean };
   http?: {
     redirections?: {
@@ -1787,14 +1789,15 @@ export interface TraefikBootstrapBuildOptions {
   readonly namespaceOwnership?: 'owned' | 'external';
   /**
    * Emit a permanent `web` → `websecure` redirect on the `web` entrypoint.
-   *
-   * Build-time rather than runtime spec because the chart disables the
-   * redirect by the ABSENCE of `ports.web.http.redirections.entryPoint`, not by
-   * a boolean — so it decides which configuration exists rather than what a
-   * value is, and a schema reference could not express "no redirect".
+   * ACME HTTP-01 challenge paths (`/.well-known/acme-challenge/`) are exempt,
+   * so a cert-manager solver route on `web` still answers them.
    *
    * @default true
    */
+  // Build-time rather than runtime spec because the chart disables the
+  // redirect by the ABSENCE of `ports.web.http.redirections.entryPoint`, not by
+  // a boolean — so it decides which configuration exists rather than what a
+  // value is, and a schema reference could not express "no redirect".
   readonly redirectWebToWebsecure?: boolean;
   /** Create a cluster-default `TLSOption` alongside the release. */
   readonly defaultTlsOption?: TraefikDefaultTlsOptionOptions;
