@@ -107,6 +107,7 @@ export default withMermaid(
               { text: 'Rook/Ceph Object Storage', link: '/api/rook/' },
               { text: 'SearXNG', link: '/api/searxng/' },
               { text: 'Valkey', link: '/api/valkey/' },
+              { text: 'Vertical Pod Autoscaler', link: '/api/vpa/' },
               { text: 'NATS / JetStream', link: '/api/nats/' },
               { text: 'Hatchet', link: '/api/hatchet/' },
               { text: 'Web App Compositions', link: '/api/webapp/' },

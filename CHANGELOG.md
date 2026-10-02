@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`typekro/vpa`: the Vertical Pod Autoscaler.** `vpaBootstrap` installs the recommender, updater
+  and admission controller with Flux from the Fairwinds `vpa` chart, pinned to 5.1.0 (VPA 1.7.1).
+  That chart was chosen over the kubernetes/autoscaler chart, which still describes itself as not
+  ready for production use. Each component can be switched off, so a recommend-only install runs
+  just the recommender. The spec covers replicas, resources (the chart's requests by default, so no
+  component runs BestEffort), disruption budgets, placement, the priority class, service account
+  annotations, the bundled metrics-server, the webhook's failure policy and selectors, and the
+  serving certificate (the chart's certgen Jobs by default, or a cert-manager Secret through
+  `VPA_CERT_MANAGER_TLS_SECRET_KEYS`). Recommender flags are typed (minimum CPU and memory,
+  target percentiles, margin, decay half-lives, memory aggregation window, checkpoint or Prometheus
+  history and `historyLength`, recommender name), as are the updater's `minReplicas` and
+  `evictionTolerance`. Flux creates and replaces the chart's `crds/` on every upgrade. A typed
+  `verticalPodAutoscaler` factory (`autoscaling.k8s.io/v1`) covers `targetRef`, every update mode,
+  `minReplicas`, eviction requirements, container policies and `recommenders`, and is ready on
+  `RecommendationProvided=True` (or once stored, with `readiness: 'accepted'`).
+  `vpaRecommendOnly(target)` builds an `Off`-mode VPA from a `targetRef` or the workload itself,
+  and `vpaRecommendationProvided(...)` builds the readiness check for a composition's status. The
+  factory throws on specs the VPA rejects and warns when an HPA or KEDA ScaledObject declared in the
+  same composition scales the target on CPU or memory that the VPA also sets. The subpath draws on
+  the shared declaration pool and is not re-exported from `typekro`.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed

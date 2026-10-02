@@ -139,6 +139,9 @@ import * as externalDns from 'typekro/external-dns';
 // Pebble ACME test server
 import * as pebble from 'typekro/pebble';
 
+// Vertical Pod Autoscaler
+import { verticalPodAutoscaler, vpaBootstrap, vpaRecommendOnly } from 'typekro/vpa';
+
 // CloudNativePG PostgreSQL
 import { cluster, pooler, backup } from 'typekro/cnpg';
 
