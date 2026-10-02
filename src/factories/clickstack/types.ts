@@ -54,7 +54,11 @@ import {
   validateSecretDataKey,
 } from '../../core/kubernetes/naming.js';
 import type { TypeKroChartValues, TypeKroValue } from '../../core/types/common.js';
-import type { HelmReleasePostRenderer, HelmReleaseValuesFromSource } from '../helm/types.js';
+import type {
+  HelmReleaseLifecycleOptions,
+  HelmReleasePostRenderer,
+  HelmReleaseValuesFromSource,
+} from '../helm/types.js';
 import { CLICKSTACK_GATEWAY_NAME_SUFFIX } from './resources/helm.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX } from './resources/mongo.js';
 import { QUEUE_CLAIM_NAME_SUFFIX } from './utils/storage.js';
@@ -1587,7 +1591,8 @@ export const ClickStackHelmReleaseConfigSchema = type({
 });
 
 /** Configuration for the ClickStack HelmRelease wrapper. */
-export type ClickStackHelmReleaseConfig = typeof ClickStackHelmReleaseConfigSchema.infer;
+export type ClickStackHelmReleaseConfig = typeof ClickStackHelmReleaseConfigSchema.infer &
+  HelmReleaseLifecycleOptions;
 
 /**
  * ArkType schema for OtelCollectorHelmReleaseConfig.
@@ -1607,7 +1612,8 @@ export const OtelCollectorHelmReleaseConfigSchema = type({
 });
 
 /** Configuration for a stock opentelemetry-collector HelmRelease wrapper. */
-export type OtelCollectorHelmReleaseConfig = typeof OtelCollectorHelmReleaseConfigSchema.infer;
+export type OtelCollectorHelmReleaseConfig = typeof OtelCollectorHelmReleaseConfigSchema.infer &
+  HelmReleaseLifecycleOptions;
 
 // ============================================================================
 // Internal Mongo resources

@@ -40,7 +40,11 @@ import type {
   PublicFactoryOptions,
 } from '../../core/types/index.js';
 import type { HelmRepositorySpec, HelmRepositoryStatus } from '../helm/helm-repository.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../helm/types.js';
+import type {
+  HelmReleaseLifecycleOptions,
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+} from '../helm/types.js';
 
 /** Default official Dagster Helm repository URL. */
 export type DagsterDefaultHelmRepositoryUrl = 'https://dagster-io.github.io/helm';
@@ -999,13 +1003,11 @@ export const DagsterHelmReleaseConfigSchema = type({
 });
 
 /** Configuration for the Dagster HelmRelease wrapper. */
-export type DagsterHelmReleaseConfig = Omit<
-  typeof DagsterHelmReleaseConfigSchema.infer,
-  'values'
-> & {
-  /** Graph-aware official Dagster chart values serialized recursively by TypeKro. */
-  values?: TypeKroChartValue<DagsterHelmValues>;
-};
+export type DagsterHelmReleaseConfig = Omit<typeof DagsterHelmReleaseConfigSchema.infer, 'values'> &
+  HelmReleaseLifecycleOptions & {
+    /** Graph-aware official Dagster chart values serialized recursively by TypeKro. */
+    values?: TypeKroChartValue<DagsterHelmValues>;
+  };
 
 /** One structured configuration issue produced by Dagster validation. */
 export interface DagsterConfigurationIssue {

@@ -10,6 +10,7 @@ import type {
 } from '../../core/types/common.js';
 import type { Enhanced } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
+import { helmReleaseLifecycle } from './lifecycle.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
 import type {
   HelmReleasePostRenderer,
@@ -216,37 +217,8 @@ export function helmRelease<TValues extends object = TypeKroValueTreeObject>(
       },
       // Retry on failed installs — required for charts that depend on external
       // resources (e.g., Inngest waiting for Postgres/Redis to be ready).
-      install: {
-        timeout: config.install?.timeout ?? '10m',
-        remediation: {
-          retries: config.install?.remediation?.retries ?? 3,
-          ...(config.install?.remediation?.remediateLastFailure !== undefined && {
-            remediateLastFailure: config.install.remediation.remediateLastFailure,
-          }),
-          ...(config.install?.remediation?.ignoreTestFailures !== undefined && {
-            ignoreTestFailures: config.install.remediation.ignoreTestFailures,
-          }),
-        },
-        ...(config.install?.createNamespace !== undefined && {
-          createNamespace: config.install.createNamespace,
-        }),
-      },
-      upgrade: {
-        timeout: config.upgrade?.timeout ?? '10m',
-        remediation: {
-          retries: config.upgrade?.remediation?.retries ?? 3,
-          ...(config.upgrade?.remediation?.remediateLastFailure !== undefined && {
-            remediateLastFailure: config.upgrade.remediation.remediateLastFailure,
-          }),
-          ...(config.upgrade?.remediation?.ignoreTestFailures !== undefined && {
-            ignoreTestFailures: config.upgrade.remediation.ignoreTestFailures,
-          }),
-          ...(config.upgrade?.remediation?.strategy && {
-            strategy: config.upgrade.remediation.strategy,
-          }),
-        },
-      },
-      ...(config.driftDetection && { driftDetection: config.driftDetection }),
+      // Caller fields override the 10m / 3-retry defaults field by field.
+      ...helmReleaseLifecycle(config),
       ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
       ...(config.postRenderers && { postRenderers: config.postRenderers }),
       ...(config.values && { values: config.values }),

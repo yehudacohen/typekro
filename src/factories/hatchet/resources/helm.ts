@@ -6,6 +6,7 @@ import {
   type HelmRepositoryStatus,
   helmRepository,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type { HatchetHelmReleaseConfig, HatchetHelmRepositoryConfig } from '../types.js';
@@ -47,18 +48,20 @@ export function hatchetHelmRelease(
       namespace: config.repositoryNamespace ?? config.namespace ?? 'hatchet-system',
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
-    install: {
-      timeout: '20m',
-      remediation: { retries: 3, remediateLastFailure: true },
-    },
     // Hatchet upgrades may commit PostgreSQL migrations. Retry the desired
     // revision, but never automatically roll back to an older server after a
-    // migration has succeeded.
-    upgrade: {
-      timeout: '20m',
-      remediation: { retries: 0, remediateLastFailure: false },
-    },
+    // migration has succeeded. Callers may still override any field.
+    ...helmReleaseLifecycle(config, {
+      driftDetection: { mode: 'enabled' },
+      install: {
+        timeout: '20m',
+        remediation: { retries: 3, remediateLastFailure: true },
+      },
+      upgrade: {
+        timeout: '20m',
+        remediation: { retries: 0, remediateLastFailure: false },
+      },
+    }),
     ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
     values: config.values ?? {},
     ...(config.id && { id: config.id }),

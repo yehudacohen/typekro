@@ -1,6 +1,7 @@
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
 import type { Composable } from '../../core/types/index.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 export const OpenSearchOperatorBootstrapConfigSchema = type({
   name: 'string > 0',
@@ -54,7 +55,7 @@ export const OpenSearchHelmRepositorySingletonStatusSchema = type({
   ready: 'boolean',
 });
 
-export interface OpenSearchOperatorHelmReleaseConfig {
+export interface OpenSearchOperatorHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   readonly name: string;
   readonly namespace: string;
   readonly version: string;
