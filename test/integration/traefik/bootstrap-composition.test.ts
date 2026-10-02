@@ -32,6 +32,11 @@
  *    status subresource and re-reads the instance to prove the CEL actually
  *    projects it.
  * 3. A typed `IngressRoute` routes a request to a Service and answers 200.
+ * 3a. The `web` → `websecure` redirect leaves `/.well-known/acme-challenge/`
+ *    to a solver route on `web` (HTTP-01), and still redirects other paths.
+ * 3b. `proxyProtocol.trustedIPs`: a PROXY header from a trusted source sets
+ *    the client address, the same header from an untrusted source does not,
+ *    and a client's own `X-Forwarded-For` is never kept.
  * 4. `forwardAuth` denies: a request the stub authorizer rejects gets 403 and
  *    never reaches the upstream.
  * 5. `forwardAuth` propagates the principal/tier/customer headers it
@@ -132,6 +137,7 @@ class Handler(BaseHTTPRequestHandler):
             "tier": self.headers.get("x-edge-tier", ""),
             "customer": self.headers.get("x-edge-customer", ""),
             "notAllowlisted": self.headers.get("x-edge-not-allowlisted", ""),
+            "forwardedFor": self.headers.get("x-forwarded-for", ""),
         }, separators=(",", ":")).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
@@ -236,6 +242,46 @@ const ordersApiEdge = kubernetesComposition(
     route.dependsOn(rateLimit);
     route.dependsOn(concurrency);
 
+    // Stands in for the route cert-manager's HTTP-01 solver creates: a router
+    // on the plain-HTTP `web` entrypoint matching the challenge prefix. The
+    // redirect on `web` must leave exactly this prefix alone.
+    traefikIngressRoute({
+      name: `${spec.name}-acme-solver`,
+      namespace: spec.namespace,
+      spec: {
+        entryPoints: ['web'],
+        ingressClassName: 'traefik',
+        routes: [
+          {
+            match: 'PathPrefix(`/.well-known/acme-challenge/`)',
+            kind: 'Rule',
+            services: [{ name: spec.upstreamService, port: 8080 }],
+          },
+        ],
+      },
+      id: 'acmeSolverRoute',
+    });
+
+    // A bare echo route on `websecure`, so the PROXY-protocol probes spend no
+    // forwardAuth or rate-limit budget.
+    traefikIngressRoute({
+      name: `${spec.name}-echo`,
+      namespace: spec.namespace,
+      spec: {
+        entryPoints: ['websecure'],
+        tls: {},
+        ingressClassName: 'traefik',
+        routes: [
+          {
+            match: 'PathPrefix(`/echo`)',
+            kind: 'Rule',
+            services: [{ name: spec.upstreamService, port: 8080 }],
+          },
+        ],
+      },
+      id: 'echoRoute',
+    });
+
     return { ready: true };
   }
 );
@@ -324,6 +370,16 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
   let webEntrypoint = '';
   /** The TLS `websecure` entrypoint the routes are published on. */
   let secureEntrypoint = '';
+  /**
+   * PROXY protocol trust for the suite. `web` trusts every in-cluster pod and
+   * node range kind uses, so a probe's PROXY header is honored there.
+   * `websecure` trusts only TEST-NET-1, which no pod is in, so the same header
+   * is ignored there. Neither entrypoint trusts forwarded headers.
+   */
+  const entrypointTrust = {
+    web: { proxyProtocol: { trustedIPs: ['10.0.0.0/8', '172.16.0.0/12'] } },
+    websecure: { proxyProtocol: { trustedIPs: ['192.0.2.0/24'] } },
+  };
 
   beforeAll(async () => {
     // The harness contract: cluster configuration comes from the shared
@@ -383,6 +439,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
       // kind has no load-balancer controller and the probes run in-cluster.
       service: { type: 'ClusterIP' },
       replicas: 1,
+      entrypoints: entrypointTrust,
       providers: { crd: true },
       accessLogs: true,
       dashboard: false,
@@ -532,6 +589,77 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     expect(logs).toContain('LOCATION:https://');
   });
 
+  it('serves ACME HTTP-01 challenge paths on web instead of redirecting them', async () => {
+    // The redirect router Traefik generates has priority MaxInt - 1, so before
+    // `allowACMEByPass` it answered cert-manager's challenge with a 301 and
+    // HTTP-01 never completed. The challenge path must reach the solver route
+    // on `web`, while a sibling path on the same host is still redirected.
+    const challengePath = '/.well-known/acme-challenge/e2e-token';
+    const logs = await runTestPodAndReadLogs(
+      {
+        namespace: appNs,
+        name: `probe-acme-${runId}`,
+        image: 'curlimages/curl:8.17.0',
+        command: [
+          'sh',
+          '-ec',
+          `for attempt in $(seq 1 30); do ` +
+            `body=$(curl --silent --max-time 10 -o /dev/stdout -w '\nHTTP:%{http_code}' ` +
+            `${webEntrypoint}${challengePath}); ` +
+            `case "$body" in *HTTP:200*) break;; esac; sleep 2; done; ` +
+            `echo "CHALLENGE $body"; ` +
+            `curl --silent --max-time 10 -o /dev/null -w 'SIBLING HTTP:%{http_code}\n' ` +
+            `${webEntrypoint}/.well-known/security.txt`,
+        ],
+        timeoutMs: 180_000,
+      },
+      kubeConfig
+    );
+
+    expect(logs).toContain(`"path":"${challengePath}"`);
+    expect(logs).toMatch(/CHALLENGE [\s\S]*HTTP:200/);
+    expect(logs).toContain('SIBLING HTTP:301');
+  });
+
+  it('honors a PROXY header only from a trusted source, and never a client X-Forwarded-For', async () => {
+    // curl's --haproxy-clientip writes the client address into a PROXY v1
+    // header, which is exactly what a load balancer does. The probe pod's own
+    // address is inside `web`'s trusted ranges and outside `websecure`'s.
+    const spoofed = '203.0.113.7';
+    const forged = '198.51.100.66';
+    const logs = await runTestPodAndReadLogs(
+      {
+        namespace: appNs,
+        name: `probe-proxy-protocol-${runId}`,
+        image: 'curlimages/curl:8.17.0',
+        command: [
+          'sh',
+          '-ec',
+          `echo "WEB $(curl --silent --max-time 10 --haproxy-protocol --haproxy-clientip ${spoofed} ` +
+            `-H 'X-Forwarded-For: ${forged}' ${webEntrypoint}/.well-known/acme-challenge/pp)"; ` +
+            `echo "SECURE $(curl --silent --insecure --max-time 10 --haproxy-protocol ` +
+            `--haproxy-clientip ${spoofed} ${secureEntrypoint}/echo)"; ` +
+            `echo "SELF $(hostname -i)"`,
+        ],
+        timeoutMs: 180_000,
+      },
+      kubeConfig
+    );
+
+    const line = (prefix: string) =>
+      logs.split('\n').find((entry) => entry.startsWith(`${prefix} `)) ?? '';
+    const forwardedFor = (prefix: string) =>
+      (JSON.parse(line(prefix).slice(prefix.length + 1)) as { forwardedFor: string }).forwardedFor;
+    const self = line('SELF').slice('SELF '.length).trim();
+
+    // Trusted: the address from the PROXY header is the client address, and
+    // the client's own X-Forwarded-For is discarded rather than appended to.
+    expect(forwardedFor('WEB')).toBe(spoofed);
+    // Untrusted: Traefik reads past the header but keeps the real peer.
+    expect(forwardedFor('SECURE')).not.toContain(spoofed);
+    expect(forwardedFor('SECURE')).toBe(self);
+  });
+
   it('denies an unauthorized request at the edge with 403', async () => {
     const logs = await runTestPodAndReadLogs(
       {
@@ -599,6 +727,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
       namespace: traefikNs,
       service: { type: 'LoadBalancer' as const },
       replicas: 1,
+      entrypoints: entrypointTrust,
       providers: { crd: true },
       accessLogs: true,
       dashboard: false as const,

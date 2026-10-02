@@ -2,6 +2,11 @@
  * Traefik utilities.
  */
 export {
+  type AwsNlbHealthCheckOptions,
+  type AwsNlbServiceAnnotationOptions,
+  awsNlbServiceAnnotations,
+} from './aws-nlb.js';
+export {
   applyTraefikOwnershipPins,
   applyTraefikSecurityPins,
   mapTraefikConfigToHelmValues,
@@ -20,3 +25,10 @@ export {
   traefikMiddlewareKeys,
   validateTraefikMiddlewareSpec,
 } from './middleware-validation.js';
+export {
+  assertTraefikProxyTrust,
+  TRAEFIK_TRUSTED_IPS_VALIDATION_RULE,
+  traefikBroadTrustWarnings,
+  traefikProxyTrustIssues,
+  traefikProxyTrustSchemaFieldValidations,
+} from './proxy-trust.js';
