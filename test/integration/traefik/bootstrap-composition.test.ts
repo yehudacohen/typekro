@@ -32,6 +32,8 @@
  *    status subresource and re-reads the instance to prove the CEL actually
  *    projects it.
  * 3. A typed `IngressRoute` routes a request to a Service and answers 200.
+ * 3a. The `web` → `websecure` redirect leaves `/.well-known/acme-challenge/`
+ *    to a solver route on `web` (HTTP-01), and still redirects other paths.
  * 4. `forwardAuth` denies: a request the stub authorizer rejects gets 403 and
  *    never reaches the upstream.
  * 5. `forwardAuth` propagates the principal/tier/customer headers it
@@ -235,6 +237,26 @@ const ordersApiEdge = kubernetesComposition(
     route.dependsOn(authz);
     route.dependsOn(rateLimit);
     route.dependsOn(concurrency);
+
+    // Stands in for the route cert-manager's HTTP-01 solver creates: a router
+    // on the plain-HTTP `web` entrypoint matching the challenge prefix. The
+    // redirect on `web` must leave exactly this prefix alone.
+    traefikIngressRoute({
+      name: `${spec.name}-acme-solver`,
+      namespace: spec.namespace,
+      spec: {
+        entryPoints: ['web'],
+        ingressClassName: 'traefik',
+        routes: [
+          {
+            match: 'PathPrefix(`/.well-known/acme-challenge/`)',
+            kind: 'Rule',
+            services: [{ name: spec.upstreamService, port: 8080 }],
+          },
+        ],
+      },
+      id: 'acmeSolverRoute',
+    });
 
     return { ready: true };
   }
@@ -530,6 +552,38 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
 
     expect(logs).toContain('HTTP:301');
     expect(logs).toContain('LOCATION:https://');
+  });
+
+  it('serves ACME HTTP-01 challenge paths on web instead of redirecting them', async () => {
+    // The redirect router Traefik generates has priority MaxInt - 1, so before
+    // `allowACMEByPass` it answered cert-manager's challenge with a 301 and
+    // HTTP-01 never completed. The challenge path must reach the solver route
+    // on `web`, while a sibling path on the same host is still redirected.
+    const challengePath = '/.well-known/acme-challenge/e2e-token';
+    const logs = await runTestPodAndReadLogs(
+      {
+        namespace: appNs,
+        name: `probe-acme-${runId}`,
+        image: 'curlimages/curl:8.17.0',
+        command: [
+          'sh',
+          '-ec',
+          `for attempt in $(seq 1 30); do ` +
+            `body=$(curl --silent --max-time 10 -o /dev/stdout -w '\nHTTP:%{http_code}' ` +
+            `${webEntrypoint}${challengePath}); ` +
+            `case "$body" in *HTTP:200*) break;; esac; sleep 2; done; ` +
+            `echo "CHALLENGE $body"; ` +
+            `curl --silent --max-time 10 -o /dev/null -w 'SIBLING HTTP:%{http_code}\n' ` +
+            `${webEntrypoint}/.well-known/security.txt`,
+        ],
+        timeoutMs: 180_000,
+      },
+      kubeConfig
+    );
+
+    expect(logs).toContain(`"path":"${challengePath}"`);
+    expect(logs).toMatch(/CHALLENGE [\s\S]*HTTP:200/);
+    expect(logs).toContain('SIBLING HTTP:301');
   });
 
   it('denies an unauthorized request at the edge with 403', async () => {

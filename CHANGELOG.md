@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Traefik `web` → `websecure` redirect blocked ACME HTTP-01 challenges.** Traefik gives the
+  router it generates for an entrypoint redirection priority `MaxInt - 1`, so it outranked the route
+  cert-manager's HTTP-01 solver creates on `web` and answered `/.well-known/acme-challenge/<token>`
+  with a 301. Certificates could not be issued over HTTP-01 while `redirectWebToWebsecure` was on,
+  which is the default. The bootstrap now sets Traefik's `allowACMEByPass` on `web` whenever it
+  emits the redirect. Traefik then leaves `/.well-known/acme-challenge/` to the routers on `web` and
+  still redirects every other path. The redirect's priority is unchanged, so a route that names no
+  entrypoint is still redirected instead of served over plain HTTP. `TraefikPortValues` gains
+  `allowACMEByPass`. The integration suite proves the challenge path reaches a solver route on `web`
+  while a sibling path still gets a 301.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed

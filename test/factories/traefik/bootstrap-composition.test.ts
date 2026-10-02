@@ -255,6 +255,31 @@ describe('traefikBootstrap (defaults)', () => {
     });
   });
 
+  it('exempts ACME HTTP-01 challenge paths from the redirect', () => {
+    // Traefik gives an entrypoint redirection's router priority MaxInt - 1, so
+    // without the bypass it would answer cert-manager's
+    // /.well-known/acme-challenge/<token> with a 301 and HTTP-01 could never
+    // complete. `allowACMEByPass` narrows the generated redirect rule to
+    // everything EXCEPT that prefix; the priority is left alone so a route
+    // that names no entrypoint is still redirected rather than served over
+    // plain HTTP. The routing itself is proven in the integration suite.
+    const consumer = rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap');
+    const values = resource(consumer, 'traefikHelmRelease').template?.spec?.values as {
+      ports?: {
+        web?: {
+          allowACMEByPass?: unknown;
+          http?: { redirections?: { entryPoint?: { priority?: unknown } } };
+        };
+        websecure?: { allowACMEByPass?: unknown };
+      };
+    };
+
+    expect(values.ports?.web?.allowACMEByPass).toBe(true);
+    expect(values.ports?.web?.http?.redirections?.entryPoint?.priority).toBeUndefined();
+    // Only the redirecting entrypoint needs it.
+    expect(values.ports?.websecure?.allowACMEByPass).toBeUndefined();
+  });
+
   it('never publishes the internal traefik entrypoint through the Service', () => {
     const consumer = rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap');
     const values = resource(consumer, 'traefikHelmRelease').template?.spec?.values as {
@@ -429,6 +454,10 @@ describe('makeTraefikBootstrap build-time variants', () => {
     };
 
     expect(values.ports?.web?.http).toBeUndefined();
+    // No redirect, nothing to bypass.
+    expect(
+      (values.ports?.web as { allowACMEByPass?: unknown } | undefined)?.allowACMEByPass
+    ).toBeUndefined();
   });
 
   it('merges a build-time values passthrough beneath the mapped values', () => {

@@ -145,7 +145,8 @@ const edge = traefik.makeTraefikBootstrap({
   kind: 'TraefikEdge',
   // 'external' when a parent graph already establishes the namespace
   namespaceOwnership: 'owned',
-  // The chart disables the redirect by OMITTING the redirection block
+  // The chart disables the redirect by OMITTING the redirection block.
+  // ACME HTTP-01 challenge paths are exempt (see "TLS via cert-manager").
   redirectWebToWebsecure: true,
   defaultTlsOption: { minVersion: 'VersionTLS13' },
   defaultTlsStore: { defaultCertificateSecretName: 'edge-wildcard-tls' },
@@ -466,6 +467,25 @@ An omitted `minVersion` becomes `VersionTLS12` and an omitted `sniStrict`
 becomes `true`. `sniStrict` rejects handshakes that would otherwise fall back
 to Traefik's self-signed default certificate — a fallback that turns a
 certificate misconfiguration into a silently insecure connection.
+
+### HTTP-01 and the `web` redirect
+
+The default `web` → `websecure` redirect does **not** apply to
+`/.well-known/acme-challenge/`. The bootstrap sets Traefik's
+`allowACMEByPass` on `web`, which narrows the generated redirect rule to
+``HostRegexp(`^.+$`) && !PathPrefix(`/.well-known/acme-challenge/`)``. A
+cert-manager HTTP-01 solver route on `web` therefore answers the challenge,
+and every other path on `web` is still redirected.
+
+Without the bypass the redirect wins every time: Traefik gives the router it
+generates for an entrypoint redirection priority `MaxInt - 1`, above any rule
+length. The redirect's priority is deliberately left alone. A route that names
+no entrypoint attaches to all of them, so a low-priority redirect would serve
+those routes over plain HTTP instead of redirecting them.
+
+A challenge path with no solver route answers `404`, not `301`. Let's Encrypt
+only fetches `/.well-known/acme-challenge/<token>` while an order is pending,
+so this changes nothing for normal traffic.
 
 `TLSStore` and `TLSOption` named `default` are cluster-wide singletons in
 Traefik, so only one namespace should own them. Chart 41.5.0 can restrict which
