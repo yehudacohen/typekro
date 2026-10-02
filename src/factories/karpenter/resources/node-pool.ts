@@ -6,7 +6,11 @@ import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { createResource } from '../../shared.js';
 import { KARPENTER_API_VERSION, KARPENTER_AWS_GROUP } from '../constants.js';
 import type { NodePoolConfig, NodePoolSpec, NodePoolStatus } from '../types.js';
-import { assertNoKarpenterErrors, validateNodePoolSpec } from '../utils/validation.js';
+import {
+  assertNoKarpenterErrors,
+  validateNodePoolSpec,
+  warnKarpenterIssues,
+} from '../utils/validation.js';
 import { evaluateKarpenterReadiness } from './readiness.js';
 
 /** `NodePool` readiness: `Ready=True` for the current generation. */
@@ -73,7 +77,9 @@ export function nodePool(
   config: Composable<NodePoolConfig>
 ): Enhanced<NodePoolSpec, NodePoolStatus> {
   const spec = config.spec as NodePoolSpec;
-  assertNoKarpenterErrors('NodePool', config.name, validateNodePoolSpec(spec));
+  const issues = validateNodePoolSpec(spec);
+  assertNoKarpenterErrors('NodePool', config.name, issues);
+  warnKarpenterIssues('nodePool', issues);
   return createResource<NodePoolSpec, NodePoolStatus>(
     {
       apiVersion: KARPENTER_API_VERSION,

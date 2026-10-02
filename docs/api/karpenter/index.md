@@ -74,8 +74,10 @@ follows that:
 
 1. `<name>-crd` installs `karpenter-crd`, whose templates carry the CRDs, so they upgrade with
    the release.
-2. `<name>` installs `karpenter` with `install.crds` and `upgrade.crds` set to `Skip`, and
-   depends on step 1.
+2. `<name>` installs `karpenter` with `install.crds` and `upgrade.crds` set to `Skip`. Its
+   Flux `spec.dependsOn` names `<name>-crd`, so Flux holds every install and upgrade of the
+   controller until the CRD release is Ready at its current generation. That ordering holds in
+   KRO mode too, where both `HelmRelease`s are created at once.
 
 Both charts use the same `version`. The CRDs carry `helm.sh/resource-policy: keep`, so
 uninstalling the bootstrap does not delete them, and with them every NodePool and NodeClaim.
@@ -96,10 +98,15 @@ manages the CRDs.
 | `logLevel` | `logLevel` (`debug`, `info`, `error`) | `info` |
 | `dnsPolicy` | `dnsPolicy` | `ClusterFirst` |
 | `serviceAccount.name` / `.annotations` | `serviceAccount.*` | the release name / none |
-| `podDisruptionBudget.maxUnavailable` | `podDisruptionBudget.maxUnavailable` | `1` |
+| `podDisruptionBudget.maxUnavailable` | `podDisruptionBudget.maxUnavailable` | `1` (the PDB is always named `karpenter`) |
 | `nodeSelector`, `affinity` | merged by Helm with the chart defaults | chart defaults |
 | `topologySpreadConstraints`, `tolerations` | replace the chart's lists | the chart's lists |
-| `resources` | `controller.resources` | none |
+| `resources` | `controller.resources` | requests 1 CPU / 1Gi, limit 1Gi memory; `{}` sets none |
+
+The resource default is deliberate: a BestEffort controller is the first pod starved under
+pressure, and it cannot reschedule onto nodes it launches itself. The chart names its
+PodDisruptionBudget `karpenter` whatever the release is called, so install one bootstrap per
+namespace.
 
 The chart's default affinity keeps the controller off nodes Karpenter launched
 (`karpenter.sh/nodepool DoesNotExist`). Run it on a managed node group or Fargate, using
@@ -116,9 +123,12 @@ has no webhooks, so there are no webhook settings to configure.
 |---|---|---|
 | `crds` | `'karpenter-crd'` | `'external'` installs only the controller |
 | `keepCrdsOnUninstall` | `true` | Annotate the CRDs with `helm.sh/resource-policy: keep` |
-| `namespaceOwnership` | `'external'` | `'owned'` creates the namespace (not for `kube-system`) |
+| `namespaceOwnership` | `'external'` | `'external'` lets Flux create a missing namespace (`install.createNamespace`); `'owned'` makes it part of the graph (not for `kube-system`) |
 | `values` | none | Raw chart values, deep-merged last (objects merge, lists replace) |
 | `name`, `kind` | `karpenter-bootstrap`, `KarpenterBootstrap` | RGD name and kind |
+
+Alpha feature gates (`nodeRepair`, `spotToSpotConsolidation`, `staticCapacity`, ...) are not
+typed; set them through `values`:
 
 ```typescript
 import { makeKarpenterBootstrap } from 'typekro/karpenter';
@@ -204,6 +214,10 @@ const nodeClass = ec2NodeClass({
 });
 ```
 
+Also typed: `capacityReservationSelectorTerms`, `placementGroupSelector`, `networkInterfaces`
+(EFA), `ipPrefixCount`, `cpuOptions`, `connectionTracking`, `context`, `instanceStorePolicy`,
+`detailedMonitoring` and `associatePublicIPAddress`; status adds `capacityReservations`.
+
 When `metadataOptions` is omitted the CRD defaults to IMDSv2 only with a hop limit of 1.
 See [NodeClasses](https://karpenter.sh/docs/concepts/nodeclasses/).
 
@@ -230,27 +244,31 @@ return { ready: karpenterReady(nodeClass, spot), spotNodes: spot.status.nodes };
 
 ## Validation
 
-The factories throw on mistakes the API server would reject, and the validators also return
-warnings for legal but risky settings. Values only known at reconcile time are skipped.
+`nodePool` and `ec2NodeClass` throw on mistakes the API server would reject. They and the
+bootstrap log warnings for legal but risky settings. The validators return both. Values only known at
+reconcile time are skipped.
 
 | Check | Severity |
 |---|---|
 | NodePool without `nodeClassRef` | error |
-| `In` with no values, `Gt`/`Lt`/`Gte`/`Lte` without exactly one integer, `minValues` above the number of values | error |
+| `In`/`Gt`/`Lt`/`Gte`/`Lte` with missing or empty values; `Gt` etc. without exactly one integer; `minValues` outside 1-50 or above the number of values | error |
+| `disruption` without `consolidateAfter` (the CRD requires it once `disruption` is set) | error |
 | Requirement on `karpenter.sh/nodepool` or `kubernetes.io/hostname` | error |
 | Budget `schedule` without `duration`, or the reverse; `weight` outside 1-100 | error |
 | NodePool with empty `requirements` | warning |
 | NodePool without `limits` | warning |
 | EC2NodeClass with both or neither of `role` and `instanceProfile` | error |
 | Empty or field-less AMI, subnet or security group selectors; `alias` mixed with other terms; no `amiFamily` without an alias; two root volumes | error |
+| Alias not `<family>@<version>`, an unknown family, a Windows alias other than `@latest`, or an `amiFamily` other than the alias's family or `Custom` | error |
+| EBS mapping with neither `volumeSize` nor `snapshotID` | error |
 | `metadataOptions.httpTokens: 'optional'` (IMDSv1) | warning |
-| Bootstrap without `interruptionQueue`, with one replica, without resource requests, or with an affinity that allows Karpenter nodes | warning |
+| Bootstrap without `interruptionQueue`, with one replica, with `resources` but no requests, or with an affinity that allows Karpenter nodes | warning |
 
 ## AWS prerequisites
 
 Create these outside TypeKro, for example with the upstream
-[CloudFormation template](https://karpenter.sh/docs/reference/cloudformation/), Terraform or
-eksctl:
+[CloudFormation template for 1.14.1](https://raw.githubusercontent.com/aws/karpenter-provider-aws/v1.14.1/website/content/en/docs/getting-started/getting-started-with-karpenter/cloudformation.yaml)
+([explained](https://karpenter.sh/docs/reference/cloudformation/)), Terraform or eksctl:
 
 1. **Controller IAM role and policy.** Bound to the `karpenter` ServiceAccount in the install
    namespace, either with [IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html)
@@ -260,9 +278,12 @@ eksctl:
 2. **Node IAM role and instance profile.** Pass the role name as `role` and Karpenter
    manages the instance profile, or create the profile yourself and pass `instanceProfile`.
 3. **SQS interruption queue and EventBridge rules.** A queue (pass its name as
-   `interruptionQueue`) with rules forwarding scheduled changes (`aws.health`), spot
-   interruption warnings, rebalance recommendations and instance state changes (`aws.ec2`)
-   to it. See [interruption](https://karpenter.sh/docs/concepts/disruption/#interruption).
+   `interruptionQueue`) whose policy allows `sqs:SendMessage` from `events.amazonaws.com` and
+   `sqs.amazonaws.com`, and five rules targeting it: `AWS Health Event` (`aws.health`),
+   `EC2 Spot Instance Interruption Warning`, `EC2 Instance Rebalance Recommendation`,
+   `EC2 Instance State-change Notification` and
+   `EC2 Capacity Reservation Instance Interruption Warning` (`aws.ec2`).
+   See [interruption](https://karpenter.sh/docs/concepts/disruption/#interruption).
 4. **Discovery tags.** Tag the subnets and security groups the nodes should use, e.g.
    `karpenter.sh/discovery: <cluster-name>`, and select them by that tag.
 5. **Cluster access for the node role.** An
@@ -272,6 +293,14 @@ eksctl:
 
 The [getting-started guide](https://karpenter.sh/docs/getting-started/getting-started-with-karpenter/)
 walks through all five.
+
+## Teardown
+
+Delete your NodePools and EC2NodeClasses **before** removing the bootstrap. The controller
+holds finalizers on them and on every NodeClaim, and it is the only thing that terminates the
+EC2 instances behind them. Remove it first and those objects stay stuck in deletion, while the
+instances keep running and billing. The CRDs survive an uninstall by default
+(`keepCrdsOnUninstall`).
 
 ## Example
 

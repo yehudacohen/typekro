@@ -97,6 +97,9 @@ function karpenterRelease(
         remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
       },
       driftDetection: { mode: 'enabled' },
+      ...(config.dependsOn
+        ? { dependsOn: config.dependsOn as { name: string; namespace?: string }[] }
+        : {}),
       ...(config.values ? { values: config.values as Record<string, unknown> } : {}),
     },
   }).withReadinessEvaluator(karpenterHelmReleaseReadinessEvaluator);

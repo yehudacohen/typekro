@@ -29,6 +29,7 @@ import {
   KarpenterBootstrapStatusSchema,
 } from '../types.js';
 import { mapKarpenterConfigToHelmValues } from '../utils/helm-values-mapper.js';
+import { validateKarpenterBootstrapConfig, warnKarpenterIssues } from '../utils/validation.js';
 import { karpenterHelmRepositoryBootstrap } from './karpenter-helm-repository.js';
 
 // The chart version Flux installed, newest history entry first. A lazy ternary
@@ -69,6 +70,7 @@ export function makeKarpenterBootstrap(
       status: KarpenterBootstrapStatusSchema,
     },
     (spec) => {
+      warnKarpenterIssues('karpenterBootstrap', validateKarpenterBootstrapConfig(spec));
       const installNamespace = Cel.default(spec.namespace, DEFAULT_KARPENTER_NAMESPACE);
       const version = Cel.default(spec.version, DEFAULT_KARPENTER_CHART_VERSION);
 
@@ -104,28 +106,42 @@ export function makeKarpenterBootstrap(
         createNamespace: !ownsNamespace,
       };
 
-      const controller = karpenterHelmRelease({
-        ...releaseCommon,
-        name: spec.name,
-        values: mapKarpenterConfigToHelmValues(spec, options.values),
-        id: 'karpenterHelmRelease',
-      });
+      const values = mapKarpenterConfigToHelmValues(spec, options.values);
 
       if (!manageCrds) {
+        const controller = karpenterHelmRelease({
+          ...releaseCommon,
+          name: spec.name,
+          values,
+          id: 'karpenterHelmRelease',
+        });
         return {
           ...helmReleaseConditionSummary(controller),
           version: Cel.expr<string>(chartVersionExpression('karpenterHelmRelease')),
         };
       }
 
+      const crdReleaseName = Cel.template('%s-crd', spec.name);
       const crds = karpenterCrdHelmRelease({
         ...releaseCommon,
-        name: Cel.template('%s-crd', spec.name),
+        name: crdReleaseName,
         // `helm.sh/resource-policy: keep` stops an uninstall from deleting the
         // CRDs and, with them, every NodePool and NodeClaim in the cluster.
         values: keepCrds ? { additionalAnnotations: { 'helm.sh/resource-policy': 'keep' } } : {},
         id: 'karpenterCrdHelmRelease',
       });
+      const controller = karpenterHelmRelease({
+        ...releaseCommon,
+        name: spec.name,
+        values,
+        // Flux holds every install AND upgrade of the controller until the CRD
+        // release is Ready, so a chart bump never runs a controller against
+        // the previous CRDs. KRO creates both objects at once; this is what
+        // orders them.
+        dependsOn: [{ name: crdReleaseName, namespace: DEFAULT_FLUX_NAMESPACE }],
+        id: 'karpenterHelmRelease',
+      });
+      // Ordering for TypeKro's direct-mode apply as well.
       controller.dependsOn(crds);
 
       return {

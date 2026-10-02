@@ -5,7 +5,11 @@ import type { Composable, Enhanced, ReadinessEvaluator } from '../../../core/typ
 import { createResource } from '../../shared.js';
 import { KARPENTER_AWS_API_VERSION } from '../constants.js';
 import type { EC2NodeClassConfig, EC2NodeClassSpec, EC2NodeClassStatus } from '../types.js';
-import { assertNoKarpenterErrors, validateEC2NodeClassSpec } from '../utils/validation.js';
+import {
+  assertNoKarpenterErrors,
+  validateEC2NodeClassSpec,
+  warnKarpenterIssues,
+} from '../utils/validation.js';
 import { evaluateKarpenterReadiness } from './readiness.js';
 
 /** `EC2NodeClass` readiness: `Ready=True` (AMIs, subnets, security groups and profile resolved). */
@@ -40,7 +44,9 @@ export function ec2NodeClass(
   config: Composable<EC2NodeClassConfig>
 ): Enhanced<EC2NodeClassSpec, EC2NodeClassStatus> {
   const spec = config.spec as EC2NodeClassSpec;
-  assertNoKarpenterErrors('EC2NodeClass', config.name, validateEC2NodeClassSpec(spec));
+  const issues = validateEC2NodeClassSpec(spec);
+  assertNoKarpenterErrors('EC2NodeClass', config.name, issues);
+  warnKarpenterIssues('ec2NodeClass', issues);
   return createResource<EC2NodeClassSpec, EC2NodeClassStatus>(
     {
       apiVersion: KARPENTER_AWS_API_VERSION,

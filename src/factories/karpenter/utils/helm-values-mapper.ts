@@ -7,6 +7,7 @@
 import { Cel } from '../../../core/references/cel.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
+  KARPENTER_DEFAULT_RESOURCES,
   KARPENTER_DEFAULT_TOLERATIONS,
   KARPENTER_DEFAULT_TOPOLOGY_SPREAD_CONSTRAINTS,
 } from '../constants.js';
@@ -87,7 +88,10 @@ export function mapKarpenterConfigToHelmValues(
       ...KARPENTER_DEFAULT_TOLERATIONS.map((toleration) => ({ ...toleration })),
     ]),
     controller: {
-      resources: Cel.default(config.resources, {}),
+      resources: Cel.default(config.resources, {
+        requests: { ...KARPENTER_DEFAULT_RESOURCES.requests },
+        limits: { ...KARPENTER_DEFAULT_RESOURCES.limits },
+      }),
     },
     settings: {
       clusterName: config.clusterName,

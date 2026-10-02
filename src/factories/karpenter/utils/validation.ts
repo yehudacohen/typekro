@@ -5,7 +5,9 @@
 // references or CEL expressions are only known at reconcile time and are
 // skipped.
 
+import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { TypeKroError } from '../../../core/errors.js';
+import { getComponentLogger } from '../../../core/logging/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type { EC2NodeClassSpec, KarpenterBootstrapConfig, NodePoolSpec } from '../types.js';
 
@@ -19,6 +21,17 @@ export interface KarpenterValidationIssue {
 
 const RESTRICTED_LABELS = ['karpenter.sh/nodepool', 'kubernetes.io/hostname'];
 const INTEGER = /^\d+$/;
+const VALUED_OPERATORS = ['In', 'Gt', 'Lt', 'Gte', 'Lte'];
+// Alias family -> the amiFamily values the CRD accepts alongside it.
+const ALIAS_FAMILIES: Record<string, string> = {
+  al2: 'AL2',
+  al2023: 'AL2023',
+  bottlerocket: 'Bottlerocket',
+  windows2019: 'Windows2019',
+  windows2022: 'Windows2022',
+  windows2025: 'Windows2025',
+};
+const logger = getComponentLogger('karpenter-validation');
 
 function isGraphValue(value: unknown): boolean {
   return isKubernetesRef(value) || isCelExpression(value);
@@ -70,6 +83,15 @@ export function validateNodePoolSpec(spec: NodePoolSpec): KarpenterValidationIss
   requirements?.forEach((requirement, index) => {
     const path = `template.spec.requirements[${index}]`;
     const values = concreteArray(requirement.values);
+    if (VALUED_OPERATORS.includes(requirement.operator) && requirement.values === undefined) {
+      error(`${path}.values`, `Operator '${requirement.operator}' needs values.`);
+    }
+    if (
+      typeof requirement.minValues === 'number' &&
+      (requirement.minValues < 1 || requirement.minValues > 50)
+    ) {
+      error(`${path}.minValues`, 'minValues must be between 1 and 50.');
+    }
     if (isConcreteString(requirement.key) && RESTRICTED_LABELS.includes(requirement.key)) {
       error(`${path}.key`, `${requirement.key} is reserved and cannot be a requirement.`);
     }
@@ -102,6 +124,17 @@ export function validateNodePoolSpec(spec: NodePoolSpec): KarpenterValidationIss
     warn(
       'limits',
       'No limits: this NodePool can scale without bound. Set limits.cpu and limits.memory.'
+    );
+  }
+
+  if (
+    spec?.disruption !== undefined &&
+    !isGraphValue(spec.disruption) &&
+    spec.disruption.consolidateAfter === undefined
+  ) {
+    error(
+      'disruption.consolidateAfter',
+      "consolidateAfter is required when disruption is set (e.g. '0s' or '1m')."
     );
   }
 
@@ -155,6 +188,24 @@ export function validateEC2NodeClassSpec(spec: EC2NodeClassSpec): KarpenterValid
     ) {
       error(path, 'An alias must be the only AMI selector term and the only field in it.');
     }
+    if (isConcreteString(term.alias)) {
+      const [family = '', version] = term.alias.split('@');
+      const amiFamily = ALIAS_FAMILIES[family];
+      if (!/^[a-zA-Z0-9]+@.+$/.test(term.alias) || amiFamily === undefined) {
+        error(
+          `${path}.alias`,
+          `Alias must be <family>@<version> with family one of ${Object.keys(ALIAS_FAMILIES).join(', ')}.`
+        );
+      } else if (family.startsWith('windows') && version !== 'latest') {
+        error(`${path}.alias`, 'Windows aliases only support @latest.');
+      } else if (
+        isConcreteString(spec.amiFamily) &&
+        spec.amiFamily !== 'Custom' &&
+        spec.amiFamily !== amiFamily
+      ) {
+        error('amiFamily', `amiFamily must be ${amiFamily} or Custom with alias ${term.alias}.`);
+      }
+    }
   });
   if (
     amiTerms?.length &&
@@ -185,9 +236,17 @@ export function validateEC2NodeClassSpec(spec: EC2NodeClassSpec): KarpenterValid
     });
   }
 
-  const rootVolumes = concreteArray(spec?.blockDeviceMappings)?.filter(
-    (mapping) => mapping.rootVolume
-  );
+  const mappings = concreteArray(spec?.blockDeviceMappings);
+  mappings?.forEach((mapping, index) => {
+    if (
+      mapping.ebs &&
+      mapping.ebs.volumeSize === undefined &&
+      mapping.ebs.snapshotID === undefined
+    ) {
+      error(`blockDeviceMappings[${index}].ebs`, 'An EBS mapping needs volumeSize or snapshotID.');
+    }
+  });
+  const rootVolumes = mappings?.filter((mapping) => mapping.rootVolume);
   if (rootVolumes && rootVolumes.length > 1) {
     error('blockDeviceMappings', 'At most one block device mapping may set rootVolume.');
   }
@@ -230,13 +289,25 @@ export function validateKarpenterBootstrapConfig(
       'The affinity no longer excludes karpenter.sh/nodepool nodes, so the controller may be scheduled onto a node it manages.'
     );
   }
-  if (config.resources?.requests === undefined) {
+  if (
+    config.resources !== undefined &&
+    !isGraphValue(config.resources) &&
+    config.resources.requests === undefined
+  ) {
     warn(
       'resources.requests',
-      'No controller resource requests. Upstream suggests at least 1 CPU and 1Gi.'
+      'No controller resource requests: a BestEffort controller is starved first and cannot reschedule onto the nodes it launches.'
     );
   }
   return issues;
+}
+
+/** Log validator warnings, once per real composition run. Used by the factories. */
+export function warnKarpenterIssues(source: string, issues: KarpenterValidationIssue[]): void {
+  if (getCurrentCompositionContext()?.suppressResourceDiagnostics) return;
+  for (const issue of issues) {
+    if (issue.severity === 'warning') logger.warn(`${source}: ${issue.path}: ${issue.message}`);
+  }
 }
 
 /** Throw on validator errors. Used by the factories. */

@@ -159,4 +159,64 @@ describe('validateEC2NodeClassSpec', () => {
     );
     expect(issues.map((issue) => issue.path)).toEqual(['blockDeviceMappings']);
   });
+
+  it('errors on malformed aliases and an amiFamily that contradicts the alias', () => {
+    const paths = (alias: string, amiFamily?: EC2NodeClassSpecBase['amiFamily']) =>
+      validateEC2NodeClassSpec(
+        spec({ amiSelectorTerms: [{ alias }], ...(amiFamily ? { amiFamily } : {}) })
+      ).map((issue) => issue.path);
+
+    expect(paths('al2023')).toEqual(['amiSelectorTerms[0].alias']);
+    expect(paths('ubuntu@latest')).toEqual(['amiSelectorTerms[0].alias']);
+    expect(paths('windows2022@v1')).toEqual(['amiSelectorTerms[0].alias']);
+    expect(paths('windows2022@latest')).toEqual([]);
+    expect(paths('bottlerocket@v1.30.0', 'AL2023')).toEqual(['amiFamily']);
+    expect(paths('bottlerocket@v1.30.0', 'Custom')).toEqual([]);
+    expect(paths('al2023@latest', 'AL2023')).toEqual([]);
+  });
+
+  it('errors on an EBS mapping with neither volumeSize nor snapshotID', () => {
+    const issues = validateEC2NodeClassSpec(
+      spec({ blockDeviceMappings: [{ deviceName: '/dev/xvdb', ebs: { volumeType: 'gp3' } }] })
+    );
+    expect(issues.map((issue) => issue.path)).toEqual(['blockDeviceMappings[0].ebs']);
+  });
+
+  it('passes the newer EC2NodeClass fields through', () => {
+    const nodeClass = ec2NodeClass({
+      name: 'efa',
+      spec: spec({
+        capacityReservationSelectorTerms: [
+          { tags: { team: 'ml' }, instanceMatchCriteria: 'targeted' },
+        ],
+        placementGroupSelector: { name: 'training' },
+        networkInterfaces: [
+          { networkCardIndex: 0, deviceIndex: 0, interfaceType: 'interface' },
+          { networkCardIndex: 1, deviceIndex: 0, interfaceType: 'efa-only' },
+        ],
+        ipPrefixCount: 1,
+        cpuOptions: { nestedVirtualization: 'disabled' },
+        connectionTracking: { tcpEstablishedTimeout: 3600 },
+        context: 'arn:aws:outposts:us-east-1:111122223333:outpost/op-0123456789abcdef0',
+        blockDeviceMappings: [
+          {
+            deviceName: '/dev/xvdb',
+            ebs: { snapshotID: 'snap-0123456789abcdef0', volumeInitializationRate: 200 },
+          },
+        ],
+      }),
+    });
+    const plainSpec = plain(nodeClass.spec) as Record<string, unknown>;
+    expect(Object.keys(plainSpec)).toEqual(
+      expect.arrayContaining([
+        'capacityReservationSelectorTerms',
+        'placementGroupSelector',
+        'networkInterfaces',
+        'ipPrefixCount',
+        'cpuOptions',
+        'connectionTracking',
+        'context',
+      ])
+    );
+  });
 });

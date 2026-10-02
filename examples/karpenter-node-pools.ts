@@ -68,7 +68,7 @@ export const clusterCapacity = kubernetesComposition(
         template: {
           metadata: { labels: { workload: 'batch' } },
           spec: {
-            nodeClassRef: { name: 'default' },
+            nodeClassRef: { name: nodeClass.metadata.name! },
             requirements: [
               { key: KARPENTER_LABELS.capacityType, operator: 'In', values: ['spot'] },
               { key: KARPENTER_LABELS.instanceCategory, operator: 'In', values: ['c', 'm', 'r'] },
@@ -103,7 +103,7 @@ export const clusterCapacity = kubernetesComposition(
       spec: {
         template: {
           spec: {
-            nodeClassRef: { name: 'default' },
+            nodeClassRef: { name: nodeClass.metadata.name! },
             requirements: [
               { key: KARPENTER_LABELS.capacityType, operator: 'In', values: ['on-demand'] },
               { key: KARPENTER_LABELS.instanceCategory, operator: 'In', values: ['c', 'm', 'r'] },

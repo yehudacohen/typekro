@@ -236,9 +236,38 @@ describe('validateNodePoolSpec', () => {
 
   it('errors on a budget schedule without a duration and an out-of-range weight', () => {
     const issues = messages(
-      spec({ disruption: { budgets: [{ nodes: '0', schedule: '@daily' }] }, weight: 101 })
+      spec({
+        disruption: { consolidateAfter: '0s', budgets: [{ nodes: '0', schedule: '@daily' }] },
+        weight: 101,
+      })
     );
 
     expect(issues.map((issue) => issue.path)).toEqual(['disruption.budgets[0]', 'weight']);
+  });
+
+  it('errors on missing values, out-of-range minValues and a disruption without consolidateAfter', () => {
+    const issues = messages(
+      spec({
+        template: {
+          spec: {
+            nodeClassRef: { name: 'default' },
+            requirements: [
+              { key: KARPENTER_LABELS.capacityType, operator: 'In' },
+              { key: KARPENTER_LABELS.instanceCpu, operator: 'Gt' },
+              { key: KARPENTER_LABELS.instanceFamily, operator: 'Exists', minValues: 51 },
+            ],
+          },
+        },
+        // @ts-expect-error consolidateAfter is required when disruption is set
+        disruption: { consolidationPolicy: 'WhenEmpty' },
+      })
+    );
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      'template.spec.requirements[0].values',
+      'template.spec.requirements[1].values',
+      'template.spec.requirements[2].minValues',
+      'disruption.consolidateAfter',
+    ]);
   });
 });

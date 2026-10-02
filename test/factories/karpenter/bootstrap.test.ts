@@ -80,6 +80,7 @@ interface ReleaseSpec {
   releaseName: string;
   install: { crds?: string; createNamespace?: boolean };
   upgrade: { crds?: string };
+  dependsOn?: { name: string; namespace?: string }[];
   values?: Record<string, unknown>;
 }
 
@@ -225,6 +226,27 @@ describe('karpenterBootstrap — direct mode', () => {
       interruptionQueue: '',
     });
     expect(values.serviceAccount).toEqual({ create: true, name: 'karpenter', annotations: {} });
+    expect(values.controller).toEqual({
+      resources: { requests: { cpu: '1', memory: '1Gi' }, limits: { memory: '1Gi' } },
+    });
+  });
+
+  it('sets no controller resources for resources: {}', () => {
+    const values = release(direct({ ...SPEC, resources: {} }), 'karpenter').values as Record<
+      string,
+      unknown
+    >;
+    expect(values.controller).toEqual({ resources: {} });
+  });
+
+  it('makes Flux hold the controller until the CRD release is Ready', () => {
+    const docs = direct();
+    expect(release(docs, 'karpenter').dependsOn).toEqual([
+      { name: 'karpenter-crd', namespace: 'flux-system' },
+    ]);
+    expect(release(docs, 'karpenter-crd').dependsOn).toBeUndefined();
+    const external = direct(SPEC, makeKarpenterBootstrap({ crds: 'external' }));
+    expect(release(external, 'karpenter').dependsOn).toBeUndefined();
   });
 
   it('honours a version override on both charts', () => {
@@ -298,6 +320,15 @@ describe('karpenterBootstrap — kro mode', () => {
     expect(controller?.template?.metadata?.annotations).toEqual({
       'typekro.dev/depends-on-karpenterCrdHelmRelease': '${karpenterCrdHelmRelease.metadata.name}',
     });
+  });
+
+  it('templates the Flux dependsOn from the instance name', () => {
+    const controller = rgdResources(yaml(), 'KarpenterBootstrap').find(
+      (resource) => resource.id === 'karpenterHelmRelease'
+    );
+    expect((controller?.template?.spec as { dependsOn?: unknown }).dependsOn).toEqual([
+      { name: '${schema.spec.name}-crd', namespace: 'flux-system' },
+    ]);
   });
 
   it('defaults optional fields in CEL with the same fallbacks as direct mode', () => {
@@ -392,6 +423,7 @@ describe('validateKarpenterBootstrapConfig', () => {
       clusterName: 'demo',
       replicas: 1,
       affinity: { podAntiAffinity: {} },
+      resources: {},
     });
     expect(issues.map((issue) => issue.path)).toEqual([
       'interruptionQueue',
@@ -404,5 +436,14 @@ describe('validateKarpenterBootstrapConfig', () => {
 
   it('accepts the recommended setup', () => {
     expect(validateKarpenterBootstrapConfig(SPEC)).toEqual([]);
+  });
+
+  it('does not warn about resources when the defaults apply', () => {
+    const paths = validateKarpenterBootstrapConfig({
+      name: 'karpenter',
+      clusterName: 'demo',
+      interruptionQueue: 'demo',
+    }).map((issue) => issue.path);
+    expect(paths).toEqual([]);
   });
 });

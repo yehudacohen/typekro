@@ -91,8 +91,11 @@ export interface NodePoolDisruptionBudget {
 export interface NodePoolDisruption {
   /** @default 'WhenEmptyOrUnderutilized' (CRD default) */
   consolidationPolicy?: 'WhenEmpty' | 'WhenEmptyOrUnderutilized' | 'Balanced';
-  /** Duration such as `'30s'`, or `'Never'`. @default '0s' (CRD default) */
-  consolidateAfter?: string;
+  /**
+   * Duration such as `'30s'`, or `'Never'`. Required by the CRD whenever
+   * `disruption` is set; the `'0s'` default applies only when it is omitted.
+   */
+  consolidateAfter: string;
   budgets?: NodePoolDisruptionBudget[];
 }
 
@@ -180,6 +183,8 @@ export interface EC2NodeClassEbs {
   kmsKeyID?: string;
   deleteOnTermination?: boolean;
   snapshotID?: string;
+  /** MiB/s to initialize a volume restored from `snapshotID` (100-300). */
+  volumeInitializationRate?: number;
 }
 
 /** A block device mapping. At most one may set `rootVolume`. */
@@ -242,6 +247,32 @@ export interface EC2NodeClassSpecBase {
   kubelet?: EC2NodeClassKubelet;
   detailedMonitoring?: boolean;
   instanceStorePolicy?: 'RAID0';
+  /** On-demand capacity reservations to launch into (beta, enabled by default). */
+  capacityReservationSelectorTerms?: Array<{
+    id?: string;
+    ownerID?: string;
+    tags?: Record<string, string>;
+    instanceMatchCriteria?: 'open' | 'targeted';
+  }>;
+  /** Placement group, by `name` or `id`. */
+  placementGroupSelector?: { name?: string; id?: string };
+  /** Network interfaces, e.g. EFA. Must include device 0 on card 0 of type `interface`. */
+  networkInterfaces?: Array<{
+    networkCardIndex: number;
+    deviceIndex: number;
+    interfaceType: 'interface' | 'efa-only';
+  }>;
+  /** IPv4 prefixes per primary ENI (prefix delegation). */
+  ipPrefixCount?: number;
+  cpuOptions?: { nestedVirtualization?: 'enabled' | 'disabled' };
+  /** Connection tracking timeouts, in seconds. */
+  connectionTracking?: {
+    tcpEstablishedTimeout?: number;
+    udpStreamTimeout?: number;
+    udpTimeout?: number;
+  };
+  /** Launch template context (for AWS Outposts / reserved capacity). */
+  context?: string;
 }
 
 /**
@@ -261,6 +292,16 @@ export interface EC2NodeClassStatus {
   subnets?: Array<{ id: string; zone: string; zoneID?: string }>;
   securityGroups?: Array<{ id: string; name?: string }>;
   instanceProfile?: string;
+  capacityReservations?: Array<{
+    id: string;
+    availabilityZone: string;
+    instanceType: string;
+    instanceMatchCriteria: 'open' | 'targeted';
+    ownerID: string;
+    reservationType?: 'default' | 'capacity-block';
+    state?: 'active' | 'expiring';
+    endTime?: string;
+  }>;
 }
 
 /** Configuration for {@link ec2NodeClass}. `EC2NodeClass` is cluster-scoped. */
@@ -321,7 +362,10 @@ export interface KarpenterBootstrapConfig {
   topologySpreadConstraints?: Record<string, unknown>[];
   /** @default KARPENTER_DEFAULT_TOLERATIONS */
   tolerations?: KarpenterToleration[];
-  /** Controller container resources. */
+  /**
+   * Controller container resources. Defaults to requests of 1 CPU / 1Gi and a
+   * 1Gi memory limit; pass `{}` to set none.
+   */
   resources?: KarpenterResourceRequirements;
 }
 
@@ -418,8 +462,9 @@ export interface KarpenterBootstrapBuildOptions {
    */
   readonly keepCrdsOnUninstall?: boolean;
   /**
-   * `'owned'` creates the install namespace. Leave it `'external'` for
-   * `kube-system`. @default 'external'
+   * `'owned'` makes the namespace part of the graph. `'external'` leaves it to
+   * Flux (`install.createNamespace`), which is right for `kube-system`.
+   * @default 'external'
    */
   readonly namespaceOwnership?: 'owned' | 'external';
   /** Raw chart values, deep-merged over the mapped values. Plain objects merge; lists replace. */
@@ -455,6 +500,8 @@ export interface KarpenterHelmReleaseConfig {
   repositoryNamespace?: string;
   /** Let Flux create the install namespace. @default false */
   createNamespace?: boolean;
+  /** Flux `spec.dependsOn`: releases that must be Ready before this one installs or upgrades. */
+  dependsOn?: { name: string; namespace?: string }[];
   values?: Record<string, unknown>;
   id?: string;
 }

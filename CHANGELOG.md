@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`typekro/karpenter`: Karpenter for EKS.** `karpenterBootstrap` installs the controller with
   Flux from the official OCI charts, pinned to 1.14.1. As upstream recommends for GitOps, the CRDs
-  come from the `karpenter-crd` chart and the controller chart's `crds/` are skipped; the CRDs are
-  kept on uninstall unless `keepCrdsOnUninstall: false`. The spec covers `clusterName`,
+  come from the `karpenter-crd` chart and the controller chart's `crds/` are skipped. A Flux
+  `dependsOn` holds every controller install and upgrade until the CRD release is Ready, and the CRDs
+  are kept on uninstall unless `keepCrdsOnUninstall: false`. The controller defaults to requests of
+  1 CPU / 1Gi and a 1Gi memory limit. `HelmReleaseSpec` gains an optional `dependsOn`. The spec covers `clusterName`,
   `clusterEndpoint`, `interruptionQueue`, the service account (IRSA annotation or EKS Pod Identity),
   replicas, the disruption budget, scheduling, resources, `logLevel` and `dnsPolicy`;
   `makeKarpenterBootstrap` takes build-time options (`crds: 'external'`, namespace ownership, raw

@@ -26,13 +26,13 @@ export const DEFAULT_KARPENTER_REPOSITORY_NAME = 'karpenter-repo';
 export const DEFAULT_KARPENTER_NAMESPACE = 'kube-system';
 
 /**
- * Well-known label keys usable in `NodePool` requirements.
+ * Well-known label keys usable in `NodePool` requirements. (`karpenter.sh/nodepool`
+ * is set on every node but is not allowed as a requirement.)
  *
  * @see https://karpenter.sh/docs/concepts/scheduling/#well-known-labels
  */
 export const KARPENTER_LABELS = {
   capacityType: 'karpenter.sh/capacity-type',
-  nodePool: 'karpenter.sh/nodepool',
   instanceType: 'node.kubernetes.io/instance-type',
   instanceCategory: 'karpenter.k8s.aws/instance-category',
   instanceFamily: 'karpenter.k8s.aws/instance-family',
@@ -60,3 +60,12 @@ export const KARPENTER_DEFAULT_TOLERATIONS = [
 export const KARPENTER_DEFAULT_TOPOLOGY_SPREAD_CONSTRAINTS = [
   { maxSkew: 1, topologyKey: 'topology.kubernetes.io/zone', whenUnsatisfiable: 'DoNotSchedule' },
 ] as const;
+
+/**
+ * Default controller resources. A BestEffort controller is first to be starved
+ * and cannot reschedule onto the nodes it launches. Pass `resources: {}` to opt out.
+ */
+export const KARPENTER_DEFAULT_RESOURCES = {
+  requests: { cpu: '1', memory: '1Gi' },
+  limits: { memory: '1Gi' },
+} as const;

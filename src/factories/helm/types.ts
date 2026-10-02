@@ -128,6 +128,8 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
     mode: 'enabled' | 'warn' | 'disabled';
     ignore?: Record<string, unknown>[];
   };
+  /** HelmReleases Flux must find Ready before installing or upgrading this one. */
+  dependsOn?: { name: string; namespace?: string }[];
 }
 
 export interface HelmReleaseStatus {
