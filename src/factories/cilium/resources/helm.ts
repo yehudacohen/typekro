@@ -13,6 +13,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { helmReleaseReadinessEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -127,6 +128,10 @@ export function ciliumHelmRepository(
 export function ciliumHelmRelease(
   config: CiliumHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+  // Per-action timeouts fall back to 10m only when no release-wide `timeout`
+  // is set; Flux applies `spec.timeout` to every action that has none.
+  const installTimeout = config.installTimeout ?? (config.timeout ? undefined : '10m');
+  const upgradeTimeout = config.upgradeTimeout ?? (config.timeout ? undefined : '10m');
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
@@ -141,6 +146,7 @@ export function ciliumHelmRelease(
     },
     spec: {
       interval: config.interval || '5m',
+      ...(config.timeout && { timeout: config.timeout }),
       chart: {
         spec: {
           chart: 'cilium',
@@ -152,6 +158,20 @@ export function ciliumHelmRelease(
           },
         },
       },
+      // The legacy flat fields seed the policy; nested install/upgrade fields
+      // win. A `timeout` without per-action timeouts must not be shadowed by
+      // the generic 10m action default, so it is only applied when unset.
+      ...helmReleaseLifecycle(config, {
+        install: {
+          ...(installTimeout && { timeout: installTimeout }),
+          ...(config.createNamespace !== undefined && { createNamespace: config.createNamespace }),
+          remediation: { retries: 3 },
+        },
+        upgrade: {
+          ...(upgradeTimeout && { timeout: upgradeTimeout }),
+          remediation: { retries: 3 },
+        },
+      }),
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator);

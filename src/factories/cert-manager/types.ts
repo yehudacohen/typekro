@@ -2,6 +2,7 @@
 // Following cert-manager.io/v1 API specifications
 
 import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // Common Kubernetes types
 export interface ResourceRequirements {
@@ -1134,7 +1135,7 @@ export interface CertManagerHelmRepositoryConfig {
 /**
  * Configuration interface for Cert-Manager HelmRelease
  */
-export interface CertManagerHelmReleaseConfig {
+export interface CertManagerHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   name: string;
   namespace?: string;
   repositoryName?: string; // Name of the HelmRepository to reference

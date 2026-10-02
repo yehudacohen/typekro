@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Every integration HelmRelease factory accepts `install`, `upgrade` and `driftDetection`.**
+  That covers APISix, cert-manager, Cilium, ClickHouse, ClickStack (both releases), CNPG, Dagster,
+  Envoy Gateway and Envoy AI Gateway, External-DNS, Harbor, Hatchet, Inngest, NATS, OpenSearch,
+  Ory (all four charts), Pebble, Rook Ceph (both charts), Traefik and Valkey. The options are the
+  ones the generic `helmRelease` already takes: install and upgrade `timeout`, the CRD policy
+  (`crds`: `Skip`, `Create` or `CreateReplace`), `remediation` (`retries`, `remediateLastFailure`,
+  `ignoreTestFailures`, and `strategy` on upgrade), `install.createNamespace`, and drift detection.
+  Each field you set overrides the factory's default for that field. A cert-manager or other
+  integration release can now set `crds: CreateReplace` directly instead of patching the
+  HelmRelease with an aspect. They all share one helper, `helmReleaseLifecycle`, which
+  `typekro/helm` exports for custom integration factories, together with the
+  `HelmReleaseLifecycleOptions`, `HelmReleaseInstallPolicy`, `HelmReleaseUpgradePolicy` and
+  `HelmReleaseCrdsPolicy` types. See "Install, upgrade and CRD policy" in the Flux docs.
+
+### Changed
+
+- **Behaviour change: the cert-manager, Cilium, External-DNS and Pebble HelmReleases now get the
+  generic `helmRelease` defaults.** These are `install.timeout` and `upgrade.timeout` of `10m` and
+  `remediation.retries: 3` for each. They rendered no install or upgrade policy before, so Flux
+  used a 5m timeout with no retries, and a slow first install stayed Stalled until someone ran
+  `flux reconcile --reset`. Existing releases pick up the new policy on their next reconcile. The
+  chart and its values do not change. Every other factory renders the same output as before
+  when the new options are not set.
+
+### Fixed
+
+- **`helmRelease` dropped `install.crds` and `upgrade.crds`.** The types accepted them, but the
+  factory did not render them, so the release silently kept Flux's `Create` / `Skip` defaults.
+  They are now rendered.
+- **`ciliumHelmRelease` ignored `timeout`, `installTimeout`, `upgradeTimeout` and
+  `createNamespace`.** They are now rendered as `spec.timeout`, `install.timeout`,
+  `upgrade.timeout` and `install.createNamespace`. When `timeout` is set without per-action
+  timeouts, no `10m` action default overrides it. `replace` and `cleanupOnFail` are still not
+  rendered.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed
