@@ -83,6 +83,10 @@
       "paths": ["factories/harbor/**"]
     },
     {
+      "owner": "keda",
+      "paths": ["factories/keda/**"]
+    },
+    {
       "owner": "hatchet",
       "paths": ["factories/hatchet/**"]
     },
