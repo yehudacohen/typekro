@@ -91,6 +91,10 @@
       "paths": ["factories/inngest/**"]
     },
     {
+      "owner": "karpenter",
+      "paths": ["factories/karpenter/**"]
+    },
+    {
       "owner": "nats",
       "paths": ["factories/nats/**"]
     },
