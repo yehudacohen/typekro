@@ -41,6 +41,12 @@ export const TRAEFIK_WEB_ENTRYPOINT = 'web';
 export const TRAEFIK_WEBSECURE_ENTRYPOINT = 'websecure';
 /** Internal entrypoint serving `/ping`, metrics and (when enabled) the dashboard. */
 export const TRAEFIK_INTERNAL_ENTRYPOINT = 'traefik';
+/** Internal entrypoint serving Prometheus metrics. Never published by the Service. */
+export const TRAEFIK_METRICS_ENTRYPOINT = 'metrics';
+/** Container port of {@link TRAEFIK_METRICS_ENTRYPOINT}, the chart's default. */
+export const DEFAULT_TRAEFIK_METRICS_PORT = 9100;
+/** Pod `terminationGracePeriodSeconds`: above the default 10s accept + 30s drain. */
+export const DEFAULT_TRAEFIK_TERMINATION_GRACE_SECONDS = 60;
 
 /**
  * `app.kubernetes.io/name` the chart stamps on the Traefik pods.

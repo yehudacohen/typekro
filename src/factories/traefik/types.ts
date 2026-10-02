@@ -1226,6 +1226,9 @@ export type TraefikChainMiddlewareConfig = typeof TraefikChainMiddlewareConfigSc
 // raw passthrough.
 // ============================================================================
 
+/** What the access log does with a field or header: keep it, drop it, or redact its value. */
+export type TraefikAccessLogFieldMode = 'keep' | 'drop' | 'redact';
+
 /** Kubernetes Service type usable for the Traefik entrypoint Service. */
 export type TraefikServiceType = 'LoadBalancer' | 'NodePort' | 'ClusterIP';
 
@@ -1459,12 +1462,24 @@ export interface TraefikManagedHelmValues {
     filePath?: string;
     addInternals?: boolean;
     bufferingSize?: number;
+    fields?: {
+      defaultMode?: TraefikAccessLogFieldMode;
+      names?: Record<string, TraefikAccessLogFieldMode>;
+      headers?: {
+        defaultMode?: TraefikAccessLogFieldMode;
+        names?: Record<string, TraefikAccessLogFieldMode>;
+      };
+      queryParameters?: { defaultMode?: 'keep' | 'drop' };
+    };
     otlp?: TraefikOtlpValues;
   };
   metrics?: {
     addInternals?: boolean;
+    /** Pinned to the internal `metrics` entrypoint; other keys pass through. */
+    prometheus?: { entryPoint?: string };
     otlp?: TraefikOtlpValues;
   };
+  podDisruptionBudget?: { enabled?: boolean; maxUnavailable?: number; minAvailable?: number };
   tracing?: {
     addInternals?: boolean;
     serviceName?: string;
@@ -1622,22 +1637,19 @@ export const TraefikHelmReleaseConfigSchema = type({
   'id?': 'string > 0',
 });
 
-/**
- * Configuration for the Traefik `HelmRelease`.
- *
- * **Accepted exception to schema-first inference, for `values` only.** Every
- * other field is inferred from {@link TraefikHelmReleaseConfigSchema}. `values`
- * is typed {@link TraefikMappedHelmValues}, which is
- * `TypeKroChartValues<TraefikHelmValues>` — a union of the chart values with
- * `KubernetesRef`/`CelExpression` PROXY types. Those describe graph wiring
- * that exists only at build time, not data an ArkType schema could validate at
- * runtime: by the time this object reaches Flux the refs are resolved, and
- * while it is being built the tree is deliberately not plain JSON. A schema
- * field here could only be `unknown`, which would erase the typed chart
- * surface the mapper exists to provide. The values themselves ARE schema-
- * checked — one level down, by {@link TraefikManagedHelmValues} and the
- * mapper's own tests.
- */
+// **Accepted exception to schema-first inference, for `values` only.** Every
+// other field is inferred from {@link TraefikHelmReleaseConfigSchema}. `values`
+// is typed {@link TraefikMappedHelmValues}, which is
+// `TypeKroChartValues<TraefikHelmValues>` — a union of the chart values with
+// `KubernetesRef`/`CelExpression` PROXY types. Those describe graph wiring
+// that exists only at build time, not data an ArkType schema could validate at
+// runtime: by the time this object reaches Flux the refs are resolved, and
+// while it is being built the tree is deliberately not plain JSON. A schema
+// field here could only be `unknown`, which would erase the typed chart
+// surface the mapper exists to provide. The values themselves ARE schema-
+// checked — one level down, by {@link TraefikManagedHelmValues} and the
+// mapper's own tests.
+/** Configuration for the Traefik `HelmRelease`. */
 export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.infer & {
   readonly values?: TraefikMappedHelmValues;
 };
@@ -1647,6 +1659,17 @@ export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.inf
 // ============================================================================
 
 const traefikServiceTypeSchema = '"LoadBalancer" | "NodePort" | "ClusterIP"';
+
+// Shutdown timing of one entrypoint. On SIGTERM Traefik keeps accepting for
+// `requestAcceptGraceTimeout` (long enough for a load balancer to stop sending
+// new connections) and then drains in-flight requests for `graceTimeOut`. The
+// pod's `terminationGracePeriodSeconds` must cover both.
+const traefikEntrypointLifecycleShape = {
+  /** Keep accepting requests this long after SIGTERM. @default '10s' */
+  'requestAcceptGraceTimeout?': 'string > 0',
+  /** Then drain in-flight requests for up to this long. @default '30s' */
+  'graceTimeOut?': 'string > 0',
+} as const;
 
 // Which upstream sources an entrypoint believes. `trustedIPs` is required
 // inside each block: an empty block would read as "configured" while trusting
@@ -1706,10 +1729,12 @@ export const TraefikBootstrapConfigSchema = type({
     'web?': {
       'exposedPort?': kubernetesPort,
       ...traefikEntrypointTrustShape,
+      ...traefikEntrypointLifecycleShape,
     },
     'websecure?': {
       'exposedPort?': kubernetesPort,
       ...traefikEntrypointTrustShape,
+      ...traefikEntrypointLifecycleShape,
       /** Entrypoint responding timeouts, for requests longer than 60s. */
       'readTimeout?': 'string > 0',
       'writeTimeout?': 'string > 0',
@@ -1720,6 +1745,34 @@ export const TraefikBootstrapConfigSchema = type({
     'crd?': 'boolean',
     'gatewayApi?': 'boolean',
     'kubernetesIngress?': 'boolean',
+    /** Keep routes whose Service has no endpoints, answering 503 instead of 404. @default false */
+    'allowEmptyServices?': 'boolean',
+    /** Namespaces the CRD and Ingress providers watch. Omit to watch all. */
+    'namespaces?': 'string[]',
+    /** Let an IngressRoute reference Services and Middlewares in other namespaces. @default false */
+    'allowCrossNamespace?': 'boolean',
+  },
+  /** Pod shutdown budget. Must exceed the entrypoints' grace timeouts. @default 60 */
+  'terminationGracePeriodSeconds?': 'number.integer >= 1',
+  /** @default { enabled: true, maxUnavailable: 1 }. Raw `values.podDisruptionBudget` replaces it. */
+  'podDisruptionBudget?': {
+    'enabled?': 'boolean',
+    'maxUnavailable?': 'number.integer >= 1',
+  },
+  'scheduling?': {
+    'nodeSelector?': 'Record<string, string>',
+    'tolerations?': type({
+      'key?': 'string',
+      'operator?': '"Exists" | "Equal"',
+      'value?': 'string',
+      'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
+      'tolerationSeconds?': 'number.integer',
+    }).array(),
+    'priorityClassName?': 'string > 0',
+    /** Spread replicas across zones. @default 'ScheduleAnyway' */
+    'zoneSpread?': '"DoNotSchedule" | "ScheduleAnyway"',
+    /** Spread replicas across nodes. @default 'ScheduleAnyway' */
+    'nodeSpread?': '"DoNotSchedule" | "ScheduleAnyway"',
   },
   'accessLogs?': 'boolean',
   'logLevel?': '"TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL" | "PANIC"',
@@ -1744,27 +1797,27 @@ export const TraefikBootstrapConfigSchema = type({
 /** Inferred runtime spec of {@link TraefikBootstrapConfigSchema}. */
 export type TraefikBootstrapConfig = typeof TraefikBootstrapConfigSchema.infer;
 
+// `loadBalancer` mirrors the entrypoint Service's
+// `status.loadBalancer.ingress[0]` and stays empty for `ClusterIP` /
+// `NodePort` services or while a cloud controller is still provisioning an
+// address.
+//
+// `version` is the chart version Flux actually installed, read back from the
+// owned `HelmRelease`'s `status.history[]` — an OBSERVED value rather than the
+// requested one, so a pinned-but-unavailable version can never be reported as
+// though it were live. It is empty until Flux records its first release.
+//
+// EVERY field here is a projection of a resource this composition owns, so it
+// hydrates identically in direct and KRO mode. That rules out literals: KRO
+// drops literal status fields, so declaring one would require a field the
+// instance never carries (#188). The entrypoint NAMES are therefore not in
+// this contract — they are fixed by this composition and exported as
+// `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
+// live port names off the Service named by `serviceName` if a consumer needs
+// them at runtime.
 /**
- * Status contract of the `traefikBootstrap` composition.
- *
- * `loadBalancer` mirrors the entrypoint Service's
- * `status.loadBalancer.ingress[0]` and stays empty for `ClusterIP` /
- * `NodePort` services or while a cloud controller is still provisioning an
- * address.
- *
- * `version` is the chart version Flux actually installed, read back from the
- * owned `HelmRelease`'s `status.history[]` — an OBSERVED value rather than the
- * requested one, so a pinned-but-unavailable version can never be reported as
- * though it were live. It is empty until Flux records its first release.
- *
- * EVERY field here is a projection of a resource this composition owns, so it
- * hydrates identically in direct and KRO mode. That rules out literals: KRO
- * drops literal status fields, so declaring one would require a field the
- * instance never carries (#188). The entrypoint NAMES are therefore not in
- * this contract — they are fixed by this composition and exported as
- * `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
- * live port names off the Service named by `serviceName` if a consumer needs
- * them at runtime.
+ * Status contract of the `traefikBootstrap` composition. `loadBalancer` is empty
+ * until a controller assigns an address; `version` is the chart Flux installed.
  */
 export const TraefikBootstrapStatusSchema = type({
   ready: 'boolean',
@@ -1796,6 +1849,22 @@ export const TraefikHelmRepositorySingletonStatusSchema = type({
 // ============================================================================
 // Build-time options (construction, NOT runtime spec)
 // ============================================================================
+
+/**
+ * Access-log field and header policy for the JSON access log.
+ *
+ * `Authorization`, `Proxy-Authorization` and `Cookie` are always dropped.
+ */
+export interface TraefikAccessLogOptions {
+  /** `crowdsec` keeps every field CrowdSec's Traefik parser reads. @default 'default' */
+  readonly preset?: 'default' | 'crowdsec';
+  /** Per-header modes, merged over the preset. Headers not listed are dropped. */
+  readonly headers?: Readonly<Record<string, TraefikAccessLogFieldMode>>;
+  /** Per-field modes (`ClientHost`, `RequestPath`, ...), merged over the preset. */
+  readonly fields?: Readonly<Record<string, TraefikAccessLogFieldMode>>;
+  /** Keep or drop query strings in `RequestPath`. @default Traefik's, which keeps them */
+  readonly queryParameters?: 'keep' | 'drop';
+}
 
 /** A default `TLSOption` owned by the bootstrap composition. */
 export interface TraefikDefaultTlsOptionOptions {
@@ -1878,6 +1947,8 @@ export interface TraefikBootstrapBuildOptions {
   // whose value comes from `valueFrom`, `--configFile`, or a raw mount at or
   // above a file Traefik searches for its static configuration.
   readonly dangerouslyTrustAnySource?: boolean;
+  /** JSON access-log field and header policy. */
+  readonly accessLog?: TraefikAccessLogOptions;
   /** Create a cluster-default `TLSOption` alongside the release. */
   readonly defaultTlsOption?: TraefikDefaultTlsOptionOptions;
   /** Create a cluster-default `TLSStore` fed by a cert-manager Secret. */

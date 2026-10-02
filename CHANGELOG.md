@@ -43,6 +43,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `tls.secretName`. `defaultTlsStore.certificate` makes the bootstrap own the `Certificate`
     behind the default `TLSStore`.
   - The Traefik docs describe the HTTP-01 flow with an Ingress or Gateway solver.
+- **Traefik production options.**
+  - Entrypoint shutdown timing (`requestAcceptGraceTimeout`, `graceTimeOut`) and
+    `terminationGracePeriodSeconds`. `validateTraefikHelmValues` warns when Kubernetes would kill
+    Traefik mid-drain.
+  - `podDisruptionBudget`, plus `scheduling.{nodeSelector,tolerations,priorityClassName,zoneSpread,nodeSpread}`.
+  - `providers.allowEmptyServices` (a route with no endpoints answers 503), `providers.namespaces`
+    and `providers.allowCrossNamespace`.
+  - The build option `accessLog` (`preset: 'default' | 'crowdsec'`, per-header and per-field
+    modes, `queryParameters`). `TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS` lists the fields the CrowdSec
+    preset pins.
+
+### Changed
+
+- **Traefik bootstrap production defaults.** These change a default deployment:
+  - Both entrypoints now accept for 10s and drain for 30s on shutdown (Traefik's default is no
+    accept grace and a 10s drain), inside a pinned 60s termination grace period (the chart's
+    default, now stated explicitly).
+  - A PodDisruptionBudget with `maxUnavailable: 1` is created.
+  - Replicas spread softly across zones and nodes.
+  - Prometheus is pinned to the internal `metrics` entrypoint, which is never exposed.
+  - JSON access logs keep `User-Agent` and always drop `Authorization`, `Proxy-Authorization` and
+    `Cookie`. Before, every header was dropped by the chart's default.
+  - `allowEmptyServices: false` and `allowCrossNamespace: false` are now stated explicitly. These
+    are Traefik's defaults.
+
+  Raw `values` that already set `podDisruptionBudget` or `topologySpreadConstraints` keep them.
+  Raw `accessLog.fields` are replaced by the access-log policy.
 
 ### Fixed
 
