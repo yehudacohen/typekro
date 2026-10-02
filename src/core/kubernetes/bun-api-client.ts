@@ -255,6 +255,33 @@ export function createBunCompatibleApiextensionsV1Api(
  * @param timeoutConfig - Optional HTTP timeout configuration for Bun runtime
  * @returns KubernetesObjectApi instance
  */
+/**
+ * Kinds sent and read as raw JSON, because the SDK's typed models rename a
+ * wire field and drop the wire spelling TypeKro manifests carry:
+ *
+ * - CustomResourceDefinition: `enum`, `default`, `$ref`, `x-kubernetes-*`
+ *   (V1JSONSchemaProps).
+ * - NetworkPolicy: `ingress[].from` (V1NetworkPolicyIngressRule `_from`).
+ *   `egress[].to` is not renamed.
+ * - LimitRange: `limits[].default` (V1LimitRangeItem `_default`).
+ * - ResourceSlice, every served version: device attribute `int` and capacity
+ *   `requestPolicy.default`.
+ *
+ * Found by listing every attributeTypeMap entry whose `name` differs from its
+ * `baseName` and walking up to the top-level kinds that embed it. The only
+ * other one, ListMeta `_continue`, appears only in list responses.
+ */
+const RAW_WIRE_KINDS: ReadonlySet<string> = new Set([
+  'apiextensions.k8s.io/v1/CustomResourceDefinition',
+  'networking.k8s.io/v1/NetworkPolicy',
+  'v1/LimitRange',
+  'resource.k8s.io/v1/ResourceSlice',
+  'resource.k8s.io/v1beta2/ResourceSlice',
+  'resource.k8s.io/v1beta1/ResourceSlice',
+  'resource.k8s.io/v1alpha3/ResourceSlice',
+  'resource.k8s.io/v1alpha2/ResourceSlice',
+]);
+
 export function createBunCompatibleKubernetesObjectApi(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
@@ -264,6 +291,10 @@ export function createBunCompatibleKubernetesObjectApi(
   // serialization-type hook, so preserve the raw CRD at the request boundary.
   // AsyncLocalStorage keeps concurrent object operations independent while the
   // SDK continues to own paths, query parameters, authentication and retries.
+  //
+  // NetworkPolicy, LimitRange and ResourceSlice have the same problem; see
+  // RAW_WIRE_KINDS. For NetworkPolicy it dropped every ingress peer and turned
+  // each rule into "allow from anywhere" on its ports.
   class SchemaPreservingKubernetesObjectApi extends getKubernetesClientNode().KubernetesObjectApi {
     private readonly rawCrd = new AsyncLocalStorage<
       | {
@@ -281,10 +312,7 @@ export function createBunCompatibleKubernetesObjectApi(
       spec: { apiVersion?: string | undefined; kind?: string | undefined },
       operation: () => Promise<T>
     ): Promise<T> {
-      const rawSpec =
-        spec.apiVersion === 'apiextensions.k8s.io/v1' && spec.kind === 'CustomResourceDefinition'
-          ? spec
-          : undefined;
+      const rawSpec = RAW_WIRE_KINDS.has(`${spec.apiVersion}/${spec.kind}`) ? spec : undefined;
       return this.rawCrd.run(rawSpec, operation);
     }
 
