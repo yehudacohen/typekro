@@ -223,6 +223,35 @@ export interface LabelSelector {
   matchLabels?: Record<string, string>;
 }
 
+/** PodDisruptionBudget settings for one cert-manager component. */
+export interface CertManagerPodDisruptionBudget {
+  /** Render the chart's PodDisruptionBudget. The chart defaults to `minAvailable: 1`. */
+  enabled?: boolean;
+  /** An integer (`'1'`) or a percentage (`'50%'`). Set this or `maxUnavailable`, not both. */
+  minAvailable?: string;
+  /** An integer (`'1'`) or a percentage (`'50%'`). Set this or `minAvailable`, not both. */
+  maxUnavailable?: string;
+}
+
+/** A Kubernetes topology spread constraint, passed to the chart unchanged. */
+export interface TopologySpreadConstraint {
+  maxSkew: number;
+  topologyKey: string;
+  whenUnsatisfiable: 'DoNotSchedule' | 'ScheduleAnyway';
+  /** Select the component's own pods, e.g. `app.kubernetes.io/component: controller`. */
+  labelSelector?: LabelSelector;
+  minDomains?: number;
+  matchLabelKeys?: string[];
+  nodeAffinityPolicy?: 'Honor' | 'Ignore';
+  nodeTaintsPolicy?: 'Honor' | 'Ignore';
+}
+
+/** Scheduling settings shared by the controller, webhook and cainjector. */
+export interface CertManagerComponentScheduling {
+  podDisruptionBudget?: CertManagerPodDisruptionBudget;
+  topologySpreadConstraints?: TopologySpreadConstraint[];
+}
+
 // Cert-Manager Bootstrap Configuration
 export interface CertManagerBootstrapConfig {
   // Basic configuration
@@ -242,8 +271,19 @@ export interface CertManagerBootstrapConfig {
     };
   };
 
-  // Installation configuration
-  installCRDs?: boolean; // Note: Best practice is to install CRDs separately
+  /**
+   * Install the CRDs with the chart.
+   * @deprecated Use `crds.enabled`. Mapped to `crds.enabled` when that is unset.
+   */
+  installCRDs?: boolean;
+  /** Chart CRD handling. @default { enabled: true, keep: true } */
+  crds?: {
+    /** Install the CRDs with the chart. */
+    enabled?: boolean;
+    /** Keep the CRDs (and so every Certificate) when the release is uninstalled. */
+    keep?: boolean;
+  };
+  /** Controller replicas. Above 1, also enable `controller.podDisruptionBudget`. */
   replicaCount?: number;
   strategy?: {
     type?: 'Recreate' | 'RollingUpdate';
@@ -254,7 +294,7 @@ export interface CertManagerBootstrapConfig {
   };
 
   // Controller configuration
-  controller?: {
+  controller?: CertManagerComponentScheduling & {
     image?: {
       repository?: string;
       tag?: string;
@@ -280,7 +320,7 @@ export interface CertManagerBootstrapConfig {
   // Webhook configuration
   // NOTE: cert-manager 1.19+ removed 'enabled' (webhook is always enabled),
   // 'mutatingAdmissionWebhooks', and 'validatingAdmissionWebhooks'.
-  webhook?: {
+  webhook?: CertManagerComponentScheduling & {
     replicaCount?: number;
     image?: {
       repository?: string;
@@ -303,7 +343,7 @@ export interface CertManagerBootstrapConfig {
   };
 
   // CA Injector configuration
-  cainjector?: {
+  cainjector?: CertManagerComponentScheduling & {
     enabled?: boolean;
     replicaCount?: number;
     image?: {
@@ -930,6 +970,40 @@ export interface OrderStatus {
 
 import { type Type, type } from 'arktype';
 
+// The chart renders `minAvailable` / `maxUnavailable` unquoted, so a string
+// carries both forms: '1' becomes the integer 1 and '50%' stays a percentage.
+// A `string | number` union would collapse to a schemaless `object` in KRO's
+// SimpleSchema, which rejects a plain integer at admission.
+const podDisruptionBudgetSchema = {
+  'enabled?': 'boolean',
+  'minAvailable?': 'string',
+  'maxUnavailable?': 'string',
+} as const;
+
+const topologySpreadConstraintsSchema = type({
+  maxSkew: 'number.integer > 0',
+  topologyKey: 'string',
+  whenUnsatisfiable: '"DoNotSchedule" | "ScheduleAnyway"',
+  'labelSelector?': {
+    'matchLabels?': 'Record<string, string>',
+    'matchExpressions?': type({
+      key: 'string',
+      operator: '"In" | "NotIn" | "Exists" | "DoesNotExist"',
+      'values?': 'string[]',
+    }).array(),
+  },
+  'minDomains?': 'number.integer > 0',
+  'matchLabelKeys?': 'string[]',
+  'nodeAffinityPolicy?': '"Honor" | "Ignore"',
+  'nodeTaintsPolicy?': '"Honor" | "Ignore"',
+}).array();
+
+const serviceAccountSchema = {
+  'create?': 'boolean',
+  'name?': 'string',
+  'annotations?': 'Record<string, string>',
+} as const;
+
 /**
  * ArkType schema for CertManagerBootstrapConfig
  * Following KroCompatibleType constraints - only basic types, nested objects, and optional fields
@@ -941,7 +1015,12 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
   'version?': 'string',
 
   // Installation configuration
+  /** @deprecated Use `crds.enabled`. */
   'installCRDs?': 'boolean',
+  'crds?': {
+    'enabled?': 'boolean',
+    'keep?': 'boolean',
+  },
   'replicaCount?': 'number.integer',
 
   // Global configuration
@@ -984,10 +1063,9 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
       },
     },
     'nodeSelector?': 'Record<string, string>',
-    'serviceAccount?': {
-      'create?': 'boolean',
-      'name?': 'string',
-    },
+    'serviceAccount?': serviceAccountSchema,
+    'podDisruptionBudget?': podDisruptionBudgetSchema,
+    'topologySpreadConstraints?': topologySpreadConstraintsSchema,
   },
 
   // Webhook configuration (cert-manager 1.19+ — no 'enabled' or admission webhook config)
@@ -1009,10 +1087,9 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
       },
     },
     'nodeSelector?': 'Record<string, string>',
-    'serviceAccount?': {
-      'create?': 'boolean',
-      'name?': 'string',
-    },
+    'serviceAccount?': serviceAccountSchema,
+    'podDisruptionBudget?': podDisruptionBudgetSchema,
+    'topologySpreadConstraints?': topologySpreadConstraintsSchema,
   },
 
   // CA Injector configuration
@@ -1035,10 +1112,9 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
       },
     },
     'nodeSelector?': 'Record<string, string>',
-    'serviceAccount?': {
-      'create?': 'boolean',
-      'name?': 'string',
-    },
+    'serviceAccount?': serviceAccountSchema,
+    'podDisruptionBudget?': podDisruptionBudgetSchema,
+    'topologySpreadConstraints?': topologySpreadConstraintsSchema,
   },
 
   // ACME solver configuration (cert-manager 1.19+ — image only)
@@ -1148,8 +1224,16 @@ export interface CertManagerHelmReleaseConfig {
  * Based on the official cert-manager Helm chart values
  */
 export interface CertManagerHelmValues {
-  // Installation configuration
-  installCRDs?: boolean; // Default: false (best practice is separate CRD installation)
+  /** @deprecated The chart refuses `installCRDs` together with `crds.enabled`. Use `crds`. */
+  installCRDs?: boolean;
+  crds?: {
+    enabled?: boolean;
+    keep?: boolean;
+  };
+  /** Controller PodDisruptionBudget (root level in the chart). */
+  podDisruptionBudget?: CertManagerPodDisruptionBudget;
+  /** Controller topology spread constraints (root level in the chart). */
+  topologySpreadConstraints?: TopologySpreadConstraint[];
 
   // Global configuration
   global?: {
@@ -1222,7 +1306,7 @@ export interface CertManagerHelmValues {
   // Webhook configuration
   // NOTE: cert-manager 1.19+ removed 'enabled', 'mutatingAdmissionWebhooks',
   // and 'validatingAdmissionWebhooks' from the Helm values schema.
-  webhook?: {
+  webhook?: CertManagerComponentScheduling & {
     replicaCount?: number;
     image?: {
       repository?: string;
@@ -1245,7 +1329,7 @@ export interface CertManagerHelmValues {
   };
 
   // CA Injector configuration
-  cainjector?: {
+  cainjector?: CertManagerComponentScheduling & {
     enabled?: boolean;
     replicaCount?: number;
     image?: {

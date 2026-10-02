@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`certManagerBootstrap` lost most of its settings in KRO mode.** `certManagerHelmRelease`
+  stripped every schema reference and CEL expression out of the chart values, and the bootstrap
+  applied its defaults with JavaScript `||`, which collapses a schema reference to the default.
+  A KRO instance therefore always ran 1 controller replica and took its leader-election lease in
+  the chart's `kube-system` default, and its image, resources, webhook and cainjector settings
+  were ignored. The values now carry schema references, with `Cel.default` for TypeKro's own
+  defaults. KRO and direct mode render the same values, which a new parity test checks for a
+  minimal spec, a namespace-only spec, a legacy `installCRDs` spec and a highly available spec.
+  The image tag was also rendered as `''` in KRO mode when `version` was unset.
+
+### Added
+
+- **`certManagerBootstrap`: `crds`, PodDisruptionBudgets and topology spread constraints.**
+  `crds.enabled` and `crds.keep` (both default `true`) replace `installCRDs`.
+  `controller`, `webhook` and `cainjector` each take `podDisruptionBudget` (`enabled`, and
+  `minAvailable` or `maxUnavailable` as a string such as `'1'` or `'50%'`) and
+  `topologySpreadConstraints`. The schema also declares `serviceAccount.annotations` for all three,
+  so KRO instances can set them too, for example for workload identity. The lease namespace
+  defaults to the install namespace instead of `kube-system`.
+
+### Changed
+
+- **Behaviour change: cert-manager now renders `crds.enabled` / `crds.keep` instead of
+  `installCRDs`.** Chart v1.17 and later refuse `installCRDs` together with `crds.enabled`.
+  `installCRDs` is deprecated. The bootstrap maps it to `crds.enabled` when that is unset, and
+  `certManagerHelmRelease` adds no `crds` default when your `values` still set `installCRDs`.
+  `installCRDs: true` already meant `crds.enabled: true` plus `crds.keep: true`, so an existing
+  release renders the same CRDs. See "Migrating from installCRDs" in the cert-manager docs.
+- **Behaviour change: the bootstrap no longer pins chart defaults explicitly.** Image
+  repositories and tags, `serviceAccount`, `nodeSelector`, `strategy`, `logLevel`,
+  `podSecurityPolicy` and the ServiceMonitor settings are rendered only when the spec sets them,
+  so the chart's own defaults apply. The image tags already matched the chart's `appVersion`.
+  TypeKro's own defaults stay: the resource requests and limits, `startupapicheck.timeout: 5m`
+  and `prometheus.enabled: false`. Config fields that the bootstrap schema does not declare
+  (`controller.tolerations`, `affinity`, `env`, `customValues`, ...) still apply in direct mode
+  only.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed
