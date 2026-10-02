@@ -241,6 +241,32 @@ export function traefikEntrypointServiceType(config: TraefikBootstrapConfig): Tr
 }
 
 /**
+ * Load-balancer fields of the owned entrypoint Service, each only when the spec sets it.
+ *
+ * The API server refuses `externalTrafficPolicy` on a ClusterIP Service and an
+ * empty `loadBalancerClass` anywhere. In KRO mode the spec is a proxy, so every
+ * field is emitted and serialization guards it with `omit()`.
+ */
+export function traefikEntrypointServiceLoadBalancer(config: TraefikBootstrapConfig): {
+  loadBalancerClass?: string;
+  externalTrafficPolicy?: 'Cluster' | 'Local';
+  loadBalancerSourceRanges?: string[];
+} {
+  const service = config.service;
+  return {
+    ...(service?.loadBalancerClass !== undefined && {
+      loadBalancerClass: service.loadBalancerClass,
+    }),
+    ...(service?.externalTrafficPolicy !== undefined && {
+      externalTrafficPolicy: service.externalTrafficPolicy,
+    }),
+    ...(service?.loadBalancerSourceRanges !== undefined && {
+      loadBalancerSourceRanges: service.loadBalancerSourceRanges,
+    }),
+  };
+}
+
+/**
  * Map the bootstrap runtime spec onto official-chart values.
  *
  * @param config - The bootstrap spec. Any field may be a schema reference.

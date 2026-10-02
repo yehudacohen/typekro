@@ -196,6 +196,18 @@ describe('owned Service in front of Traefik', () => {
     expect(service?.spec).not.toHaveProperty('loadBalancerSourceRanges');
   });
 
+  it('leaves every mixed template in the RGD un-nested, which KRO requires', () => {
+    // KRO rejects `${${...}/${...}}` ("nested expressions are not allowed").
+    // A conditional spread written in the composition body once made the
+    // analyzer re-wrap the published-service pathOverride that way.
+    const yaml = traefikBootstrap.toYaml();
+
+    expect(yaml).not.toContain('${${');
+    expect(yaml).toContain(
+      `pathOverride: '\${has(schema.spec.namespace) && dyn(schema.spec.namespace) != null ? schema.spec.namespace : "traefik"}/\${schema.spec.name}'`
+    );
+  });
+
   it('guards each with omit() in the KRO RGD', () => {
     const yaml = traefikBootstrap.toYaml();
 

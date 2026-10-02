@@ -63,6 +63,7 @@ import {
 } from '../types.js';
 import {
   mapTraefikConfigToHelmValues,
+  traefikEntrypointServiceLoadBalancer,
   traefikEntrypointServiceType,
 } from '../utils/helm-values-mapper.js';
 import { traefikProxyTrustSchemaFieldValidations } from '../utils/proxy-trust.js';
@@ -305,19 +306,12 @@ export function makeTraefikBootstrap(
         },
         spec: {
           type: traefikEntrypointServiceType(spec),
-          // Present only when the spec carries them: the API server refuses
-          // `externalTrafficPolicy` on a ClusterIP Service and an empty
-          // `loadBalancerClass` anywhere. In KRO mode the spec is a proxy, so
-          // each is emitted and serialization guards it with `omit()`.
-          ...(spec.service?.loadBalancerClass !== undefined && {
-            loadBalancerClass: spec.service.loadBalancerClass,
-          }),
-          ...(spec.service?.externalTrafficPolicy !== undefined && {
-            externalTrafficPolicy: spec.service.externalTrafficPolicy,
-          }),
-          ...(spec.service?.loadBalancerSourceRanges !== undefined && {
-            loadBalancerSourceRanges: spec.service.loadBalancerSourceRanges,
-          }),
+          // Present only when the spec carries them. Built outside this
+          // function: the composition analyzer rewrites expressions it finds in
+          // this body, and a conditional spread here made it re-wrap every
+          // mixed template in the values tree as a nested `${...}`, which KRO
+          // rejects.
+          ...traefikEntrypointServiceLoadBalancer(spec),
           // The chart stamps these two labels on the Traefik pods, and the
           // values mapper pins both of their sources (`nameOverride`,
           // `instanceLabelOverride`) so this selector is exact.
