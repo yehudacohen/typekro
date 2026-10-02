@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New integration: `typekro/aws-load-balancer-controller`.** `awsLoadBalancerControllerBootstrap`
+  installs the AWS Load Balancer Controller from eks-charts (chart 3.5.0, controller v3.5.0)
+  through a Flux `HelmRepository` singleton and a `HelmRelease`. It works in both direct and KRO
+  mode, and a unit test checks that both render the same values. The spec covers `clusterName`,
+  `region`, `vpcId`, the service account (an IRSA annotation, or a pinned name for an EKS Pod
+  Identity association), replicas, a PodDisruptionBudget (default `maxUnavailable: 1`), topology
+  spread constraints, `enableServiceMutatorWebhook` (default `false`, so Services that belong to
+  another controller are not taken over), `createIngressClassResource`, `defaultTargetType`
+  (default `ip`), resources, node selector, tolerations and log level. `keepTLSSecret` is on, so
+  upgrades keep the chart-generated webhook certificate. Status (`ready`, `failed`,
+  `phase` and the installed chart `version`) comes from the HelmRelease. The release defaults to
+  `install.crds` and `upgrade.crds` of `CreateReplace`, because the chart ships its CRDs in
+  `crds/`. `makeAwsLoadBalancerControllerBootstrap` takes the release's install, upgrade and drift
+  options and raw chart `values` at build time. Typed `targetGroupBinding` and
+  `ingressClassParams` factories cover the `elbv2.k8s.aws/v1beta1` resources. TypeKro creates no
+  AWS resources; the docs list the IAM policy for the pinned version and the subnet discovery
+  tags. With the Service webhook off, a Service opts in with
+  `loadBalancerClass: service.k8s.aws/nlb`, which the docs explain. The integration is a subpath
+  export only and draws 18.2 KiB from the shared declaration pool.
 - **Every integration HelmRelease factory accepts `install`, `upgrade` and `driftDetection`.**
   That covers APISix, cert-manager, Cilium, ClickHouse, ClickStack (both releases), CNPG, Dagster,
   Envoy Gateway and Envoy AI Gateway, External-DNS, Harbor, Hatchet, Inngest, NATS, OpenSearch,
