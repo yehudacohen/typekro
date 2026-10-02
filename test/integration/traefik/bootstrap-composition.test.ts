@@ -37,6 +37,7 @@
  * 3b. `proxyProtocol.trustedIPs`: a PROXY header from a trusted source sets
  *    the client address, the same header from an untrusted source does not,
  *    and a client's own `X-Forwarded-For` is never kept.
+ * 3c. `allowEmptyServices`: a route whose Service has no endpoints answers 503.
  * 4. `forwardAuth` denies: a request the stub authorizer rejects gets 403 and
  *    never reaches the upstream.
  * 5. `forwardAuth` propagates the principal/tier/customer headers it
@@ -282,6 +283,26 @@ const ordersApiEdge = kubernetesComposition(
       id: 'echoRoute',
     });
 
+    // A route whose Service has no endpoints. With `allowEmptyServices` the
+    // router stays and answers 503; without it Traefik drops the router (404).
+    traefikIngressRoute({
+      name: `${spec.name}-empty`,
+      namespace: spec.namespace,
+      spec: {
+        entryPoints: ['websecure'],
+        tls: {},
+        ingressClassName: 'traefik',
+        routes: [
+          {
+            match: 'PathPrefix(`/empty`)',
+            kind: 'Rule',
+            services: [{ name: 'no-endpoints', port: 8080 }],
+          },
+        ],
+      },
+      id: 'emptyRoute',
+    });
+
     return { ready: true };
   }
 );
@@ -440,7 +461,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
       service: { type: 'ClusterIP' },
       replicas: 1,
       entrypoints: entrypointTrust,
-      providers: { crd: true },
+      providers: { crd: true, allowEmptyServices: true },
       accessLogs: true,
       dashboard: false,
     });
@@ -520,6 +541,16 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
   it('routes a request through the typed IngressRoute and answers 200', async () => {
     await installStub(appNs, 'authorizer', AUTHORIZER, kubeConfig);
     await installStub(appNs, 'upstream', UPSTREAM, kubeConfig);
+    // Selects no pods, so it never has endpoints.
+    await createCoreV1ApiClient(kubeConfig).createNamespacedService({
+      namespace: appNs,
+      body: {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'no-endpoints', labels: { 'typekro.dev/integration-test': 'owned' } },
+        spec: { selector: { app: 'no-such-pod' }, ports: [{ port: 8080, targetPort: 8080 }] },
+      },
+    });
 
     edgeFactory = ordersApiEdge.factory('direct', {
       namespace: appNs,
@@ -660,6 +691,29 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     expect(forwardedFor('SECURE')).toBe(self);
   });
 
+  it('answers 503 for a route whose Service has no endpoints (allowEmptyServices)', async () => {
+    const logs = await runTestPodAndReadLogs(
+      {
+        namespace: appNs,
+        name: `probe-empty-${runId}`,
+        image: 'curlimages/curl:8.17.0',
+        command: [
+          'sh',
+          '-ec',
+          // A 404 means Traefik dropped the router; retry while it reconciles.
+          `for attempt in $(seq 1 30); do ` +
+            `code=$(curl --silent --insecure --max-time 10 -o /dev/null -w '%{http_code}' ` +
+            `${secureEntrypoint}/empty); ` +
+            `[ "$code" = 503 ] && break; sleep 2; done; echo "HTTP:$code"`,
+        ],
+        timeoutMs: 180_000,
+      },
+      kubeConfig
+    );
+
+    expect(logs).toContain('HTTP:503');
+  });
+
   it('denies an unauthorized request at the edge with 403', async () => {
     const logs = await runTestPodAndReadLogs(
       {
@@ -728,7 +782,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
       service: { type: 'LoadBalancer' as const },
       replicas: 1,
       entrypoints: entrypointTrust,
-      providers: { crd: true },
+      providers: { crd: true, allowEmptyServices: true },
       accessLogs: true,
       dashboard: false as const,
     };

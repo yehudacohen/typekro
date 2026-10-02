@@ -105,17 +105,37 @@ interface TraefikBootstrapConfig {
       exposedPort?: number;
       proxyProtocol?: { trustedIPs: string[] };
       forwardedHeaders?: { trustedIPs: string[] };
+      requestAcceptGraceTimeout?: string; // default '10s'
+      graceTimeOut?: string; // default '30s'
     };
     websecure?: {
       exposedPort?: number;
       proxyProtocol?: { trustedIPs: string[] };
       forwardedHeaders?: { trustedIPs: string[] };
+      requestAcceptGraceTimeout?: string;
+      graceTimeOut?: string;
       readTimeout?: string;
       writeTimeout?: string;
       idleTimeout?: string;
     };
   };
-  providers?: { crd?: boolean; gatewayApi?: boolean; kubernetesIngress?: boolean };
+  providers?: {
+    crd?: boolean;
+    gatewayApi?: boolean;
+    kubernetesIngress?: boolean;
+    allowEmptyServices?: boolean; // default false
+    namespaces?: string[]; // default: all namespaces
+    allowCrossNamespace?: boolean; // default false
+  };
+  terminationGracePeriodSeconds?: number; // default 60
+  podDisruptionBudget?: { enabled?: boolean; maxUnavailable?: number }; // default on, 1
+  scheduling?: {
+    nodeSelector?: Record<string, string>;
+    tolerations?: Toleration[];
+    priorityClassName?: string;
+    zoneSpread?: 'DoNotSchedule' | 'ScheduleAnyway'; // default 'ScheduleAnyway'
+    nodeSpread?: 'DoNotSchedule' | 'ScheduleAnyway'; // default 'ScheduleAnyway'
+  };
   accessLogs?: boolean;
   logLevel?: 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL' | 'PANIC';
   otlp?: { endpoint: string; insecure?: boolean; serviceName?: string };
@@ -164,7 +184,10 @@ const edge = traefik.makeTraefikBootstrap({
   // Flux CRD policy, applied to install AND upgrade. 'Skip' only when the
   // traefik.io CRDs are managed by something else.
   crds: 'CreateReplace',
+  // JSON access-log field policy; see "Access logs".
+  accessLog: { preset: 'default' },
   // Chart surface this factory does not model. The security pins still win.
+  // A raw podDisruptionBudget replaces the default one.
   values: { podDisruptionBudget: { enabled: true, minAvailable: 1 } },
 });
 ```
@@ -266,6 +289,59 @@ consequences worth knowing:
   created itself. The chart's Gateway API `statusAddress.service` wiring has no
   such override and is skipped; set `providers.kubernetesGateway.statusAddress`
   through `values` if a Gateway needs a published address.
+
+## Production defaults
+
+| Default | Why |
+|---------|-----|
+| `requestAcceptGraceTimeout: 10s`, `graceTimeOut: 30s` on both entrypoints | On SIGTERM Traefik keeps accepting for 10s, while the load balancer deregisters the pod, then drains in-flight requests for up to 30s. |
+| `terminationGracePeriodSeconds: 60` | Covers both. `validateTraefikHelmValues` warns when an entrypoint's accept + drain time reaches the grace period. |
+| PodDisruptionBudget, `maxUnavailable: 1` | A node drain can't evict every replica at once, and the budget never blocks a drain, even at one replica. |
+| Soft zone and node spread (`ScheduleAnyway`, `maxSkew: 1`) | Replicas land in different zones and on different nodes when the cluster allows it. The selector is the chart's exact pod selector. Set `zoneSpread: 'DoNotSchedule'` to make the zone spread hard. |
+| `allowEmptyServices: false`, `allowCrossNamespace: false` | Traefik's own defaults, stated explicitly. With `allowEmptyServices: true`, a route whose Service has no ready endpoints answers `503` instead of disappearing (`404`). |
+| Prometheus on the internal `metrics` entrypoint (9100) | The owned Service never publishes it, and `ports.metrics.expose` stays `false` even if the raw values set it. |
+
+Raw `values` take precedence over these defaults in a few places:
+
+- A raw `podDisruptionBudget` replaces the default PDB. Merging the two could
+  set `minAvailable` and `maxUnavailable` together, which the API server
+  rejects.
+- Raw `topologySpreadConstraints` replace the default spread.
+- A raw `nodeSelector`, `tolerations`, `priorityClassName` or
+  `deployment.terminationGracePeriodSeconds` is used when the spec does not
+  set it. The spec field wins when both are set, in both modes.
+- Other `metrics.prometheus` keys (router labels, the chart's metrics Service,
+  a ServiceMonitor) pass through. Only `entryPoint` is pinned.
+
+### Access logs
+
+Access logs are JSON. The build option `accessLog` controls which fields and
+request headers they carry:
+
+```typescript
+const edge = traefik.makeTraefikBootstrap({
+  name: 'public-edge',
+  kind: 'PublicEdge',
+  accessLog: {
+    preset: 'crowdsec', // or 'default'
+    headers: { Referer: 'keep', 'X-Request-Id': 'keep' },
+    queryParameters: 'keep',
+  },
+});
+```
+
+Every field is kept and every request header is dropped unless listed.
+`User-Agent` is kept. `Authorization`, `Proxy-Authorization` and `Cookie` are
+always dropped. Overriding any of them to `keep`, in any letter case, throws,
+while `redact` is allowed. The `crowdsec` preset also pins every field that
+CrowdSec's `crowdsecurity/traefik-logs` parser reads from a JSON line
+(`ClientHost`, `RequestHost`, `RequestPath`, `DownstreamStatus`, `Duration`,
+`RouterName` and the others in `TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS`), along
+with `User-Agent`. Dropping one of them throws. `ClientHost` is the real client
+only when the proxy trust described below is set, so configure that too
+before CrowdSec acts on it.
+
+The policy replaces any `accessLog.fields` in the raw values.
 
 ## A public edge behind an AWS NLB
 
@@ -727,6 +803,8 @@ Traefik's controller name for `BackendTLSPolicy`.
 | `readOnlyRootFilesystem`, no privilege escalation, all capabilities dropped | Traefik needs no writable root; ACME storage gets an explicit volume. |
 | `ingressClass.isDefaultClass: false` | Claiming the cluster-default class would silently capture every class-less `Ingress`. |
 | `global.checkNewVersion: false`, `global.sendAnonymousUsage: false` | No phone-home from an edge. |
+| Access logs drop `Authorization`, `Proxy-Authorization` and `Cookie` | A bearer token in a log line is a live credential for as long as the log is kept. |
+| `/0` trusted ranges and `insecure` proxy trust refused | Either lets any client set its own source address. |
 
 The `api.*` and security-context pins are applied **after** every other values
 source, including `makeTraefikBootstrap({ values })`. Re-enabling them means not

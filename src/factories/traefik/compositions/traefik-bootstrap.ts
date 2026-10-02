@@ -211,6 +211,7 @@ export function makeTraefikBootstrap(
       const values = mapTraefikConfigToHelmValues(spec, {
         redirectWebToWebsecure,
         dangerouslyTrustAnySource,
+        ...(options.accessLog ? { accessLog: options.accessLog } : {}),
         targetNamespace: installNamespace,
         ...(options.values ? { baseValues: options.values } : {}),
       });

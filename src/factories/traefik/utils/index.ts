@@ -2,6 +2,11 @@
  * Traefik utilities.
  */
 export {
+  TRAEFIK_ACCESS_LOG_DROPPED_HEADERS,
+  TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS,
+  traefikAccessLogFields,
+} from './access-log.js';
+export {
   type AwsNlbHealthCheckOptions,
   type AwsNlbServiceAnnotationOptions,
   awsNlbServiceAnnotations,

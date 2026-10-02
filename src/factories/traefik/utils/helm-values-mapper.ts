@@ -1,16 +1,14 @@
-/**
- * Traefik Helm values mapping.
- *
- * Turns the bootstrap composition's runtime spec into values for the official
- * `traefik` chart 41.5.0, then applies the security pins from #172 LAST so no
- * caller — not even the build-time `values` passthrough — can re-enable the
- * dashboard or the insecure API.
- *
- * Every value produced here may be a schema reference in KRO mode. The mapping
- * therefore never branches on a spec value; it only places values into the
- * tree. Decisions about which configuration EXISTS live in
- * {@link TraefikHelmValuesMapperOptions} and are concrete at build time.
- */
+// Traefik Helm values mapping.
+//
+// Turns the bootstrap composition's runtime spec into values for the official
+// `traefik` chart 41.5.0, then applies the security pins from #172 LAST so no
+// caller — not even the build-time `values` passthrough — can re-enable the
+// dashboard or the insecure API.
+//
+// Every value produced here may be a schema reference in KRO mode. The mapping
+// therefore never branches on a spec value; it only places values into the
+// tree. Decisions about which configuration EXISTS live in
+// {@link TraefikHelmValuesMapperOptions} and are concrete at build time.
 
 import { Cel } from '../../../core/references/cel.js';
 import type { RefOrValue } from '../../../core/types/references.js';
@@ -18,15 +16,20 @@ import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js'
 import {
   DEFAULT_TRAEFIK_CHART_VERSION,
   DEFAULT_TRAEFIK_INGRESS_CLASS,
+  DEFAULT_TRAEFIK_METRICS_PORT,
+  DEFAULT_TRAEFIK_TERMINATION_GRACE_SECONDS,
   DEFAULT_TRAEFIK_NAMESPACE,
   DEFAULT_TRAEFIK_WEB_PORT,
   DEFAULT_TRAEFIK_WEBSECURE_PORT,
+  TRAEFIK_METRICS_ENTRYPOINT,
   TRAEFIK_POD_NAME_LABEL_VALUE,
   TRAEFIK_WEB_ENTRYPOINT,
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
+import { traefikAccessLogFields } from './access-log.js';
 import { assertTraefikProxyTrust, traefikBroadTrustWarnings } from './proxy-trust.js';
 import type {
+  TraefikAccessLogOptions,
   TraefikBootstrapConfig,
   TraefikContainerSecurityContext,
   TraefikHelmValues,
@@ -35,6 +38,7 @@ import type {
   TraefikPortValues,
   TraefikRawHelmValues,
   TraefikServiceType,
+  TraefikTopologySpreadConstraint,
 } from '../types.js';
 
 /**
@@ -119,6 +123,8 @@ export interface TraefikHelmValuesMapperOptions {
    * boundary is {@link TraefikRawHelmValues} rather than the managed type.
    */
   readonly baseValues?: TraefikRawHelmValues;
+  /** Access-log field and header policy. */
+  readonly accessLog?: TraefikAccessLogOptions;
   /**
    * Skip the check that refuses `/0` trusted ranges and `insecure` proxy trust.
    * @default false
@@ -161,6 +167,11 @@ function isGraphValue(value: unknown): boolean {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A raw-values section as an object, or `{}` when it is absent or not an object. */
+function sectionOf(value: unknown): Record<string, unknown> {
+  return isPlainObject(value) && !isGraphValue(value) ? value : {};
 }
 
 /**
@@ -294,6 +305,8 @@ export function mapTraefikConfigToHelmValues(
   // making direct and KRO deployments disagree.
   const ingressClass = Cel.default(config.ingressClass, DEFAULT_TRAEFIK_INGRESS_CLASS);
   const redirect = options.redirectWebToWebsecure ?? true;
+  // Concrete at build time, so the mapper may ask what it contains.
+  const base = options.baseValues ?? {};
 
   // OTLP is enabled by the PRESENCE of an endpoint. In KRO mode the endpoint is
   // a schema reference, so the enablement has to be a CEL comparison — a
@@ -321,6 +334,7 @@ export function mapTraefikConfigToHelmValues(
     exposedPort: Cel.default(config.entrypoints?.web?.exposedPort, DEFAULT_TRAEFIK_WEB_PORT),
     expose: { default: true },
     ...entrypointTrust(config.entrypoints?.web),
+    transport: { lifeCycle: entrypointLifecycle(config.entrypoints?.web) },
     ...(redirect
       ? {
           // The redirect router Traefik generates for an entrypoint redirection
@@ -371,6 +385,7 @@ export function mapTraefikConfigToHelmValues(
         writeTimeout: Cel.default(config.entrypoints?.websecure?.writeTimeout, '90s'),
         idleTimeout: Cel.default(config.entrypoints?.websecure?.idleTimeout, '180s'),
       },
+      lifeCycle: entrypointLifecycle(config.entrypoints?.websecure),
     },
   };
 
@@ -380,7 +395,36 @@ export function mapTraefikConfigToHelmValues(
     // Deployment — and of the Service the chart's Ingress `publishedService`
     // path points at, which must match the Service this factory owns.
     fullnameOverride: config.name,
-    deployment: { replicas: Cel.default(config.replicas, 2) },
+    deployment: {
+      replicas: Cel.default(config.replicas, 2),
+      // Covers both entrypoints' default grace (10s accept + 30s drain).
+      terminationGracePeriodSeconds: Cel.default(
+        config.terminationGracePeriodSeconds,
+        (sectionOf(base.deployment).terminationGracePeriodSeconds as number | undefined) ??
+          DEFAULT_TRAEFIK_TERMINATION_GRACE_SECONDS
+      ),
+    },
+    // A PDB by default: without one a node drain can evict every replica at
+    // once. `maxUnavailable: 1` never blocks a drain, even at one replica. A
+    // `podDisruptionBudget` in the raw values owns the section instead, because
+    // merging the two could set `minAvailable` and `maxUnavailable` together,
+    // which the API server rejects.
+    ...(base.podDisruptionBudget === undefined && {
+      podDisruptionBudget: {
+        enabled: Cel.default(config.podDisruptionBudget?.enabled, true),
+        maxUnavailable: Cel.default(config.podDisruptionBudget?.maxUnavailable, 1),
+      },
+    }),
+    // The spec wins, then the raw values, then nothing. Placing a spec field
+    // alone would drop a raw value in KRO mode, where the key is always
+    // emitted and `omit()` removes it when the spec is silent.
+    ...specOverBase('nodeSelector', config.scheduling?.nodeSelector, base),
+    ...specOverBase('tolerations', config.scheduling?.tolerations, base),
+    ...specOverBase('priorityClassName', config.scheduling?.priorityClassName, base),
+    // Raw `topologySpreadConstraints` replace the default spread.
+    ...(base.topologySpreadConstraints === undefined && {
+      topologySpreadConstraints: traefikTopologySpread(config),
+    }),
     ingressClass: {
       enabled: true,
       // Claiming the cluster-default IngressClass would silently capture every
@@ -392,9 +436,18 @@ export function mapTraefikConfigToHelmValues(
       kubernetesCRD: {
         enabled: Cel.default(config.providers?.crd, true),
         ingressClass,
+        allowEmptyServices: Cel.default(config.providers?.allowEmptyServices, false),
+        allowCrossNamespace: Cel.default(config.providers?.allowCrossNamespace, false),
+        ...(config.providers?.namespaces !== undefined && {
+          namespaces: config.providers.namespaces,
+        }),
       },
       kubernetesIngress: {
         enabled: Cel.default(config.providers?.kubernetesIngress, false),
+        allowEmptyServices: Cel.default(config.providers?.allowEmptyServices, false),
+        ...(config.providers?.namespaces !== undefined && {
+          namespaces: config.providers.namespaces,
+        }),
         // The chart emits `--providers.kubernetesingress.ingressendpoint.
         // publishedservice` only when it created the Service itself, or when a
         // pathOverride names one. This factory owns the Service, so the
@@ -421,8 +474,18 @@ export function mapTraefikConfigToHelmValues(
       // Health and metrics traffic on the internal entrypoint would otherwise
       // dominate the access log.
       addInternals: false,
+      fields: traefikAccessLogFields(options.accessLog),
     },
     metrics: {
+      // @security Prometheus is served on the internal `metrics` entrypoint,
+      // which the owned Service never publishes and `ports.metrics` below keeps
+      // unexposed. Other Prometheus settings (labels, the chart's metrics
+      // Service, a ServiceMonitor) are chart surface for the raw values, which
+      // this keeps rather than replaces.
+      prometheus: {
+        ...sectionOf(sectionOf(base.metrics).prometheus),
+        entryPoint: TRAEFIK_METRICS_ENTRYPOINT,
+      },
       otlp: {
         enabled: otlpEnabled,
         grpc: { enabled: otlpEnabled, endpoint: otlpEndpoint, insecure: otlpInsecure },
@@ -441,6 +504,11 @@ export function mapTraefikConfigToHelmValues(
       // @security The internal entrypoint serves /ping, metrics and the (pinned
       // off) dashboard. It must never be published by the Service.
       traefik: { expose: { default: false } },
+      [TRAEFIK_METRICS_ENTRYPOINT]: {
+        ...sectionOf(sectionOf(base.ports)[TRAEFIK_METRICS_ENTRYPOINT]),
+        port: DEFAULT_TRAEFIK_METRICS_PORT,
+        expose: { default: false },
+      },
     },
     // No `service` section: the entrypoint Service — its type, annotations and
     // published ports — is a resource this factory owns, not a chart value.
@@ -454,6 +522,63 @@ export function mapTraefikConfigToHelmValues(
   const pinned = applyTraefikSecurityPins(applyTraefikOwnershipPins(merged, config.name));
   if (!options.dangerouslyTrustAnySource) assertTraefikProxyTrust(pinned);
   return pinned;
+}
+
+/**
+ * A top-level value from the spec, falling back to the same key in the raw values.
+ *
+ * Emits nothing when the spec is concretely unset and the raw values do not
+ * set the key either.
+ */
+function specOverBase(
+  key: 'nodeSelector' | 'tolerations' | 'priorityClassName',
+  specValue: RefOrValue<object | string> | undefined,
+  base: TraefikRawHelmValues
+): TraefikRawHelmValues {
+  if (specValue === undefined) return {};
+  const baseValue = base[key] as object | string | undefined;
+  return {
+    [key]: baseValue === undefined ? specValue : Cel.default<object>(specValue as object, baseValue as object),
+  };
+}
+
+/** Shutdown timing of one entrypoint, with the edge defaults. */
+function entrypointLifecycle(
+  entrypoint: NonNullable<TraefikBootstrapConfig['entrypoints']>['web']
+): NonNullable<NonNullable<TraefikPortValues['transport']>['lifeCycle']> {
+  return {
+    requestAcceptGraceTimeout: Cel.default(entrypoint?.requestAcceptGraceTimeout, '10s'),
+    graceTimeOut: Cel.default(entrypoint?.graceTimeOut, '30s'),
+  };
+}
+
+/**
+ * Soft zone and node spread for the Traefik pods.
+ *
+ * The selector is the chart's own pod selector, which the ownership pins make
+ * exact: `nameOverride` and `instanceLabelOverride` (= `config.name`).
+ */
+function traefikTopologySpread(config: TraefikBootstrapConfig): TraefikTopologySpreadConstraint[] {
+  const labelSelector = {
+    matchLabels: {
+      'app.kubernetes.io/name': TRAEFIK_POD_NAME_LABEL_VALUE,
+      'app.kubernetes.io/instance': config.name,
+    },
+  };
+  return [
+    {
+      maxSkew: 1,
+      topologyKey: 'topology.kubernetes.io/zone',
+      whenUnsatisfiable: Cel.default(config.scheduling?.zoneSpread, 'ScheduleAnyway'),
+      labelSelector,
+    },
+    {
+      maxSkew: 1,
+      topologyKey: 'kubernetes.io/hostname',
+      whenUnsatisfiable: Cel.default(config.scheduling?.nodeSpread, 'ScheduleAnyway'),
+      labelSelector,
+    },
+  ];
 }
 
 /**
@@ -560,6 +685,21 @@ export function validateTraefikHelmValues(
     }
   }
   warnings.push(...traefikBroadTrustWarnings(values));
+  // Kubernetes kills the pod at terminationGracePeriodSeconds, whatever
+  // Traefik is still draining.
+  const terminationGrace = values.deployment?.terminationGracePeriodSeconds;
+  if (typeof terminationGrace === 'number') {
+    for (const [name, port] of Object.entries(values.ports ?? {})) {
+      const lifeCycle = port?.transport?.lifeCycle;
+      const accept = durationSeconds(lifeCycle?.requestAcceptGraceTimeout);
+      const drain = durationSeconds(lifeCycle?.graceTimeOut);
+      if (accept !== undefined && drain !== undefined && accept + drain >= terminationGrace) {
+        warnings.push(
+          `The \`${name}\` entrypoint needs ${accept + drain}s to shut down (requestAcceptGraceTimeout + graceTimeOut), but terminationGracePeriodSeconds is ${terminationGrace}. Kubernetes will kill Traefik before in-flight requests finish.`
+        );
+      }
+    }
+  }
   if (values.ports?.traefik?.expose?.default === true) {
     warnings.push(
       'The internal `traefik` entrypoint is exposed by the Service. It serves /ping and metrics and should stay cluster-internal.'
@@ -567,6 +707,18 @@ export function validateTraefikHelmValues(
   }
 
   return warnings;
+}
+
+/** Seconds in a concrete Go duration or nanosecond count; `undefined` for a reference. */
+function durationSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number') return value / 1e9;
+  if (typeof value !== 'string' || !/^(\d+(\.\d+)?(ns|us|ms|s|m|h))+$/.test(value)) return undefined;
+  const unit: Record<string, number> = { ns: 1e-9, us: 1e-6, ms: 1e-3, s: 1, m: 60, h: 3600 };
+  let total = 0;
+  for (const [, amount, , suffix] of value.matchAll(/(\d+(\.\d+)?)(ns|us|ms|s|m|h)/g)) {
+    total += Number(amount) * (unit[suffix as string] ?? 0);
+  }
+  return total;
 }
 
 /**
