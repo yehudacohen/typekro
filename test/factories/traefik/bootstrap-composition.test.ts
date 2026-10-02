@@ -450,10 +450,11 @@ describe('makeTraefikBootstrap build-time variants', () => {
     });
     const consumer = rgd(bootstrap.toYaml(), 'TraefikNoRedirect');
     const values = resource(consumer, 'traefikHelmRelease').template?.spec?.values as {
-      ports?: { web?: { http?: unknown } };
+      ports?: { web?: { http?: { redirections?: unknown } } };
     };
 
-    expect(values.ports?.web?.http).toBeUndefined();
+    // `http` itself stays: it carries the alias-header strategy.
+    expect(values.ports?.web?.http?.redirections).toBeUndefined();
     // No redirect, nothing to bypass.
     expect(
       (values.ports?.web as { allowACMEByPass?: unknown } | undefined)?.allowACMEByPass

@@ -367,6 +367,7 @@ export function mapTraefikConfigToHelmValues(
           // else redirected.
           allowACMEByPass: true,
           http: {
+            aliasHeadersStrategy: aliasStrategy(config.entrypoints?.web),
             redirections: {
               entryPoint: {
                 to: TRAEFIK_WEBSECURE_ENTRYPOINT,
@@ -376,7 +377,7 @@ export function mapTraefikConfigToHelmValues(
             },
           },
         }
-      : {}),
+      : { http: { aliasHeadersStrategy: aliasStrategy(config.entrypoints?.web) } }),
   };
 
   const websecurePort: TraefikPortValues = {
@@ -388,7 +389,10 @@ export function mapTraefikConfigToHelmValues(
     ...entrypointTrust(config.entrypoints?.websecure, options.dangerouslyTrustAnySource ?? false),
     // TLS lives under `http` in chart 41.5.0 — `ports.websecure.tls` is
     // rejected outright by the chart's values.schema.json.
-    http: { tls: { enabled: true } },
+    http: {
+      tls: { enabled: true },
+      aliasHeadersStrategy: aliasStrategy(config.entrypoints?.websecure),
+    },
     // An edge fronting requests longer than Traefik's 60s default must raise
     // the responding timeouts here as well as the upstream ServersTransport.
     transport: {
@@ -595,8 +599,21 @@ function specOverBase(
   if (specValue === undefined) return {};
   const baseValue = base[key] as object | string | undefined;
   return {
-    [key]: baseValue === undefined ? specValue : Cel.default<object>(specValue as object, baseValue as object),
+    [key]:
+      baseValue === undefined
+        ? specValue
+        : Cel.default<object>(specValue as object, baseValue as object),
   };
+}
+
+/**
+ * What one entrypoint does with headers whose names alias another, `delete`
+ * by default. See `traefikEntrypointAliasShape` in `types.ts`.
+ */
+function aliasStrategy(
+  entrypoint: NonNullable<TraefikBootstrapConfig['entrypoints']>['web']
+): 'keep' | 'delete' | 'reject' {
+  return Cel.default(entrypoint?.aliasHeadersStrategy, 'delete');
 }
 
 /** Shutdown timing of one entrypoint, with the edge defaults. */
@@ -786,7 +803,8 @@ export function validateTraefikHelmValues(
 /** Seconds in a concrete Go duration or nanosecond count; `undefined` for a reference. */
 function durationSeconds(value: unknown): number | undefined {
   if (typeof value === 'number') return value / 1e9;
-  if (typeof value !== 'string' || !/^(\d+(\.\d+)?(ns|us|ms|s|m|h))+$/.test(value)) return undefined;
+  if (typeof value !== 'string' || !/^(\d+(\.\d+)?(ns|us|ms|s|m|h))+$/.test(value))
+    return undefined;
   const unit: Record<string, number> = { ns: 1e-9, us: 1e-6, ms: 1e-3, s: 1, m: 60, h: 3600 };
   let total = 0;
   for (const [, amount, , suffix] of value.matchAll(/(\d+(\.\d+)?)(ns|us|ms|s|m|h)/g)) {

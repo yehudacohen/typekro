@@ -39,7 +39,8 @@
  *    and a client's own `X-Forwarded-For` is never kept.
  * 3c. `allowEmptyServices`: a route whose Service has no endpoints answers 503.
  * 3d. The forwardAuth secure pair strips client-supplied identity headers
- *    before the authorizer sees them; bare forwardAuth does not.
+ *    before the authorizer sees them; bare forwardAuth does not. An alias
+ *    spelling (`X_Edge_Principal`) is deleted at the entrypoint.
  * 3e. A Redis-backed rate limit answers 500 while Valkey is down and recovers
  *    when it returns.
  * 4. `forwardAuth` denies: a request the stub authorizer rejects gets 403 and
@@ -158,6 +159,7 @@ class Handler(BaseHTTPRequestHandler):
             "customer": self.headers.get("x-edge-customer", ""),
             "notAllowlisted": self.headers.get("x-edge-not-allowlisted", ""),
             "forwardedFor": self.headers.get("x-forwarded-for", ""),
+            "aliasPrincipal": self.headers.get("x_edge_principal", ""),
         }, separators=(",", ":")).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
@@ -883,7 +885,10 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     // authorizer sees a clean request, and the upstream sees only what the
     // authorizer returned. With `allow-partial` the authorizer returns no
     // tier, and the client's tier must not survive either.
-    const spoof = `-H 'X-Edge-Principal: admin' -H 'X-Edge-Tier: platinum'`;
+    // `X_Edge_Principal` aliases the principal for backends that fold `_`
+    // into `-`; the entrypoints' default aliasHeadersStrategy deletes it.
+    const spoof =
+      `-H 'X-Edge-Principal: admin' -H 'X-Edge-Tier: platinum' ` + `-H 'X_Edge_Principal: admin'`;
     const curl = (key: string, path: string) =>
       `curl --silent --insecure --max-time 10 -w ' HTTP:%{http_code}' ${spoof} ` +
       `-H 'X-Edge-Api-Key: ${key}' ${secureEntrypoint}${path}`;
@@ -911,6 +916,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     expect(line('SECURE')).toContain('HTTP:200');
     expect(line('SECURE')).toContain('"principal":"svc-integration"');
     expect(line('SECURE')).toContain('"tier":"gold"');
+    expect(line('SECURE')).toContain('"aliasPrincipal":""');
     expect(line('PARTIAL')).toContain('HTTP:200');
     expect(line('PARTIAL')).toContain('"principal":"svc-partial"');
     expect(line('PARTIAL')).toContain('"tier":""');
