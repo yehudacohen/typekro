@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     modes, `queryParameters`). `TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS` lists the fields the CrowdSec
     preset pins.
 
+- **Traefik plugins and the forwardAuth secure pair.**
+  - The build options `plugins` (`moduleName`, exact `version`, and a required SHA-256 `hash`,
+    which Traefik verifies), `localPlugins` (`inlinePlugin` or `localPath`, mounted at
+    `/plugins-local/src/<moduleName>`) and `abortOnPluginFailure`. The last defaults to `true`
+    once any plugin is declared.
+  - `traefikPluginMiddleware`, and `traefikSecretValue(secret, key)` for the `urn:k8s:secret`
+    values Traefik resolves in plugin configuration.
+  - `traefikForwardAuthSecurePair` chains a `headers` Middleware that strips the
+    `authResponseHeaders` from the client's request in front of the `forwardAuth`, so a client
+    can't hand the authorizer its own identity headers.
+  - `validateTraefikHelmValues` warns about raw-values plugins that carry no hash.
+  - The integration suite pins how the Redis-backed rate limit fails: 500 while Valkey is down,
+    then recovery.
+
 ### Changed
 
 - **Traefik bootstrap production defaults.** These change a default deployment:

@@ -1106,6 +1106,18 @@ export const TraefikForwardAuthMiddlewareConfigSchema = type({
 export type TraefikForwardAuthMiddlewareConfig =
   typeof TraefikForwardAuthMiddlewareConfigSchema.infer;
 
+/** Configuration for `traefikPluginMiddleware`. */
+export const TraefikPluginMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  /** The plugin's name as declared in the bootstrap's `plugins` or `localPlugins`. */
+  plugin: /^[A-Za-z][A-Za-z0-9_-]*$/,
+  /** The plugin's own configuration. Strings may be `traefikSecretValue(...)` references. */
+  config: 'Record<string, unknown>',
+});
+
+/** Configuration for `traefikPluginMiddleware`. */
+export type TraefikPluginMiddlewareConfig = typeof TraefikPluginMiddlewareConfigSchema.infer;
+
 /** Every way a rate/concurrency budget can be keyed. Exactly one, or none. */
 const middlewareBudgetKeyShape = {
   /**
@@ -1485,7 +1497,12 @@ export interface TraefikManagedHelmValues {
     sampleRate?: number;
     otlp?: TraefikOtlpValues;
   };
-  experimental?: { otlpLogs?: boolean; plugins?: TraefikPluginChartConfig };
+  experimental?: {
+    otlpLogs?: boolean;
+    plugins?: TraefikPluginChartConfig;
+    localPlugins?: Record<string, unknown>;
+    abortOnPluginFailure?: boolean;
+  };
   ports?: Record<string, TraefikPortValues>;
   service?: {
     /**
@@ -1838,6 +1855,36 @@ export const TraefikHelmRepositorySingletonStatusSchema = type({
 // Build-time options (construction, NOT runtime spec)
 // ============================================================================
 
+/** A registry plugin, pinned by version and archive hash. */
+export interface TraefikPluginDeclaration {
+  /** e.g. `github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin`. */
+  readonly moduleName: string;
+  /** Exact release, e.g. `v1.4.2`. */
+  readonly version: string;
+  /** SHA-256 of the plugin archive, 64 lowercase hex digits. Traefik refuses a mismatch. */
+  readonly hash: string;
+}
+
+/**
+ * A plugin loaded from the pod's filesystem instead of the registry.
+ *
+ * `inlinePlugin` ships the source in a ConfigMap the chart creates;
+ * `localPath` mounts a volume named in raw `values.deployment.additionalVolumes`.
+ */
+export type TraefikLocalPluginDeclaration =
+  | {
+      readonly moduleName: string;
+      readonly type: 'inlinePlugin';
+      /** File name to content, e.g. `{ '.traefik.yml': ..., 'plugin.go': ... }`. */
+      readonly source: Readonly<Record<string, string>>;
+    }
+  | {
+      readonly moduleName: string;
+      readonly type: 'localPath';
+      readonly volumeName: string;
+      readonly subPath?: string;
+    };
+
 /**
  * Access-log field and header policy for the JSON access log.
  *
@@ -1930,6 +1977,15 @@ export interface TraefikBootstrapBuildOptions {
   readonly dangerouslyTrustAnySource?: boolean;
   /** JSON access-log field and header policy. */
   readonly accessLog?: TraefikAccessLogOptions;
+  /** Registry plugins, keyed by the name `Middleware.spec.plugin` uses. */
+  readonly plugins?: Readonly<Record<string, TraefikPluginDeclaration>>;
+  /** Plugins loaded from the pod's filesystem. */
+  readonly localPlugins?: Readonly<Record<string, TraefikLocalPluginDeclaration>>;
+  /**
+   * Refuse to start when a declared plugin fails to load, instead of starting
+   * without it. @default true when any plugin is declared
+   */
+  readonly abortOnPluginFailure?: boolean;
   /** Create a cluster-default `TLSOption` alongside the release. */
   readonly defaultTlsOption?: TraefikDefaultTlsOptionOptions;
   /** Create a cluster-default `TLSStore` fed by a cert-manager Secret. */

@@ -72,6 +72,8 @@ const edge = await factory.deploy({
 | `traefikTLSOption` / `traefikTLSStore` | TLS policy and the default certificate |
 | `traefikTlsCertificate` | A cert-manager `Certificate` whose Secret Traefik serves |
 | `awsNlbServiceAnnotations` | AWS Load Balancer Controller annotations for a TCP-passthrough NLB with PROXY protocol v2 |
+| `traefikForwardAuthSecurePair` | `forwardAuth` behind a Middleware that strips client-supplied identity headers |
+| `traefikPluginMiddleware` / `traefikSecretValue` | A plugin Middleware, and `urn:k8s:secret` values for its configuration |
 | `traefikGatewayClass` / `traefikGateway` / `traefikHTTPRoute` / `traefikGRPCRoute` | Gateway API, via the shared `gateway-api` module |
 | `mapTraefikConfigToHelmValues` / `validateTraefikHelmValues` | Values mapping and edge-configuration warnings |
 | `validateTraefikMiddlewareSpec` | The exactly-one-middleware rule, callable directly |
@@ -540,6 +542,39 @@ const authz = traefik.traefikForwardAuthMiddleware({
 reaching the entrypoint is already behind a trusted proxy that rewrites
 `X-Forwarded-*`; otherwise a caller can assert its own source address.
 
+### The forwardAuth secure pair
+
+`traefikForwardAuthSecurePair` creates three Middlewares from one
+`forwardAuth` configuration:
+
+- `<name>-strip-identity`, a `headers` Middleware that removes every
+  `authResponseHeaders` entry from the client's request;
+- `<name>-forward-auth`, the `forwardAuth` itself, with the same secure
+  defaults as `traefikForwardAuthMiddleware`;
+- `<name>`, a `chain` of the two in that order. Routes reference this one.
+
+```typescript
+const authz = traefik.traefikForwardAuthSecurePair({
+  name: 'orders-api-authz',
+  namespace: 'edge',
+  address: 'http://orders-authorizer.edge.svc.cluster.local:8080/authorize',
+  authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
+  id: 'ordersApiAuthz',
+});
+// route middlewares: [{ name: 'orders-api-authz' }]
+```
+
+When the authorizer approves a request, Traefik 3.7 replaces each
+`authResponseHeaders` entry with the authorizer's value, or removes it if the
+authorizer sent none, so the upstream never sees the client's copy. What it
+does not do is keep the client's copy away from the authorizer. Without an
+`authRequestHeaders` allowlist every client header is forwarded, and an
+authorizer that reads, logs or echoes `X-Edge-Principal` can be fooled. The
+strip step closes that gap and still protects against anything later in the
+chain that reads those headers. Listing a returned identity header in
+`authRequestHeaders` throws. Header names must be concrete values, because
+they become keys of the strip Middleware.
+
 ### Header-keyed rate limit with the Redis backend
 
 ```typescript
@@ -565,6 +600,64 @@ Without `redis` each Traefik replica keeps its own counters, so the effective
 budget is `average × replicas`. Supply the backend whenever the budget must
 hold for the whole edge. The `secret` names a Secret with `username` /
 `password` keys.
+
+**The Redis limiter fails closed.** When Traefik can't reach Redis it answers
+`500 Could not insert/update bucket` for every request through the middleware,
+and recovers on its own once Redis is back. The integration suite pins this
+behavior. A Valkey outage is therefore an outage of every route behind the
+limit, so run Valkey with the same availability as the edge, and keep
+`dialTimeout` / `readTimeout` short so requests fail fast instead of hanging.
+
+## Plugins
+
+Plugins are build-time options, because declaring one adds a volume to the
+Traefik pod. A registry plugin needs an exact `version` and the SHA-256 `hash`
+of its archive. Traefik refuses to load an archive whose hash does not match.
+Without a hash, Traefik only asks the registry whether the archive is intact,
+so whoever controls the registry or the network path decides what code runs
+in the edge.
+
+```typescript
+const edge = traefik.makeTraefikBootstrap({
+  name: 'public-edge',
+  kind: 'PublicEdge',
+  plugins: {
+    bouncer: {
+      moduleName: 'github.com/example/bouncer-plugin',
+      version: 'v1.4.2',
+      // curl -sL https://plugins.traefik.io/public/download/<moduleName>/<version> | sha256sum
+      hash: '0f3c…64 hex digits…',
+    },
+  },
+  // abortOnPluginFailure defaults to true once any plugin is declared
+});
+
+const bouncer = traefik.traefikPluginMiddleware({
+  name: 'bouncer',
+  namespace: 'edge',
+  plugin: 'bouncer',
+  config: {
+    enabled: true,
+    // Resolved by Traefik from the Secret in the Middleware's namespace.
+    apiKey: traefik.traefikSecretValue('bouncer-credentials', 'api-key'),
+  },
+  id: 'bouncer',
+});
+```
+
+- `localPlugins` loads a plugin from the pod's filesystem instead. An
+  `inlinePlugin` ships its `source` files in a ConfigMap the chart creates. A
+  `localPath` plugin mounts a volume you declare in raw
+  `values.deployment.additionalVolumes`. The mount path is always
+  `/plugins-local/src/<moduleName>`, which is where Traefik looks.
+- `abortOnPluginFailure` defaults to `true` when any plugin is declared. If a
+  security plugin fails to load, Traefik refuses to start, so the previous
+  replicas keep serving. Otherwise Traefik would start without the plugin.
+- `traefikSecretValue(secret, key)` returns
+  `urn:k8s:secret:<secret>:<key>`. Traefik resolves these strings at any depth
+  of a **plugin** middleware's configuration, and nowhere else.
+- Plugins already set in raw `values.experimental.plugins` are kept.
+  `validateTraefikHelmValues` warns about any that carry no hash.
 
 ### Concurrency cap, CORS, body limits and a chain
 
@@ -821,6 +914,7 @@ Traefik's controller name for `BackendTLSPolicy`.
 | `global.checkNewVersion: false`, `global.sendAnonymousUsage: false` | No phone-home from an edge. |
 | Access logs drop `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` | A bearer token in a log line is a live credential for as long as the log is kept. |
 | `/0` trusted ranges and `insecure` proxy trust refused | Either lets any client set its own source address. |
+| Registry plugins need an archive `hash`; `abortOnPluginFailure` on | Traefik runs only the plugin code that was reviewed, and never starts without a declared plugin. |
 
 The `api.*` and security-context pins are applied **after** every other values
 source, including `makeTraefikBootstrap({ values })`. Re-enabling them means not

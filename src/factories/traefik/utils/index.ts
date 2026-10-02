@@ -37,3 +37,9 @@ export {
   traefikProxyTrustIssues,
   traefikProxyTrustSchemaFieldValidations,
 } from './proxy-trust.js';
+export {
+  assertTraefikPlugins,
+  traefikLocalPluginMountPath,
+  traefikPluginIssues,
+  traefikSecretValue,
+} from './plugins.js';

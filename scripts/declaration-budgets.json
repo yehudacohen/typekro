@@ -7,7 +7,7 @@
     "minBytes": 4096,
     "fraction": 0.02
   },
-  "sharedPoolBytes": 259072,
+  "sharedPoolBytes": 251392,
   "pooledOwners": [],
   "docDropFraction": 0.2,
   "owners": {
@@ -35,7 +35,7 @@
     "pebble": 14336,
     "rook": 38912,
     "searxng": 15360,
-    "traefik": 148224,
+    "traefik": 155904,
     "valkey": 21248,
     "webapp": 16640
   }
