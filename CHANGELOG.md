@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Direct-mode NetworkPolicies kept their ports but lost their peers, so they allowed any
+  source.** `@kubernetes/client-node` models `ingress[].from` as `_from`, while TypeKro manifests
+  carry the wire spelling `from`. In direct mode, the SDK's typed serialization dropped `from` on
+  create and patch, so every ingress rule admitted traffic from anywhere on its ports. Affected
+  versions: up to and including 0.44.1. Affected in direct mode: `networkPolicy` and
+  `simple.NetworkPolicy`, the policies of the Harbor and OpenSearch compositions, and
+  NetworkPolicies loaded from YAML files or manifests (`yamlFile`, `createResource`). KRO mode is
+  not affected, because the KRO controller applies the templates. `egress[].to` is not renamed by
+  the SDK and was not affected. The object client now sends and reads NetworkPolicies as raw
+  JSON, as it already did for CRDs, and rewrites the SDK spellings (`_from`, `_default`, `_int`)
+  to the wire fields so an object built with the SDK's types is not stripped either. Re-deploy
+  direct-mode NetworkPolicies to restore their peers.
+
+### Fixed
+
+- **LimitRange defaults in YAML and KRO mode.** `limitRange` emitted client-node's `_default`
+  instead of the wire field `limits[].default`, so YAML and KRO deployments created LimitRanges
+  without their default limits. The factory now writes `default` (`_default` stays a read-only
+  alias), and LimitRanges go over the wire as raw JSON so direct mode keeps the field too.
+- **ResourceSlice wire fields in direct mode.** Device attribute `int` and capacity
+  `requestPolicy.default` were dropped by the same typed serialization; ResourceSlices are now
+  sent as raw JSON. A scan of every client-node model field whose name differs from its wire
+  name found no other affected kind (ListMeta `continue` appears only in list responses).
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed
