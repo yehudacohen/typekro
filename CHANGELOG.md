@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`typekro/crowdsec`: CrowdSec for a Traefik-fronted API.** A new subpath export (not in the
+  root barrel). `makeCrowdsecBootstrap` installs the official `crowdsec` chart 0.24.2 (CrowdSec
+  v1.8.1) through Flux: LAPI on SQLite or an existing Postgres, ClusterIP only, with its Ingress
+  pinned off; the agent DaemonSet reading Traefik pods' logs by namespace and pod-name glob; the
+  Traefik, base HTTP and HTTP CVE collections; optional Central API enrollment and community
+  blocklist; bouncer keys from Secrets; an IP/CIDR allowlist; global simulation with exclusions;
+  and optional AppSec with in-band virtual patching, out-of-band CRS, a body size limit and rule
+  exclusions. Every component has resource requests, LAPI and AppSec get a PodDisruptionBudget, and
+  status (`ready`, `phase`, `lapiHost`, `appsecHost`, `version`) is read from the owned
+  HelmRelease in both direct and KRO mode. On the Traefik side, `crowdsecTraefikPlugin()` declares
+  the bouncer plugin v1.7.1 with its archive SHA-256, and `crowdsecBouncerMiddleware()` returns a
+  stream-mode, ban-only Middleware spec that fails open by default. See `docs/api/crowdsec`.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed

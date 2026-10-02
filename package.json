@@ -46,6 +46,10 @@
       "import": "./dist/factories/traefik/index.js",
       "types": "./dist/factories/traefik/index.d.ts"
     },
+    "./crowdsec": {
+      "import": "./dist/factories/crowdsec/index.js",
+      "types": "./dist/factories/crowdsec/index.d.ts"
+    },
     "./gateway-api": {
       "import": "./dist/factories/gateway-api/index.js",
       "types": "./dist/factories/gateway-api/index.d.ts"
