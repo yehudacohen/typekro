@@ -565,18 +565,23 @@ function traefikTopologySpread(config: TraefikBootstrapConfig): TraefikTopologyS
       'app.kubernetes.io/instance': config.name,
     },
   };
+  // Count skew per ReplicaSet, so a rolling update spreads the new pods
+  // instead of balancing them against the old ones it is about to delete.
+  const matchLabelKeys = ['pod-template-hash'];
   return [
     {
       maxSkew: 1,
       topologyKey: 'topology.kubernetes.io/zone',
       whenUnsatisfiable: Cel.default(config.scheduling?.zoneSpread, 'ScheduleAnyway'),
       labelSelector,
+      matchLabelKeys,
     },
     {
       maxSkew: 1,
       topologyKey: 'kubernetes.io/hostname',
       whenUnsatisfiable: Cel.default(config.scheduling?.nodeSpread, 'ScheduleAnyway'),
       labelSelector,
+      matchLabelKeys,
     },
   ];
 }
