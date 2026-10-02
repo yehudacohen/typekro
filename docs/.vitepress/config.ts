@@ -96,6 +96,7 @@ export default withMermaid(
               { text: 'Harbor', link: '/api/harbor/' },
               { text: 'Kro', link: '/api/kro/' },
               { text: 'Kro Runtime Bootstrap', link: '/api/kro/compositions/runtime' },
+              { text: 'KEDA', link: '/api/keda/' },
               { text: 'APISix', link: '/api/apisix/' },
               { text: 'Traefik', link: '/api/traefik/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
