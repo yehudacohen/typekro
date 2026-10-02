@@ -393,6 +393,17 @@ describe('assertCrowdsecBootstrapOptions', () => {
     rejects({ allowlist: { ips: ['192.0.2.1'], reason: '${schema.spec.name}' } }, /parse as CEL/);
     rejects({ simulation: { global: true, enforce: ['${a}'] } }, /parse as CEL/);
     rejects({ collections: ['${a}'] }, /parse as CEL/);
+    rejects({ lapi: { env: [{ name: 'X', value: '${a}' }] } }, /parse as CEL/);
+    rejects(
+      { agent: { env: [{ name: 'X', valueFrom: { secretKeyRef: { name: '${a}', key: 'k' } } }] } },
+      /parse as CEL/
+    );
+    rejects({ networkPolicy: { traefikNamespace: '${a}' } }, /parse as CEL/);
+    rejects({ networkPolicy: { traefikNamespace: 'Edge_NS' } }, /DNS-1123/);
+    rejects(
+      { networkPolicy: { traefikNamespace: 'edge', metricsNamespace: 'a'.repeat(64) } },
+      /DNS-1123/
+    );
   });
 
   it('rejects malformed policy', () => {

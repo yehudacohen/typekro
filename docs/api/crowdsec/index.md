@@ -389,7 +389,9 @@ to the same size, so the plugin does not send more than AppSec reads.
 
 Both accept `:6060` (Prometheus) from `metricsNamespace`, or from any
 namespace when it is unset. The agents need no ingress besides metrics and get
-no policy. It needs a CNI that enforces NetworkPolicy; most such CNIs let
+no policy. Any other bouncer outside `traefikNamespace`, and a Traefik running
+with `hostNetwork` (its traffic comes from the node, not a pod), is blocked
+unless you extend the policies. It needs a CNI that enforces NetworkPolicy; most such CNIs let
 kubelet probes through, which come from the node.
 
 In direct mode, the policies need the NetworkPolicy fix in #285: before it,

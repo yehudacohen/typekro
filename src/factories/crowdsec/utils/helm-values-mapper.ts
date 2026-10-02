@@ -66,6 +66,7 @@ export const CROWDSEC_GENERATED_FILES = {
 export const CROWDSEC_APPSEC_POLICY_NAME = 'typekro/appsec-policy';
 
 const BOUNCER_NAME = /^[A-Za-z0-9_]+$/;
+const DNS_LABEL = /^(?=.{1,63}$)[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/;
 const IPV4 = /^(\d{1,3})(\.\d{1,3}){3}$/;
 const IPV6 = /^[0-9a-fA-F:]+$/;
 
@@ -89,6 +90,13 @@ function assertNoCel(options: CrowdsecBootstrapOptions): void {
     ...(options.storage?.type === 'postgres'
       ? [options.storage.host, options.storage.database, options.storage.user]
       : []),
+    ...[...(options.lapi?.env ?? []), ...(options.agent?.env ?? [])].flatMap((env) => [
+      env.name,
+      env.value,
+      JSON.stringify(env.valueFrom ?? null),
+    ]),
+    options.networkPolicy?.traefikNamespace,
+    options.networkPolicy?.metricsNamespace,
   ];
   for (const value of strings) {
     if (value?.includes('${')) fail(`"${value}" contains "\${", which KRO would parse as CEL.`);
@@ -141,6 +149,15 @@ export function assertCrowdsecBootstrapOptions(options: CrowdsecBootstrapOptions
       fail(
         `Acquisition ${acquisition.namespace}/${acquisition.podName} is not a namespace and pod-name glob.`
       );
+    }
+  }
+
+  for (const namespace of [
+    options.networkPolicy?.traefikNamespace,
+    options.networkPolicy?.metricsNamespace,
+  ]) {
+    if (namespace !== undefined && !DNS_LABEL.test(namespace)) {
+      fail(`networkPolicy namespace "${namespace}" is not a DNS-1123 label.`);
     }
   }
 

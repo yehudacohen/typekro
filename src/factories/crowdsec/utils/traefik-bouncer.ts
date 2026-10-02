@@ -101,6 +101,15 @@ export function crowdsecBouncerMiddleware(
       'CROWDSEC_INVALID_SECRET_REF'
     );
   }
+  for (const value of [options.apiKeyFile, options.apiKeySecret?.name, options.apiKeySecret?.key]) {
+    // The Middleware spec can be a KRO template, where `${` starts CEL.
+    if (value?.includes('${')) {
+      throw new TypeKroError(
+        `"${value}" contains "\${", which KRO would parse as CEL.`,
+        'CROWDSEC_INVALID_SECRET_REF'
+      );
+    }
+  }
   const tolerance = options.failClosedAfter ?? 4;
   if (!Number.isInteger(tolerance) || tolerance < 0) {
     throw new TypeKroError(

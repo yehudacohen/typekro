@@ -114,6 +114,9 @@ describe('crowdsecBouncerMiddleware', () => {
     expect(config?.crowdsecLapiKey).toBeUndefined();
     expect(() => crowdsecBouncerMiddleware({ lapiHost: BASE.lapiHost })).toThrow(/exactly one/);
     expect(() =>
+      crowdsecBouncerMiddleware({ lapiHost: BASE.lapiHost, apiKeyFile: '/keys/${a}' })
+    ).toThrow(/parse as CEL/);
+    expect(() =>
       crowdsecBouncerMiddleware({ ...BASE, apiKeyFile: '/etc/crowdsec-bouncer/api-key' })
     ).toThrow(/exactly one/);
   });
