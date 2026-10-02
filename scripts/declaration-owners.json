@@ -63,6 +63,10 @@
       "paths": ["factories/cnpg/**"]
     },
     {
+      "owner": "crowdsec",
+      "paths": ["factories/crowdsec/**"]
+    },
+    {
       "owner": "dagster",
       "paths": ["factories/dagster/**"]
     },
