@@ -275,11 +275,35 @@ describe('entrypoint proxy trust', () => {
         { baseValues: { ports: { metrics: { forwardedHeaders: { insecure: true } } } } }
       )
     ).toThrow(/ports\.metrics\.forwardedHeaders\.insecure/);
+    for (const arg of [
+      '--entryPoints.web.forwardedHeaders.insecure=true',
+      '--entrypoints.web.forwardedheaders.insecure=1',
+      '--entryPoints.web.proxyProtocol.insecure=T',
+    ]) {
+      expect(traefikProxyTrustIssues({ additionalArguments: [arg] })).toHaveLength(1);
+    }
     expect(
       traefikProxyTrustIssues({
-        additionalArguments: ['--entryPoints.web.forwardedHeaders.insecure=true'],
+        additionalArguments: ['--entryPoints.web.proxyProtocol.insecure=false'],
       })
-    ).toHaveLength(1);
+    ).toEqual([]);
+    expect(
+      traefikProxyTrustIssues({
+        env: [{ name: 'TRAEFIK_ENTRYPOINTS_WEBSECURE_PROXYPROTOCOL_INSECURE', value: 'true' }],
+      })
+    ).toEqual([
+      expect.stringContaining('env TRAEFIK_ENTRYPOINTS_WEBSECURE_PROXYPROTOCOL_INSECURE'),
+    ]);
+    expect(() =>
+      mapTraefikConfigToHelmValues(
+        { name: 'traefik' },
+        {
+          baseValues: {
+            env: [{ name: 'TRAEFIK_ENTRYPOINTS_WEB_FORWARDEDHEADERS_INSECURE', value: '1' }],
+          },
+        }
+      )
+    ).toThrow(/trusts every source/);
   });
 
   it('accepts both behind the dangerouslyTrustAnySource escape hatch', () => {
@@ -310,6 +334,22 @@ describe('entrypoint proxy trust', () => {
     const occurrences = yaml.split(rule).length - 1;
 
     expect(occurrences).toBe(4);
+  });
+
+  it('warns about a very broad trusted range without refusing it', () => {
+    const values = mapTraefikConfigToHelmValues({
+      name: 'traefik',
+      entrypoints: {
+        web: { proxyProtocol: { trustedIPs: ['10.0.0.0/8', '0.0.0.0/1'] } },
+        websecure: { forwardedHeaders: { trustedIPs: ['2001:db8::/12', '2001:db8::/32'] } },
+      },
+    });
+    const broad = validateTraefikHelmValues(values).filter((w) => w.includes('very large'));
+
+    expect(broad).toEqual([
+      expect.stringContaining('0.0.0.0/1'),
+      expect.stringContaining('2001:db8::/12'),
+    ]);
   });
 
   it('warns when the NLB sends PROXY headers an entrypoint will not accept', () => {

@@ -79,9 +79,11 @@ export function awsNlbServiceAnnotations(
   const proxyProtocol = options.proxyProtocol ?? true;
 
   // The controller derives `proxy_protocol_v2.enabled` from the proxy-protocol
-  // annotation, and `load_balancing.cross_zone.enabled` from `crossZone` here.
-  // Setting either attribute directly as well is a conflict the controller
-  // rejects at reconcile time, long after deploy succeeded.
+  // annotation, and this helper derives `load_balancing.cross_zone.enabled`
+  // from `crossZone`. Setting either attribute directly as well gives two
+  // sources for one setting: the controller does not reject it, one of the
+  // two silently wins, and which one is not obvious from the manifest. So the
+  // helper refuses the combination instead.
   if (
     options.targetGroupAttributes &&
     'proxy_protocol_v2.enabled' in options.targetGroupAttributes

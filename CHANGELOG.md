@@ -16,15 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     set (guarded with `omit()` in KRO mode), so a `ClusterIP` Service stays valid.
   - `awsNlbServiceAnnotations({ scheme, targetType, proxyProtocol, crossZone, ... })` returns AWS
     Load Balancer Controller annotations for IP targets with PROXY protocol v2 by default. It has
-    no certificate inputs, and it throws on the conflicts the controller would only reject at
-    reconcile time.
+    no certificate inputs, and it throws on ambiguous attribute combinations the controller would
+    silently resolve, and on malformed values.
   - `entrypoints.{web,websecure}.proxyProtocol.trustedIPs` and `.forwardedHeaders.trustedIPs`.
     A `/0` range is refused: in direct mode when the values are mapped, and in KRO mode by
     `x-kubernetes-validations` on the generated CRD. An `insecure` proxy-protocol or
-    forwarded-header flag in raw `values` or `additionalArguments` throws too. The escape hatch is
-    the build option `dangerouslyTrustAnySource`.
+    forwarded-header flag in raw `values`, `additionalArguments` or `env` throws too. The escape
+    hatch is the build option `dangerouslyTrustAnySource`.
   - `validateTraefikHelmValues(values, { serviceAnnotations })` warns when the NLB sends PROXY
-    headers to an entrypoint that does not accept them.
+    headers to an entrypoint that does not accept them, and about trusted ranges broader than
+    `/8` (IPv4) or `/16` (IPv6).
   - `traefikTlsCertificate({ name, namespace, hostnames, issuerRef })` creates a cert-manager
     `Certificate` (ECDSA P-256, `rotationPolicy: Always`) for an `IngressRoute`'s
     `tls.secretName`. `defaultTlsStore.certificate` makes the bootstrap own the `Certificate`

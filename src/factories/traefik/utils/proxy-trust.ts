@@ -39,8 +39,12 @@ const TRUSTED_IP_SPEC_PATHS = [
 ] as const;
 
 // `--entryPoints.<name>.proxyProtocol.insecure` and the forwardedHeaders twin,
-// with or without `=true`. Traefik's flag parser is case-insensitive.
-const INSECURE_ARGUMENT = /\.(proxyprotocol|forwardedheaders)\.insecure(=true)?$/i;
+// bare or with any value Go's `strconv.ParseBool` reads as true. Traefik's
+// flag parser is case-insensitive.
+const INSECURE_ARGUMENT = /\.(proxyprotocol|forwardedheaders)\.insecure(=(1|t|true))?$/i;
+// The same settings through Traefik's environment-variable configuration.
+const INSECURE_ENV = /^TRAEFIK_ENTRYPOINTS_.+_(PROXYPROTOCOL|FORWARDEDHEADERS)_INSECURE$/i;
+const TRUE_VALUE = /^(1|t|true)$/i;
 
 /** Whether a range trusts every address. */
 function trustsAnySource(range: string): boolean {
@@ -81,6 +85,20 @@ export function traefikProxyTrustIssues(values: TraefikHelmValues): string[] {
       }
     }
   }
+  const env = values.env;
+  if (Array.isArray(env) && isConcrete(env)) {
+    for (const entry of env) {
+      if (
+        entry &&
+        typeof entry.name === 'string' &&
+        INSECURE_ENV.test(entry.name) &&
+        typeof entry.value === 'string' &&
+        TRUE_VALUE.test(entry.value)
+      ) {
+        issues.push(`env ${entry.name}=${entry.value} trusts every source.`);
+      }
+    }
+  }
   const args = values.additionalArguments;
   if (Array.isArray(args) && isConcrete(args)) {
     for (const arg of args) {
@@ -108,6 +126,35 @@ export function assertTraefikProxyTrust(values: TraefikHelmValues): void {
     'TRAEFIK_UNTRUSTED_PROXY_SOURCE',
     { issues }
   );
+}
+
+/**
+ * Warnings for trusted ranges that are legal but very broad: an IPv4 prefix
+ * shorter than /8 or an IPv6 prefix shorter than /16.
+ */
+export function traefikBroadTrustWarnings(values: TraefikHelmValues): string[] {
+  const warnings: string[] = [];
+  const ports = values.ports;
+  if (!ports || !isConcrete(ports)) return warnings;
+  for (const [name, port] of Object.entries(ports)) {
+    if (!port || !isConcrete(port)) continue;
+    for (const field of ['proxyProtocol', 'forwardedHeaders'] as const) {
+      const ranges = port[field]?.trustedIPs;
+      if (!Array.isArray(ranges) || !isConcrete(ranges)) continue;
+      for (const range of ranges) {
+        const match = typeof range === 'string' ? /\/(\d+)$/.exec(range.trim()) : null;
+        if (!match || trustsAnySource(range)) continue;
+        const prefix = Number(match[1]);
+        const limit = range.includes(':') ? 16 : 8;
+        if (prefix < limit) {
+          warnings.push(
+            `ports.${name}.${field}.trustedIPs contains ${range}, which trusts a very large address range. List the load balancer or proxy ranges instead.`
+          );
+        }
+      }
+    }
+  }
+  return warnings;
 }
 
 /** `schemaFieldValidations` refusing `/0` trusted ranges on a KRO instance. */

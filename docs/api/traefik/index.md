@@ -318,10 +318,11 @@ await edge.factory('direct', { namespace: 'flux-system', waitForReady: true, kub
 `aws-load-balancer-proxy-protocol: "*"`, and, when given, load-balancer and
 target-group attributes, subnets, the name, tags and health-check settings. It
 has no certificate or SSL-port inputs, because TLS is not terminated on the
-NLB. It throws on combinations the controller only rejects at reconcile time:
-`proxy_protocol_v2.enabled` in `targetGroupAttributes` (use `proxyProtocol`),
-`crossZone` together with the cross-zone attribute, a `,` in a value, a name
-over 32 characters, or a health-check `path` on a TCP check.
+NLB. It throws on ambiguous or malformed input: `proxy_protocol_v2.enabled` in
+`targetGroupAttributes` (use `proxyProtocol`) or `crossZone` together with the
+cross-zone attribute, where the controller would silently let one source win;
+and a `,` in a value, a name over 32 characters, or a health-check `path` on a
+TCP check.
 
 **PROXY protocol has to be on at both ends.** With it on, the NLB prepends a
 PROXY v2 header to every connection, health checks included. An entrypoint
@@ -340,8 +341,12 @@ A range with a `/0` prefix (`0.0.0.0/0`, `::/0`) would let any client set its
 own source address, so it is refused. Direct mode refuses it when the
 composition runs, and KRO mode refuses it at admission through
 `x-kubernetes-validations` on the generated CRD. An `insecure` flag that
-reaches the final values through `values` (`ports.*.proxyProtocol.insecure`)
-or `additionalArguments` throws as well. The escape hatch is
+reaches the final values throws as well, whether it comes through `values`
+(`ports.*.proxyProtocol.insecure`), `additionalArguments` (`=true`, `=1` or
+bare) or a `TRAEFIK_ENTRYPOINTS_*_INSECURE` entry in `env`. A range that is
+legal but very broad, with an IPv4 prefix shorter than `/8` or an IPv6 prefix
+shorter than `/16`, gets a `validateTraefikHelmValues` warning instead. The
+escape hatch is
 `makeTraefikBootstrap({ dangerouslyTrustAnySource: true })`, for a Traefik that
 no client can reach directly.
 

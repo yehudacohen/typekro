@@ -25,7 +25,7 @@ import {
   TRAEFIK_WEB_ENTRYPOINT,
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
-import { assertTraefikProxyTrust } from './proxy-trust.js';
+import { assertTraefikProxyTrust, traefikBroadTrustWarnings } from './proxy-trust.js';
 import type {
   TraefikBootstrapConfig,
   TraefikContainerSecurityContext,
@@ -559,6 +559,7 @@ export function validateTraefikHelmValues(
       }
     }
   }
+  warnings.push(...traefikBroadTrustWarnings(values));
   if (values.ports?.traefik?.expose?.default === true) {
     warnings.push(
       'The internal `traefik` entrypoint is exposed by the Service. It serves /ping and metrics and should stay cluster-internal.'
