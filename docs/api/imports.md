@@ -148,6 +148,9 @@ import { valkey } from 'typekro/valkey';
 // Inngest workflow engine
 import { inngestBootstrap } from 'typekro/inngest';
 
+// Karpenter node autoscaling (EKS)
+import { ec2NodeClass, karpenterBootstrap, nodePool } from 'typekro/karpenter';
+
 // Full-stack web app compositions
 import { webAppWithProcessing } from 'typekro/webapp';
 

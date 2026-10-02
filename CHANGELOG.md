@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`typekro/karpenter`: Karpenter for EKS.** `karpenterBootstrap` installs the controller with
+  Flux from the official OCI charts, pinned to 1.14.1. As upstream recommends for GitOps, the CRDs
+  come from the `karpenter-crd` chart and the controller chart's `crds/` are skipped; the CRDs are
+  kept on uninstall unless `keepCrdsOnUninstall: false`. The spec covers `clusterName`,
+  `clusterEndpoint`, `interruptionQueue`, the service account (IRSA annotation or EKS Pod Identity),
+  replicas, the disruption budget, scheduling, resources, `logLevel` and `dnsPolicy`;
+  `makeKarpenterBootstrap` takes build-time options (`crds: 'external'`, namespace ownership, raw
+  chart values). Typed `nodePool` (`karpenter.sh/v1`) and `ec2NodeClass` (`karpenter.k8s.aws/v1`)
+  factories evaluate readiness from the `Ready` condition and ignore one left from an earlier
+  generation. `karpenterReady(...)` builds the same check for a composition's status. The factories
+  throw on specs the CRDs would reject, and `validateNodePoolSpec`, `validateEC2NodeClassSpec` and
+  `validateKarpenterBootstrapConfig` also warn about empty requirements, a NodePool without limits,
+  IMDSv1 and a controller allowed onto its own nodes. TypeKro creates no AWS resources; the docs list
+  the IAM, SQS, EventBridge, tagging and access-entry prerequisites. The subpath draws on the shared
+  declaration pool and is not re-exported from `typekro`.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed
