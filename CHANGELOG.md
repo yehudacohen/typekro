@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults. KRO and direct mode render the same values, which a new parity test checks for a
   minimal spec, a namespace-only spec, a legacy `installCRDs` spec and a highly available spec.
   The image tag was also rendered as `''` in KRO mode when `version` was unset.
+- **cert-manager `strategy.rollingUpdate.maxSurge` / `maxUnavailable` digit strings were rejected.**
+  The schema types them as strings, and the API server accepts a string only as a percentage, so
+  `'1'` failed. A digit-only string now renders as an integer in direct and KRO mode; a percentage
+  such as `'25%'` stays a string.
 
 ### Added
 
@@ -36,7 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `installCRDs` is deprecated. The bootstrap maps it to `crds.enabled` when that is unset, and
   `certManagerHelmRelease` adds no `crds` default when your `values` still set `installCRDs`.
   `installCRDs: true` already meant `crds.enabled: true` plus `crds.keep: true`, so an existing
-  release renders the same CRDs. See "Migrating from installCRDs" in the cert-manager docs.
+  release renders the same CRDs. Direct-mode `customValues` that still set `installCRDs` own the
+  CRD setting, so no `crds` is rendered next to it. A whole `values` object passed to
+  `certManagerHelmRelease` as one schema reference cannot be inspected at build time: it must not
+  carry `installCRDs: true`. See "Migrating from installCRDs" in the cert-manager docs.
+- **Behaviour change: existing KRO instances move their leader-election lease.** They used to
+  take it in `kube-system` (the chart default); it now defaults to the install namespace. While
+  the Deployment rolls, the old pod holds the lease in `kube-system` and the new one takes the
+  lease in the install namespace, so two controllers can briefly both act as leader. Set
+  `global.leaderElection.namespace: kube-system` to keep the old lease.
 - **Behaviour change: the bootstrap no longer pins chart defaults explicitly.** Image
   repositories and tags, `serviceAccount`, `nodeSelector`, `strategy`, `logLevel`,
   `podSecurityPolicy` and the ServiceMonitor settings are rendered only when the spec sets them,

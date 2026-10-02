@@ -299,7 +299,8 @@ await factory.deploy({
 |---|---|---|
 | `crds.enabled` | `true` | Installs the CRDs with the chart |
 | `crds.keep` | `true` | Keeps the CRDs, and with them every Certificate and Issuer, when the release is uninstalled |
-| `global.leaderElection.namespace` | the install namespace | The chart's own default is `kube-system` |
+| `global.leaderElection.namespace` | the install namespace | The chart's own default is `kube-system`. KRO instances created before this default moved their lease; set `kube-system` to keep it |
+| `strategy.rollingUpdate.maxSurge` / `maxUnavailable` | chart | Strings. A digit-only string (`'1'`) is rendered as an integer, a percentage (`'25%'`) as a string |
 | `replicaCount`, `webhook.replicaCount`, `cainjector.replicaCount` | chart default (1) | With more than 1 replica, also enable that component's `podDisruptionBudget` |
 | `controller` / `webhook` / `cainjector` `.podDisruptionBudget` | off | `enabled`, plus `minAvailable` or `maxUnavailable`, not both. Each is a string holding an integer (`'1'`) or a percentage (`'50%'`); the chart renders it unquoted. The chart defaults to `minAvailable: 1` |
 | `controller` / `webhook` / `cainjector` `.topologySpreadConstraints` | none | Passed to the chart unchanged. Give each constraint a `labelSelector` that matches that component's pods (`app.kubernetes.io/component: controller`, `webhook` or `cainjector`) |
@@ -326,6 +327,11 @@ Fields of the TypeScript config that the bootstrap schema does not declare
 - `certManagerHelmRelease` now defaults to `crds: { enabled: true, keep: true }`
   instead of `installCRDs: true`. If your `values` still set `installCRDs`, the
   factory adds no `crds` default, so the chart sees only your setting.
+- Direct-mode `customValues` that still set `installCRDs` own the CRD setting:
+  the bootstrap then renders no `crds`. A `values` object passed to
+  `certManagerHelmRelease` as one schema reference cannot be inspected at build
+  time, so it must not carry `installCRDs: true`; the chart would refuse it
+  next to the `crds.enabled` default.
 - An existing release keeps its CRDs. `installCRDs: true` already meant
   `crds.enabled: true` with `crds.keep: true`, so the rendered CRDs are the same.
 

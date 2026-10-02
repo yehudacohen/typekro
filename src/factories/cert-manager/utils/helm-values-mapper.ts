@@ -60,6 +60,58 @@ function resourcesWithDefaults(resources: ResourceRequirements | undefined): Res
   };
 }
 
+// Deployment `maxSurge` / `maxUnavailable` are int-or-string, and a string must
+// be a percentage: the API server rejects `'1'`. The schema types them as
+// strings (a `string | number` union collapses to a schemaless `object` in
+// KRO's SimpleSchema), so a digit-only string is rendered as an integer and a
+// percentage stays a string, in both modes.
+const DIGITS_ONLY = /^[0-9]+$/;
+
+function intOrPercent(value: string | number): string | number {
+  return typeof value === 'string' && DIGITS_ONLY.test(value) ? Number(value) : value;
+}
+
+type Strategy = NonNullable<CertManagerBootstrapConfig['strategy']>;
+
+// `rollingUpdate` is built whole, never field by field: an empty
+// `rollingUpdate: {}` left next to `type: Recreate` is rejected by the API
+// server.
+function rollingUpdate(strategy: Strategy | undefined): unknown {
+  const update = strategy?.rollingUpdate;
+  if (isKubernetesRef(update)) {
+    const maxSurge = update.maxSurge;
+    const maxUnavailable = update.maxUnavailable;
+    const entry = (key: string, field: unknown, last: boolean): unknown[] => [
+      `"${key}": has(`,
+      field,
+      ') ? (',
+      field,
+      '.matches("^[0-9]+$") ? dyn(int(',
+      field,
+      ')) : dyn(',
+      field,
+      last ? ')) : omit()' : ')) : omit(), ',
+    ];
+    return Cel.expr(
+      'has(',
+      strategy,
+      ') && has(',
+      update,
+      ') ? {',
+      ...entry('maxSurge', maxSurge, false),
+      ...entry('maxUnavailable', maxUnavailable, true),
+      '} : omit()'
+    );
+  }
+  if (!update) return undefined;
+  return {
+    ...(update.maxSurge !== undefined && { maxSurge: intOrPercent(update.maxSurge) }),
+    ...(update.maxUnavailable !== undefined && {
+      maxUnavailable: intOrPercent(update.maxUnavailable),
+    }),
+  };
+}
+
 function scheduling(component: CertManagerComponentScheduling | undefined) {
   return {
     podDisruptionBudget: component?.podDisruptionBudget,
@@ -103,9 +155,10 @@ export function mapCertManagerConfigToHelmValues(
 
     // Controller settings live at the chart's root level.
     replicaCount: config.replicaCount,
-    // Whole objects, not field by field: an empty `rollingUpdate: {}` left
-    // behind next to `type: Recreate` is rejected by the API server.
-    strategy: config.strategy,
+    strategy: {
+      type: config.strategy?.type,
+      rollingUpdate: rollingUpdate(config.strategy),
+    },
     image: controller?.image,
     extraArgs: controller?.extraArgs,
     resources: resourcesWithDefaults(controller?.resources),
@@ -178,6 +231,11 @@ export function mapCertManagerConfigToHelmValues(
 
   const customValues = concrete(config.customValues);
   if (customValues && typeof customValues === 'object') {
+    // The chart refuses the deprecated `installCRDs` next to `crds.enabled`.
+    // When custom values still carry `installCRDs`, they own the CRD setting.
+    if (Object.hasOwn(customValues, 'installCRDs') && !Object.hasOwn(customValues, 'crds')) {
+      delete mapped.crds;
+    }
     Object.assign(mapped, customValues);
   }
 

@@ -23,6 +23,7 @@ import {
   certManagerHelmRelease,
 } from '../../../src/factories/cert-manager/index.js';
 import type { CertManagerBootstrapConfig } from '../../../src/factories/cert-manager/types.js';
+import { mapCertManagerConfigToHelmValues } from '../../../src/factories/cert-manager/utils/helm-values-mapper.js';
 
 interface HelmReleaseDocument {
   kind: string;
@@ -32,7 +33,7 @@ interface HelmReleaseDocument {
 
 const OMIT = Symbol('omit');
 const CEL_SUBSET =
-  /^(?:has\(|dyn\(|omit\(\)|schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)*|&&|!=|null|true|false|\?|:|\(|\)|"[^"\\]*"|-?\d+|\s+)+$/;
+  /^(?:has\(|dyn\(|int\(|omit\(\)|\.matches\(|schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)*|&&|!=|null|true|false|\?|:|\(|\)|\{|\}|,|"[^"\\]*"|-?\d+|\s+)+$/;
 
 function lookup(spec: unknown, path: string): unknown {
   let node: unknown = { schema: { spec } };
@@ -45,14 +46,18 @@ function lookup(spec: unknown, path: string): unknown {
 
 function evaluateCel(expression: string, spec: CertManagerBootstrapConfig): unknown {
   expect(expression).toMatch(CEL_SUBSET);
-  const js = expression.replace(/has\((schema\.spec[.\w]*)\)/g, (_m, path: string) =>
-    String(lookup(spec, path) !== undefined)
-  );
-  const fn = new Function('schema', 'dyn', 'omit', `return (${js});`);
+  const js = expression
+    .replace(/has\((schema\.spec[.\w]*)\)/g, (_m, path: string) =>
+      String(lookup(spec, path) !== undefined)
+    )
+    .replace(/(schema\.spec[.\w]*)\.matches\(("[^"]*")\)/g, '__matches($1, $2)');
+  const fn = new Function('schema', 'dyn', 'omit', 'int', '__matches', `return (${js});`);
   return fn(
     { spec },
     (value: unknown) => value,
-    () => OMIT
+    () => OMIT,
+    (value: string) => Number.parseInt(value, 10),
+    (value: string, pattern: string) => new RegExp(pattern).test(value)
   );
 }
 
@@ -127,6 +132,11 @@ const SPECS: Record<string, CertManagerBootstrapConfig> = {
   minimal: { name: 'cert-manager' },
   namespaceOnly: { name: 'cert-manager', namespace: 'certs' },
   legacyInstallCRDs: { name: 'cert-manager', installCRDs: false },
+  percentageStrategy: {
+    name: 'cert-manager',
+    strategy: { rollingUpdate: { maxSurge: '25%', maxUnavailable: '0' } },
+  },
+  recreate: { name: 'cert-manager', strategy: { type: 'Recreate' } },
   highlyAvailable: {
     name: 'cert-manager',
     namespace: 'certs',
@@ -188,10 +198,28 @@ describe('certManagerBootstrap KRO / direct parity', () => {
       podDisruptionBudget: { enabled: true, minAvailable: '50%' },
     });
     expect(values.crds).toEqual({ enabled: true, keep: false });
+    // Digit-only strings reach the Deployment as integers; '1' as a string is rejected.
+    expect(values.strategy).toEqual({
+      type: 'RollingUpdate',
+      rollingUpdate: { maxSurge: 1, maxUnavailable: 0 },
+    });
     expect(values.resources).toEqual({
       requests: { cpu: '50m', memory: '32Mi' },
       limits: { cpu: '100m', memory: '256Mi' },
     });
+  });
+
+  it('keeps percentages as strings and renders no rollingUpdate next to Recreate', () => {
+    for (const release of [kroRelease, directRelease]) {
+      const pct = normalize(
+        release(SPECS.percentageStrategy as CertManagerBootstrapConfig).spec.values
+      ) as Record<string, unknown>;
+      expect(pct.strategy).toEqual({ rollingUpdate: { maxSurge: '25%', maxUnavailable: 0 } });
+      const recreate = normalize(
+        release(SPECS.recreate as CertManagerBootstrapConfig).spec.values
+      ) as Record<string, unknown>;
+      expect(recreate.strategy).toEqual({ type: 'Recreate' });
+    }
   });
 
   it('defaults the lease to the install namespace, not kube-system', () => {
@@ -237,5 +265,24 @@ describe('certManagerHelmRelease values defaults', () => {
       values: { crds: { enabled: false }, replicaCount: 2 },
     });
     expect(release.spec.values).toMatchObject({ crds: { enabled: false }, replicaCount: 2 });
+  });
+});
+
+describe('mapCertManagerConfigToHelmValues customValues and installCRDs', () => {
+  it('lets direct-mode customValues that set installCRDs own the CRD setting', () => {
+    const values = mapCertManagerConfigToHelmValues({
+      name: 'cert-manager',
+      customValues: { installCRDs: true },
+    });
+    expect(values.installCRDs).toBe(true);
+    expect(Object.keys(values)).not.toContain('crds');
+  });
+
+  it('keeps crds when customValues set both', () => {
+    const values = mapCertManagerConfigToHelmValues({
+      name: 'cert-manager',
+      customValues: { installCRDs: false, crds: { enabled: true } },
+    });
+    expect(values.crds).toEqual({ enabled: true });
   });
 });
