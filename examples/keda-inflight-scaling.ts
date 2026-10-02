@@ -65,7 +65,7 @@ export const checkoutScaling = kubernetesComposition(
     status: type({ ready: 'boolean', active: 'boolean', hpa: 'string' }),
   },
   (spec) => {
-    deployment({
+    const checkout = deployment({
       metadata: { name: 'checkout', labels: { app: 'checkout' } },
       spec: {
         selector: { matchLabels: { app: 'checkout' } },
@@ -89,7 +89,9 @@ export const checkoutScaling = kubernetesComposition(
     const scaler = scaledObject({
       name: 'checkout',
       spec: {
-        scaleTargetRef: { name: 'checkout' },
+        // The resource itself, so the ScaledObject is applied after it: KEDA's
+        // webhook rejects one whose target does not exist yet.
+        scaleTargetRef: checkout,
         minReplicaCount: 2,
         maxReplicaCount: spec.maxReplicas,
         pollingInterval: 15,

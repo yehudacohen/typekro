@@ -122,7 +122,9 @@ export function validateScaledObjectSpec(spec: ScaledObjectSpec): KedaValidation
   const max = concrete(spec?.maxReplicaCount);
   const idle = concrete(spec?.idleReplicaCount);
   const effectiveMin = typeof min === 'number' ? min : 0;
-  if (typeof max === 'number' && effectiveMin > max) {
+  // An unset maxReplicaCount is the CRD default, 100.
+  const effectiveMax = typeof max === 'number' ? max : max === undefined ? 100 : undefined;
+  if (effectiveMax !== undefined && effectiveMin > effectiveMax) {
     error('minReplicaCount', 'minReplicaCount must not exceed maxReplicaCount');
   }
   if (typeof idle === 'number' && idle >= effectiveMin) {
@@ -161,12 +163,18 @@ export function validateScaledObjectSpec(spec: ScaledObjectSpec): KedaValidation
     ) {
       error('fallback.behavior', '"scalingModifiers" needs advanced.scalingModifiers.formula');
     }
-    triggers.forEach((trigger, index) => {
-      const type = concrete(trigger.type);
-      if (typeof type === 'string' && RESOURCE_TRIGGERS.includes(type)) {
-        warn(`triggers[${index}]`, 'fallback does not apply to cpu and memory triggers');
-      }
-    });
+    // KEDA 2.21's webhook: without scalingModifiers, fallback needs at least
+    // one trigger that is not cpu or memory.
+    if (onlyResource && concrete(modifiers?.formula) === undefined) {
+      error('fallback', 'fallback needs at least one trigger that is not cpu or memory');
+    } else {
+      triggers.forEach((trigger, index) => {
+        const type = concrete(trigger.type);
+        if (typeof type === 'string' && RESOURCE_TRIGGERS.includes(type)) {
+          warn(`triggers[${index}]`, 'fallback does not apply to cpu and memory triggers');
+        }
+      });
+    }
   }
   return issues;
 }
@@ -185,9 +193,28 @@ export function validateScaledJobSpec(spec: ScaledJobSpec): KedaValidationIssue[
   if (!spec?.jobTargetRef) {
     issues.push({ severity: 'error', path: 'jobTargetRef', message: 'jobTargetRef is required' });
   }
-  validateTriggers(spec?.triggers, issues);
+  validateTriggers(spec?.triggers as readonly KedaTrigger[] | undefined, issues);
+  (concreteTriggers(spec?.triggers as readonly KedaTrigger[] | undefined) ?? []).forEach(
+    (trigger, index) => {
+      const type = concrete(trigger.type);
+      if (typeof type === 'string' && RESOURCE_TRIGGERS.includes(type)) {
+        issues.push({
+          severity: 'error',
+          path: `triggers[${index}].type`,
+          message: `ScaledJobs cannot scale on ${type}`,
+        });
+      }
+      if (trigger.metricType !== undefined) {
+        issues.push({
+          severity: 'error',
+          path: `triggers[${index}].metricType`,
+          message: 'the ScaledJob CRD has no metricType',
+        });
+      }
+    }
+  );
   const min = concrete(spec?.minReplicaCount);
-  const max = concrete(spec?.maxReplicaCount);
+  const max = spec?.maxReplicaCount === undefined ? 100 : concrete(spec.maxReplicaCount);
   if (typeof min === 'number' && typeof max === 'number' && min > max) {
     issues.push({
       severity: 'error',
@@ -253,17 +280,26 @@ function manifestOf(resource: unknown): ManifestLike | undefined {
   }
 }
 
-/** Resources a VPA sets: cpu and memory unless every active policy narrows them. */
+/**
+ * Resources a VPA sets. Containers without a policy of their own follow the
+ * `'*'` policy, or get cpu and memory when there is none, so only a `'*'`
+ * policy can narrow them; named policies can only add.
+ */
 function vpaResources(spec: Record<string, unknown>): string[] {
-  const policies = (spec.resourcePolicy as { containerPolicies?: unknown[] } | undefined)
-    ?.containerPolicies as Array<{ mode?: string; controlledResources?: string[] }> | undefined;
-  if (!Array.isArray(policies) || policies.length === 0) return [...RESOURCE_TRIGGERS];
-  const controlled = new Set<string>();
+  const policies = ((spec.resourcePolicy as { containerPolicies?: unknown[] } | undefined)
+    ?.containerPolicies ?? []) as Array<{
+    containerName?: string;
+    mode?: string;
+    controlledResources?: string[];
+  }>;
+  const controlledBy = (policy: { mode?: string; controlledResources?: string[] }) =>
+    policy.mode === 'Off' ? [] : (policy.controlledResources ?? RESOURCE_TRIGGERS);
+  const star = policies.find((policy) => policy.containerName === '*');
+  const controlled = new Set<string>(star ? controlledBy(star) : RESOURCE_TRIGGERS);
   for (const policy of policies) {
-    if (policy.mode === 'Off') continue;
-    for (const name of policy.controlledResources ?? RESOURCE_TRIGGERS) controlled.add(name);
+    if (policy !== star) for (const name of controlledBy(policy)) controlled.add(name);
   }
-  return [...controlled];
+  return RESOURCE_TRIGGERS.filter((name) => controlled.has(name));
 }
 
 /**

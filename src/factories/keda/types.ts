@@ -108,7 +108,8 @@ export interface KedaAwsCloudWatchMetadata {
   expression?: string;
   targetMetricValue: string;
   activationTargetMetricValue?: string;
-  minMetricValue?: string;
+  /** Value used when CloudWatch returns no data points. Required by the 2.21 scaler. */
+  minMetricValue: string;
   ignoreNullValues?: 'true' | 'false';
   metricCollectionTime?: string;
   metricStat?: string;
@@ -211,8 +212,18 @@ export interface KedaCustomTrigger extends KedaTriggerCommon {
   metadata: Record<string, string>;
 }
 
-/** A ScaledObject or ScaledJob trigger. */
+/** A ScaledObject trigger. */
 export type KedaTrigger = KedaTypedTrigger | KedaCustomTrigger;
+
+type WithoutMetricType<T> = T extends unknown ? Omit<T, 'metricType'> : never;
+
+/**
+ * A ScaledJob trigger: the ScaledJob CRD has no `metricType`, and KEDA does
+ * not scale Jobs on `cpu` or `memory`.
+ */
+export type KedaScaledJobTrigger = WithoutMetricType<
+  Exclude<KedaTypedTrigger, KedaResourceTrigger> | KedaCustomTrigger
+>;
 
 // ============================================================================
 // ScaledObject (keda.sh/v1alpha1)
@@ -227,15 +238,24 @@ export interface KedaHpaScalingRules {
   tolerance?: string | number;
 }
 
+/** The workload a ScaledObject scales. `kind` defaults to Deployment. */
+export interface KedaScaleTargetRef {
+  apiVersion?: string;
+  kind?: string;
+  name: string;
+  envSourceContainerName?: string;
+}
+
+/** A workload resource, used as a `scaleTargetRef` through its `apiVersion`, `kind` and name. */
+export interface KedaScaleTargetResource {
+  apiVersion: string;
+  kind: string;
+  metadata: { name?: string | undefined };
+}
+
 /** `spec` of a `ScaledObject`. */
 export interface ScaledObjectSpec {
-  /** The workload to scale. `kind` defaults to Deployment. */
-  scaleTargetRef: {
-    apiVersion?: string;
-    kind?: string;
-    name: string;
-    envSourceContainerName?: string;
-  };
+  scaleTargetRef: KedaScaleTargetRef;
   /** Seconds between trigger polls. @default 30 */
   pollingInterval?: number;
   /** Seconds after the last active trigger before scaling to zero. @default 300 */
@@ -246,7 +266,7 @@ export interface ScaledObjectSpec {
   idleReplicaCount?: number;
   /** @default 0 */
   minReplicaCount?: number;
-  /** @default 100 */
+  /** @default 100 (CRD default) */
   maxReplicaCount?: number;
   /** Replicas to hold when a scaler fails `failureThreshold` times in a row. */
   fallback?: {
@@ -302,7 +322,14 @@ export interface ScaledObjectConfig {
   namespace?: string;
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
-  spec: ScaledObjectSpec;
+  /**
+   * `scaleTargetRef` may be the workload resource itself, which also orders
+   * the ScaledObject after it: KEDA's webhook rejects one whose target does
+   * not exist yet.
+   */
+  spec: Omit<ScaledObjectSpec, 'scaleTargetRef'> & {
+    scaleTargetRef: KedaScaleTargetRef | KedaScaleTargetResource;
+  };
   /** Resource id for composition references. */
   id?: string;
 }
@@ -333,7 +360,7 @@ export interface ScaledJobSpec {
     pendingPodConditions?: string[];
     multipleScalersCalculation?: 'max' | 'min' | 'avg' | 'sum';
   };
-  triggers: KedaTrigger[];
+  triggers: KedaScaledJobTrigger[];
 }
 
 /** Observed status of a `ScaledJob`. */
@@ -367,6 +394,8 @@ export interface KedaPodIdentity {
   roleArn?: string;
   /** `aws` only. @default 'keda' */
   identityOwner?: 'keda' | 'workload';
+  /** `aws`: external ID for the `roleArn` trust policy. */
+  externalID?: string;
   /** `azure-workload`: client id to use instead of the operator's. */
   identityId?: string;
   identityTenantId?: string;
@@ -383,6 +412,21 @@ export interface TriggerAuthenticationSpec {
   podIdentity?: KedaPodIdentity;
   /** Trigger parameters filled with a token for the named ServiceAccount. */
   boundServiceAccountToken?: Array<{ parameter: string; serviceAccountName: string }>;
+  /** Trigger parameters read from a file mounted into the operator. */
+  filePath?: string;
+  // Untyped: passed through as written. See the KEDA authentication docs.
+  /** HashiCorp Vault secrets. Untyped; see https://keda.sh/docs/2.21/concepts/authentication/ */
+  hashiCorpVault?: Record<string, unknown>;
+  /** Azure Key Vault secrets. Untyped. */
+  azureKeyVault?: Record<string, unknown>;
+  /** Azure service principal. Untyped. */
+  azureServicePrincipal?: Record<string, unknown>;
+  /** AWS Secrets Manager secrets. Untyped. */
+  awsSecretManager?: Record<string, unknown>;
+  /** GCP Secret Manager secrets. Untyped. */
+  gcpSecretManager?: Record<string, unknown>;
+  /** OAuth2 client credentials. Untyped. */
+  oauth2?: Record<string, unknown>;
 }
 
 /** Observed status of a trigger authentication: the objects that use it. */

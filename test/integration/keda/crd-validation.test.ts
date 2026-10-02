@@ -182,11 +182,13 @@ const cronApp = kubernetesComposition(
     status: type({ ready: 'boolean', active: 'boolean', hpa: 'string' }),
   },
   (spec) => {
-    web('clock');
+    const clock = web('clock');
     const scaler = scaledObject({
       name: 'clock',
       spec: {
-        scaleTargetRef: { name: 'clock' },
+        // The resource itself: orders the ScaledObject after the Deployment,
+        // which KEDA's webhook requires.
+        scaleTargetRef: clock,
         minReplicaCount: 1,
         maxReplicaCount: 5,
         pollingInterval: 5,

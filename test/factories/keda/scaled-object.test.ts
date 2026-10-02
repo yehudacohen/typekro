@@ -29,6 +29,7 @@ import {
   validateScaledObjectSpec,
 } from '../../../src/factories/keda/utils/validation.js';
 import { horizontalPodAutoscaler } from '../../../src/factories/kubernetes/autoscaling/horizontal-pod-autoscaler.js';
+import { deployment } from '../../../src/factories/kubernetes/workloads/deployment.js';
 import { createResource } from '../../../src/factories/shared.js';
 
 const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
@@ -74,6 +75,7 @@ describe('triggers', () => {
           dimensionName: 'QueueName',
           dimensionValue: 'jobs',
           targetMetricValue: '10',
+          minMetricValue: '0',
         },
       },
       {
@@ -181,6 +183,80 @@ describe('scaledObject', () => {
     );
   });
 
+  it('treats an unset maxReplicaCount as 100', () => {
+    expect(() =>
+      scaledObject({
+        name: 'a',
+        spec: { scaleTargetRef: { name: 'api' }, minReplicaCount: 150, triggers: [inflight] },
+      })
+    ).toThrow('minReplicaCount must not exceed maxReplicaCount');
+    expect(
+      validateScaledObjectSpec({
+        scaleTargetRef: { name: 'api' },
+        minReplicaCount: 100,
+        triggers: [inflight],
+      })
+    ).toEqual([]);
+  });
+
+  it('throws on fallback with only cpu and memory triggers', () => {
+    expect(() =>
+      scaledObject({
+        name: 'a',
+        spec: {
+          scaleTargetRef: { name: 'api' },
+          minReplicaCount: 1,
+          fallback: { failureThreshold: 3, replicas: 4 },
+          triggers: [cpu],
+        },
+      })
+    ).toThrow('fallback needs at least one trigger that is not cpu or memory');
+  });
+
+  it('takes the workload resource as scaleTargetRef and orders after it', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'keda-target',
+        kind: 'KedaTarget',
+        spec: type({ name: 'string' }),
+        status: type({ ok: 'boolean' }),
+      },
+      (spec) => {
+        const api = deployment({
+          metadata: { name: spec.name, labels: { app: 'api' } },
+          spec: {
+            selector: { matchLabels: { app: 'api' } },
+            template: {
+              metadata: { labels: { app: 'api' } },
+              spec: { containers: [{ name: 'api', image: 'nginx' }] },
+            },
+          },
+          id: 'api',
+        });
+        scaledObject({
+          name: 'api',
+          spec: { scaleTargetRef: api, triggers: [inflight] },
+          id: 'apiScaler',
+        });
+        return { ok: true };
+      }
+    );
+    // The name is a reference to the Deployment's own name, resolved when it is
+    // applied; direct-mode toYaml leaves such references out.
+    const direct = loadAll(
+      composition.factory('direct', { namespace: 'shop' }).toYaml({ name: 'web' })
+    ) as Array<{ kind: string; spec: { scaleTargetRef?: unknown } }>;
+    expect(direct.find((doc) => doc.kind === 'ScaledObject')?.spec.scaleTargetRef).toMatchObject({
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+    });
+    const kro = composition.toYaml();
+    expect(kro).toContain('typekro.dev/depends-on-api: ${api.metadata.name}');
+    expect(kro).toMatch(
+      /scaleTargetRef:\n\s+apiVersion: apps\/v1\n\s+kind: Deployment\n\s+name: \$\{api\.metadata\.name\}/
+    );
+  });
+
   it('accepts CPU-only scaling with a floor of one replica', () => {
     expect(
       validateScaledObjectSpec({
@@ -244,6 +320,20 @@ describe('scaledJob', () => {
     });
     expect(job.kind).toBe('ScaledJob');
     expect(job.spec.scalingStrategy?.strategy).toBe('accurate');
+  });
+
+  it('rejects cpu, memory and metricType on ScaledJob triggers', () => {
+    const issues = validateScaledJobSpec({
+      jobTargetRef: { template: { spec: { containers: [] } } },
+      triggers: [
+        { type: 'cpu', metadata: { value: '50' } } as never,
+        { ...inflight, metricType: 'Value' } as never,
+      ],
+    });
+    expect(issues.map((issue) => issue.path)).toEqual([
+      'triggers[0].type',
+      'triggers[1].metricType',
+    ]);
   });
 
   it('validates triggers and replica bounds', () => {
@@ -353,7 +443,11 @@ describe('HPA / VPA conflicts', () => {
     return [...new Set(messages)];
   }
 
-  const vpa = (mode: string, controlledResources?: string[]) =>
+  const vpa = (
+    mode: string,
+    controlledResources?: string[],
+    policies?: Record<string, unknown>[]
+  ) =>
     createResource({
       apiVersion: 'autoscaling.k8s.io/v1',
       kind: 'VerticalPodAutoscaler',
@@ -364,6 +458,7 @@ describe('HPA / VPA conflicts', () => {
         ...(controlledResources
           ? { resourcePolicy: { containerPolicies: [{ containerName: '*', controlledResources }] } }
           : {}),
+        ...(policies ? { resourcePolicy: { containerPolicies: policies } } : {}),
       },
       id: 'apiVpa',
     });
@@ -391,6 +486,25 @@ describe('HPA / VPA conflicts', () => {
     });
     expect(messages).toHaveLength(1);
     expect(messages[0]).toContain('VerticalPodAutoscaler "api" also sets cpu requests');
+  });
+
+  it('still warns when only named containers are narrowed', () => {
+    // The usual sidecar exclusion leaves the main container on cpu and memory.
+    const sidecarOnly = conflictsIn(() => {
+      vpa('Recreate', undefined, [{ containerName: 'istio-proxy', mode: 'Off' }]);
+      return { scaleTargetRef: { name: 'api' }, minReplicaCount: 1, triggers: [cpu] };
+    });
+    expect(sidecarOnly).toHaveLength(1);
+    const namedMemoryOnly = conflictsIn(() => {
+      vpa('Recreate', undefined, [{ containerName: 'app', controlledResources: ['memory'] }]);
+      return { scaleTargetRef: { name: 'api' }, minReplicaCount: 1, triggers: [cpu] };
+    });
+    expect(namedMemoryOnly).toHaveLength(1);
+    const starOff = conflictsIn(() => {
+      vpa('Recreate', undefined, [{ containerName: '*', mode: 'Off' }]);
+      return { scaleTargetRef: { name: 'api' }, minReplicaCount: 1, triggers: [cpu] };
+    });
+    expect(starOff).toEqual([]);
   });
 
   it('stays quiet for an Off VPA, a memory-only VPA, and non-resource triggers', () => {

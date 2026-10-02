@@ -159,7 +159,7 @@ scaledObject({
 
 | Field | Notes |
 |---|---|
-| `scaleTargetRef` | `name`, optional `apiVersion`/`kind` (Deployment by default), `envSourceContainerName` |
+| `scaleTargetRef` | `name`, optional `apiVersion`/`kind` (Deployment by default), `envSourceContainerName`; or the workload resource itself (below) |
 | `minReplicaCount` / `maxReplicaCount` | `0` / `100` by default. `0` scales to zero while no trigger is active |
 | `idleReplicaCount` | Replicas while idle; must be below `minReplicaCount` |
 | `pollingInterval`, `cooldownPeriod`, `initialCooldownPeriod` | Seconds; `30`, `300`, `0` by default |
@@ -168,6 +168,25 @@ scaledObject({
 | `advanced.restoreToOriginalReplicaCount` | Restore the replica count when the ScaledObject is deleted |
 | `advanced.scalingModifiers` | Combine triggers into one metric: `formula`, `target`, `activationTarget`, `metricType` |
 | `triggers` | At least one (below) |
+
+### Apply order: pass the workload as `scaleTargetRef`
+
+KEDA's webhook rejects a ScaledObject whose target does not exist yet, which matters on the
+first deploy, when both are created together. (A server-side dry run skips that check, so it
+only shows up on a real apply.) Pass the workload resource itself:
+
+```typescript
+const checkout = deployment({ metadata: { name: 'checkout' }, spec: { /* ... */ }, id: 'checkout' });
+
+scaledObject({
+  name: 'checkout',
+  spec: { scaleTargetRef: checkout, triggers: [/* ... */] },
+});
+```
+
+The ScaledObject takes the workload's `apiVersion`, `kind` and name, and TypeKro applies it
+after the workload, in direct mode and in KRO. With a plain `{ name: 'checkout' }`, nothing
+orders the two; `{ name: checkout.metadata.name }` orders them through the reference.
 
 ### Triggers
 
@@ -179,7 +198,7 @@ scaledObject({
 | `prometheus` | `serverAddress`, `query`, `threshold` | `activationThreshold`, `namespace`, `customHeaders`, `authModes`, `ignoreNullValues`, `unsafeSsl`, `timeout` |
 | `cpu`, `memory` | `value` | `metricType` is required: `Utilization` (percent of the request) or `AverageValue`. Needs requests on the pods |
 | `aws-sqs-queue` | `awsRegion`, and `queueURL` or `queueURLFromEnv` | `queueLength` (per replica), `scaleOnInFlight`, `scaleOnDelayed` |
-| `aws-cloudwatch` | `awsRegion`, `targetMetricValue`, and `namespace`/`metricName`/dimensions or `expression` | `metricStat`, `metricStatPeriod`, `minMetricValue`, ... |
+| `aws-cloudwatch` | `awsRegion`, `targetMetricValue`, `minMetricValue`, and `namespace`/`metricName`/dimensions or `expression` | `metricStat`, `metricStatPeriod`, `ignoreNullValues`, ... |
 | `cron` | `timezone`, `start`, `end`, `desiredReplicas` | Holds `desiredReplicas` inside the window |
 | `metrics-api` | `url`, `valueLocation`, `targetValue` | `format`, `authMode`, `aggregateFromKubeServiceEndpoints` |
 | `postgresql` | `query`, `targetQueryValue` | `connectionFromEnv`, or `host`/`port`/`userName`/`dbName`/`sslmode` with a password from auth |
@@ -290,8 +309,9 @@ The `deployment` factory takes a spec without `replicas`; `simple.Deployment` al
 A VerticalPodAutoscaler that sets CPU or memory requests on a workload this ScaledObject scales
 on `cpu` or `memory` changes the base the utilization is measured against, and the two
 autoscalers chase each other. `scaledObject` warns when such a VPA is declared in the same
-composition. Use the VPA in `updateMode: 'Off'`, or scale on a metric other than the resource it
-controls. The `typekro/vpa` factory makes the same check from its side.
+composition. Containers without a policy of their own follow the VPA's `'*'` policy, or get both
+resources when there is none, so a policy list that only excludes a sidecar still counts. Use the
+VPA in `updateMode: 'Off'`, or scale on a metric other than the resource it controls. The `typekro/vpa` factory makes the same check from its side.
 
 ## ScaledJob
 
@@ -319,6 +339,10 @@ scaledJob({
 `jobTargetRef` is a Kubernetes `JobSpec`. `scalingStrategy`, `rollout`, the history limits and
 `pollingInterval` follow the [ScaledJob spec](https://keda.sh/docs/2.21/reference/scaledjob-spec/).
 
+ScaledJob triggers are typed separately (`KedaScaledJobTrigger`): the ScaledJob CRD has no
+`metricType`, and Jobs are not scaled on `cpu` or `memory`. `scalingStrategy.multipleScalersCalculation`
+decides how several triggers combine.
+
 ## Trigger authentication
 
 ```typescript
@@ -342,6 +366,10 @@ clusterTriggerAuthentication({ name: 'aws-keda', spec: { podIdentity: { provider
 | `env` | An environment variable of the scale target's container |
 | `podIdentity` | `aws`, `azure-workload` or `gcp` workload identity (`roleArn`, `identityOwner`, `identityId`, ...) |
 | `boundServiceAccountToken` | A token for the named ServiceAccount |
+| `filePath` | A file mounted into the operator |
+| `hashiCorpVault`, `azureKeyVault`, `azureServicePrincipal`, `awsSecretManager`, `gcpSecretManager`, `oauth2` | Untyped, passed through as written; see [Authentication](https://keda.sh/docs/2.21/concepts/authentication/) |
+
+`podIdentity` also takes `externalID` for an `aws` `roleArn` whose trust policy requires one.
 
 Reference a cluster-scoped one with `authenticationRef: { name, kind: 'ClusterTriggerAuthentication' }`.
 
@@ -373,12 +401,14 @@ validators return both. Values only known at reconcile time are skipped.
 | Check | Severity |
 |---|---|
 | No triggers; a trigger name used twice | error |
-| `minReplicaCount` above `maxReplicaCount`; `idleReplicaCount` not below `minReplicaCount` | error |
+| `minReplicaCount` above `maxReplicaCount` (100 when unset); `idleReplicaCount` not below `minReplicaCount` | error |
 | Only `cpu`/`memory` triggers with `minReplicaCount` 0 (they cannot scale from zero) | error |
 | `metricType: 'Value'` on `cpu`/`memory`; `Utilization` on any other trigger | error |
 | `scalingModifiers` without a `target`; `fallback.behavior: 'scalingModifiers'` without a formula | error |
 | An unnamed trigger under a `scalingModifiers` formula | warning |
-| `fallback` with `cpu`/`memory` triggers (fallback does not apply to them) | warning |
+| `fallback` with only `cpu`/`memory` triggers and no `scalingModifiers` (KEDA's webhook rejects it) | error |
+| `fallback` with some `cpu`/`memory` triggers (fallback ignores them) | warning |
+| A ScaledJob trigger on `cpu`/`memory` or with `metricType` | error |
 | An HPA on the same target in the composition; a VPA there setting a resource a trigger uses | warning |
 | Bootstrap with the webhooks off, a PDB that blocks every eviction, or IRSA without a role | warning |
 
