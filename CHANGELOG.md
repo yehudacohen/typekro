@@ -12,11 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Direct-mode NetworkPolicies kept their ports but lost their peers, so they allowed any
   source.** `@kubernetes/client-node` models `ingress[].from` as `_from`, while TypeKro manifests
   carry the wire spelling `from`. In direct mode, the SDK's typed serialization dropped `from` on
-  create and patch, so every ingress rule admitted traffic from anywhere on its ports. Affected:
-  `networkPolicy` and `simple.NetworkPolicy` in direct mode, and the direct-mode policies of the
-  Harbor and OpenSearch compositions. KRO mode is not affected, because the KRO controller
-  applies the templates. `egress[].to` is not renamed by the SDK and was not affected. The object
-  client now sends and reads NetworkPolicies as raw JSON, as it already did for CRDs. Re-deploy
+  create and patch, so every ingress rule admitted traffic from anywhere on its ports. Affected
+  versions: up to and including 0.44.1. Affected in direct mode: `networkPolicy` and
+  `simple.NetworkPolicy`, the policies of the Harbor and OpenSearch compositions, and
+  NetworkPolicies loaded from YAML files or manifests (`yamlFile`, `createResource`). KRO mode is
+  not affected, because the KRO controller applies the templates. `egress[].to` is not renamed by
+  the SDK and was not affected. The object client now sends and reads NetworkPolicies as raw
+  JSON, as it already did for CRDs, and rewrites the SDK spellings (`_from`, `_default`, `_int`)
+  to the wire fields so an object built with the SDK's types is not stripped either. Re-deploy
   direct-mode NetworkPolicies to restore their peers.
 
 ### Fixed

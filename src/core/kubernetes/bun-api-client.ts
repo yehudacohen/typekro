@@ -282,6 +282,44 @@ const RAW_WIRE_KINDS: ReadonlySet<string> = new Set([
   'resource.k8s.io/v1alpha2/ResourceSlice',
 ]);
 
+/** SDK property names that differ from the Kubernetes wire field. */
+const SDK_TO_WIRE: Readonly<Record<string, string>> = {
+  _from: 'from',
+  _default: 'default',
+  _int: 'int',
+};
+
+/** Raw kinds whose objects may still arrive with the SDK's spelling. */
+const SDK_SPELLING_KINDS: ReadonlySet<string> = new Set(
+  [...RAW_WIRE_KINDS].filter((kind) => !kind.endsWith('/CustomResourceDefinition'))
+);
+
+/**
+ * Rewrite the SDK spellings (`_from`, `_default`, `_int`) to the wire field.
+ *
+ * The raw path skips the SDK serializer that used to do this, and the API
+ * server drops unknown fields, so an object built with the SDK's typed models
+ * (through `createResource`, say) would lose them. For a NetworkPolicy that
+ * means an allow-all rule. None of these kinds has user-chosen map keys that
+ * may start with `_`, so renaming keys anywhere in the object is safe.
+ *
+ * @throws {Error} When both spellings are present with different values.
+ */
+function toWireSpelling<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => toWireSpelling(item)) as T;
+  if (value === null || typeof value !== 'object') return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const wire = SDK_TO_WIRE[key] ?? key;
+    const converted = toWireSpelling(child);
+    if (wire in result && JSON.stringify(result[wire]) !== JSON.stringify(converted)) {
+      throw new Error(`Object sets "${wire}" twice, with and without the SDK spelling.`);
+    }
+    result[wire] = converted;
+  }
+  return result as T;
+}
+
 export function createBunCompatibleKubernetesObjectApi(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
@@ -312,7 +350,17 @@ export function createBunCompatibleKubernetesObjectApi(
       spec: { apiVersion?: string | undefined; kind?: string | undefined },
       operation: () => Promise<T>
     ): Promise<T> {
-      const rawSpec = RAW_WIRE_KINDS.has(`${spec.apiVersion}/${spec.kind}`) ? spec : undefined;
+      const key = `${spec.apiVersion}/${spec.kind}`;
+      let rawSpec: typeof spec | undefined;
+      try {
+        rawSpec = RAW_WIRE_KINDS.has(key)
+          ? SDK_SPELLING_KINDS.has(key)
+            ? toWireSpelling(spec)
+            : spec
+          : undefined;
+      } catch (error) {
+        return Promise.reject(error);
+      }
       return this.rawCrd.run(rawSpec, operation);
     }
 

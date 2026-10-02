@@ -313,6 +313,67 @@ describe('bun-api-client', () => {
       });
     }
 
+    it('rewrites the SDK spellings _from, _default and _int to the wire fields', async () => {
+      const client = createBunCompatibleKubernetesObjectApi(createTestKubeConfig());
+      const bodies: unknown[] = [];
+      Reflect.set(client, 'resource', async () => ({ kind: 'X', name: 'xs', namespaced: true }));
+      const configuration = Reflect.get(client, 'configuration');
+      Reflect.set(configuration, 'httpApi', {
+        send(request: { getHttpMethod(): string; getBody(): unknown }) {
+          bodies.push(JSON.parse(String(request.getBody())));
+          return of({
+            httpStatusCode: 200,
+            headers: { 'content-type': 'application/json' },
+            body: { text: async () => '{}' },
+          });
+        },
+      });
+      const peer = { podSelector: { matchLabels: { type: 'agent' } } };
+
+      await client.create({
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: { name: 'lapi', namespace: 'crowdsec' },
+        spec: { podSelector: {}, ingress: [{ _from: [peer], ports: [{ port: 8080 }] }] },
+      } as k8s.KubernetesObject);
+      await client.create({
+        apiVersion: 'v1',
+        kind: 'LimitRange',
+        metadata: { name: 'defaults', namespace: 'apps' },
+        spec: { limits: [{ type: 'Container', _default: { memory: '256Mi' } }] },
+      } as k8s.KubernetesObject);
+      await client.create({
+        apiVersion: 'resource.k8s.io/v1',
+        kind: 'ResourceSlice',
+        metadata: { name: 'node-a-gpu', namespace: 'unused' },
+        spec: { devices: [{ name: 'gpu-0', attributes: { index: { _int: 0 } } }] },
+      } as k8s.KubernetesObject);
+
+      expect(bodies).toEqual([
+        expect.objectContaining({
+          spec: { podSelector: {}, ingress: [{ from: [peer], ports: [{ port: 8080 }] }] },
+        }),
+        expect.objectContaining({
+          spec: { limits: [{ type: 'Container', default: { memory: '256Mi' } }] },
+        }),
+        expect.objectContaining({
+          spec: { devices: [{ name: 'gpu-0', attributes: { index: { int: 0 } } }] },
+        }),
+      ]);
+      for (const body of bodies) {
+        expect(JSON.stringify(body)).not.toMatch(/"_(from|default|int)"/);
+      }
+
+      await expect(
+        client.create({
+          apiVersion: 'networking.k8s.io/v1',
+          kind: 'NetworkPolicy',
+          metadata: { name: 'conflict', namespace: 'crowdsec' },
+          spec: { ingress: [{ _from: [peer], from: [] }] },
+        } as k8s.KubernetesObject)
+      ).rejects.toThrow(/sets "from" twice/);
+    });
+
     it('keeps concurrent CRD and ordinary object serialization separate', async () => {
       const client = createBunCompatibleKubernetesObjectApi(createTestKubeConfig());
       const crd = {
