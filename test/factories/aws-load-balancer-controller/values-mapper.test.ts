@@ -80,7 +80,7 @@ describe('mapAwsLoadBalancerControllerConfigToHelmValues', () => {
     }
   });
 
-  it('deep-merges build-time values last: objects merge, arrays and primitives replace', () => {
+  it('lays build-time values over the mapped ones: a set key replaces, serviceAccount merges', () => {
     const values = mapAwsLoadBalancerControllerConfigToHelmValues(
       {
         name: 'lbc',
@@ -98,12 +98,25 @@ describe('mapAwsLoadBalancerControllerConfigToHelmValues', () => {
     expect(values.serviceAccount).toEqual({
       create: true,
       name: 'aws-load-balancer-controller',
-      annotations: { a: '1', b: '2' },
+      // A spec-derived value is replaced whole, as KRO mode has to.
+      annotations: { b: '2' },
       automountServiceAccountToken: false,
     });
     expect(values.tolerations).toEqual([{ key: 'two', operator: 'Exists' }]);
     expect(values.defaultTargetType).toBe('instance');
     expect(values.enableShield).toBe(false);
+  });
+
+  it('replaces podDisruptionBudget as a whole, so its exclusive keys never combine', () => {
+    const values = mapAwsLoadBalancerControllerConfigToHelmValues(
+      { name: 'lbc', clusterName: 'prod', resources: { requests: { cpu: '100m' } } },
+      {
+        podDisruptionBudget: { minAvailable: 1 },
+        resources: { limits: { memory: '256Mi' } },
+      }
+    );
+    expect(values.podDisruptionBudget).toEqual({ minAvailable: 1 });
+    expect(values.resources).toEqual({ limits: { memory: '256Mi' } });
   });
 
   it('ignores prototype keys in build-time values', () => {

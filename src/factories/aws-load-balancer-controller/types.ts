@@ -82,7 +82,11 @@ export interface AwsLoadBalancerControllerBootstrapOptions extends HelmReleaseLi
   name?: string;
   /** Custom resource kind. @default 'AwsLoadBalancerControllerBootstrap' */
   kind?: string;
-  /** Raw chart values, deep-merged over the mapped values. */
+  /**
+   * Raw chart values laid over the mapped values. A key set here replaces the
+   * mapped value as a whole (so `podDisruptionBudget: { minAvailable: 1 }`
+   * drops the default `maxUnavailable`); `serviceAccount` merges field by field.
+   */
   values?: Record<string, unknown>;
 }
 

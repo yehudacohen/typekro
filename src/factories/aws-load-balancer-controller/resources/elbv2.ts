@@ -55,36 +55,87 @@ function isGraphValue(value: unknown): boolean {
   return isKubernetesRef(value) || isCelExpression(value);
 }
 
+/** The VPC ID format the controller's webhook accepts (v3.5.0). */
+const VPC_ID_PATTERN = /^(?:vpc-[0-9a-f]{8}|vpc-[0-9a-f]{17}|vpc-[0-9a-f]{32})$/;
+
+/** A concrete, non-empty string; `undefined` for a graph value or anything else. */
+function concreteString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 /**
- * Reject a binding that names no target group. The CRD accepts one, but the
- * controller's webhook refuses it ("either TargetGroupARN or TargetGroupName"
- * is required, and an empty string counts as unset), so it would never
- * reconcile. A reference or CEL value is only known per instance, so it counts
- * as set here; the webhook still checks the resolved value.
+ * Reject at build time the TargetGroupBindings the controller's validating
+ * webhook (v3.5.0) would reject on static grounds alone, so the mistake shows
+ * up in the composition rather than as a failed apply. Checks that need the
+ * AWS target group (protocol, IP address type and VPC matching it) stay with
+ * the webhook. A reference or CEL value is only known per instance, so a check
+ * that involves one is skipped; the webhook still checks the resolved value.
  */
-function assertTargetGroup(config: Composable<TargetGroupBindingConfig>): void {
+function validateTargetGroupBinding(config: Composable<TargetGroupBindingConfig>): void {
   const spec: unknown = config.spec;
+  // A whole spec given as a graph value: nothing is known until an instance.
   if (isGraphValue(spec)) return;
-  const { targetGroupARN, targetGroupName } = (spec ?? {}) as {
-    targetGroupARN?: unknown;
-    targetGroupName?: unknown;
-  };
-  const isSet = (value: unknown) =>
-    isGraphValue(value) || (typeof value === 'string' && value.length > 0);
-  if (isSet(targetGroupARN) || isSet(targetGroupName)) return;
+  const fields = (spec ?? {}) as Record<string, unknown>;
   const name = typeof config.name === 'string' ? config.name : '<reference>';
-  throw new ValidationError(
-    `TargetGroupBinding '${name}' names no target group: set spec.targetGroupARN or ` +
-      'spec.targetGroupName (a non-empty string). The AWS Load Balancer Controller rejects a ' +
-      'binding without one.',
-    'TargetGroupBinding',
-    name,
-    'spec.targetGroupARN',
-    [
-      'Set spec.targetGroupARN to the ARN of an existing target group.',
-      'Or set spec.targetGroupName; the controller looks the ARN up by name.',
-    ]
-  );
+  const fail = (message: string, field: string, suggestions: string[]): never => {
+    throw new ValidationError(
+      `TargetGroupBinding '${name}': ${message}`,
+      'TargetGroupBinding',
+      name,
+      field,
+      suggestions
+    );
+  };
+
+  // The CRD accepts a binding with neither, but the webhook refuses it, and
+  // it treats an empty string as unset.
+  const isSet = (value: unknown) => isGraphValue(value) || concreteString(value) !== undefined;
+  if (!isSet(fields.targetGroupARN) && !isSet(fields.targetGroupName)) {
+    fail(
+      'names no target group: set spec.targetGroupARN or spec.targetGroupName (a non-empty ' +
+        'string). The AWS Load Balancer Controller rejects a binding without one.',
+      'spec.targetGroupARN',
+      [
+        'Set spec.targetGroupARN to the ARN of an existing target group.',
+        'Or set spec.targetGroupName; the controller looks the ARN up by name.',
+      ]
+    );
+  }
+
+  const targetType = concreteString(fields.targetType);
+  if (
+    targetType === 'ip' &&
+    fields.nodeSelector !== undefined &&
+    !isGraphValue(fields.nodeSelector)
+  ) {
+    fail(
+      'spec.nodeSelector only applies to instance targets, and targetType is ip.',
+      'spec.nodeSelector',
+      ["Remove spec.nodeSelector, or use targetType 'instance'."]
+    );
+  }
+  if (targetType === 'instance' && concreteString(fields.iamRoleArnToAssume) !== undefined) {
+    fail(
+      'a cross-account binding (spec.iamRoleArnToAssume) needs ip targets, and targetType is instance.',
+      'spec.targetType',
+      ["Use targetType 'ip' with spec.iamRoleArnToAssume."]
+    );
+  }
+  const protocol = concreteString(fields.targetGroupProtocol);
+  if (targetType === 'instance' && (protocol === 'QUIC' || protocol === 'TCP_QUIC')) {
+    fail(`${protocol} target groups do not support instance targets.`, 'spec.targetType', [
+      "Use targetType 'ip' for a QUIC or TCP_QUIC target group.",
+    ]);
+  }
+  const vpcID = concreteString(fields.vpcID);
+  if (vpcID !== undefined && !VPC_ID_PATTERN.test(vpcID)) {
+    fail(
+      `spec.vpcID '${vpcID}' is not a VPC ID: it must be 'vpc-' followed by 8, 17 or 32 ` +
+        'lowercase hex characters.',
+      'spec.vpcID',
+      ['Leave spec.vpcID unset to let the controller read it from the target group.']
+    );
+  }
 }
 
 /**
@@ -105,12 +156,15 @@ function assertTargetGroup(config: Composable<TargetGroupBindingConfig>): void {
  * ```
  *
  * @throws {ValidationError} when neither `targetGroupARN` nor `targetGroupName`
- * is set (or both are empty strings).
+ * is set (or both are empty strings), or when concrete values break a static
+ * rule of the controller's webhook: `nodeSelector` with `ip` targets,
+ * `iamRoleArnToAssume` or a QUIC / TCP_QUIC protocol with `instance` targets, or
+ * a malformed `vpcID`.
  */
 export function targetGroupBinding(
   config: Composable<TargetGroupBindingConfig>
 ): Enhanced<TargetGroupBindingSpec, TargetGroupBindingStatus> {
-  assertTargetGroup(config);
+  validateTargetGroupBinding(config);
   return createResource<TargetGroupBindingSpec, TargetGroupBindingStatus>({
     ...(config.id ? { id: config.id } : {}),
     apiVersion: AWS_LBC_ELBV2_API_VERSION,

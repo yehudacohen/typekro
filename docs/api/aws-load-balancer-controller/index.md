@@ -108,7 +108,7 @@ concrete values:
 | Option | Default | Notes |
 |---|---|---|
 | `install`, `upgrade`, `driftDetection` | see below | The Flux lifecycle options every TypeKro HelmRelease factory takes. See [Install, upgrade and CRD policy](/api/flux/#install-upgrade-and-crd-policy) |
-| `values` | none | Raw chart values, deep-merged over the mapped values. Objects merge; arrays and scalars replace |
+| `values` | none | Raw chart values laid over the mapped values. A key you set replaces the mapped value as a whole, so `podDisruptionBudget: { minAvailable: 1 }` drops the default `maxUnavailable`. `serviceAccount` merges field by field. Direct and KRO mode render the same values |
 | `name`, `kind` | `aws-load-balancer-controller-bootstrap`, `AwsLoadBalancerControllerBootstrap` | The composition's name and custom resource kind |
 
 ```typescript
@@ -191,6 +191,20 @@ looks the ARN up), or both; with both set, the controller uses the ARN. The type
 requires at least one, and the factory throws a `ValidationError` when both are
 missing or empty, because the controller's webhook rejects such a binding. A
 schema reference counts as set, since its value is only known per instance.
+
+The factory also rejects, on concrete values, what the controller's webhook
+rejects without looking at AWS: `nodeSelector` with `targetType: 'ip'`,
+`iamRoleArnToAssume` or a `QUIC` / `TCP_QUIC` `targetGroupProtocol` with
+`targetType: 'instance'`, and a `vpcID` that is not `vpc-` followed by 8, 17 or
+32 lowercase hex characters.
+
+`targetGroupARN`, `targetType`, `ipAddressType` and `vpcID` cannot change after
+the binding is created; to change one, create a new binding. On create, the
+controller's mutating webhook fills in whichever of them you leave unset (the
+ARN from `targetGroupName`, the others from the target group). A later apply
+that omits a field the webhook filled in can then be rejected as a change to
+an immutable field. Set `targetType` explicitly, and set `ipAddressType` and
+`vpcID` too when you know them.
 
 Readiness: ready once `status.observedGeneration` has reached
 `metadata.generation` and no condition is `False`.

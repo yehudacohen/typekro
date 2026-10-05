@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import { ValidationError } from '../../../src/core/errors.js';
 import { getResourceScope } from '../../../src/core/metadata/resource-metadata.js';
+import { Cel } from '../../../src/core/references/cel.js';
 import {
   ingressClassParams,
   type TargetGroupBindingSpec,
@@ -81,7 +83,7 @@ describe('targetGroupBinding', () => {
     const build = (spec: Partial<TargetGroupBindingSpec>) => () =>
       targetGroupBinding({ name: 'web', spec: spec as TargetGroupBindingSpec });
     expect(build({ serviceRef })).toThrow(
-      "TargetGroupBinding 'web' names no target group: set spec.targetGroupARN or spec.targetGroupName"
+      "TargetGroupBinding 'web': names no target group: set spec.targetGroupARN or spec.targetGroupName"
     );
     // The controller treats an empty string as unset.
     expect(build({ serviceRef, targetGroupARN: '', targetGroupName: '' })).toThrow(ValidationError);
@@ -110,6 +112,104 @@ describe('targetGroupBinding', () => {
       }
     );
     expect(graph.toYaml()).toContain('targetGroupName: ${schema.spec.targetGroupName}');
+  });
+
+  describe('mirrors the static rules of the controller webhook', () => {
+    const build = (spec: Partial<TargetGroupBindingSpec>) => () =>
+      targetGroupBinding({
+        name: 'web',
+        spec: { serviceRef, targetGroupARN: TARGET_GROUP_ARN, ...spec } as TargetGroupBindingSpec,
+      });
+
+    it('rejects a node selector on ip targets', () => {
+      expect(build({ targetType: 'ip', nodeSelector: { matchLabels: { pool: 'a' } } })).toThrow(
+        /nodeSelector only applies to instance targets/
+      );
+      // Like the webhook, any selector counts, an empty one too.
+      expect(build({ targetType: 'ip', nodeSelector: {} })).toThrow(ValidationError);
+      expect(
+        build({ targetType: 'instance', nodeSelector: { matchLabels: { pool: 'a' } } })
+      ).not.toThrow();
+    });
+
+    it('rejects a cross-account role on instance targets', () => {
+      const iamRoleArnToAssume = 'arn:aws:iam::111122223333:role/elb-targets';
+      expect(build({ targetType: 'instance', iamRoleArnToAssume })).toThrow(
+        /iamRoleArnToAssume\) needs ip targets/
+      );
+      expect(build({ targetType: 'ip', iamRoleArnToAssume })).not.toThrow();
+    });
+
+    it('rejects QUIC and TCP_QUIC target groups with instance targets', () => {
+      for (const targetGroupProtocol of ['QUIC', 'TCP_QUIC'] as const) {
+        expect(build({ targetType: 'instance', targetGroupProtocol })).toThrow(
+          `${targetGroupProtocol} target groups do not support instance targets`
+        );
+        expect(build({ targetType: 'ip', targetGroupProtocol })).not.toThrow();
+      }
+      expect(build({ targetType: 'instance', targetGroupProtocol: 'TCP' })).not.toThrow();
+    });
+
+    it('rejects a malformed VPC ID', () => {
+      for (const vpcID of [
+        'vpc-123',
+        'vpc-0123456789ABCDEF0',
+        'subnet-01234567',
+        'vpc-0123456789abcdef',
+      ]) {
+        expect(build({ vpcID })).toThrow(/is not a VPC ID/);
+      }
+      for (const vpcID of ['vpc-01234567', 'vpc-0123456789abcdef0', `vpc-${'a'.repeat(32)}`]) {
+        expect(build({ vpcID })).not.toThrow();
+      }
+    });
+
+    it('skips a rule whose values are only known per instance', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'tgb-rule-refs',
+          apiVersion: 'example.com/v1alpha1',
+          kind: 'TgbRuleRefs',
+          spec: type({
+            'targetType?': "'instance' | 'ip'",
+            'vpcID?': 'string',
+            'role?': 'string',
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          targetGroupBinding({
+            id: 'binding',
+            name: 'web',
+            spec: {
+              serviceRef,
+              targetGroupARN: TARGET_GROUP_ARN,
+              targetType: spec.targetType,
+              vpcID: spec.vpcID,
+              iamRoleArnToAssume: spec.role,
+              nodeSelector: { matchLabels: { pool: 'a' } },
+            },
+          });
+          return { ready: true };
+        }
+      );
+      expect(graph.toYaml()).toContain('kind: TargetGroupBinding');
+    });
+
+    it('checks nothing when the whole spec is a graph value', () => {
+      const wholeSpec = (spec: unknown) =>
+        targetGroupBinding({ name: 'web', spec: spec as TargetGroupBindingSpec });
+      const schemaSpec = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath: 'spec.binding',
+      };
+      // Fields read off a schema reference are references, so it passes either way.
+      expect(() => wholeSpec(schemaSpec)).not.toThrow();
+      // A CEL value has no readable fields; without the early return the
+      // target-group check would wrongly fire.
+      expect(() => wholeSpec(Cel.expr('schema.spec.binding'))).not.toThrow();
+    });
   });
 
   const evaluate = (resource: unknown) => targetGroupBindingReadinessEvaluator(resource);

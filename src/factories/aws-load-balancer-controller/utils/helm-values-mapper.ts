@@ -31,15 +31,32 @@ function prune(value: unknown): unknown {
   return Object.keys(pruned).length > 0 ? pruned : undefined;
 }
 
-// Plain objects merge key by key; arrays, primitives and graph values replace.
-function deepMerge(base: Record<string, unknown>, overlay: Record<string, unknown>) {
+// Sections the mapper builds itself, field by field and the same way in both
+// modes. An overlay merges into these one field at a time.
+const MAPPER_SECTIONS: ReadonlySet<string> = new Set(['serviceAccount']);
+
+function isUnsafeKey(key: string): boolean {
+  return key === '__proto__' || key === 'constructor' || key === 'prototype';
+}
+
+// Lay the build-time overlay over the mapped values. Every other key the
+// overlay sets replaces the mapped value as a whole. A spec-derived value is a
+// schema reference in KRO mode, which the overlay can only replace, so direct
+// mode does the same; merging there would also combine keys a chart object
+// allows only one of, e.g. a spec `podDisruptionBudget.maxUnavailable` with an
+// overlay `minAvailable`, which the PDB API rejects.
+function applyOverlay(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+  sections: ReadonlySet<string>
+): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(overlay)) {
-    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    if (isUnsafeKey(key)) continue;
     const current = merged[key];
     merged[key] =
-      isMergeableValuesObject(current) && isMergeableValuesObject(value)
-        ? deepMerge(current, value)
+      sections.has(key) && isMergeableValuesObject(current) && isMergeableValuesObject(value)
+        ? applyOverlay(current, value, new Set())
         : value;
   }
   return merged;
@@ -49,7 +66,9 @@ function deepMerge(base: Record<string, unknown>, overlay: Record<string, unknow
  * Map the bootstrap spec to `aws-load-balancer-controller` chart values.
  *
  * Works on a concrete spec (direct mode) and on the schema proxy (KRO mode).
- * `values` is a concrete, build-time overlay, deep-merged last.
+ * `values` is a concrete, build-time overlay applied last. A key it sets
+ * replaces the mapped value as a whole, except `serviceAccount`, which merges
+ * field by field; both modes render the same result.
  *
  * @example
  * ```typescript
@@ -95,5 +114,5 @@ export function mapAwsLoadBalancerControllerConfigToHelmValues(
     keepTLSSecret: true,
   };
   const pruned = (prune(mapped) ?? {}) as Record<string, unknown>;
-  return values ? deepMerge(pruned, values) : pruned;
+  return values ? applyOverlay(pruned, values, MAPPER_SECTIONS) : pruned;
 }

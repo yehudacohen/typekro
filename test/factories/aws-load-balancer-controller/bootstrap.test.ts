@@ -69,22 +69,25 @@ function instantiate(template: unknown, spec: AwsLoadBalancerControllerBootstrap
   return template;
 }
 
-function directRelease(spec: AwsLoadBalancerControllerBootstrapConfig): HelmReleaseDocument {
-  const yaml = awsLoadBalancerControllerBootstrap
-    .factory('direct', { namespace: 'default' })
-    .toYaml(spec);
+type Bootstrap = typeof awsLoadBalancerControllerBootstrap;
+
+function directRelease(
+  spec: AwsLoadBalancerControllerBootstrapConfig,
+  composition: Bootstrap = awsLoadBalancerControllerBootstrap
+): HelmReleaseDocument {
+  const yaml = composition.factory('direct', { namespace: 'default' }).toYaml(spec);
   const release = (loadAll(yaml) as HelmReleaseDocument[]).find((d) => d?.kind === 'HelmRelease');
   if (!release) throw new Error('direct render has no HelmRelease');
   return release;
 }
 
-function rgd(): {
+function rgd(composition: Bootstrap = awsLoadBalancerControllerBootstrap): {
   spec: {
     resources: { id: string; template?: unknown }[];
     schema: { status: Record<string, string> };
   };
 } {
-  const docs = loadAll(awsLoadBalancerControllerBootstrap.toYaml()) as {
+  const docs = loadAll(composition.toYaml()) as {
     metadata: { name: string };
     spec: {
       resources: { id: string; template?: unknown }[];
@@ -96,8 +99,11 @@ function rgd(): {
   return bootstrap;
 }
 
-function kroRelease(spec: AwsLoadBalancerControllerBootstrapConfig): HelmReleaseDocument {
-  const template = rgd().spec.resources.find((r) => r.id === RELEASE_ID)?.template;
+function kroRelease(
+  spec: AwsLoadBalancerControllerBootstrapConfig,
+  composition: Bootstrap = awsLoadBalancerControllerBootstrap
+): HelmReleaseDocument {
+  const template = rgd(composition).spec.resources.find((r) => r.id === RELEASE_ID)?.template;
   if (!template) throw new Error(`RGD has no ${RELEASE_ID}`);
   return instantiate(template, spec) as HelmReleaseDocument;
 }
@@ -250,4 +256,39 @@ describe('makeAwsLoadBalancerControllerBootstrap', () => {
     expect(release?.spec.upgrade).toMatchObject({ crds: 'Skip', timeout: '20m' });
     expect(release?.spec.values).toMatchObject({ enableShield: false });
   });
+});
+
+describe('build-time values overlay', () => {
+  // Overlay keys whose objects carry exclusive or spec-derived fields.
+  const overlaid = makeAwsLoadBalancerControllerBootstrap({
+    values: {
+      podDisruptionBudget: { minAvailable: 1 },
+      resources: { limits: { memory: '256Mi' } },
+      nodeSelector: { 'node-role': 'system' },
+      affinity: {
+        nodeAffinity: {
+          requiredDuringSchedulingIgnoredDuringExecution: {
+            nodeSelectorTerms: [
+              { matchExpressions: [{ key: 'arch', operator: 'In', values: ['arm64'] }] },
+            ],
+          },
+        },
+      },
+      serviceAccount: { annotations: { 'example.com/owner': 'platform' } },
+    },
+  });
+
+  for (const [name, spec] of Object.entries(SPECS)) {
+    it(`renders the same values in KRO and direct mode: ${name}`, () => {
+      const direct = directRelease(spec, overlaid).spec.values ?? {};
+      expect(kroRelease(spec, overlaid).spec.values).toEqual(direct);
+      // The overlay replaces the PDB whole: never both minAvailable and maxUnavailable.
+      expect(direct.podDisruptionBudget).toEqual({ minAvailable: 1 });
+      expect(direct.resources).toEqual({ limits: { memory: '256Mi' } });
+      expect(direct.nodeSelector).toEqual({ 'node-role': 'system' });
+      expect(direct.serviceAccount).toMatchObject({
+        annotations: { 'example.com/owner': 'platform' },
+      });
+    });
+  }
 });
