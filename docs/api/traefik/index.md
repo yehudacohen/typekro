@@ -123,7 +123,7 @@ interface TraefikBootstrapConfig {
     crd?: boolean;
     gatewayApi?: boolean;
     kubernetesIngress?: boolean;
-    allowEmptyServices?: boolean; // default false
+    allowEmptyServices?: boolean; // default true, as in the chart
     namespaces?: string[]; // default: all namespaces
     allowCrossNamespace?: boolean; // default false
   };
@@ -298,7 +298,7 @@ consequences worth knowing:
 | `terminationGracePeriodSeconds: 60` | Covers both. `validateTraefikHelmValues` warns when an entrypoint's accept + drain time reaches the grace period. |
 | PodDisruptionBudget, `maxUnavailable: 1` | A node drain can't evict every replica at once, and the budget never blocks a drain, even at one replica. |
 | Soft zone and node spread (`ScheduleAnyway`, `maxSkew: 1`) | Replicas land in different zones and on different nodes when the cluster allows it. The selector is the chart's exact pod selector, and `matchLabelKeys: [pod-template-hash]` counts skew per ReplicaSet so a rolling update spreads the new pods. Set `zoneSpread: 'DoNotSchedule'` to make the zone spread hard. |
-| `allowEmptyServices: false`, `allowCrossNamespace: false` | Traefik's own defaults, stated explicitly. With `allowEmptyServices: true`, a route whose Service has no ready endpoints answers `503` instead of disappearing (`404`). |
+| `allowEmptyServices: true`, `allowCrossNamespace: false` | The chart's defaults, stated explicitly. A route whose Service has no ready endpoints answers `503`. With `allowEmptyServices: false` the route disappears instead: a `404`, or another router takes the request. |
 | Prometheus on the internal `metrics` entrypoint (9100) | The owned Service never publishes it, and `ports.metrics.expose` stays `false` even if the raw values set it. |
 
 **Behind an AWS NLB with IP targets**, size the shutdown to the NLB:

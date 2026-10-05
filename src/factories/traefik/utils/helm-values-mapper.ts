@@ -440,7 +440,7 @@ export function mapTraefikConfigToHelmValues(
       kubernetesCRD: {
         enabled: Cel.default(config.providers?.crd, true),
         ingressClass,
-        allowEmptyServices: Cel.default(config.providers?.allowEmptyServices, false),
+        allowEmptyServices: Cel.default(config.providers?.allowEmptyServices, true),
         allowCrossNamespace: Cel.default(config.providers?.allowCrossNamespace, false),
         ...(config.providers?.namespaces !== undefined && {
           namespaces: config.providers.namespaces,
@@ -448,7 +448,7 @@ export function mapTraefikConfigToHelmValues(
       },
       kubernetesIngress: {
         enabled: Cel.default(config.providers?.kubernetesIngress, false),
-        allowEmptyServices: Cel.default(config.providers?.allowEmptyServices, false),
+        allowEmptyServices: Cel.default(config.providers?.allowEmptyServices, true),
         ...(config.providers?.namespaces !== undefined && {
           namespaces: config.providers.namespaces,
         }),

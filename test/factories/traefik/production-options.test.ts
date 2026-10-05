@@ -178,9 +178,16 @@ describe('providers', () => {
     });
   });
 
-  it('defaults to dropping empty services and refusing cross-namespace references', () => {
+  it('defaults to keeping empty services, as the chart does, and refusing cross-namespace references', () => {
     const values = map({ name: 'traefik' });
-    expect(values.providers?.kubernetesCRD?.allowEmptyServices).toBe(false);
+    // Chart 41.5.0 defaults both providers to true: a route whose Service has
+    // no ready endpoints answers 503 instead of vanishing.
+    expect(values.providers?.kubernetesCRD?.allowEmptyServices).toBe(true);
+    expect(values.providers?.kubernetesIngress?.allowEmptyServices).toBe(true);
+    expect(
+      map({ name: 'traefik', providers: { allowEmptyServices: false } }).providers?.kubernetesCRD
+        ?.allowEmptyServices
+    ).toBe(false);
     expect(values.providers?.kubernetesCRD?.allowCrossNamespace).toBe(false);
     expect(values.providers?.kubernetesCRD).not.toHaveProperty('namespaces');
   });

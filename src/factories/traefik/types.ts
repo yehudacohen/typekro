@@ -1745,7 +1745,11 @@ export const TraefikBootstrapConfigSchema = type({
     'crd?': 'boolean',
     'gatewayApi?': 'boolean',
     'kubernetesIngress?': 'boolean',
-    /** Keep routes whose Service has no endpoints, answering 503 instead of 404. @default false */
+    /**
+     * Keep routes whose Service has no ready endpoints, answering 503. Off,
+     * such a route disappears: a 404, or another router takes the request.
+     * @default true, the chart's default
+     */
     'allowEmptyServices?': 'boolean',
     /** Namespaces the CRD and Ingress providers watch. Omit to watch all. */
     'namespaces?': 'string[]',
