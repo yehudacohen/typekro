@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAll } from 'js-yaml';
-
+import { Cel } from '../../../src/core/references/cel.js';
 import {
   makeTraefikBootstrap,
   traefikBootstrap,
@@ -390,6 +390,101 @@ describe('entrypoint proxy trust', () => {
         ],
       })
     ).toEqual([]);
+  });
+
+  // A static configuration file outranks every flag, so pointing Traefik at
+  // one, or mounting over a path it searches, hides the trust settings.
+  const STATIC_CONFIG_VALUES: Record<string, Record<string, unknown>> = {
+    '--configFile=': { additionalArguments: ['--configFile=/config/traefik.yml'] },
+    '--configfile and a separate value': {
+      additionalArguments: ['--configfile', '/config/traefik.yml'],
+    },
+    '-CONFIGFILE': { additionalArguments: ['-CONFIGFILE=/config/traefik.yml'] },
+    'a mount at /etc/traefik': {
+      additionalVolumeMounts: [{ name: 'config', mountPath: '/etc/traefik' }],
+    },
+    'a mount of the file itself': {
+      additionalVolumeMounts: [
+        { name: 'config', mountPath: '/etc/traefik/traefik.yml', subPath: 'traefik.yml' },
+      ],
+    },
+    'a mount at /etc': { additionalVolumeMounts: [{ name: 'config', mountPath: '/etc/' }] },
+    'a mount at the working directory file': {
+      additionalVolumeMounts: [{ name: 'config', mountPath: '/traefik.toml' }],
+    },
+    'a mount at $HOME/.config': {
+      additionalVolumeMounts: [{ name: 'config', mountPath: '//.config/./' }],
+    },
+    'a templated mount path': {
+      additionalVolumeMounts: [{ name: 'config', mountPath: '{{ .Values.configPath }}' }],
+    },
+    'a chart volume': {
+      volumes: [{ name: 'config', type: 'configMap', mountPath: '/etc/traefik/../traefik' }],
+    },
+    'persistence.path': { persistence: { enabled: true, path: '/etc/traefik' } },
+    'hub.tokenMountPath': { hub: { token: 'hub', tokenMountPath: '/.config/traefik.yaml' } },
+    'a raw local plugin': {
+      experimental: {
+        localPlugins: {
+          stamp: { moduleName: 'stamp', mountPath: '/etc/traefik', type: 'localPath' },
+        },
+      },
+    },
+    'a literal HOME with a mount under it': {
+      env: [{ name: 'HOME', value: '/home/traefik' }],
+      additionalVolumeMounts: [{ name: 'config', mountPath: '/home/traefik/.config' }],
+    },
+    'a literal XDG_CONFIG_HOME with a mount under it': {
+      env: [{ name: 'XDG_CONFIG_HOME', value: '/xdg' }],
+      additionalVolumeMounts: [{ name: 'config', mountPath: '/xdg' }],
+    },
+    'HOME from a reference': {
+      env: [{ name: 'HOME', valueFrom: { configMapKeyRef: { name: 'env', key: 'home' } } }],
+    },
+  };
+
+  for (const [label, baseValues] of Object.entries(STATIC_CONFIG_VALUES)) {
+    it(`refuses a static configuration file it cannot see: ${label}`, () => {
+      expect(() => mapTraefikConfigToHelmValues({ name: 'traefik' }, { baseValues })).toThrow(
+        /static configuration[\s\S]*dangerouslyTrustAnySource: true/
+      );
+      expect(() =>
+        mapTraefikConfigToHelmValues(
+          { name: 'traefik' },
+          { baseValues, dangerouslyTrustAnySource: true }
+        )
+      ).not.toThrow();
+    });
+  }
+
+  it('lets through mounts and arguments that leave the static configuration alone', () => {
+    const baseValues: Record<string, unknown> = {
+      additionalArguments: ['--log.level=DEBUG', '--providers.file.directory=/config'],
+      additionalVolumeMounts: [
+        { name: 'dynamic', mountPath: '/etc/traefik/dynamic' },
+        { name: 'extra', mountPath: '/etc/traefik-extra' },
+        { name: 'certs', mountPath: '/etc/ssl/certs' },
+      ],
+      volumes: [{ name: 'config', type: 'configMap', mountPath: '/config' }],
+      persistence: { path: '/data' },
+      experimental: {
+        localPlugins: {
+          stamp: { moduleName: 'stamp', mountPath: '/plugins-local/src/stamp', type: 'localPath' },
+        },
+      },
+    };
+    expect(() => mapTraefikConfigToHelmValues({ name: 'traefik' }, { baseValues })).not.toThrow();
+  });
+
+  it('refuses additionalArguments entries that are not literal strings', () => {
+    for (const arg of [
+      Cel.expr<string>('"--log.level=" + schema.spec.level'),
+      '--log.level=__KUBERNETES_REF___schema___spec.level__',
+    ]) {
+      expect(traefikProxyTrustIssues({ additionalArguments: [arg] })).toEqual([
+        expect.stringContaining('additionalArguments[0] is not a literal string'),
+      ]);
+    }
   });
 
   it('accepts the hidden sources behind the dangerouslyTrustAnySource escape hatch', () => {

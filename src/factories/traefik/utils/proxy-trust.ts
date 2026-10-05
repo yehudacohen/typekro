@@ -31,8 +31,22 @@
 // ConfigMap, and a trust variable whose value comes from `valueFrom` or a
 // schema reference. The chart reads `env` and `envFrom` only at the top level
 // of its values, for the Traefik container.
+//
+// A static configuration file is a fourth route, and it outranks the flags:
+// when Traefik finds one it loads the file and ignores every flag
+// (`pkg/cli/loader_file.go`). It looks at `--configFile`, then
+// `/etc/traefik/traefik`, `$XDG_CONFIG_HOME/traefik`, `$HOME/.config/traefik`
+// and `./traefik`, each with `.toml`, `.yaml` or `.yml`. The official image has
+// no WORKDIR and the pinned UID 65532 has no passwd entry, so the working
+// directory and HOME are `/` and XDG_CONFIG_HOME is unset (it expands to an
+// empty string). The guard refuses `--configFile` and any raw-values mount at,
+// or above, one of those files, since it cannot see what the file says.
+//
+// Raw `values` are trusted input. The guard catches misconfiguration, not
+// deliberate YAML injection through raw values.
 
 import { TypeKroError } from '../../../core/errors.js';
+import { KUBERNETES_REF_MARKER_SOURCE } from '../../../shared/brands.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type { TraefikHelmValues } from '../types.js';
 
@@ -63,6 +77,13 @@ const INSECURE_ENV = /^TRAEFIK_ENTRYPOINTS_.+_(PROXYPROTOCOL|FORWARDEDHEADERS)_I
 const TRUST_ENV = /^TRAEFIK_ENTRYPOINTS_.+_(PROXYPROTOCOL|FORWARDEDHEADERS)_/i;
 const TRUE_VALUE = /^(1|t|true)$/i;
 
+// `--configFile` / `-configfile`, with the value after `=` or in the next argument.
+const CONFIG_FILE_ARGUMENT = /^--?configfile(=|$)/i;
+const CONFIG_FILE_EXTENSIONS = ['toml', 'yaml', 'yml'] as const;
+const CONFIG_FILE_FIX =
+  'Traefik would load its static configuration from that file in place of its flags, and ' +
+  'TypeKro cannot see what the file says. Mount files elsewhere.';
+
 const HIDDEN_VALUE_FIX =
   'TypeKro cannot see that value, so it cannot rule out trusting every source.';
 
@@ -74,6 +95,13 @@ function trustsAnySource(range: string): boolean {
 
 function isConcrete(value: unknown): boolean {
   return !isKubernetesRef(value) && !isCelExpression(value);
+}
+
+const REF_MARKER = new RegExp(KUBERNETES_REF_MARKER_SOURCE);
+
+/** A plain string, not one carrying a serialized reference marker. */
+function isLiteralString(value: unknown): value is string {
+  return typeof value === 'string' && !REF_MARKER.test(value);
 }
 
 /**
@@ -108,26 +136,161 @@ export function traefikProxyTrustIssues(values: TraefikHelmValues): string[] {
     }
   }
   issues.push(...envIssues(values));
-  const args = values.additionalArguments;
-  if (Array.isArray(args) && isConcrete(args)) {
-    args.forEach((arg, index) => {
-      if (typeof arg !== 'string') return;
-      if (INSECURE_ARGUMENT.test(arg)) {
-        issues.push(`additionalArguments contains ${arg}, which trusts every source.`);
-        return;
+  issues.push(...argumentIssues(values.additionalArguments));
+  issues.push(...staticConfigIssues(values));
+  return issues;
+}
+
+/** Proxy-trust problems in `additionalArguments`. */
+function argumentIssues(args: unknown): string[] {
+  const issues: string[] = [];
+  if (args === undefined || args === null) return issues;
+  if (!Array.isArray(args) || !isConcrete(args)) {
+    issues.push(`additionalArguments is not a literal list. ${HIDDEN_VALUE_FIX}`);
+    return issues;
+  }
+  args.forEach((arg: unknown, index) => {
+    if (!isConcrete(arg) || (typeof arg === 'string' && !isLiteralString(arg))) {
+      issues.push(`additionalArguments[${index}] is not a literal string. ${HIDDEN_VALUE_FIX}`);
+      return;
+    }
+    if (typeof arg !== 'string') return;
+    if (INSECURE_ARGUMENT.test(arg)) {
+      issues.push(`additionalArguments contains ${arg}, which trusts every source.`);
+      return;
+    }
+    if (CONFIG_FILE_ARGUMENT.test(arg)) {
+      issues.push(`additionalArguments contains ${arg.split('=')[0]}. ${CONFIG_FILE_FIX}`);
+      return;
+    }
+    const match = TRUSTED_IPS_ARGUMENT.exec(arg);
+    if (!match) return;
+    const next: unknown = args[index + 1];
+    const ranges = match[2] ?? (typeof next === 'string' ? next : '');
+    for (const range of ranges.split(',')) {
+      if (trustsAnySource(range)) {
+        issues.push(
+          `additionalArguments sets ${arg.split('=')[0]} to ${range.trim()}, which trusts every source.`
+        );
       }
-      const match = TRUSTED_IPS_ARGUMENT.exec(arg);
-      if (!match) return;
-      const next = args[index + 1];
-      const ranges = match[2] ?? (typeof next === 'string' ? next : '');
-      for (const range of ranges.split(',')) {
-        if (trustsAnySource(range)) {
-          issues.push(
-            `additionalArguments sets ${arg.split('=')[0]} to ${range.trim()}, which trusts every source.`
+    }
+  });
+  return issues;
+}
+
+/** An absolute path with `.`, `..` and repeated slashes resolved; relative paths start at `/`. */
+function normalizePath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.trim().split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+/** Whether a mount at `mountPath` would cover `file`: the same path or a parent of it. */
+function covers(mountPath: string, file: string): boolean {
+  return file === mountPath || file.startsWith(mountPath === '/' ? '/' : `${mountPath}/`);
+}
+
+/**
+ * The files Traefik would read its static configuration from, given the
+ * container's HOME and XDG_CONFIG_HOME (see the module comment for the defaults).
+ */
+function staticConfigFiles(home: string, xdgConfigHome: string): string[] {
+  const bases = [
+    '/etc/traefik/traefik',
+    `${xdgConfigHome}/traefik`,
+    `${home}/.config/traefik`,
+    '/traefik',
+  ];
+  return bases.flatMap((base) =>
+    CONFIG_FILE_EXTENSIONS.map((extension) => normalizePath(`${base}.${extension}`))
+  );
+}
+
+/** Static-configuration-file problems: raw mounts over the files Traefik searches. */
+function staticConfigIssues(values: TraefikHelmValues): string[] {
+  const issues: string[] = [];
+  // A literal HOME or XDG_CONFIG_HOME moves the search; one from a reference
+  // hides it. A non-literal `env` list is already reported by `envIssues`.
+  const location = { HOME: '/', XDG_CONFIG_HOME: '' };
+  const env: unknown = values.env;
+  if (Array.isArray(env) && isConcrete(env)) {
+    for (const entry of env) {
+      if (!isLiteralRecord(entry)) continue;
+      const name = entry.name;
+      if (name !== 'HOME' && name !== 'XDG_CONFIG_HOME') continue;
+      if (isLiteralString(entry.value) && entry.valueFrom === undefined) {
+        location[name] = entry.value;
+      } else {
+        issues.push(
+          `env ${name} takes its value from a reference, so TypeKro cannot see where Traefik ` +
+            'looks for a static configuration file.'
+        );
+      }
+    }
+  }
+  const files = staticConfigFiles(location.HOME, location.XDG_CONFIG_HOME);
+
+  const checkPath = (where: string, path: unknown): void => {
+    if (path === undefined || path === null) return;
+    // The chart runs `additionalVolumeMounts` through `tpl`, so `{{ }}` is
+    // evaluated at render time.
+    if (!isLiteralString(path) || path.includes('{{')) {
+      issues.push(`${where} is not a literal path. ${CONFIG_FILE_FIX}`);
+      return;
+    }
+    const mountPath = normalizePath(path);
+    const file = files.find((candidate) => covers(mountPath, candidate));
+    if (file) issues.push(`${where} mounts ${path} over ${file}. ${CONFIG_FILE_FIX}`);
+  };
+  const checkList = (where: string, list: unknown): void => {
+    if (list === undefined || list === null) return;
+    if (!Array.isArray(list) || !isConcrete(list)) {
+      issues.push(`${where} is not a literal list. ${CONFIG_FILE_FIX}`);
+      return;
+    }
+    list.forEach((entry: unknown, index) => {
+      if (entry === undefined || entry === null) return;
+      checkPath(`${where}[${index}].mountPath`, isLiteralRecord(entry) ? entry.mountPath : entry);
+    });
+  };
+  const checkSection = (where: string, section: unknown, field: string): void => {
+    if (section === undefined || section === null) return;
+    if (!isLiteralRecord(section)) {
+      issues.push(`${where} is not a literal object. ${CONFIG_FILE_FIX}`);
+      return;
+    }
+    checkPath(`${where}.${field}`, section[field]);
+  };
+
+  // Every raw-values mount the chart adds to the Traefik container.
+  // `deployment.additionalVolumes` only declares volumes; they are mounted
+  // through `additionalVolumeMounts` or a `localPath` local plugin.
+  checkList('additionalVolumeMounts', values.additionalVolumeMounts);
+  checkList('volumes', values.volumes);
+  checkSection('persistence', values.persistence, 'path');
+  checkSection('hub', values.hub, 'tokenMountPath');
+  const experimental: unknown = values.experimental;
+  if (experimental !== undefined && experimental !== null) {
+    if (!isLiteralRecord(experimental)) {
+      issues.push(`experimental is not a literal object. ${CONFIG_FILE_FIX}`);
+    } else {
+      const localPlugins = experimental.localPlugins;
+      if (localPlugins !== undefined && localPlugins !== null && !isLiteralRecord(localPlugins)) {
+        issues.push(`experimental.localPlugins is not a literal object. ${CONFIG_FILE_FIX}`);
+      } else if (localPlugins) {
+        for (const [name, plugin] of Object.entries(localPlugins)) {
+          if (plugin === undefined || plugin === null) continue;
+          checkPath(
+            `experimental.localPlugins.${name}.mountPath`,
+            isLiteralRecord(plugin) ? plugin.mountPath : plugin
           );
         }
       }
-    });
+    }
   }
   return issues;
 }
@@ -168,7 +331,7 @@ function envIssues(values: TraefikHelmValues): string[] {
     }
     if (!TRUST_ENV.test(name)) continue;
     const { value, valueFrom } = entry;
-    if (valueFrom !== undefined || (value !== undefined && typeof value !== 'string')) {
+    if (valueFrom !== undefined || (value !== undefined && !isLiteralString(value))) {
       issues.push(`env ${name} takes its value from a reference. ${HIDDEN_VALUE_FIX}`);
       continue;
     }

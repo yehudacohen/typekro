@@ -24,7 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     forwarded-header flag, or a `/0` range, in raw `values`, `additionalArguments` or `env` throws
     too. So does trust TypeKro cannot see: a non-empty `envFrom`, or an `env` entry for an
     entrypoint's PROXY-protocol or forwarded-header variable whose value comes from `valueFrom`.
-    The escape hatch is the build option `dangerouslyTrustAnySource`.
+    A static configuration file would replace the flags, so `--configFile` and raw-values mounts
+    at or above the files Traefik searches (`/etc/traefik/traefik.*`, `/traefik.*`,
+    `/.config/traefik.*`) are refused as well. The escape hatch is the build option
+    `dangerouslyTrustAnySource`. Raw `values` are trusted input: the guard catches
+    misconfiguration, not deliberate YAML injection through raw values.
   - `validateTraefikHelmValues(values, { serviceAnnotations })` warns when the NLB sends PROXY
     headers to an entrypoint that does not accept them, and about trusted ranges broader than
     `/8` (IPv4) or `/16` (IPv6).

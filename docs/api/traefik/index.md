@@ -349,7 +349,17 @@ refused too: any non-empty `envFrom`, since a Secret or ConfigMap can carry
 `TRAEFIK_ENTRYPOINTS_WEB_FORWARDEDHEADERS_INSECURE=true`, and an `env` entry
 for an entrypoint's `PROXYPROTOCOL_*` or `FORWARDEDHEADERS_*` variable whose
 value comes from `valueFrom`. Other variables may still use `valueFrom`; list
-them as individual `env` entries instead of `envFrom`. A range that is
+them as individual `env` entries instead of `envFrom`. A static configuration
+file replaces Traefik's flags entirely, so `--configFile` in
+`additionalArguments` is refused, and so is a raw-values mount at or above a
+file Traefik searches (`/etc/traefik/traefik.*`, `/traefik.*` and
+`/.config/traefik.*` in the official image, or under a literal `HOME` or
+`XDG_CONFIG_HOME`). That covers `additionalVolumeMounts`, `volumes`,
+`persistence.path`, `hub.tokenMountPath` and `experimental.localPlugins`. A
+value the guard can't read, such as a `{{ }}` template in a mount path or a
+schema reference in an argument, is refused too. Raw `values` are trusted
+input: the guard catches misconfiguration, not deliberate YAML injection
+through raw values. A range that is
 legal but very broad, with an IPv4 prefix shorter than `/8` or an IPv6 prefix
 shorter than `/16`, gets a `validateTraefikHelmValues` warning instead. The
 escape hatch is
