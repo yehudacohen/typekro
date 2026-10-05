@@ -27,14 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TargetGroupBinding` must name its target group by `targetGroupARN`, `targetGroupName` or both:
   the type requires one, and the factory throws when neither is set. It also throws on the
   webhook's static rules: `nodeSelector` with `ip` targets, `iamRoleArnToAssume` or a QUIC
-  protocol with `instance` targets, and a malformed `vpcID`. Raw `values` lay over the mapped
-  values key by key: a key you set replaces the mapped value as a whole (`serviceAccount` merges
-  per field), so direct and KRO mode render the same values and a `podDisruptionBudget` overlay
-  never combines `minAvailable` with the default `maxUnavailable`. TypeKro creates no
+  protocol with `instance` targets, and a malformed `vpcID`. Raw `values` are for chart
+  settings the spec does not map: setting a mapped value (`image`, `serviceAccount.annotations`,
+  `resources`, ...) throws and names the spec field to use, so an instance's IRSA annotation or
+  image is never silently dropped. A build-time `podDisruptionBudget` (e.g. a percentage) becomes
+  the default PDB, and an instance's own PDB replaces it whole. TypeKro creates no
   AWS resources; the docs list the IAM policy for the pinned version and the subnet discovery
   tags. With the Service webhook off, a Service opts in with
   `loadBalancerClass: service.k8s.aws/nlb`, which the docs explain. The integration is a subpath
-  export only and draws 19.6 KiB from the shared declaration pool.
+  export only and draws 20.3 KiB from the shared declaration pool.
 - **Every integration HelmRelease factory accepts `install`, `upgrade` and `driftDetection`.**
   That covers APISix, cert-manager, Cilium, ClickHouse, ClickStack (both releases), CNPG, Dagster,
   Envoy Gateway and Envoy AI Gateway, External-DNS, Harbor, Hatchet, Inngest, NATS, OpenSearch,

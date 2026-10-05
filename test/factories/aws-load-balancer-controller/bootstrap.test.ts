@@ -259,12 +259,11 @@ describe('makeAwsLoadBalancerControllerBootstrap', () => {
 });
 
 describe('build-time values overlay', () => {
-  // Overlay keys whose objects carry exclusive or spec-derived fields.
+  // Only values the spec does not map, plus a percentage PDB default.
   const overlaid = makeAwsLoadBalancerControllerBootstrap({
     values: {
-      podDisruptionBudget: { minAvailable: 1 },
-      resources: { limits: { memory: '256Mi' } },
-      nodeSelector: { 'node-role': 'system' },
+      podDisruptionBudget: { maxUnavailable: '50%' },
+      enableShield: false,
       affinity: {
         nodeAffinity: {
           requiredDuringSchedulingIgnoredDuringExecution: {
@@ -274,7 +273,7 @@ describe('build-time values overlay', () => {
           },
         },
       },
-      serviceAccount: { annotations: { 'example.com/owner': 'platform' } },
+      serviceAccount: { automountServiceAccountToken: false },
     },
   });
 
@@ -282,13 +281,31 @@ describe('build-time values overlay', () => {
     it(`renders the same values in KRO and direct mode: ${name}`, () => {
       const direct = directRelease(spec, overlaid).spec.values ?? {};
       expect(kroRelease(spec, overlaid).spec.values).toEqual(direct);
-      // The overlay replaces the PDB whole: never both minAvailable and maxUnavailable.
-      expect(direct.podDisruptionBudget).toEqual({ minAvailable: 1 });
-      expect(direct.resources).toEqual({ limits: { memory: '256Mi' } });
-      expect(direct.nodeSelector).toEqual({ 'node-role': 'system' });
-      expect(direct.serviceAccount).toMatchObject({
-        annotations: { 'example.com/owner': 'platform' },
-      });
+      // An instance PDB replaces the build-time default whole; never both fields.
+      expect(direct.podDisruptionBudget).toEqual(
+        spec.podDisruptionBudget ?? { maxUnavailable: '50%' }
+      );
+      expect(direct.serviceAccount).toMatchObject({ automountServiceAccountToken: false });
+      // What the instance sets through the spec survives the overlay.
+      if (spec.serviceAccount?.annotations) {
+        expect(direct.serviceAccount).toMatchObject({
+          annotations: spec.serviceAccount.annotations,
+        });
+      }
+      if (spec.image) expect(direct.image).toEqual(spec.image);
     });
   }
+
+  it('rejects build-time values that would drop an instance IRSA annotation or image', () => {
+    expect(() =>
+      makeAwsLoadBalancerControllerBootstrap({
+        values: {
+          serviceAccount: { annotations: { team: 'platform' } },
+          image: { tag: 'v3.5.1' },
+        },
+      })
+    ).toThrow(
+      /values\.serviceAccount\.annotations, values\.image .*spec\.serviceAccount\.annotations, spec\.image/
+    );
+  });
 });

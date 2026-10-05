@@ -83,9 +83,11 @@ export interface AwsLoadBalancerControllerBootstrapOptions extends HelmReleaseLi
   /** Custom resource kind. @default 'AwsLoadBalancerControllerBootstrap' */
   kind?: string;
   /**
-   * Raw chart values laid over the mapped values. A key set here replaces the
-   * mapped value as a whole (so `podDisruptionBudget: { minAvailable: 1 }`
-   * drops the default `maxUnavailable`); `serviceAccount` merges field by field.
+   * Raw chart values for settings the spec does not map, applied at build
+   * time. Setting a value the spec maps (`image`, `serviceAccount.annotations`,
+   * `resources`, ...) throws: set it through the spec, per instance. A
+   * `podDisruptionBudget` here replaces the default PDB (use it for a
+   * percentage); an instance's `spec.podDisruptionBudget` replaces it whole.
    */
   values?: Record<string, unknown>;
 }
@@ -124,7 +126,8 @@ export const AwsLoadBalancerControllerBootstrapConfigSchema: Type<AwsLoadBalance
     // Integers only: a `number | string` union collapses to a schemaless
     // `object` in KRO's SimpleSchema, which rejects a plain integer, and the
     // chart passes these straight into the PDB, where a string must be a
-    // percentage. Use build-time `values` for a percentage.
+    // percentage. For a percentage, set `podDisruptionBudget` in build-time
+    // `values`; it becomes the default an instance's PDB replaces.
     'podDisruptionBudget?': {
       'minAvailable?': 'number.integer >= 0',
       'maxUnavailable?': 'number.integer >= 0',

@@ -196,6 +196,22 @@ describe('targetGroupBinding', () => {
       expect(graph.toYaml()).toContain('kind: TargetGroupBinding');
     });
 
+    it('skips the ip-target node selector rule when the selector is a graph value', () => {
+      const selectorRef = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath: 'spec.nodeSelector',
+      } as unknown as NonNullable<TargetGroupBindingSpec['nodeSelector']>;
+      expect(build({ targetType: 'ip', nodeSelector: selectorRef })).not.toThrow();
+      expect(
+        build({ targetType: 'ip', nodeSelector: Cel.expr('schema.spec.selector') as never })
+      ).not.toThrow();
+      // The same concrete selector is rejected.
+      expect(build({ targetType: 'ip', nodeSelector: { matchLabels: { pool: 'a' } } })).toThrow(
+        ValidationError
+      );
+    });
+
     it('checks nothing when the whole spec is a graph value', () => {
       const wholeSpec = (spec: unknown) =>
         targetGroupBinding({ name: 'web', spec: spec as TargetGroupBindingSpec });

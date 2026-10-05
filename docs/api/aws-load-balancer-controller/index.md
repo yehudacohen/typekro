@@ -108,7 +108,7 @@ concrete values:
 | Option | Default | Notes |
 |---|---|---|
 | `install`, `upgrade`, `driftDetection` | see below | The Flux lifecycle options every TypeKro HelmRelease factory takes. See [Install, upgrade and CRD policy](/api/flux/#install-upgrade-and-crd-policy) |
-| `values` | none | Raw chart values laid over the mapped values. A key you set replaces the mapped value as a whole, so `podDisruptionBudget: { minAvailable: 1 }` drops the default `maxUnavailable`. `serviceAccount` merges field by field. Direct and KRO mode render the same values |
+| `values` | none | Raw chart values for settings the spec does not map. Setting one the spec maps throws a `ValidationError`; see below |
 | `name`, `kind` | `aws-load-balancer-controller-bootstrap`, `AwsLoadBalancerControllerBootstrap` | The composition's name and custom resource kind |
 
 ```typescript
@@ -122,7 +122,26 @@ const lbc = makeAwsLoadBalancerControllerBootstrap({
 
 Raw `values` are build-time because a KRO instance cannot carry an arbitrary
 values tree into individual chart fields. Use them for chart settings the spec
-does not model, and for a percentage PDB.
+does not model. They cannot set a chart value the spec maps (`clusterName`,
+`region`, `vpcId`, `replicaCount`, `image`, `serviceAccount.create`,
+`serviceAccount.name`, `serviceAccount.annotations`, `topologySpreadConstraints`,
+`enableServiceMutatorWebhook`, `createIngressClassResource`, `ingressClass`,
+`defaultTargetType`, `resources`, `nodeSelector`, `tolerations`, `logLevel`),
+at any depth: the factory throws a `ValidationError` naming the spec field to
+use. Build-time values cannot merge with a KRO instance's spec, so replacing a
+mapped value would silently drop what the instance sets. Two cases matter most:
+
+- **IRSA.** Put the role annotation in `spec.serviceAccount.annotations`, together
+  with any other service-account annotations. `values.serviceAccount` may only
+  add fields the spec does not map, such as `automountServiceAccountToken`.
+- **Image.** Set the registry mirror and tag in `spec.image`
+  (`{ repository, tag }`). Do not split them between `values.image` and the spec.
+
+`podDisruptionBudget` is the exception, because the spec field takes integers
+only: a build-time `podDisruptionBudget` (for example `{ maxUnavailable: '50%' }`)
+replaces the default `{ maxUnavailable: 1 }`, and an instance's own
+`spec.podDisruptionBudget` replaces either one as a whole, so `minAvailable` and
+`maxUnavailable` never end up together.
 
 The chart's `keepTLSSecret` is set to `true`, so an upgrade keeps the webhook
 certificate the chart generated instead of minting a new one. A new

@@ -1,4 +1,5 @@
 import { isMergeableValuesObject } from '../../../core/aspects/values-merge.js';
+import { ValidationError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { DEFAULT_AWS_LBC_NAME } from '../constants.js';
@@ -31,32 +32,93 @@ function prune(value: unknown): unknown {
   return Object.keys(pruned).length > 0 ? pruned : undefined;
 }
 
-// Sections the mapper builds itself, field by field and the same way in both
-// modes. An overlay merges into these one field at a time.
-const MAPPER_SECTIONS: ReadonlySet<string> = new Set(['serviceAccount']);
+// Chart values the spec maps, named by their chart path, which is also the
+// spec field that feeds them. Build-time `values` may not set these: a KRO
+// instance's value is a schema reference the overlay could only replace, so
+// an overlay would silently drop what the instance sets (an IRSA role
+// annotation, a private image repository), in direct mode as well to keep the
+// two modes alike. `podDisruptionBudget` is handled separately below.
+const SPEC_MAPPED_VALUES: ReadonlySet<string> = new Set([
+  'clusterName',
+  'region',
+  'vpcId',
+  'replicaCount',
+  'image',
+  'serviceAccount.create',
+  'serviceAccount.name',
+  'serviceAccount.annotations',
+  'topologySpreadConstraints',
+  'enableServiceMutatorWebhook',
+  'createIngressClassResource',
+  'ingressClass',
+  'defaultTargetType',
+  'resources',
+  'nodeSelector',
+  'tolerations',
+  'logLevel',
+]);
+
+// A section the mapper builds field by field. An overlay may add the fields
+// the spec does not map (e.g. `serviceAccount.automountServiceAccountToken`).
+const MAPPER_SECTION = 'serviceAccount';
 
 function isUnsafeKey(key: string): boolean {
   return key === '__proto__' || key === 'constructor' || key === 'prototype';
 }
 
-// Lay the build-time overlay over the mapped values. Every other key the
-// overlay sets replaces the mapped value as a whole. A spec-derived value is a
-// schema reference in KRO mode, which the overlay can only replace, so direct
-// mode does the same; merging there would also combine keys a chart object
-// allows only one of, e.g. a spec `podDisruptionBudget.maxUnavailable` with an
-// overlay `minAvailable`, which the PDB API rejects.
+/**
+ * Reject build-time `values` that set a chart value the spec maps, at any
+ * depth (`image.tag` falls under the spec's `image`).
+ *
+ * @throws {ValidationError} naming the spec field to use instead.
+ */
+export function assertAwsLoadBalancerControllerBuildTimeValues(
+  values: Record<string, unknown> | undefined
+): void {
+  if (!values) return;
+  const conflicts: string[] = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (isUnsafeKey(key)) continue;
+    if (key === MAPPER_SECTION) {
+      if (!isMergeableValuesObject(value)) {
+        conflicts.push(key);
+        continue;
+      }
+      for (const field of Object.keys(value)) {
+        if (SPEC_MAPPED_VALUES.has(`${key}.${field}`)) conflicts.push(`${key}.${field}`);
+      }
+    } else if (SPEC_MAPPED_VALUES.has(key)) {
+      conflicts.push(key);
+    }
+  }
+  if (conflicts.length === 0) return;
+  const paths = conflicts.map((path) => `values.${path}`).join(', ');
+  throw new ValidationError(
+    `AWS Load Balancer Controller build-time ${paths} ${conflicts.length === 1 ? 'sets a chart value' : 'set chart values'} the spec maps. ` +
+      'Set it through the spec instead (' +
+      conflicts.map((path) => `spec.${path}`).join(', ') +
+      "): build-time values cannot merge with an instance's spec, and replacing it would " +
+      'drop what the instance sets, such as an IRSA role annotation or a private image repository.',
+    'AwsLoadBalancerControllerBootstrap',
+    'values',
+    `values.${conflicts[0]}`,
+    conflicts.map((path) => `Move values.${path} to spec.${path}.`)
+  );
+}
+
+// Lay the checked overlay over the mapped values: new keys are added, and the
+// service-account section takes the overlay's extra fields.
 function applyOverlay(
   base: Record<string, unknown>,
-  overlay: Record<string, unknown>,
-  sections: ReadonlySet<string>
+  overlay: Record<string, unknown>
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(overlay)) {
     if (isUnsafeKey(key)) continue;
     const current = merged[key];
     merged[key] =
-      sections.has(key) && isMergeableValuesObject(current) && isMergeableValuesObject(value)
-        ? applyOverlay(current, value, new Set())
+      key === MAPPER_SECTION && isMergeableValuesObject(current) && isMergeableValuesObject(value)
+        ? applyOverlay(current, value)
         : value;
   }
   return merged;
@@ -66,9 +128,12 @@ function applyOverlay(
  * Map the bootstrap spec to `aws-load-balancer-controller` chart values.
  *
  * Works on a concrete spec (direct mode) and on the schema proxy (KRO mode).
- * `values` is a concrete, build-time overlay applied last. A key it sets
- * replaces the mapped value as a whole, except `serviceAccount`, which merges
- * field by field; both modes render the same result.
+ * `values` is a concrete, build-time overlay for chart settings the spec does
+ * not map; setting one the spec maps throws (see
+ * {@link assertAwsLoadBalancerControllerBuildTimeValues}). Its
+ * `podDisruptionBudget` replaces the TypeKro default PDB, and an instance's own
+ * `spec.podDisruptionBudget` replaces either one whole, so its two exclusive
+ * fields never combine. Both modes render the same result.
  *
  * @example
  * ```typescript
@@ -80,6 +145,8 @@ export function mapAwsLoadBalancerControllerConfigToHelmValues(
   config: AwsLoadBalancerControllerBootstrapConfig,
   values?: Record<string, unknown>
 ): Record<string, unknown> {
+  assertAwsLoadBalancerControllerBuildTimeValues(values);
+  const { podDisruptionBudget: overlayPdb, ...overlay } = values ?? {};
   const mapped = {
     clusterName: config.clusterName,
     region: config.region,
@@ -94,7 +161,15 @@ export function mapAwsLoadBalancerControllerConfigToHelmValues(
       annotations: config.serviceAccount?.annotations,
     },
     // The chart renders a PDB only above one replica, and its default is none.
-    podDisruptionBudget: Cel.default(config.podDisruptionBudget, { maxUnavailable: 1 }),
+    // A build-time PDB (say a percentage, which the integer-only spec field
+    // cannot express) replaces TypeKro's default; an instance's own PDB
+    // replaces either one whole.
+    podDisruptionBudget: Cel.default(
+      config.podDisruptionBudget,
+      (overlayPdb ?? { maxUnavailable: 1 }) as NonNullable<
+        AwsLoadBalancerControllerBootstrapConfig['podDisruptionBudget']
+      >
+    ),
     topologySpreadConstraints: config.topologySpreadConstraints,
     // Off by default: the webhook makes this controller claim every new
     // `type: LoadBalancer` Service, including ones another controller owns.
@@ -114,5 +189,5 @@ export function mapAwsLoadBalancerControllerConfigToHelmValues(
     keepTLSSecret: true,
   };
   const pruned = (prune(mapped) ?? {}) as Record<string, unknown>;
-  return values ? applyOverlay(pruned, values, MAPPER_SECTIONS) : pruned;
+  return applyOverlay(pruned, overlay);
 }

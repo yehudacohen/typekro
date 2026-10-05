@@ -26,7 +26,10 @@ import {
   type AwsLoadBalancerControllerBootstrapStatus,
   AwsLoadBalancerControllerBootstrapStatusSchema,
 } from '../types.js';
-import { mapAwsLoadBalancerControllerConfigToHelmValues } from '../utils/helm-values-mapper.js';
+import {
+  assertAwsLoadBalancerControllerBuildTimeValues,
+  mapAwsLoadBalancerControllerConfigToHelmValues,
+} from '../utils/helm-values-mapper.js';
 import { awsLoadBalancerControllerHelmRepositoryBootstrap } from './helm-repository.js';
 
 const RELEASE_ID = 'awsLoadBalancerControllerHelmRelease';
@@ -61,6 +64,8 @@ export function makeAwsLoadBalancerControllerBootstrap(
   AwsLoadBalancerControllerBootstrapConfig,
   AwsLoadBalancerControllerBootstrapStatus
 > {
+  // Fail when the composition is built, not when it is first rendered.
+  assertAwsLoadBalancerControllerBuildTimeValues(options.values);
   return kubernetesComposition(
     {
       name: options.name ?? 'aws-load-balancer-controller-bootstrap',
