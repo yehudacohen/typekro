@@ -72,7 +72,12 @@ const RESTRICTED_TAGS = [
 const MAX_LABEL_VALUE_NAME = 63;
 // What a schema proxy stringifies to inside a template literal.
 const KUBERNETES_REF_MARKER_PREFIX = '__KUBERNETES_REF_';
-const INTEGER = /^\d+$/;
+// What the CRD's `int(x) >= 0` accepts: cel-go's int() parses like Go's
+// strconv.ParseInt, so a sign is allowed ('+5', and '-0', which is 0).
+const SIGNED_INTEGER = /^[+-]?\d+$/;
+function isNonNegativeInteger(value: string): boolean {
+  return SIGNED_INTEGER.test(value) && Number(value) >= 0;
+}
 const VALUED_OPERATORS = ['In', 'Gt', 'Lt', 'Gte', 'Lte'];
 // Alias family -> the amiFamily values the CRD accepts alongside it.
 const ALIAS_FAMILIES: Record<string, string> = {
@@ -209,7 +214,7 @@ export function validateNodePoolSpec(
     }
     if (['Gt', 'Lt', 'Gte', 'Lte'].includes(requirement.operator) && values) {
       const [only] = values;
-      if (values.length !== 1 || !isConcreteString(only) || !INTEGER.test(only)) {
+      if (values.length !== 1 || !isConcreteString(only) || !isNonNegativeInteger(only)) {
         error(
           `${path}.values`,
           `Operator '${requirement.operator}' needs exactly one non-negative integer value.`

@@ -371,3 +371,31 @@ describe('validateNodePoolSpec: names and CRD mirrors', () => {
     ).toEqual([]);
   });
 });
+
+describe('validateNodePoolSpec: Gt/Lt/Gte/Lte values', () => {
+  const paths = (value: string, operator: 'Gt' | 'Lt' | 'Gte' | 'Lte' = 'Gt') =>
+    validateNodePoolSpec(
+      spec({
+        template: {
+          spec: {
+            nodeClassRef: { name: 'default' },
+            requirements: [
+              { key: KARPENTER_LABELS.capacityType, operator: 'In', values: ['spot'] },
+              { key: KARPENTER_LABELS.instanceCpu, operator, values: [value] },
+            ],
+          },
+        },
+      })
+    ).map((issue) => issue.path);
+
+  it("accepts what the CRD's int(x) >= 0 accepts, a leading sign included", () => {
+    for (const value of ['5', '+5', '0', '007', '-0']) expect(paths(value)).toEqual([]);
+    expect(paths('+16', 'Lte')).toEqual([]);
+  });
+
+  it('rejects negative and non-integer values', () => {
+    for (const value of ['-1', '5.0', '', ' 5', '1e3', '0x10', '+']) {
+      expect(paths(value)).toEqual(['template.spec.requirements[1].values']);
+    }
+  });
+});
