@@ -5,7 +5,12 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { load, loadAll } from 'js-yaml';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { evaluateSchemaCelExpression } from '../../../src/core/deployment/schema-cel-evaluator.js';
+import { createSchemaProxy } from '../../../src/core/references/schema-proxy.js';
 import { toResourceGraph } from '../../../src/core/serialization/index.js';
+import type { KroCompatibleType } from '../../../src/core/types/serialization.js';
 import { apisixHelmRelease } from '../../../src/factories/apisix/index.js';
 import { certManagerHelmRelease } from '../../../src/factories/cert-manager/index.js';
 import { ciliumHelmRelease } from '../../../src/factories/cilium/index.js';
@@ -46,6 +51,7 @@ import {
 } from '../../../src/factories/rook/index.js';
 import { traefikHelmRelease } from '../../../src/factories/traefik/index.js';
 import { valkeyHelmRelease } from '../../../src/factories/valkey/index.js';
+import { isCelExpression, isKubernetesRef } from '../../../src/utils/type-guards.js';
 
 interface RenderedRelease {
   spec: Pick<HelmReleaseSpec, 'install' | 'upgrade' | 'driftDetection' | 'timeout'>;
@@ -315,5 +321,238 @@ describe('lifecycle options in KRO mode', () => {
     expect(yaml).toContain('timeout: ${schema.spec.installTimeout}');
     expect(yaml).toContain('retries: ${schema.spec.retries}');
     expect(yaml).toContain('crds: CreateReplace');
+  });
+});
+
+// An instance schema that takes the whole lifecycle objects, each optional and
+// each declaring only some of the fields Flux accepts.
+const WholeLifecycleSpec = type({
+  name: 'string',
+  'install?': {
+    'timeout?': 'string',
+    'crds?': "'Skip' | 'Create' | 'CreateReplace'",
+    'remediation?': { 'retries?': 'number.integer', 'remediateLastFailure?': 'boolean' },
+  },
+  'upgrade?': {
+    'timeout?': 'string',
+    'remediation?': { 'retries?': 'number.integer', 'strategy?': "'rollback' | 'uninstall'" },
+  },
+  'driftDetection?': { mode: "'enabled' | 'warn' | 'disabled'" },
+});
+type WholeLifecycle = typeof WholeLifecycleSpec.infer;
+
+/** `Cel.default(<leaf>, <fallback>)` as it renders into an RGD template. */
+function celDefault(path: string, fallback: string): string {
+  const segments = path.split('.');
+  const guard = segments
+    .map((_, index) => `has(schema.spec.${segments.slice(0, index + 1).join('.')})`)
+    .join(' && ');
+  return `\${${guard} && dyn(schema.spec.${path}) != null ? schema.spec.${path} : ${fallback}}`;
+}
+
+/** A schema field that has no default renders omitted when the instance leaves it unset. */
+function omittedUnlessSet(path: string): string {
+  const segments = path.split('.');
+  const guard = segments
+    .map((_, index) => `has(schema.spec.${segments.slice(0, index + 1).join('.')})`)
+    .join(' && ');
+  return `\${${guard} ? schema.spec.${path} : omit()}`;
+}
+
+const wholeLifecycleGraph = kubernetesComposition(
+  {
+    name: 'whole-lifecycle',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WholeLifecycle',
+    spec: WholeLifecycleSpec,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec) => {
+    helmRelease({
+      id: 'app',
+      name: spec.name,
+      chart: { repository: 'https://charts.example.com', name: 'app' },
+      install: spec.install,
+      upgrade: spec.upgrade,
+      driftDetection: spec.driftDetection,
+    });
+    cnpgHelmRelease({
+      id: 'operator',
+      name: 'cnpg',
+      install: spec.install,
+      upgrade: spec.upgrade,
+      driftDetection: spec.driftDetection,
+    });
+    return { ready: true };
+  }
+);
+
+interface RgdResource {
+  id: string;
+  template: { spec: Record<string, unknown> };
+}
+
+function rgdReleaseSpec(id: string): Record<string, unknown> {
+  const rgd = load(wholeLifecycleGraph.factory('kro').toYaml()) as {
+    spec: { resources: RgdResource[] };
+  };
+  const resource = rgd.spec.resources.find((candidate) => candidate.id === id);
+  if (!resource) throw new Error(`no resource ${id} in the RGD`);
+  return resource.template.spec;
+}
+
+function directReleaseSpec(instance: WholeLifecycle, name: string): Record<string, unknown> {
+  const docs = loadAll(wholeLifecycleGraph.factory('direct').toYaml(instance)) as {
+    kind?: string;
+    metadata?: { name?: string };
+    spec: Record<string, unknown>;
+  }[];
+  const release = docs.find((doc) => doc?.kind === 'HelmRelease' && doc.metadata?.name === name);
+  if (!release) throw new Error(`no HelmRelease ${name} in the direct-mode YAML`);
+  return release.spec;
+}
+
+describe('lifecycle defaults when an override is a whole schema reference', () => {
+  it('emits the default as a CEL fallback on every leaf the instance may leave unset', () => {
+    const spec = rgdReleaseSpec('app');
+    expect(spec.install).toEqual({
+      timeout: celDefault('install.timeout', '"10m"'),
+      remediation: {
+        retries: celDefault('install.remediation.retries', '3'),
+        remediateLastFailure: omittedUnlessSet('install.remediation.remediateLastFailure'),
+      },
+      crds: omittedUnlessSet('install.crds'),
+    });
+    expect(spec.upgrade).toEqual({
+      timeout: celDefault('upgrade.timeout', '"10m"'),
+      remediation: {
+        retries: celDefault('upgrade.remediation.retries', '3'),
+        strategy: omittedUnlessSet('upgrade.remediation.strategy'),
+      },
+    });
+    // No default on the generic factory, so an unset field is simply omitted.
+    expect(spec.driftDetection).toBe(omittedUnlessSet('driftDetection'));
+  });
+
+  it('applies factory-specific defaults, including a whole drift-detection object', () => {
+    const spec = rgdReleaseSpec('operator');
+    expect(spec.install).toMatchObject({
+      timeout: celDefault('install.timeout', '"10m"'),
+      remediation: { retries: celDefault('install.remediation.retries', '3') },
+    });
+    expect(spec.driftDetection).toBe(
+      '${has(schema.spec.driftDetection) && dyn(schema.spec.driftDetection) != null ? ' +
+        'dyn(schema.spec.driftDetection) : dyn({"mode": "enabled"})}'
+    );
+  });
+
+  it('never selects a field the instance schema does not declare', () => {
+    const yaml = wholeLifecycleGraph.factory('kro').toYaml();
+    for (const undeclared of [
+      'install.createNamespace',
+      'install.remediation.ignoreTestFailures',
+      'upgrade.crds',
+      'upgrade.remediation.remediateLastFailure',
+    ]) {
+      expect(yaml).not.toContain(`schema.spec.${undeclared}`);
+    }
+  });
+
+  it('renders the same values in direct mode', () => {
+    expect(directReleaseSpec({ name: 'unset' }, 'unset')).toMatchObject({
+      install: { timeout: '10m', remediation: { retries: 3 } },
+      upgrade: { timeout: '10m', remediation: { retries: 3 } },
+    });
+    const set = directReleaseSpec(
+      {
+        name: 'set',
+        install: { crds: 'CreateReplace', remediation: { retries: 0 } },
+        upgrade: { timeout: '30m', remediation: { strategy: 'uninstall' } },
+        driftDetection: { mode: 'warn' },
+      },
+      'set'
+    );
+    expect(set.install).toEqual({
+      timeout: '10m',
+      remediation: { retries: 0 },
+      crds: 'CreateReplace',
+    });
+    expect(set.upgrade).toEqual({
+      timeout: '30m',
+      remediation: { retries: 3, strategy: 'uninstall' },
+    });
+    expect(set.driftDetection).toEqual({ mode: 'warn' });
+  });
+
+  // Resolve a KRO-mode lifecycle against one instance the way KRO would: CEL
+  // is evaluated, a bare reference reads the instance, and `omit()` drops it.
+  function resolveForInstance(value: unknown, instance: KroCompatibleType): unknown {
+    if (isCelExpression(value)) return evaluateSchemaCelExpression(value, instance);
+    if (isKubernetesRef(value)) {
+      return value.fieldPath
+        .replace(/^spec\./, '')
+        .split('.')
+        .reduce<unknown>(
+          (node, key) => (node as Record<string, unknown> | undefined)?.[key],
+          instance
+        );
+    }
+    if (value && typeof value === 'object') {
+      const resolved = Object.entries(value)
+        .map(([key, child]) => [key, resolveForInstance(child, instance)] as const)
+        .filter(([, child]) => child !== undefined);
+      return resolved.length > 0 ? Object.fromEntries(resolved) : undefined;
+    }
+    return value;
+  }
+
+  it.each<[string, WholeLifecycle]>([
+    ['nothing set', { name: 'a' }],
+    ['empty objects', { name: 'a', install: {}, upgrade: { remediation: {} } }],
+    [
+      'some fields set',
+      {
+        name: 'a',
+        install: { timeout: '45m', remediation: { remediateLastFailure: true } },
+        upgrade: { remediation: { retries: 0 } },
+      },
+    ],
+    [
+      'every declared field set',
+      {
+        name: 'a',
+        install: {
+          timeout: '1h',
+          crds: 'Create',
+          remediation: { retries: 9, remediateLastFailure: false },
+        },
+        upgrade: { timeout: '2h', remediation: { retries: 1, strategy: 'rollback' } },
+        driftDetection: { mode: 'disabled' },
+      },
+    ],
+  ])('KRO and direct mode agree per instance: %s', (_, instance) => {
+    const defaults = { driftDetection: { mode: 'enabled' as const } };
+    const schema = createSchemaProxy<WholeLifecycle, { ready: boolean }>(WholeLifecycleSpec.json);
+    const kro = helmReleaseLifecycle(
+      {
+        install: schema.spec.install,
+        upgrade: schema.spec.upgrade,
+        driftDetection: schema.spec.driftDetection,
+      },
+      { ...helmReleaseLifecycle(undefined), ...defaults }
+    );
+    const direct = helmReleaseLifecycle(instance, {
+      ...helmReleaseLifecycle(undefined),
+      ...defaults,
+    });
+    expect(resolveForInstance(kro, instance)).toEqual(direct);
+  });
+
+  it('leaves a required schema field as a plain reference', () => {
+    const schema = createSchemaProxy<{ timeout: string }, { ready: boolean }>(
+      type({ timeout: 'string' }).json
+    );
+    const { install } = helmReleaseLifecycle({ install: { timeout: schema.spec.timeout } });
+    expect(isKubernetesRef(install?.timeout)).toBe(true);
   });
 });

@@ -133,10 +133,13 @@ included: a failed install is uninstalled and tried again, and a failed upgrade
 is rolled back (or uninstalled, with `strategy: 'uninstall'`) and tried again.
 Set `retries: 0` for a chart that must never be rolled back automatically.
 
-In KRO mode, pass individual fields (`install: { timeout: spec.installTimeout }`).
-An `install` or `upgrade` object passed as one schema reference is read field by
-field, so every field becomes a reference to the instance's spec, and the
-factory's defaults no longer fill the fields the instance leaves unset.
+In KRO mode the options can be schema references, either field by field
+(`install: { timeout: spec.installTimeout }`) or as whole objects
+(`install: spec.install`). Each field that has a default renders as
+`Cel.default(<instance field>, <default>)`, so an instance that leaves it unset
+still gets the factory's default, the same as in direct mode. Fields your schema
+does not declare keep their defaults and are never read from the instance.
+Declare `retries` as `'number.integer'` so its type matches the integer default.
 
 Unless a factory sets its own policy, it uses the defaults of the generic
 `helmRelease`: `install.timeout` and `upgrade.timeout` of `10m`, and 3

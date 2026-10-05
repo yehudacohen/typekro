@@ -8,7 +8,13 @@
 // unless a factory says otherwise, the same bounded-retry defaults as the
 // generic `helmRelease`.
 
+import { SCHEMA_REFERENCE_OPTIONAL_BRAND } from '../../core/constants/brands.js';
+import { Cel } from '../../core/references/cel.js';
+import { declaredSchemaFields, isSchemaReference } from '../../core/references/schema-proxy.js';
+import type { KubernetesRef } from '../../core/types/common.js';
 import type { Composable } from '../../core/types/composable.js';
+import type { RefOrValue } from '../../core/types/references.js';
+import { isKubernetesRef } from '../../utils/type-guards.js';
 import type {
   HelmReleaseInstallPolicy,
   HelmReleaseLifecycleOptions,
@@ -40,20 +46,54 @@ const UPGRADE_REMEDIATION_KEYS = [...INSTALL_REMEDIATION_KEYS, 'strategy'] as co
 
 type FieldBag = Readonly<Record<string, unknown>>;
 
-// Fields are read one by one rather than spread. A schema reference arrives as
-// a proxy, and spreading a proxy enumerates nothing, so the caller's setting
-// would silently vanish. Reading a named field from it yields a field reference
-// that serializes as CEL.
-//
-// Known gap: when a whole `install`/`upgrade` object is one schema reference,
-// every field read from it is a reference too (never `undefined`), so the
-// defaults do not fill the fields an instance leaves unset. Callers should pass
-// individual fields in KRO mode; the Flux docs say so.
+/**
+ * Read one field of a caller override. A plain object answers directly. A
+ * schema or resource reference (KRO mode, e.g. `install: spec.install`) arrives
+ * as a proxy, and spreading a proxy enumerates nothing, so fields are always
+ * read by name: reading a field off a reference yields a reference to that
+ * field. A field the instance schema does not declare can never be set, so it
+ * reads as absent rather than as CEL selecting a field the schema lacks.
+ */
+function readField(bag: unknown, key: string): unknown {
+  if (bag === undefined || bag === null) return undefined;
+  if (isKubernetesRef(bag)) {
+    const declared = declaredSchemaFields(bag);
+    if (declared && !declared.has(key)) return undefined;
+  }
+  return (bag as FieldBag)[key];
+}
+
+/**
+ * Whether a value is read from the instance at reconcile time and may be
+ * missing there: any graph reference except a schema field the schema
+ * declares required.
+ */
+function mayBeAbsentAtInstanceTime(value: unknown): value is KubernetesRef<unknown> {
+  if (!isKubernetesRef(value)) return false;
+  return !isSchemaReference(value) || Reflect.get(value, SCHEMA_REFERENCE_OPTIONAL_BRAND) === true;
+}
+
+/**
+ * "Caller value when set, otherwise the default" for one leaf. With concrete
+ * values that is `??`. A reference only resolves per instance, where `??` has
+ * nothing to test at build time (a reference is never `undefined`), so the
+ * choice is emitted as CEL instead: the instance field when present, else the
+ * default. Direct mode passes concrete values and takes the `??` path.
+ */
+function withDefault(override: unknown, fallback: unknown): unknown {
+  if (fallback !== undefined && mayBeAbsentAtInstanceTime(override)) {
+    // Leaves are scalars or (drift detection) objects; the emitted CEL is the
+    // same either way, so the object overload stands in for both.
+    return Cel.default<object | undefined>(override, fallback as RefOrValue<object>);
+  }
+  return override ?? fallback;
+}
+
 function mergeFields(
   keys: readonly string[],
   remediationKeys: readonly string[],
   base: FieldBag | undefined,
-  override: FieldBag | undefined
+  override: unknown
 ): FieldBag | undefined {
   const merged: Record<string, unknown> = {};
   for (const key of keys) {
@@ -63,9 +103,9 @@ function mergeFields(
             remediationKeys,
             [],
             base?.remediation as FieldBag | undefined,
-            override?.remediation as FieldBag | undefined
+            readField(override, key)
           )
-        : (override?.[key] ?? base?.[key]);
+        : withDefault(readField(override, key), base?.[key]);
     if (value !== undefined) {
       merged[key] = value;
     }
@@ -77,6 +117,11 @@ function mergeFields(
  * Merge caller lifecycle options over a factory's defaults, for spreading into
  * a HelmRelease `spec`. Defaults to the generic `helmRelease` policy (10m
  * timeouts, 3 remediation retries).
+ *
+ * In KRO mode an override can be a schema reference at any level, down to a
+ * whole `install` or `upgrade` object. Every leaf that has a default then
+ * renders as `Cel.default(<instance field>, <default>)`: the instance's value
+ * when it sets the field, otherwise the default, exactly as in direct mode.
  *
  * @example
  * ```typescript
@@ -91,15 +136,16 @@ export function helmReleaseLifecycle(
     INSTALL_KEYS,
     INSTALL_REMEDIATION_KEYS,
     defaults.install,
-    options?.install as FieldBag | undefined
+    readField(options, 'install')
   );
   const upgrade = mergeFields(
     UPGRADE_KEYS,
     UPGRADE_REMEDIATION_KEYS,
     defaults.upgrade,
-    options?.upgrade as FieldBag | undefined
+    readField(options, 'upgrade')
   );
-  const driftDetection = options?.driftDetection ?? defaults.driftDetection;
+  // Drift detection replaces the default as a whole, so it is one leaf.
+  const driftDetection = withDefault(readField(options, 'driftDetection'), defaults.driftDetection);
   const spec: HelmReleaseLifecycleSpec = {};
   if (install) spec.install = install as HelmReleaseInstallPolicy;
   if (upgrade) spec.upgrade = upgrade as HelmReleaseUpgradePolicy;

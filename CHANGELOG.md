@@ -22,7 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CRD policy does not affect them; its chart value `crds.enabled` does.) They all share one helper, `helmReleaseLifecycle`, which
   `typekro/helm` exports for custom integration factories, together with the
   `HelmReleaseLifecycleOptions`, `HelmReleaseInstallPolicy`, `HelmReleaseUpgradePolicy` and
-  `HelmReleaseCrdsPolicy` types. See "Install, upgrade and CRD policy" in the Flux docs.
+  `HelmReleaseCrdsPolicy` types. In KRO mode the defaults also hold when an option is a schema
+  reference, including a whole object such as `install: spec.install`: each defaulted field renders
+  as a CEL fallback (the instance's value when set, otherwise the default), and fields the instance
+  schema does not declare are not read from it. An optional schema field passed as a lifecycle
+  field of the generic `helmRelease` therefore carries its default in the resource template
+  instead of in the RGD schema. See "Install, upgrade and CRD policy" in the Flux docs.
 
 ### Changed
 
