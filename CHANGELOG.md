@@ -53,8 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back and tried again. Existing releases pick up the new policy on their next reconcile. The
   chart and its values do not change. Every other factory renders the same fields with the same
   values as before when the new options are not set. In the APISix and Traefik releases,
-  `createNamespace` and `crds` now come after `remediation`, so their YAML and RGD text change
-  while the objects stay identical.
+  `createNamespace` and `crds` now come after `remediation`, which reorders the keys in
+  direct-mode YAML. The objects are identical, and RGD text does not change, because it is
+  emitted with sorted keys.
 
 ### Fixed
 
