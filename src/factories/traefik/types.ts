@@ -1653,9 +1653,10 @@ const traefikServiceTypeSchema = '"LoadBalancer" | "NodePort" | "ClusterIP"';
 // nothing. Each entry must be one IP address or CIDR range in the strict
 // format of `utils/trusted-range.ts`. A `/0` range is rejected unless the
 // build-time escape hatch `dangerouslyTrustAnySource` is set (see
-// `utils/proxy-trust.ts`). At most 64 entries, which keeps the KRO CRD's
-// admission rule inside the API server's cost budget.
-const traefikTrustedRanges = type('string[] <= 64').narrow(
+// `utils/proxy-trust.ts`). At most 64 entries of at most 43 characters (a full
+// IPv6 address and `/128`): the bounds keep the KRO CRD's strict admission
+// rule inside the API server's CEL cost budget.
+const traefikTrustedRanges = type('(string <= 43)[] <= 64').narrow(
   (ranges, ctx) =>
     ranges.every((range) => parseTraefikTrustedRange(range) !== undefined) ||
     ctx.mustBe(

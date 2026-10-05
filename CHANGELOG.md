@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Each entry must be one IP address or CIDR range in a strict format (no spaces, commas,
     leading zeros or IPv4-mapped addresses, at most 64 entries), since Go reads `0.0.0.0/00` and
     `::ffff:0:0/96` as trust-all. A `/0` range is refused: in direct mode when the values are
-    mapped; in KRO mode by a cost-bounded `x-kubernetes-validations` rule on the generated CRD,
-    and the rendered values keep only entries in the strict format. An `insecure` proxy-protocol or
+    mapped; in KRO mode by an `x-kubernetes-validations` rule on the generated CRD (the items are
+    bounded to 43 characters through a SimpleSchema custom type so the rule fits the CEL cost
+    budget), and the rendered values keep only entries in the strict format as a second line of
+    defence. An `insecure` proxy-protocol or
     forwarded-header flag, or a `/0` range, in raw `values`, `additionalArguments` or `env` throws
-    too. So does trust TypeKro cannot see: a non-empty `envFrom`, or an `env` entry for an
+    too, including an `insecure` value other than `false` (the chart treats `'false'` as true), a
+    raw `trustedIPs` string, and a value carrying a newline or other control character. So does trust TypeKro cannot see: a non-empty `envFrom`, or an `env` entry for an
     entrypoint's PROXY-protocol or forwarded-header variable whose value comes from `valueFrom`.
     A static configuration file would replace the flags, so `--configFile` and raw-values mounts
     at or above the files Traefik searches (`/etc/traefik/traefik.*`, `/traefik.*`,
@@ -43,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **KRO SimpleSchema: constrained array items.** A list whose items carry a length or pattern
+  constraint (`'(string <= 43)[]'`) was emitted as `[]string | maxLength=43`, which KRO applies to
+  the list and rejects. The item constraint is now a named custom type in `spec.schema.types`.
 - **The Traefik `web` → `websecure` redirect blocked ACME HTTP-01 challenges.** Traefik gives the
   router it generates for an entrypoint redirection priority `MaxInt - 1`, so it outranked the route
   cert-manager's HTTP-01 solver creates on `web` and answered `/.well-known/acme-challenge/<token>`

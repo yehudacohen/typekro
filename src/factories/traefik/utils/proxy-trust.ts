@@ -52,26 +52,21 @@ import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js'
 import type { TraefikHelmValues } from '../types.js';
 import {
   parseTraefikTrustedRange,
-  TRAEFIK_TRUSTED_RANGE_MAX_LENGTH,
   traefikEffectiveTrustedPrefix,
   traefikTrustedRangeCel,
 } from './trusted-range.js';
 
 /**
- * Admission rule on each KRO-mode `trustedIPs` list.
+ * Admission rule on each KRO-mode `trustedIPs` list: every entry in the strict
+ * format and not `/0`.
  *
- * Only the cheap part of the strict format: the API server estimates a CEL
- * rule's cost from the schema, and `matches()` over list items whose length it
- * cannot bound exceeds the CRD budget. The full format is applied when the
- * values are rendered instead (see `traefikStrictTrustedIPs`), so an entry
- * that passes here but not there is dropped before Traefik sees it.
+ * The API server estimates a CEL rule's cost from the schema, so the list
+ * carries `maxItems=64` and its items `maxLength=43` (through a SimpleSchema
+ * custom type); without those bounds `matches()` would exceed the CRD budget.
+ * The rendered values also keep only entries in the strict format (see
+ * `traefikStrictTrustedIPs`), as a second line of defence.
  */
-export const TRAEFIK_TRUSTED_IPS_VALIDATION_RULE =
-  `self.all(range, range.size() <= ${TRAEFIK_TRUSTED_RANGE_MAX_LENGTH}` +
-  " && !range.endsWith('/0') && !range.endsWith('/00')" +
-  " && !range.startsWith(' ') && !range.endsWith(' ')" +
-  " && !range.startsWith(',') && !range.endsWith(',')" +
-  " && !range.startsWith('::ffff:') && !range.startsWith('::FFFF:'))";
+export const TRAEFIK_TRUSTED_IPS_VALIDATION_RULE = `self.all(range, ${traefikTrustedRangeCel('range')})`;
 
 // Runtime spec paths that carry a `trustedIPs` list, for the KRO-mode rule.
 const TRUSTED_IP_SPEC_PATHS = [
@@ -81,16 +76,27 @@ const TRUSTED_IP_SPEC_PATHS = [
   'entrypoints.websecure.forwardedHeaders.trustedIPs',
 ] as const;
 
-// `--entryPoints.<name>.proxyProtocol.insecure` and the forwardedHeaders twin,
-// bare or with any value Go's `strconv.ParseBool` reads as true. Traefik's
-// flag parser is case-insensitive.
-const INSECURE_ARGUMENT = /\.(proxyprotocol|forwardedheaders)\.insecure(=(1|t|true))?$/i;
-// `--entryPoints.<name>.proxyProtocol.trustedIPs=<ranges>` and the
-// forwardedHeaders twin, with the value after `=` or in the next argument.
-const TRUSTED_IPS_ARGUMENT =
-  /\.(proxyprotocol|forwardedheaders)\.trustedips(?:\[\d+\])?(?:=(.*))?$/i;
+// A flag argument: one or two dashes, the name, and an optional `=value`.
+// `[\s\S]` so a newline in the value can't end the match early.
+const FLAG_ARGUMENT = /^--?([^=]+)(?:=([\s\S]*))?$/;
+// Flag names, matched lowercase (Traefik's flag parser is case-insensitive).
+const INSECURE_FLAG = /^entrypoints\.[^.]+\.(proxyprotocol|forwardedheaders)\.insecure$/;
+const TRUSTED_IPS_FLAG =
+  /^entrypoints\.[^.]+\.(proxyprotocol|forwardedheaders)\.trustedips(\[[0-9]+\])?$/;
 // Any flag under an entrypoint's proxyProtocol or forwardedHeaders.
-const TRUST_ARGUMENT = /\.(proxyprotocol|forwardedheaders)\./i;
+const TRUST_FLAG = /^entrypoints\.[^.]+\.(proxyprotocol|forwardedheaders)\./;
+// The values Go's `strconv.ParseBool` reads as false. Anything else on an
+// `insecure` flag or variable either turns it on or makes it unreadable.
+const FALSE_VALUE = /^(0|f|F|false|FALSE|False)$/;
+// Control characters, newlines included. Traefik trims list items, so
+// `'0.0.0.0/0\n'` is `/0`; values carrying one are refused outright.
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
 // The same settings through Traefik's environment-variable configuration.
 // Traefik matches variable names case-insensitively.
 const INSECURE_ENV = /^TRAEFIK_ENTRYPOINTS_.+_(PROXYPROTOCOL|FORWARDEDHEADERS)_INSECURE$/i;
@@ -99,10 +105,7 @@ const TRUSTED_IPS_ENV =
 // Any variable under an entrypoint's proxyProtocol or forwardedHeaders: the
 // names whose value must be visible for the guard to vouch for it.
 const TRUST_ENV = /^TRAEFIK_ENTRYPOINTS_.+_(PROXYPROTOCOL|FORWARDEDHEADERS)_/i;
-const TRUE_VALUE = /^(1|t|true)$/i;
 
-// `--configFile` / `-configfile`, with the value after `=` or in the next argument.
-const CONFIG_FILE_ARGUMENT = /^--?configfile(=|$)/i;
 const CONFIG_FILE_EXTENSIONS = ['toml', 'yaml', 'yml'] as const;
 const CONFIG_FILE_FIX =
   'Traefik would load its static configuration from that file in place of its flags, and ' +
@@ -134,6 +137,12 @@ function rangeIssue(where: string, range: string): string | undefined {
 
 /** Issues for a comma-separated list of ranges, as env values and flags carry them. */
 function rangeListIssues(where: string, list: string): string[] {
+  if (hasControlCharacter(list)) {
+    return [
+      `${where} contains a control character such as a newline. Traefik trims list items, ` +
+        'so it would read the value differently from what the guard checks.',
+    ];
+  }
   if (list.includes('$(')) {
     return [`${where} uses a $(VAR) reference, which Kubernetes expands. ${HIDDEN_VALUE_FIX}`];
   }
@@ -169,26 +178,43 @@ export function traefikProxyTrustIssues(values: TraefikHelmValues): string[] {
     for (const [name, port] of Object.entries(ports)) {
       if (!port || !isConcrete(port)) continue;
       for (const field of ['proxyProtocol', 'forwardedHeaders'] as const) {
-        const trust = port[field];
-        if (!trust || !isConcrete(trust)) continue;
-        if (trust.insecure === true) {
-          issues.push(`ports.${name}.${field}.insecure trusts every source.`);
-        }
-        const ranges = trust.trustedIPs;
-        if (!Array.isArray(ranges) || !isConcrete(ranges)) continue;
-        // Each entry must be one range on its own: the chart joins the list
-        // with ",", so an entry carrying a comma would add ranges unseen.
-        for (const range of ranges) {
-          if (typeof range !== 'string') continue;
-          const issue = rangeIssue(`ports.${name}.${field}.trustedIPs`, range);
-          if (issue) issues.push(issue);
-        }
+        issues.push(...portTrustIssues(`ports.${name}.${field}`, port[field]));
       }
     }
   }
   issues.push(...envIssues(values));
   issues.push(...argumentIssues(values.additionalArguments));
   issues.push(...staticConfigIssues(values));
+  return issues;
+}
+
+/** Proxy-trust problems in one raw `ports.<name>.proxyProtocol` / `forwardedHeaders` block. */
+function portTrustIssues(where: string, trust: unknown): string[] {
+  if (trust === undefined || trust === null || !isConcrete(trust)) return [];
+  if (!isLiteralRecord(trust)) {
+    return [`${where} is not an object, so the guard cannot read its trust settings.`];
+  }
+  const issues: string[] = [];
+  // The chart tests `insecure` with Go template truthiness, so 'false', 1 or
+  // 'yes' all switch it on. Only an absent value or boolean false is safe.
+  const insecure = trust.insecure;
+  if (insecure !== undefined && insecure !== null && insecure !== false && isConcrete(insecure)) {
+    issues.push(`${where}.insecure is ${JSON.stringify(insecure)}, which trusts every source.`);
+  }
+  const ranges = trust.trustedIPs;
+  if (ranges === undefined || ranges === null || !isConcrete(ranges)) return issues;
+  // The chart joins the list with ","; a string is joined as one element.
+  const entries: unknown[] = Array.isArray(ranges) ? ranges : [ranges];
+  for (const range of entries) {
+    if (!isConcrete(range)) continue;
+    // Each entry must be one range on its own, so an entry carrying a comma
+    // (which the join would split into more ranges) is refused too.
+    const issue =
+      typeof range === 'string'
+        ? rangeIssue(`${where}.trustedIPs`, range)
+        : `${where}.trustedIPs contains ${JSON.stringify(range)}, which is not a range.`;
+    if (issue) issues.push(issue);
+  }
   return issues;
 }
 
@@ -206,10 +232,18 @@ function argumentIssues(args: unknown): string[] {
       return;
     }
     if (typeof arg !== 'string') return;
+    // Traefik trims list values, and a newline would end a single-line match.
+    if (hasControlCharacter(arg)) {
+      issues.push(
+        `additionalArguments[${index}] contains a control character such as a newline. ` +
+          'Traefik would read it differently from what the guard checks.'
+      );
+      return;
+    }
+    const flagMatch = FLAG_ARGUMENT.exec(arg);
     // Kubernetes expands $(VAR) in container arguments, so an argument that
-    // uses one could become any flag or value.
-    const [flag = ''] = arg.split('=');
-    if (!flag.startsWith('-') || flag.includes('$(')) {
+    // uses one outside a flag's value could become any flag.
+    if (!flagMatch || flagMatch[1]?.includes('$(')) {
       if (arg.includes('$(')) {
         issues.push(
           `additionalArguments[${index}] uses a $(VAR) reference, which Kubernetes expands. ${HIDDEN_VALUE_FIX}`
@@ -217,24 +251,29 @@ function argumentIssues(args: unknown): string[] {
       }
       return;
     }
-    if (TRUST_ARGUMENT.test(flag) && arg.includes('$(')) {
+    const flag = `--${flagMatch[1] ?? ''}`;
+    const name = (flagMatch[1] ?? '').toLowerCase();
+    const value = flagMatch[2];
+    if (TRUST_FLAG.test(name) && arg.includes('$(')) {
       issues.push(
         `additionalArguments sets ${flag} from a $(VAR) reference, which Kubernetes expands. ${HIDDEN_VALUE_FIX}`
       );
       return;
     }
-    if (INSECURE_ARGUMENT.test(arg)) {
-      issues.push(`additionalArguments contains ${arg}, which trusts every source.`);
+    if (INSECURE_FLAG.test(name)) {
+      // Bare, true, or anything Go would not read as false.
+      if (value === undefined || !FALSE_VALUE.test(value)) {
+        issues.push(`additionalArguments contains ${arg}, which trusts every source.`);
+      }
       return;
     }
-    if (CONFIG_FILE_ARGUMENT.test(arg)) {
-      issues.push(`additionalArguments contains ${arg.split('=')[0]}. ${CONFIG_FILE_FIX}`);
+    if (name === 'configfile') {
+      issues.push(`additionalArguments contains ${flag}. ${CONFIG_FILE_FIX}`);
       return;
     }
-    const match = TRUSTED_IPS_ARGUMENT.exec(arg);
-    if (!match) return;
+    if (!TRUSTED_IPS_FLAG.test(name)) return;
     const next: unknown = args[index + 1];
-    const ranges = match[2] ?? (typeof next === 'string' ? next : '');
+    const ranges = value ?? (typeof next === 'string' ? next : '');
     issues.push(...rangeListIssues(`additionalArguments ${flag}`, ranges));
   });
   return issues;
@@ -288,7 +327,8 @@ function staticConfigIssues(values: TraefikHelmValues): string[] {
       if (
         isLiteralString(entry.value) &&
         entry.valueFrom === undefined &&
-        !entry.value.includes('$(')
+        !entry.value.includes('$(') &&
+        !hasControlCharacter(entry.value)
       ) {
         location[name] = entry.value;
       } else {
@@ -404,11 +444,15 @@ function envIssues(values: TraefikHelmValues): string[] {
       continue;
     }
     if (typeof value !== 'string') continue;
-    if (value.includes('$(')) {
+    if (hasControlCharacter(value)) {
+      issues.push(
+        `env ${name} contains a control character such as a newline. ${HIDDEN_VALUE_FIX}`
+      );
+    } else if (value.includes('$(')) {
       issues.push(
         `env ${name} uses a $(VAR) reference, which Kubernetes expands. ${HIDDEN_VALUE_FIX}`
       );
-    } else if (INSECURE_ENV.test(name) && TRUE_VALUE.test(value.trim())) {
+    } else if (INSECURE_ENV.test(name) && !FALSE_VALUE.test(value)) {
       issues.push(`env ${name}=${value} trusts every source.`);
     } else if (TRUSTED_IPS_ENV.test(name)) {
       issues.push(...rangeListIssues(`env ${name}`, value));
@@ -449,8 +493,9 @@ export function traefikBroadTrustWarnings(values: TraefikHelmValues): string[] {
   for (const [name, port] of Object.entries(ports)) {
     if (!port || !isConcrete(port)) continue;
     for (const field of ['proxyProtocol', 'forwardedHeaders'] as const) {
-      const ranges = port[field]?.trustedIPs;
-      if (!Array.isArray(ranges) || !isConcrete(ranges)) continue;
+      const trustedIPs: unknown = port[field]?.trustedIPs;
+      if (trustedIPs === undefined || trustedIPs === null || !isConcrete(trustedIPs)) continue;
+      const ranges: unknown[] = Array.isArray(trustedIPs) ? trustedIPs : [trustedIPs];
       for (const entry of ranges) {
         if (typeof entry !== 'string') continue;
         // Read the way Go does: an IPv4-mapped `/96` is IPv4 `/0`.
@@ -484,8 +529,8 @@ export function traefikProxyTrustSchemaFieldValidations(): Record<string, string
  * entries that pass the strict format.
  *
  * Direct mode sees concrete lists, which the guard checks whole. In KRO mode
- * the API server can afford only the cheap admission rule, so the rendered
- * values keep just the entries that are one valid range (and, unless
+ * the CRD refuses the same entries at admission; this filter is the second
+ * line of defence, keeping only entries that are one valid range (and, unless
  * `allowAnySource`, not `/0`). A dropped entry narrows trust; it never widens it.
  */
 export function traefikStrictTrustedIPs<T>(ranges: T, allowAnySource: boolean): T {

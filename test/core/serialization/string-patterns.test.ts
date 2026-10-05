@@ -84,10 +84,12 @@ describe('KRO string pattern serialization', () => {
 
   it('preserves constraints on array elements and on the array itself', () => {
     const schema = type({ names: 'string > 0[] > 0' });
+    const yaml = rgdObject(schema);
 
-    expect(rgdObject(schema)).toContain(
-      "names: '[]string | minLength=1 | minItems=1'",
-    );
+    // KRO applies the markers after `|` to the field, and refuses minLength on
+    // a list, so the element constraint lives on a named custom type.
+    expect(yaml).toContain("names: '[]StringPatternObjectTestNamesItem | minItems=1'");
+    expect(yaml).toContain("StringPatternObjectTestNamesItem: string | minLength=1");
   });
 });
 

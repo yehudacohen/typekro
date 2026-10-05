@@ -195,6 +195,81 @@ describe('direct mode', () => {
     }
   });
 
+  it('refuses values with a newline or other control character, which Traefik would trim', () => {
+    for (const args of [
+      ['--entryPoints.web.proxyProtocol.trustedIPs=0.0.0.0/0\n'],
+      ['--entryPoints.web.proxyProtocol.trustedIPs=0.0.0.0/0\r'],
+      ['--entrypoints.web.proxyprotocol.trustedips[0]=0.0.0.0/0\n'],
+      ['-entrypoints.web.proxyprotocol.trustedips=0.0.0.0/0\n'],
+      ['--entrypoints.web.proxyprotocol.trustedips=10.0.0.0/8\n,0.0.0.0/0'],
+      ['--entrypoints.web.proxyprotocol.trustedips', '0.0.0.0/0\n'],
+      ['--entrypoints.web.forwardedheaders.insecure\n'],
+      ['--entrypoints.web.forwardedheaders.insecure=true\n'],
+      ['--configfile=/x.yml\n'],
+    ]) {
+      expect(traefikProxyTrustIssues({ additionalArguments: args })).not.toEqual([]);
+    }
+    for (const name of [
+      'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_TRUSTEDIPS',
+      'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_INSECURE',
+    ]) {
+      expect(traefikProxyTrustIssues({ env: [{ name, value: '10.0.1.0/24\n' }] })).not.toEqual([]);
+    }
+    expect(traefikProxyTrustIssues({ env: [{ name: 'HOME', value: '/home\n' }] })).not.toEqual([]);
+  });
+
+  it('refuses insecure values Go would not read as false', () => {
+    for (const value of ['yes', 'on', 'TRUE', 'True', '1', 't', '']) {
+      expect(
+        traefikProxyTrustIssues({
+          additionalArguments: [`--entrypoints.web.proxyprotocol.insecure=${value}`],
+        })
+      ).not.toEqual([]);
+      expect(
+        traefikProxyTrustIssues({
+          env: [{ name: 'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_INSECURE', value }],
+        })
+      ).not.toEqual([]);
+    }
+    for (const value of ['false', 'FALSE', 'False', '0', 'f', 'F']) {
+      expect(
+        traefikProxyTrustIssues({
+          additionalArguments: [`--entrypoints.web.proxyprotocol.insecure=${value}`],
+          env: [{ name: 'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_INSECURE', value }],
+        })
+      ).toEqual([]);
+    }
+  });
+
+  it('refuses raw ports insecure values the chart reads as true, for both fields', () => {
+    for (const field of ['proxyProtocol', 'forwardedHeaders']) {
+      for (const insecure of [true, 'false', 'true', 1, 'yes', 'no', 0.5, {}]) {
+        expect(traefikProxyTrustIssues({ ports: { admin: { [field]: { insecure } } } })).toEqual([
+          expect.stringContaining('trusts every source'),
+        ]);
+      }
+      for (const insecure of [false, null, undefined]) {
+        expect(traefikProxyTrustIssues({ ports: { admin: { [field]: { insecure } } } })).toEqual(
+          []
+        );
+      }
+    }
+  });
+
+  it('checks a raw trustedIPs that is not a list, and entries that are not strings', () => {
+    const map = (ports: Record<string, unknown>) => () =>
+      mapTraefikConfigToHelmValues({ name: 'traefik' }, { baseValues: { ports } });
+    // The chart's `join ","` turns a string into a one-element list.
+    expect(map({ admin: { proxyProtocol: { trustedIPs: '0.0.0.0/0' } } })).toThrow(
+      /trusts every source/
+    );
+    expect(map({ admin: { proxyProtocol: { trustedIPs: '10.0.1.0/24' } } })).not.toThrow();
+    for (const trustedIPs of [['10.0.1.0/24', 0], [{}], 7]) {
+      expect(map({ admin: { forwardedHeaders: { trustedIPs } } })).toThrow(/not a range/);
+    }
+    expect(map({ admin: { proxyProtocol: 'yes' } })).toThrow(/not an object/);
+  });
+
   it('reads env and argument lists the way Traefik does: split on "," and trimmed', () => {
     expect(
       traefikProxyTrustIssues({
@@ -287,7 +362,7 @@ function evaluatePredicate(predicate: string, variable: string, value: string): 
 
 interface RgdDocument {
   spec?: {
-    schema?: { spec?: unknown };
+    schema?: { spec?: unknown; types?: Record<string, unknown> };
     resources?: Array<{ template?: unknown }>;
   };
 }
@@ -318,29 +393,22 @@ function trustedIpsStrings(node: unknown, found: string[] = []): string[] {
 }
 
 describe('KRO mode', () => {
-  it('puts a cost-bounded admission rule on all four trusted-range fields', () => {
-    const fields = trustedIpsStrings(rgd(traefikBootstrap).spec?.schema?.spec);
+  it('refuses every malformed or /0 entry at admission, with items bounded for the cost budget', () => {
+    const document = rgd(traefikBootstrap);
+    const fields = trustedIpsStrings(document.spec?.schema?.spec);
     expect(fields).toHaveLength(4);
     for (const field of fields) {
-      expect(field).toContain('maxItems=64');
+      // `[]<ItemType> | maxItems=64 validation=...`, the item type a
+      // `string | maxLength=43` alias: KRO puts field markers on the list, so
+      // the item bound needs a custom type.
+      const itemType = /^\[\](\w+) \| maxItems=64 /.exec(field)?.[1];
+      if (!itemType) throw new Error(`no bounded item type in ${field}`);
+      expect(document.spec?.schema?.types?.[itemType]).toBe('string | maxLength=43');
       const rule = /validation="self\.all\(range, (.*)\)"$/.exec(field)?.[1];
       if (!rule) throw new Error(`no admission rule in ${field}`);
       const admits = (value: string) => evaluatePredicate(rule, 'range', value);
       for (const range of VALID) expect(admits(range)).toBe(true);
-      for (const range of [
-        '0.0.0.0/0',
-        '::/0',
-        '0.0.0.0/00',
-        '::/00',
-        '0.0.0.0/0 ',
-        ' 0.0.0.0/0',
-        '::ffff:0:0/96',
-        '::FFFF:0.0.0.0/96',
-        '0.0.0.0/0,',
-        'x'.repeat(44),
-      ]) {
-        expect(admits(range)).toBe(false);
-      }
+      for (const range of [...TRUSTS_ALL, ...MALFORMED]) expect(admits(range)).toBe(false);
     }
   });
 

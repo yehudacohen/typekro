@@ -341,19 +341,24 @@ client address comes from the PROXY header. Leave `forwardedHeaders` unset
 unless another proxy, such as a CDN, sits in front and sets `X-Forwarded-For`.
 Each entry must be one IPv4 or IPv6 address or CIDR range: no spaces, no
 commas, no leading zeros in octets or prefixes, no zone, no IPv4-mapped
-(`::ffff:`) address, and at most 64 entries. Go, which Traefik uses, reads
+(`::ffff:`) address, at most 43 characters each and at most 64 entries. Go,
+which Traefik uses, reads
 `0.0.0.0/00` as `/0` and `::ffff:0:0/96` as every IPv4 client, and the chart
 joins a list with commas, so a looser check could be fooled. A range with a
 `/0` prefix (`0.0.0.0/0`, `::/0`) would let any client set its own source
 address, so it is refused. Direct mode refuses a malformed or `/0` entry when
-the composition runs. In KRO mode, the API server can only afford a cheap CEL
-rule over list items whose length it can't bound, so admission refuses the
-common cases (`/0`, `/00`, a leading or trailing space or comma, `::ffff:`, an
-entry longer than 43 characters), and the rendered values keep only the
-entries in the strict format. An entry that slips past admission is dropped
-before Traefik sees it, which narrows trust and never widens it. An `insecure`
-flag or a malformed or `/0` range that reaches the final values throws as
-well, whether it comes through
+the composition runs. In KRO mode the generated CRD refuses the same entries
+at admission, with an `x-kubernetes-validations` rule; the item and list
+bounds are what keep that rule inside the API server's CEL cost budget. As a
+second line of defence the rendered values keep only entries in the strict
+format. If an entry did get past admission it would be dropped before
+Traefik saw it, and a list with no valid entry left would mean no PROXY
+protocol or forwarded-header trust at all: behind an NLB that sends PROXY v2,
+every connection would then fail. An `insecure` value other than `false`, or
+a malformed or `/0` range, that reaches the final values throws as well,
+including a raw `insecure: 'false'` (the chart treats any non-empty value as
+true), a raw `trustedIPs` given as a string, and a value carrying a newline or
+other control character. That holds whether it comes through
 `values` (`ports.*.proxyProtocol.insecure`), `additionalArguments` (`=true`,
 `=1` or bare for `insecure`, the `=` or next argument for `trustedIPs`) or a
 `TRAEFIK_ENTRYPOINTS_*` entry in `env`, where lists are split on commas and
