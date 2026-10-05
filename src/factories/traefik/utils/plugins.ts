@@ -19,6 +19,25 @@ import type { TraefikLocalPluginDeclaration, TraefikPluginDeclaration } from '..
 // and `Middleware.spec.plugin` keys, so they stay to one flag-safe word.
 const PLUGIN_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+// The chart writes `moduleName`, `version`, a local plugin's `volumeName` and
+// `subPath`, and inline source file names into its templates unescaped. A
+// quote or newline there would add YAML of the caller's choosing (another
+// argument, mount or manifest) behind every check TypeKro runs on the values,
+// so each is held to the characters its real form uses.
+// A Go module path: letters, digits and `-._~/`.
+const MODULE_NAME = /^[A-Za-z0-9][A-Za-z0-9._~/-]*$/;
+// A release tag such as `v1.4.2` or `v2.0.0-rc.1+build.5`.
+const VERSION = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+// A Kubernetes volume name (DNS-1123 label).
+const VOLUME_NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+// A relative path inside the volume.
+const SUB_PATH = /^[A-Za-z0-9._-][A-Za-z0-9._/-]*$/;
+// A ConfigMap key.
+const FILE_NAME = /^[-._A-Za-z0-9]{1,253}$/;
+
+function hasParentSegment(path: string): boolean {
+  return path.split('/').includes('..');
+}
 
 /** Where Traefik loads a local plugin from: `./plugins-local/src/<moduleName>`. */
 export function traefikLocalPluginMountPath(moduleName: string): string {
@@ -33,8 +52,10 @@ export function traefikPluginIssues(
   const issues: string[] = [];
   for (const [name, plugin] of Object.entries(plugins)) {
     if (!PLUGIN_NAME.test(name)) issues.push(`plugin name ${name} must match ${PLUGIN_NAME}.`);
-    if (plugin.moduleName.trim() === '') issues.push(`plugin ${name} needs a moduleName.`);
-    if (plugin.version.trim() === '' || plugin.version === 'latest') {
+    if (!MODULE_NAME.test(plugin.moduleName)) {
+      issues.push(`plugin ${name} needs a Go module path as its moduleName.`);
+    }
+    if (!VERSION.test(plugin.version) || plugin.version === 'latest') {
       issues.push(`plugin ${name} needs an exact version, not ${JSON.stringify(plugin.version)}.`);
     }
     if (!SHA256_HEX.test(plugin.hash)) {
@@ -46,11 +67,28 @@ export function traefikPluginIssues(
       issues.push(`local plugin name ${name} must match ${PLUGIN_NAME}.`);
     if (name in plugins)
       issues.push(`plugin ${name} is declared both as a registry and a local plugin.`);
-    if (plugin.moduleName.trim() === '' || plugin.moduleName.includes('..')) {
-      issues.push(`local plugin ${name} needs a moduleName without "..".`);
+    if (!MODULE_NAME.test(plugin.moduleName) || plugin.moduleName.includes('..')) {
+      issues.push(`local plugin ${name} needs a Go module path without ".." as its moduleName.`);
     }
-    if (plugin.type === 'inlinePlugin' && Object.keys(plugin.source).length === 0) {
-      issues.push(`local plugin ${name} has no source files.`);
+    if (plugin.type === 'inlinePlugin') {
+      const files = Object.keys(plugin.source);
+      if (files.length === 0) issues.push(`local plugin ${name} has no source files.`);
+      for (const file of files.filter((file) => !FILE_NAME.test(file))) {
+        issues.push(
+          `local plugin ${name} source file ${JSON.stringify(file)} must be a ConfigMap key ` +
+            '(letters, digits, "-", "_" and ".").'
+        );
+      }
+    } else {
+      if (!VOLUME_NAME.test(plugin.volumeName)) {
+        issues.push(`local plugin ${name} volumeName must be a Kubernetes volume name.`);
+      }
+      if (
+        plugin.subPath !== undefined &&
+        (!SUB_PATH.test(plugin.subPath) || hasParentSegment(plugin.subPath))
+      ) {
+        issues.push(`local plugin ${name} subPath must be a relative path without "..".`);
+      }
     }
   }
   return issues;

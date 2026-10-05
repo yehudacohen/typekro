@@ -13,6 +13,7 @@ import {
   traefikForwardAuthSecurePair,
   traefikPluginMiddleware,
 } from '../../../src/factories/traefik/resources/middleware.js';
+import type { TraefikLocalPluginDeclaration } from '../../../src/factories/traefik/types.js';
 import {
   mapTraefikConfigToHelmValues,
   validateTraefikHelmValues,
@@ -88,6 +89,70 @@ describe('plugin declarations', () => {
         }
       )
     ).toThrow(/both as a registry and a local plugin/);
+  });
+
+  it('refuses plugin fields that would inject YAML into the chart templates', () => {
+    // The chart writes these unescaped, e.g.
+    // "--experimental.plugins.<name>.moduleName={{ $plugin.moduleName }}", so a
+    // quote and newline would add an argument such as an insecure trust flag.
+    const injected = 'x"\n          - "--entryPoints.web.forwardedHeaders.insecure=true';
+    const invalidPlugins = [
+      { bouncer: { ...BOUNCER, moduleName: injected } },
+      { bouncer: { ...BOUNCER, version: `v1.0.0${injected}` } },
+    ];
+    for (const plugins of invalidPlugins) {
+      expect(() => mapTraefikConfigToHelmValues({ name: 'traefik' }, { plugins })).toThrow(
+        /Invalid Traefik plugin declaration/
+      );
+    }
+    const invalidLocal: Record<string, TraefikLocalPluginDeclaration>[] = [
+      { stamp: { moduleName: injected, type: 'localPath', volumeName: 'plugins' } },
+      { stamp: { moduleName: 'example.com/stamp', type: 'localPath', volumeName: injected } },
+      {
+        stamp: {
+          moduleName: 'example.com/stamp',
+          type: 'localPath',
+          volumeName: 'plugins',
+          subPath: 'src\n            mountPath: /etc/traefik',
+        },
+      },
+      {
+        stamp: {
+          moduleName: 'example.com/stamp',
+          type: 'localPath',
+          volumeName: 'plugins',
+          subPath: '../other',
+        },
+      },
+      {
+        stamp: {
+          moduleName: 'example.com/stamp',
+          type: 'inlinePlugin',
+          source: { 'stamp.go: |\n---\nkind: Secret': 'package stamp\n' },
+        },
+      },
+    ];
+    for (const localPlugins of invalidLocal) {
+      expect(() => mapTraefikConfigToHelmValues({ name: 'traefik' }, { localPlugins })).toThrow(
+        /Invalid Traefik plugin declaration/
+      );
+    }
+    expect(() =>
+      mapTraefikConfigToHelmValues(
+        { name: 'traefik' },
+        {
+          plugins: { bouncer: { ...BOUNCER, version: 'v2.0.0-rc.1+build.5' } },
+          localPlugins: {
+            stamp: {
+              moduleName: 'example.com/stamp',
+              type: 'localPath',
+              volumeName: 'plugins',
+              subPath: 'src/stamp',
+            },
+          },
+        }
+      )
+    ).not.toThrow();
   });
 
   it('keeps raw-values plugins but warns about any without a hash', () => {

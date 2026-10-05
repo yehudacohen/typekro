@@ -57,7 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The build options `plugins` (`moduleName`, exact `version`, and a required SHA-256 `hash`,
     which Traefik verifies), `localPlugins` (`inlinePlugin` or `localPath`, mounted at
     `/plugins-local/src/<moduleName>`) and `abortOnPluginFailure`. The last defaults to `true`
-    once any plugin is declared.
+    once any plugin is declared. The chart writes plugin fields into its templates unescaped, so
+    `moduleName`, `version`, `volumeName`, `subPath` and inline source file names are limited to
+    the characters their real forms use.
   - `traefikPluginMiddleware`, and `traefikSecretValue(secret, key)` for the `urn:k8s:secret`
     values Traefik resolves in plugin configuration.
   - `traefikForwardAuthSecurePair` chains a `headers` Middleware that strips the

@@ -717,6 +717,11 @@ const bouncer = traefik.traefikPluginMiddleware({
 - `traefikSecretValue(secret, key)` returns
   `urn:k8s:secret:<secret>:<key>`. Traefik resolves these strings at any depth
   of a **plugin** middleware's configuration, and nowhere else.
+- The chart writes `moduleName`, `version`, `volumeName`, `subPath` and inline
+  source file names into its templates unescaped. Each is held to the
+  characters its real form uses (a Go module path, a release tag, a volume
+  name, a relative path, a ConfigMap key), so a quote or newline can't add an
+  argument, a mount or a manifest that bypasses TypeKro's checks.
 - Plugins already set in raw `values.experimental.plugins` are kept.
   `validateTraefikHelmValues` warns about any that carry no hash.
 
