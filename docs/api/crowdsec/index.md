@@ -85,8 +85,8 @@ const instance = await security
 | `crowdsecHelmRepository`, `crowdsecHelmRelease` | The Flux resources, if you assemble your own graph. |
 | `mapCrowdsecConfigToHelmValues` | The values mapper the bootstrap uses. |
 | `crowdsecTraefikPlugin({ version?, hash? })` | One `experimental.plugins` entry for Traefik. |
-| `crowdsecBouncerMiddleware(options)` | A Traefik `Middleware.spec` that runs the bouncer. |
-| `crowdsecSecretUrn(secret)` | `urn:k8s:secret:<name>:<key>`, which Traefik resolves in plugin config. |
+| `crowdsecBouncerMiddleware(options)` | A Traefik `Middleware.spec` that runs the bouncer. Throws on a blank `apiKeyFile` and on a `pluginName` that is not a flag-safe word (`^[A-Za-z][A-Za-z0-9_-]*$`, as Traefik's plugin declarations require). |
+| `crowdsecSecretUrn(secret)` | `urn:k8s:secret:<name>:<key>`, which Traefik resolves in plugin config. Throws on a blank name or key, or one containing `:`. |
 
 ## Runtime spec and status
 

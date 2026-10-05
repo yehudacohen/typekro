@@ -149,6 +149,42 @@ describe('crowdsecBouncerMiddleware', () => {
   it('refuses secret refs Traefik cannot split', () => {
     expect(() => crowdsecSecretUrn({ name: 'a:b', key: 'k' })).toThrow(/may not contain/);
   });
+
+  it('refuses an empty or blank secret name or key', () => {
+    expect(() => crowdsecSecretUrn({ name: '', key: '' })).toThrow('Secret name must not be empty');
+    expect(() => crowdsecSecretUrn({ name: '  ', key: 'k' })).toThrow(
+      'Secret name must not be empty'
+    );
+    expect(() => crowdsecSecretUrn({ name: 's', key: '' })).toThrow('Secret key must not be empty');
+    expect(() => crowdsecSecretUrn({ name: 's', key: '\t' })).toThrow(
+      'Secret key must not be empty'
+    );
+    expect(() =>
+      crowdsecBouncerMiddleware({ lapiHost: BASE.lapiHost, apiKeySecret: { name: '', key: 'k' } })
+    ).toThrow('Secret name must not be empty');
+    expect(crowdsecSecretUrn({ name: 's', key: 'k' })).toBe('urn:k8s:secret:s:k');
+  });
+
+  it('refuses an empty or blank apiKeyFile', () => {
+    for (const apiKeyFile of ['', '   ']) {
+      expect(() => crowdsecBouncerMiddleware({ lapiHost: BASE.lapiHost, apiKeyFile })).toThrow(
+        'apiKeyFile must not be empty'
+      );
+    }
+  });
+
+  it('refuses a plugin name Traefik cannot declare', () => {
+    for (const pluginName of ['', 'crowd sec', '1crowdsec', '-crowdsec', 'crowd.sec', 'a${b}']) {
+      expect(() => crowdsecBouncerMiddleware({ ...BASE, pluginName })).toThrow(
+        /Plugin name .* must match/
+      );
+    }
+    for (const pluginName of ['crowdsec', 'Bouncer_2', 'crowdsec-edge']) {
+      expect(Object.keys(crowdsecBouncerMiddleware({ ...BASE, pluginName }).plugin)).toEqual([
+        pluginName,
+      ]);
+    }
+  });
 });
 
 describe('typekro/crowdsec exports', () => {

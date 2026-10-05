@@ -21,6 +21,10 @@ import type {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const EXACT_VERSION = /^v\d+\.\d+\.\d+$/;
+// Plugin names become Traefik CLI flag segments (`--experimental.plugins.<name>...`)
+// and `Middleware.spec.plugin` keys, so they stay one flag-safe word. The same
+// rule as Traefik's own plugin declarations.
+const PLUGIN_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 /**
  * Declare the bouncer plugin for Traefik's `experimental.plugins`.
@@ -59,8 +63,21 @@ export function crowdsecTraefikPlugin(
 /**
  * A `urn:k8s:secret:<name>:<key>` reference, which Traefik's CRD provider
  * resolves inside plugin configuration from the Middleware's namespace.
+ *
+ * @throws {TypeKroError} `CROWDSEC_INVALID_SECRET_REF` for an empty name or key, or one with ":".
  */
 export function crowdsecSecretUrn(secret: CrowdsecSecretKeyRef): string {
+  for (const [what, value] of [
+    ['name', secret.name],
+    ['key', secret.key],
+  ] as const) {
+    if (value.trim() === '') {
+      throw new TypeKroError(`Secret ${what} must not be empty.`, 'CROWDSEC_INVALID_SECRET_REF', {
+        name: secret.name,
+        key: secret.key,
+      });
+    }
+  }
   if (secret.name.includes(':') || secret.key.includes(':')) {
     throw new TypeKroError(
       'Secret name and key may not contain ":"; Traefik splits the URN on it.',
@@ -99,6 +116,17 @@ export function crowdsecBouncerMiddleware(
     throw new TypeKroError(
       'Set exactly one of apiKeySecret and apiKeyFile.',
       'CROWDSEC_INVALID_SECRET_REF'
+    );
+  }
+  if (options.apiKeyFile?.trim() === '') {
+    throw new TypeKroError('apiKeyFile must not be empty.', 'CROWDSEC_INVALID_SECRET_REF');
+  }
+  const pluginName = options.pluginName ?? DEFAULT_CROWDSEC_PLUGIN_NAME;
+  if (!PLUGIN_NAME.test(pluginName)) {
+    throw new TypeKroError(
+      `Plugin name "${pluginName}" must match ${PLUGIN_NAME}, the name Traefik's experimental.plugins declares.`,
+      'CROWDSEC_INVALID_OPTIONS',
+      { pluginName }
     );
   }
   for (const value of [options.apiKeyFile, options.apiKeySecret?.name, options.apiKeySecret?.key]) {
@@ -148,5 +176,5 @@ export function crowdsecBouncerMiddleware(
       : {}),
     ...(options.clientTrustedIps ? { clientTrustedIps: [...options.clientTrustedIps] } : {}),
   };
-  return { plugin: { [options.pluginName ?? DEFAULT_CROWDSEC_PLUGIN_NAME]: config } };
+  return { plugin: { [pluginName]: config } };
 }

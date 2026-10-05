@@ -271,7 +271,10 @@ export interface CrowdsecBouncerMiddlewareOptions {
   readonly failOpen?: boolean;
   /** Failed pulls tolerated before fail-closed blocks traffic. @default 4 */
   readonly failClosedAfter?: number;
-  /** Key of the plugin in `experimental.plugins`. @default 'crowdsec' */
+  /**
+   * Key of the plugin in `experimental.plugins`: a letter, then letters, digits, `_` or `-`.
+   * @default 'crowdsec'
+   */
   readonly pluginName?: string;
   /** Seconds between decision pulls. @default 15 */
   readonly updateIntervalSeconds?: number;
