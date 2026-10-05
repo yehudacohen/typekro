@@ -161,7 +161,7 @@ scaledObject({
 |---|---|
 | `scaleTargetRef` | `name`, optional `apiVersion`/`kind` (Deployment by default), `envSourceContainerName`; or the workload resource itself (below) |
 | `minReplicaCount` / `maxReplicaCount` | `0` / `100` by default. `0` scales to zero while no trigger is active |
-| `idleReplicaCount` | Replicas while idle; must be below `minReplicaCount` |
+| `idleReplicaCount` | Replicas while idle; KEDA only supports `0`, below `minReplicaCount` |
 | `pollingInterval`, `cooldownPeriod`, `initialCooldownPeriod` | Seconds; `30`, `300`, `0` by default |
 | `fallback` | `failureThreshold` and `replicas` to hold when a scaler keeps failing; `behavior` picks `static`, `currentReplicas`, `currentReplicasIfHigher`, `currentReplicasIfLower` or per-trigger `scalingModifiers` |
 | `advanced.horizontalPodAutoscalerConfig` | `name` and `behavior` (`scaleUp`/`scaleDown` stabilization windows and policies) of the HPA KEDA creates |
@@ -402,6 +402,8 @@ validators return both. Values only known at reconcile time are skipped.
 |---|---|
 | No triggers; a trigger name used twice | error |
 | `minReplicaCount` above `maxReplicaCount` (100 when unset); `idleReplicaCount` not below `minReplicaCount` | error |
+| `idleReplicaCount` other than `0` (KEDA documents 0 as the only value that works, an HPA limitation) | error |
+| A ScaledObject name over 63 characters, or over 54 without `advanced.horizontalPodAutoscalerConfig.name` (KEDA's webhook caps the generated `keda-hpa-<name>` at 63); an explicit HPA name over 63 characters or not a DNS-1123 subdomain; a ScaledJob name over 63 characters (a label value on every Job) | error |
 | Only `cpu`/`memory` triggers with `minReplicaCount` 0 (they cannot scale from zero) | error |
 | `metricType: 'Value'` on `cpu`/`memory`; `Utilization` on any other trigger | error |
 | `scalingModifiers` without a `target`; `fallback.behavior: 'scalingModifiers'` without a formula | error |

@@ -183,6 +183,82 @@ describe('scaledObject', () => {
     );
   });
 
+  it('rejects any idleReplicaCount other than 0', () => {
+    const base = { scaleTargetRef: { name: 'api' }, triggers: [inflight] };
+    const paths = (spec: Partial<ScaledObjectSpec>) =>
+      validateScaledObjectSpec({ ...base, ...spec }).map((issue) => issue.path);
+
+    expect(paths({ idleReplicaCount: 0, minReplicaCount: 1 })).toEqual([]);
+    expect(paths({ idleReplicaCount: 1, minReplicaCount: 3 })).toEqual(['idleReplicaCount']);
+    expect(paths({ idleReplicaCount: 2, minReplicaCount: 10 })).toEqual(['idleReplicaCount']);
+    expect(() =>
+      scaledObject({ name: 'a', spec: { ...base, idleReplicaCount: 1, minReplicaCount: 3 } })
+    ).toThrow('idleReplicaCount 1 is not supported; KEDA only supports 0');
+  });
+
+  it("enforces KEDA's ScaledObject and HPA name limits", () => {
+    const base = { scaleTargetRef: { name: 'api' }, triggers: [inflight] };
+    const withHpaName = (name: string) => ({
+      ...base,
+      advanced: { horizontalPodAutoscalerConfig: { name } },
+    });
+    const paths = (name: string, spec: ScaledObjectSpec = base) =>
+      validateScaledObjectSpec(spec, name).map((issue) => issue.path);
+    const n = (length: number) => 'a'.repeat(length);
+
+    // No explicit HPA name: KEDA's keda-hpa-<name> caps the name at 54.
+    expect(paths(n(54))).toEqual([]);
+    expect(paths(n(55))).toEqual(['name']);
+    expect(() => scaledObject({ name: n(55), spec: base })).toThrow(
+      `KEDA names its HPA "keda-hpa-${n(55)}"`
+    );
+    // An empty HPA name is treated as unset.
+    expect(paths(n(55), withHpaName(''))).toEqual(['name']);
+    // An explicit HPA name lifts the cap to the webhook's 63.
+    expect(paths(n(63), withHpaName('api-hpa'))).toEqual([]);
+    expect(paths(n(64), withHpaName('api-hpa'))).toEqual(['name']);
+    expect(paths(n(64))).toEqual(['name']);
+    // The explicit HPA name itself: at most 63 characters, a DNS-1123 subdomain.
+    const hpaPath = 'advanced.horizontalPodAutoscalerConfig.name';
+    expect(paths('api', withHpaName(n(63)))).toEqual([]);
+    expect(paths('api', withHpaName(n(64)))).toEqual([hpaPath]);
+    expect(paths('api', withHpaName('api.hpa-1'))).toEqual([]);
+    for (const bad of ['API', 'api_hpa', '-api', 'api-', 'api..hpa']) {
+      expect(paths('api', withHpaName(bad))).toEqual([hpaPath]);
+    }
+    // No name: nothing to check.
+    expect(validateScaledObjectSpec(base)).toEqual([]);
+  });
+
+  it('skips the name limits for names only known at reconcile time', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'keda-ref-name',
+        kind: 'KedaRefName',
+        spec: type({ name: 'string' }),
+        status: type({ ok: 'boolean' }),
+      },
+      (spec) => {
+        scaledObject({
+          name: `${spec.name}-${'a'.repeat(60)}`,
+          spec: {
+            scaleTargetRef: { name: 'api' },
+            triggers: [inflight],
+            advanced: { horizontalPodAutoscalerConfig: { name: spec.name } },
+          },
+          id: 'scaler',
+        });
+        scaledJob({
+          name: spec.name,
+          spec: { jobTargetRef: { template: { spec: { containers: [] } } }, triggers: [inflight] },
+          id: 'jobs',
+        });
+        return { ok: true };
+      }
+    );
+    expect(() => composition.toYaml()).not.toThrow();
+  });
+
   it('treats an unset maxReplicaCount as 100', () => {
     expect(() =>
       scaledObject({
@@ -334,6 +410,18 @@ describe('scaledJob', () => {
       'triggers[0].type',
       'triggers[1].metricType',
     ]);
+  });
+
+  it('caps the ScaledJob name at 63, the label value KEDA puts on every Job', () => {
+    const spec = {
+      jobTargetRef: { template: { spec: { containers: [] } } },
+      triggers: [inflight],
+    };
+    expect(validateScaledJobSpec(spec, 'a'.repeat(63))).toEqual([]);
+    expect(validateScaledJobSpec(spec, 'a'.repeat(64)).map((issue) => issue.path)).toEqual([
+      'name',
+    ]);
+    expect(() => scaledJob({ name: 'a'.repeat(64), spec })).toThrow('ScaledJob name is 64');
   });
 
   it('validates triggers and replica bounds', () => {

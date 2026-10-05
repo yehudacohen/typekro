@@ -17,6 +17,7 @@
 import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
+import { REQUIRED_FIELD_SENTINEL } from '../../../core/serialization/schema.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   KedaBootstrapConfig,
@@ -28,16 +29,82 @@ import type {
 /** One finding from a KEDA validator. */
 export interface KedaValidationIssue {
   severity: 'error' | 'warning';
-  /** Dotted path of the offending field, relative to `spec`. */
+  /** Dotted path of the offending field, relative to `spec` (`name` for the resource name). */
   path: string;
   message: string;
 }
 
 const logger = getComponentLogger('keda-validation');
 const RESOURCE_TRIGGERS = ['cpu', 'memory'];
+// KEDA uses ScaledObject and ScaledJob names as label values, and its webhook
+// caps the ScaledObject name and the HPA name it owns at the same limit.
+const MAX_NAME_LENGTH = 63;
+// KEDA names the HPA `keda-hpa-<ScaledObject name>` unless one is set.
+const DEFAULT_HPA_NAME_PREFIX = 'keda-hpa-';
+// The HPA API validates names as DNS-1123 subdomains.
+const DNS_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+// What a schema proxy stringifies to inside a template literal.
+const KUBERNETES_REF_MARKER_PREFIX = '__KUBERNETES_REF_';
 
 function isGraphValue(value: unknown): boolean {
   return isKubernetesRef(value) || isCelExpression(value);
+}
+
+/**
+ * A name a build-time check can judge: not a schema reference or CEL, not a
+ * template literal over one, and not the placeholder the defaults pass uses.
+ */
+function concreteName(value: unknown): string | undefined {
+  return typeof value === 'string' &&
+    !isGraphValue(value) &&
+    !value.includes(KUBERNETES_REF_MARKER_PREFIX) &&
+    !value.includes(REQUIRED_FIELD_SENTINEL)
+    ? value
+    : undefined;
+}
+
+// KEDA 2.21 webhook `verifyName`, plus the HPA API's own name rules for an
+// explicit HPA name.
+function validateScaledObjectNames(
+  name: unknown,
+  spec: ScaledObjectSpec,
+  error: (path: string, message: string) => void
+): void {
+  const hpaPath = 'advanced.horizontalPodAutoscalerConfig.name';
+  const rawHpaName = concrete(spec?.advanced)?.horizontalPodAutoscalerConfig?.name;
+  // KEDA treats an empty HPA name as unset.
+  const hpaNameSet = rawHpaName !== undefined && rawHpaName !== '';
+  const hpaName = concreteName(rawHpaName);
+  const soName = concreteName(name);
+  if (soName !== undefined && soName.length > MAX_NAME_LENGTH) {
+    error(
+      'name',
+      `ScaledObject name is ${soName.length} characters; KEDA's webhook allows at most ${MAX_NAME_LENGTH} because it is used as a label value`
+    );
+  } else if (
+    soName !== undefined &&
+    !hpaNameSet &&
+    DEFAULT_HPA_NAME_PREFIX.length + soName.length > MAX_NAME_LENGTH
+  ) {
+    error(
+      'name',
+      `ScaledObject name is ${soName.length} characters; KEDA names its HPA "${DEFAULT_HPA_NAME_PREFIX}${soName}", which may be at most ${MAX_NAME_LENGTH}. Shorten the name to ${MAX_NAME_LENGTH - DEFAULT_HPA_NAME_PREFIX.length} or set ${hpaPath}`
+    );
+  }
+  if (hpaName !== undefined && hpaName !== '') {
+    if (hpaName.length > MAX_NAME_LENGTH) {
+      error(
+        hpaPath,
+        `HPA name is ${hpaName.length} characters; KEDA's webhook allows at most ${MAX_NAME_LENGTH}`
+      );
+    }
+    if (!DNS_SUBDOMAIN.test(hpaName)) {
+      error(
+        hpaPath,
+        `HPA name "${hpaName}" must be lowercase letters, digits, '-' and '.', starting and ending with a letter or digit`
+      );
+    }
+  }
 }
 
 function concrete<T>(value: T | undefined): T | undefined {
@@ -102,16 +169,22 @@ function validateTriggers(
  *
  * @example
  * ```typescript
- * const errors = validateScaledObjectSpec(spec).filter((issue) => issue.severity === 'error');
+ * // Pass the name to also check KEDA's name limits.
+ * const errors = validateScaledObjectSpec(spec, 'worker').filter((i) => i.severity === 'error');
  * ```
  */
-export function validateScaledObjectSpec(spec: ScaledObjectSpec): KedaValidationIssue[] {
+export function validateScaledObjectSpec(
+  spec: ScaledObjectSpec,
+  name?: string
+): KedaValidationIssue[] {
   const issues: KedaValidationIssue[] = [];
   if (isGraphValue(spec)) return issues;
   const error = (path: string, message: string) =>
     issues.push({ severity: 'error', path, message });
   const warn = (path: string, message: string) =>
     issues.push({ severity: 'warning', path, message });
+
+  validateScaledObjectNames(name, spec, error);
 
   if (!spec?.scaleTargetRef || (!isGraphValue(spec.scaleTargetRef) && !spec.scaleTargetRef.name)) {
     error('scaleTargetRef.name', 'scaleTargetRef needs a name');
@@ -127,7 +200,14 @@ export function validateScaledObjectSpec(spec: ScaledObjectSpec): KedaValidation
   if (effectiveMax !== undefined && effectiveMin > effectiveMax) {
     error('minReplicaCount', 'minReplicaCount must not exceed maxReplicaCount');
   }
-  if (typeof idle === 'number' && idle >= effectiveMin) {
+  // KEDA 2.21 docs: "the only supported value for this property is 0" (the
+  // HPA controller cannot hold a non-zero idle count; kedacore/keda#2314).
+  if (typeof idle === 'number' && idle !== 0) {
+    error(
+      'idleReplicaCount',
+      `idleReplicaCount ${idle} is not supported; KEDA only supports 0 (an HPA limitation). Use 0, or leave it unset and raise minReplicaCount`
+    );
+  } else if (typeof idle === 'number' && idle >= effectiveMin) {
     error('idleReplicaCount', 'idleReplicaCount must be lower than minReplicaCount');
   }
 
@@ -184,12 +264,22 @@ export function validateScaledObjectSpec(spec: ScaledObjectSpec): KedaValidation
  *
  * @example
  * ```typescript
- * validateScaledJobSpec(spec);
+ * validateScaledJobSpec(spec, 'transcode');
  * ```
  */
-export function validateScaledJobSpec(spec: ScaledJobSpec): KedaValidationIssue[] {
+export function validateScaledJobSpec(spec: ScaledJobSpec, name?: string): KedaValidationIssue[] {
   const issues: KedaValidationIssue[] = [];
   if (isGraphValue(spec)) return issues;
+  // KEDA labels every Job it starts with `scaledjob.keda.sh/name: <name>`; a
+  // longer name passes admission but every Job creation then fails.
+  const jobName = concreteName(name);
+  if (jobName !== undefined && jobName.length > MAX_NAME_LENGTH) {
+    issues.push({
+      severity: 'error',
+      path: 'name',
+      message: `ScaledJob name is ${jobName.length} characters; at most ${MAX_NAME_LENGTH}, because KEDA uses it as a label value on every Job it starts`,
+    });
+  }
   if (!spec?.jobTargetRef) {
     issues.push({ severity: 'error', path: 'jobTargetRef', message: 'jobTargetRef is required' });
   }

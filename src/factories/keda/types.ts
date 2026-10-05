@@ -262,7 +262,7 @@ export interface ScaledObjectSpec {
   cooldownPeriod?: number;
   /** Seconds after creation before the cooldown can apply. @default 0 */
   initialCooldownPeriod?: number;
-  /** Replicas while no trigger is active; must be below `minReplicaCount` (in practice 0). */
+  /** Replicas while no trigger is active. KEDA only supports 0, below `minReplicaCount`. */
   idleReplicaCount?: number;
   /** @default 0 */
   minReplicaCount?: number;

@@ -30,7 +30,7 @@ export function scaledJob(
   config: Composable<ScaledJobConfig>
 ): Enhanced<ScaledJobSpec, ScaledJobStatus> {
   const spec = config.spec as ScaledJobSpec;
-  const issues = validateScaledJobSpec(spec);
+  const issues = validateScaledJobSpec(spec, config.name as string);
   assertNoKedaErrors('ScaledJob', config.name, issues);
   warnKedaIssues('scaledJob', issues);
   return createResource<ScaledJobSpec, ScaledJobStatus>({

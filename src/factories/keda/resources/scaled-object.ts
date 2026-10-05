@@ -72,7 +72,7 @@ export function scaledObject(
         }
       : input
   ) as ScaledObjectSpec;
-  const issues = validateScaledObjectSpec(spec);
+  const issues = validateScaledObjectSpec(spec, config.name as string);
   assertNoKedaErrors('ScaledObject', config.name, issues);
   warnKedaIssues('scaledObject', [
     ...issues,
