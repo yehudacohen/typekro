@@ -158,8 +158,29 @@ function validateScaledObjectNames(
   }
 }
 
+/**
+ * Only known at reconcile time: a reference, CEL, a template literal over a
+ * reference, or the defaults-pass placeholder (which also stands in for
+ * numbers and booleans).
+ */
+function isDeferred(value: unknown): boolean {
+  return (
+    isGraphValue(value) ||
+    (typeof value === 'string' &&
+      (value.includes(KUBERNETES_REF_MARKER_PREFIX) || value.includes(REQUIRED_FIELD_SENTINEL)))
+  );
+}
+
+/** The value when concrete; `undefined` when absent or deferred. */
 function concrete<T>(value: T | undefined): T | undefined {
-  return value === undefined || isGraphValue(value) ? undefined : value;
+  return value === undefined || isDeferred(value) ? undefined : value;
+}
+
+/** A string field's state for presence checks: a reference counts as set. */
+function presence(value: unknown): 'absent' | 'set' | 'unknown' {
+  if (value === undefined) return 'absent';
+  if (isDeferred(value)) return 'unknown';
+  return value === '' ? 'absent' : 'set';
 }
 
 function concreteTriggers(triggers: readonly KedaTrigger[] | undefined): KedaTrigger[] | undefined {
@@ -251,7 +272,10 @@ export function validateScaledObjectSpec(
   validateTriggers(spec?.triggers, issues);
 
   checkMinimums(spec, SCALED_OBJECT_MINIMUMS, error);
+  // A reference is unknown, not unset: checks that compare it are skipped.
+  const minKnown = !isDeferred(spec?.minReplicaCount);
   const min = concrete(spec?.minReplicaCount);
+  const maxKnown = !isDeferred(spec?.maxReplicaCount);
   const max = concrete(spec?.maxReplicaCount);
   const idle = concrete(spec?.idleReplicaCount);
   const effectiveMin = typeof min === 'number' ? min : 0;
@@ -260,8 +284,8 @@ export function validateScaledObjectSpec(
   // minReplicaCount: 0 still allows idleReplicaCount: 0.
   const idleFloor = typeof min === 'number' ? Math.max(min, 1) : 0;
   // An unset maxReplicaCount is the CRD default, 100.
-  const effectiveMax = typeof max === 'number' ? max : max === undefined ? 100 : undefined;
-  if (effectiveMax !== undefined && effectiveMin > effectiveMax) {
+  const effectiveMax = typeof max === 'number' ? max : 100;
+  if (minKnown && maxKnown && effectiveMin > effectiveMax) {
     error('minReplicaCount', 'minReplicaCount must not exceed maxReplicaCount');
   }
   // KEDA 2.21 docs: "the only supported value for this property is 0" (the
@@ -271,7 +295,7 @@ export function validateScaledObjectSpec(
       'idleReplicaCount',
       `idleReplicaCount ${idle} is not supported; KEDA only supports 0 (an HPA limitation). Use 0, or leave it unset and raise minReplicaCount`
     );
-  } else if (typeof idle === 'number' && idle >= idleFloor) {
+  } else if (typeof idle === 'number' && minKnown && idle >= idleFloor) {
     error('idleReplicaCount', 'idleReplicaCount must be lower than minReplicaCount');
   }
 
@@ -280,17 +304,22 @@ export function validateScaledObjectSpec(
   const onlyResource =
     triggers.length > 0 &&
     types.every((type) => typeof type === 'string' && RESOURCE_TRIGGERS.includes(type));
-  if (onlyResource && effectiveMin === 0) {
+  if (onlyResource && minKnown && effectiveMin === 0) {
     error(
       'minReplicaCount',
       'scaling to zero needs at least one trigger other than cpu or memory; set minReplicaCount >= 1'
     );
   }
 
-  const modifiers = concrete(spec?.advanced?.scalingModifiers);
+  // `advanced` or `scalingModifiers` as a whole reference: nothing is known.
+  const advanced = spec?.advanced;
+  const rawModifiers = isDeferred(advanced) ? undefined : advanced?.scalingModifiers;
+  const modifiersDeferred = isDeferred(advanced) || isDeferred(rawModifiers);
+  const modifiers = modifiersDeferred ? undefined : rawModifiers;
+  const formula = modifiersDeferred ? 'unknown' : presence(modifiers?.formula);
   // KEDA validates scalingModifiers whenever any field is set.
   const modifierFields = modifiers ? Object.values(modifiers).filter((v) => v !== undefined) : [];
-  if (modifiers && modifierFields.length > 0 && (modifiers.formula ?? '') === '') {
+  if (modifierFields.length > 0 && formula === 'absent') {
     error('advanced.scalingModifiers.formula', 'scalingModifiers needs a formula');
   }
   const target = concrete(modifiers?.target);
@@ -300,8 +329,8 @@ export function validateScaledObjectSpec(
       `target "${target}" must be a number greater than 0, e.g. "10" or "0.5"`
     );
   }
-  if (modifiers && concrete(modifiers.formula) !== undefined) {
-    if (!concrete(modifiers.target)) {
+  if (modifiers && formula !== 'absent') {
+    if (formula === 'set' && presence(modifiers.target) === 'absent') {
       error('advanced.scalingModifiers.target', 'a formula needs a target');
     }
     triggers.forEach((trigger, index) => {
@@ -313,15 +342,12 @@ export function validateScaledObjectSpec(
 
   const fallback = concrete(spec?.fallback);
   if (fallback !== undefined) {
-    if (
-      concrete(fallback.behavior) === 'scalingModifiers' &&
-      concrete(modifiers?.formula) === undefined
-    ) {
+    if (concrete(fallback.behavior) === 'scalingModifiers' && formula === 'absent') {
       error('fallback.behavior', '"scalingModifiers" needs advanced.scalingModifiers.formula');
     }
     // KEDA 2.21's webhook: without scalingModifiers, fallback needs at least
     // one trigger that is not cpu or memory.
-    if (onlyResource && concrete(modifiers?.formula) === undefined) {
+    if (onlyResource && formula === 'absent') {
       error('fallback', 'fallback needs at least one trigger that is not cpu or memory');
     } else {
       triggers.forEach((trigger, index) => {

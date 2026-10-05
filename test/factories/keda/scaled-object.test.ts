@@ -302,6 +302,103 @@ describe('scaledObject', () => {
     }
   });
 
+  describe('accepts valid specs whose values are references', () => {
+    // Built inside each test, so a regression fails the test instead of the file.
+    const build = () =>
+      kubernetesComposition(
+        {
+          name: 'keda-ref-values',
+          kind: 'KedaRefValues',
+          spec: type({ min: 'number', target: 'string', formula: 'string' }),
+          status: type({ ok: 'boolean' }),
+        },
+        (spec) => {
+          const target = { name: 'api' };
+          const fallback = { failureThreshold: 3, replicas: 2 };
+          // 1. cpu-only triggers with a reference minReplicaCount.
+          scaledObject({
+            name: 'cpu-ref-min',
+            spec: { scaleTargetRef: target, minReplicaCount: spec.min, triggers: [cpu] },
+            id: 'cpuRefMin',
+          });
+          // 2. idleReplicaCount 0 with a reference minReplicaCount.
+          scaledObject({
+            name: 'idle-ref-min',
+            spec: {
+              scaleTargetRef: target,
+              idleReplicaCount: 0,
+              minReplicaCount: spec.min,
+              triggers: [inflight],
+            },
+            id: 'idleRefMin',
+          });
+          // 3. A concrete formula with a reference target.
+          scaledObject({
+            name: 'formula-ref-target',
+            spec: {
+              scaleTargetRef: target,
+              triggers: [inflight],
+              advanced: { scalingModifiers: { formula: 'inflight', target: spec.target } },
+            },
+            id: 'formulaRefTarget',
+          });
+          // 4. scalingModifiers fallback behavior with a reference formula.
+          scaledObject({
+            name: 'fallback-ref-formula',
+            spec: {
+              scaleTargetRef: target,
+              triggers: [inflight],
+              fallback: { ...fallback, behavior: 'scalingModifiers' },
+              advanced: { scalingModifiers: { formula: spec.formula, target: '10' } },
+            },
+            id: 'fallbackRefFormula',
+          });
+          // 5. cpu-only triggers with fallback and a reference formula.
+          scaledObject({
+            name: 'cpu-fallback-ref-formula',
+            spec: {
+              scaleTargetRef: target,
+              minReplicaCount: 1,
+              triggers: [cpu],
+              fallback,
+              advanced: { scalingModifiers: { formula: spec.formula, target: '10' } },
+            },
+            id: 'cpuFallbackRefFormula',
+          });
+          return { ok: true };
+        }
+      );
+
+    it('in KRO mode', () => {
+      expect(() => build().toYaml()).not.toThrow();
+    });
+
+    it('in direct mode', () => {
+      const yaml = build()
+        .factory('direct', { namespace: 'default' })
+        .toYaml({ min: 1, target: '10', formula: 'inflight' });
+      expect(
+        (loadAll(yaml) as Array<{ kind?: string }>).filter((d) => d.kind === 'ScaledObject')
+      ).toHaveLength(5);
+    });
+
+    it('still rejects the same specs when the values are concrete and wrong', () => {
+      const base = { scaleTargetRef: { name: 'api' } };
+      const paths = (spec: Partial<ScaledObjectSpec>) =>
+        validateScaledObjectSpec({ ...base, triggers: [inflight], ...spec }).map((i) => i.path);
+      expect(paths({ minReplicaCount: 0, triggers: [cpu] })).toContain('minReplicaCount');
+      expect(paths({ idleReplicaCount: 0 })).toEqual(['idleReplicaCount']);
+      expect(
+        paths({ advanced: { scalingModifiers: { formula: 'inflight', target: '' } } })
+      ).toContain('advanced.scalingModifiers.target');
+      expect(
+        paths({
+          fallback: { failureThreshold: 3, replicas: 2, behavior: 'scalingModifiers' },
+        })
+      ).toContain('fallback.behavior');
+    });
+  });
+
   it('skips the 54-character rule when advanced is a whole reference', () => {
     const composition = kubernetesComposition(
       {
