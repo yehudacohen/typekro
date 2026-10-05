@@ -85,14 +85,14 @@ const instance = await security
 | `crowdsecHelmRepository`, `crowdsecHelmRelease` | The Flux resources, if you assemble your own graph. |
 | `mapCrowdsecConfigToHelmValues` | The values mapper the bootstrap uses. |
 | `crowdsecTraefikPlugin({ version?, hash? })` | One `experimental.plugins` entry for Traefik. |
-| `crowdsecBouncerMiddleware(options)` | A Traefik `Middleware.spec` that runs the bouncer. Throws on a blank `apiKeyFile` and on a `pluginName` that is not a flag-safe word (`^[A-Za-z][A-Za-z0-9_-]*$`, as Traefik's plugin declarations require). |
-| `crowdsecSecretUrn(secret)` | `urn:k8s:secret:<name>:<key>`, which Traefik resolves in plugin config. Throws on a blank name or key, or one containing `:`. |
+| `crowdsecBouncerMiddleware(options)` | A Traefik `Middleware.spec` that runs the bouncer. Throws on what the plugin would refuse (Traefik then drops every route using it) and on unsafe trust: a blank `apiKeyFile` or `lapiHost`, a host with a scheme, `updateIntervalSeconds` below 1, a negative `appsecBodyLimit`, a `pluginName` that is not a flag-safe word (`^[A-Za-z][A-Za-z0-9_-]*$`, as Traefik's plugin declarations require), trusted IPs that are not IPs or CIDRs, any `/0` range in `forwardedHeadersTrustedIps` (any client could spoof `X-Forwarded-For`) or `clientTrustedIps` (it would turn the bouncer off). Warns when `failClosedAfter` is set without `failOpen: false`. An empty `appsecHost` leaves AppSec off. |
+| `crowdsecSecretUrn(secret)` | `urn:k8s:secret:<name>:<key>`, which Traefik resolves in plugin config. Throws on a name that is not a DNS-1123 subdomain or a key outside `[-._a-zA-Z0-9]+`. |
 
 ## Runtime spec and status
 
 The runtime spec only carries values that may be schema references in KRO
-mode: `name` (at most 39 characters, so the chart's Job names fit),
-`namespace`, `chartVersion`, and per component `resources` (requests are
+mode: `name` (at most 33 characters, so the chart's longest generated name,
+a volume, fits in 63), `namespace`, `chartVersion`, and per component `resources` (requests are
 required, so no pod is BestEffort) plus `appsec.replicas`.
 
 Everything that decides what CrowdSec runs is a build-time option, because it
@@ -107,7 +107,7 @@ installed).
 
 | Option | Default | Notes |
 |---|---|---|
-| `storage` | `{ type: 'sqlite', size: '1Gi' }` | Or `{ type: 'postgres', host, database, user, passwordSecretRef, port?, sslMode? }`. The password must not contain `"` or `\`: CrowdSec substitutes it into YAML before parsing. |
+| `storage` | `{ type: 'sqlite', size: '1Gi' }` | Or `{ type: 'postgres', host, database, user, passwordSecretRef, port?, sslMode? }`. CrowdSec substitutes the password into the YAML text before parsing it, so it goes in a single-quoted scalar: any character works except `'` and a newline, which would break the file. |
 | `lapi.replicas` | `1` | More than one needs Postgres. |
 | `lapi.env`, `agent.env` | none | Extra env, appended after the env this factory sets. Raw `values.lapi.env` / `values.agent.env` would be replaced, so use these. |
 | `lapi.pdb`, `appsec.pdb` | `true` | `maxUnavailable: 1`, which never blocks a drain. The chart has no PDB. |
@@ -188,7 +188,9 @@ const bouncer = traefikMiddleware({
   namespace: 'traefik',
   spec: crowdsecBouncerMiddleware({
     // From the bootstrap's status; inside a parent composition, use the
-    // nested composition's status instead.
+    // nested composition's status instead. `appsecHost` is '' when AppSec is
+    // off, which leaves AppSec off in the bouncer too (a reference becomes the
+    // CEL `appsecHost != ""`).
     lapiHost: instance.status.lapiHost,
     appsecHost: instance.status.appsecHost,
     apiKeySecret: { name: 'crowdsec-bouncer', key: 'api-key' },
@@ -258,6 +260,11 @@ parser ignores private addresses, so nothing is ever banned.
 | AppSec returns 500 | Let the request through (`crowdsecAppsecFailureBlock: false`). | Block it. |
 | Body cannot be buffered for AppSec (HTTP/2 stream without length) | Forward headers only (`crowdsecAppsecUnreadableBodyBlock: false`). | Block it. |
 | Traefik starts while LAPI is down | The first pull waits up to 10 s, then serves. | The first pull fails; traffic flows until `failClosedAfter` pulls have failed, then everything is blocked. |
+
+`failOpen` and `failClosedAfter` may be schema references in KRO mode: the
+fail-open choice is then emitted as CEL (`failOpen ? -1 : failClosedAfter`, and
+`!failOpen` for the AppSec blocks), never decided at build time, and a negative
+`failClosedAfter` reference counts as 0, which blocks at the first failure.
 
 Known bans keep working while LAPI is down either way: they are cached in
 Traefik. The bouncer only bans. It configures no captcha provider, so a

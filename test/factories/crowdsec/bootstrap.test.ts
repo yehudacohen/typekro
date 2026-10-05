@@ -6,10 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type } from 'arktype';
 import { load, loadAll } from 'js-yaml';
 
 import {
   assertCrowdsecBootstrapOptions,
+  CrowdsecBootstrapConfigSchema,
   type CrowdsecBootstrapOptions,
   crowdsecBootstrap,
   DEFAULT_CROWDSEC_CHART_VERSION,
@@ -135,7 +137,10 @@ describe('crowdsecBootstrap defaults', () => {
       expect(values[component].resources.limits.memory).toBeString();
       expect(values[component].resources.limits.cpu).toBeUndefined();
     }
-    expect(values.appsec).toEqual({ enabled: false, service: { type: 'ClusterIP' } });
+    expect(values.appsec).toEqual({
+      enabled: false,
+      service: { type: 'ClusterIP', externalIPs: [], loadBalancerIP: '', loadBalancerClass: '' },
+    });
   });
 
   it('pins the kubectl image of the register Jobs and creates no NetworkPolicy', () => {
@@ -371,6 +376,61 @@ describe('crowdsecBootstrap storage, CAPI and agents', () => {
     expect(values.lapi.ingress.enabled).toBe(false);
     expect(values.lapi.dnsConfig).toEqual({ options: [] });
     expect(values.podLabels).toEqual({ a: 'b' });
+  });
+
+  it('keeps every Service ClusterIP-only and TLS off whatever raw values say', () => {
+    const publish = {
+      type: 'LoadBalancer',
+      externalIPs: ['203.0.113.10'],
+      loadBalancerIP: '203.0.113.11',
+      loadBalancerClass: 'example.com/lb',
+    };
+    const { values } = directValues({
+      appsec: {},
+      values: {
+        lapi: { service: publish },
+        agent: { service: publish },
+        appsec: { service: publish },
+        tls: { enabled: false, insecureSkipVerify: true },
+      },
+    });
+    for (const component of ['lapi', 'agent', 'appsec']) {
+      expect(values[component].service).toEqual({
+        type: 'ClusterIP',
+        externalIPs: [],
+        loadBalancerIP: '',
+        loadBalancerClass: '',
+      });
+    }
+    expect(values.tls).toEqual({ enabled: false, insecureSkipVerify: true });
+    expect(() => directValues({ values: { tls: { enabled: true } } })).toThrow(
+      /values.tls.enabled is not supported/
+    );
+  });
+
+  it('caps the release name at 33, for <name>-lapi-cscli-credentials-volume', () => {
+    expect(CrowdsecBootstrapConfigSchema({ name: 'a'.repeat(33) })).toEqual({
+      name: 'a'.repeat(33),
+    });
+    expect(`${'a'.repeat(33)}-lapi-cscli-credentials-volume`).toHaveLength(63);
+    expect(CrowdsecBootstrapConfigSchema({ name: 'a'.repeat(34) })).toBeInstanceOf(type.errors);
+  });
+
+  it('single-quotes the Postgres password, which CrowdSec substitutes before parsing', () => {
+    const { values } = directValues({
+      storage: {
+        type: 'postgres',
+        host: 'postgres.db.svc.cluster.local',
+        database: 'crowdsec',
+        user: 'crowdsec',
+        passwordSecretRef: { name: 'crowdsec-db', key: 'password' },
+      },
+    });
+    const text: string = values.config['config.yaml.local'];
+    expect(text).toContain("password: '$DB_PASSWORD'");
+    // What CrowdSec parses after substituting a password with ", \ and #.
+    const expanded = load(text.replace('$DB_PASSWORD', 'p"a\\s#s: x')) as Values;
+    expect(expanded.db_config.password).toBe('p"a\\s#s: x');
   });
 });
 

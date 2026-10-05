@@ -77,6 +77,8 @@ export const exampleProtectedApi = kubernetesComposition(
   {
     name: 'example-protected-api',
     kind: 'ExampleProtectedApi',
+    // `appsecHost` is the bootstrap's `status.appsecHost`: '' when AppSec is
+    // off (pass it as is), which leaves AppSec off in the bouncer too.
     spec: type({ lapiHost: 'string', appsecHost: 'string', host: 'string' }),
     status: type({ ready: 'boolean' }),
   },

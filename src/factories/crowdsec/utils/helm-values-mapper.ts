@@ -26,6 +26,7 @@ import type {
   CrowdsecPlacement,
   CrowdsecResources,
 } from '../types.js';
+import { isCidr, isIp } from './net.js';
 
 // Defaults sized from a kind run with the Traefik collections and CRS loaded.
 // Requests are always set so no CrowdSec pod is BestEffort. No CPU limits:
@@ -67,8 +68,6 @@ export const CROWDSEC_APPSEC_POLICY_NAME = 'typekro/appsec-policy';
 
 const BOUNCER_NAME = /^[A-Za-z0-9_]+$/;
 const DNS_LABEL = /^(?=.{1,63}$)[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/;
-const IPV4 = /^(\d{1,3})(\.\d{1,3}){3}$/;
-const IPV6 = /^[0-9a-fA-F:]+$/;
 
 function fail(message: string, context?: Record<string, unknown>): never {
   throw new TypeKroError(message, 'CROWDSEC_INVALID_OPTIONS', context);
@@ -101,22 +100,6 @@ function assertNoCel(options: CrowdsecBootstrapOptions): void {
   for (const value of strings) {
     if (value?.includes('${')) fail(`"${value}" contains "\${", which KRO would parse as CEL.`);
   }
-}
-
-function isIp(value: string): boolean {
-  return (
-    (IPV4.test(value) && value.split('.').every((o) => Number(o) <= 255)) ||
-    (value.includes(':') && IPV6.test(value))
-  );
-}
-
-function isCidr(value: string): boolean {
-  const [address, bits, extra] = value.split('/');
-  if (address === undefined || bits === undefined || extra !== undefined || !/^\d+$/.test(bits)) {
-    return false;
-  }
-  const max = address.includes(':') ? 128 : 32;
-  return isIp(address) && Number(bits) <= max;
 }
 
 /**
@@ -175,6 +158,13 @@ export function assertCrowdsecBootstrapOptions(options: CrowdsecBootstrapOptions
   }
   for (const cidr of options.allowlist?.cidrs ?? []) {
     if (!isCidr(cidr)) fail(`Allowlist CIDR "${cidr}" is not a valid range.`);
+  }
+
+  // The bouncer talks plain http to LAPI; with chart TLS on it could not
+  // connect, and a fail-open bouncer would then let everything through.
+  const rawTls = (options.values as { tls?: { enabled?: unknown } } | undefined)?.tls;
+  if (rawTls?.enabled === true) {
+    fail('values.tls.enabled is not supported: the Traefik bouncer reaches LAPI over http.');
   }
 
   const enrollment = options.centralApi?.enrollment;
@@ -326,6 +316,12 @@ export function renderCrowdsecAppsecPolicy(options: CrowdsecBootstrapOptions): s
   });
 }
 
+function clusterIpOnly(): Record<string, unknown> {
+  return { type: 'ClusterIP', externalIPs: [], loadBalancerIP: '', loadBalancerClass: '' };
+}
+
+const DB_PASSWORD_VAR = '$DB_PASSWORD';
+
 function configYamlLocal(options: CrowdsecBootstrapOptions): string {
   const storage = options.storage ?? { type: 'sqlite' };
   const server: Record<string, unknown> = {
@@ -341,7 +337,11 @@ function configYamlLocal(options: CrowdsecBootstrapOptions): string {
   if (options.centralApi && options.centralApi.communityBlocklist === false) {
     server.online_client = { pull: { community: false } };
   }
-  // Quoted, because CrowdSec expands `$DB_PASSWORD` BEFORE parsing the YAML.
+  // CrowdSec expands `$VAR` in the file text BEFORE parsing the YAML, so the
+  // password lands in the file verbatim. Single quotes keep `"`, `\`, `#`, `:`
+  // and leading or trailing spaces literal; only `'` and newlines cannot be
+  // carried, which the docs state (the value lives in a Secret, so it cannot be
+  // checked here).
   return yaml(
     {
       api: { server },
@@ -350,7 +350,7 @@ function configYamlLocal(options: CrowdsecBootstrapOptions): string {
             db_config: {
               type: 'postgresql',
               user: storage.user,
-              password: '$DB_PASSWORD',
+              password: DB_PASSWORD_VAR,
               db_name: storage.database,
               host: storage.host,
               port: storage.port ?? 5432,
@@ -360,7 +360,7 @@ function configYamlLocal(options: CrowdsecBootstrapOptions): string {
         : {}),
     },
     true
-  );
+  ).replace(`"${DB_PASSWORD_VAR}"`, `'${DB_PASSWORD_VAR}'`);
 }
 
 function collections(options: CrowdsecBootstrapOptions): string {
@@ -464,9 +464,13 @@ export function mapCrowdsecConfigToHelmValues(
   const merged = merge({ ...(options.values ?? {}) }, mapped);
   return merge(merged, {
     // @security LAPI holds every bouncer key and decision: never published.
-    lapi: { ingress: { enabled: false }, service: { type: 'ClusterIP' } },
-    agent: { service: { type: 'ClusterIP' } },
-    appsec: { service: { type: 'ClusterIP' } },
+    // ClusterIP alone is not enough: the chart also renders `externalIPs`,
+    // `loadBalancerIP` and `loadBalancerClass` from values, whatever the type.
+    lapi: { ingress: { enabled: false }, service: clusterIpOnly() },
+    agent: { service: clusterIpOnly() },
+    appsec: { service: clusterIpOnly() },
+    // @security The bouncer speaks http to LAPI (see assertCrowdsecBootstrapOptions).
+    tls: { enabled: false },
   });
 }
 

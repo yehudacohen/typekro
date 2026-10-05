@@ -46,8 +46,10 @@ export interface CrowdsecBootstrapStatus {
   version: string;
 }
 
-// Release names prefix `<name>-lapi-cscli-register-job`, a 63-character Job name.
-const releaseName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 39');
+// The longest name the 0.24.2 chart renders from the release name is the LAPI
+// volume `<name>-lapi-cscli-credentials-volume` (+30). Volume names are DNS-1123
+// labels of at most 63 characters, so the release name is capped at 33.
+const releaseName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 33');
 const dnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
 const resources = type({
   requests: { cpu: 'string > 0', memory: 'string > 0' },
