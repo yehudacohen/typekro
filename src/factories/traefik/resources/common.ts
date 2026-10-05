@@ -24,22 +24,25 @@ export type TraefikResourceConfig<TSpec extends object> = TraefikResourceMetadat
   readonly spec: TSpec;
 };
 
-// **Why always-ready:** none of the `traefik.io/v1alpha1` kinds
-// (`IngressRoute`, `IngressRouteTCP`, `Middleware`, `TLSOption`, `TLSStore`,
-// `ServersTransport`, `TraefikService`) declares a `status` subresource — the
-// proxy consumes them as dynamic configuration and reports problems in its own
-// logs and metrics, never on the object. A condition-based evaluator would
-// therefore poll to its deadline and then fail a deployment whose routing is
-// in fact live, so applying the object successfully is the only readiness
-// signal the API offers. This mirrors how `envoy-ai-gateway` treats Envoy
-// Gateway's status-less `Backend` kind.
-//
-// A route that references a missing Service or Middleware is still surfaced —
-// by the referenced resource's own readiness, and by Traefik returning 404/503
-// for the route, which the integration suite asserts on.
-//
-// @param kind - Traefik kind name, used in the readiness message.
-/** Readiness evaluator for a Traefik CRD: always ready, as none has a status subresource. */
+/**
+ * Readiness evaluator for a Traefik CRD: always ready, as none has a status subresource.
+ *
+ * **Why always-ready:** none of the `traefik.io/v1alpha1` kinds
+ * (`IngressRoute`, `IngressRouteTCP`, `Middleware`, `TLSOption`, `TLSStore`,
+ * `ServersTransport`, `TraefikService`) declares a `status` subresource — the
+ * proxy consumes them as dynamic configuration and reports problems in its own
+ * logs and metrics, never on the object. A condition-based evaluator would
+ * therefore poll to its deadline and then fail a deployment whose routing is
+ * in fact live, so applying the object successfully is the only readiness
+ * signal the API offers. This mirrors how `envoy-ai-gateway` treats Envoy
+ * Gateway's status-less `Backend` kind.
+ *
+ * A route that references a missing Service or Middleware is still surfaced —
+ * by the referenced resource's own readiness, and by Traefik returning 404/503
+ * for the route, which the integration suite asserts on.
+ *
+ * @param kind - Traefik kind name, used in the readiness message.
+ */
 export function traefikStatuslessReadinessEvaluator<T = unknown>(
   kind: string
 ): ReadinessEvaluator<T> {

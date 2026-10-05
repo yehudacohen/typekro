@@ -1,36 +1,38 @@
-// Traefik type definitions.
-//
-// **ArkType is the single source of truth.** Every configuration type in this
-// file — the `traefik.io/v1alpha1` CRD specs, the middleware set, and the
-// bootstrap composition's spec — is INFERRED from the ArkType schema declared
-// next to it (`typeof XSchema.infer`), per `docs/advanced/integration-skill.md`
-// Step 2. One declaration then validates at runtime, generates the KRO
-// SimpleSchema, and types the factory, so the three cannot drift. Only STATUS
-// types stay hand-written: they describe what a controller publishes rather
-// than user input.
-//
-// Three layers live here:
-//
-// 1. **CRD spec schemas** — verified field-by-field against the
-//    `traefik.io/v1alpha1` CRDs shipped by chart 41.5.0 (Traefik v3.7.13), read
-//    back from a live API server with
-//    `kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec}'`.
-//    None of the Traefik CRDs has a `status` subresource, which is why the
-//    resource factories register an always-ready evaluator (see
-//    `resources/routing.ts`). Where a schema is stricter than the CRD it is
-//    deliberate and noted inline.
-// 2. **Helm chart values** — {@link TraefikManagedHelmValues} is a CLOSED,
-//    precise description of the chart paths this factory maps, pins or reads
-//    back (verified against chart 41.5.0's `values.schema.json`). It carries no
-//    index signatures at any depth; {@link TraefikRawHelmValues} is the single,
-//    explicitly named raw-passthrough boundary for the rest of the chart.
-// 3. **Bootstrap contract** — the runtime spec/status of the bootstrap
-//    composition. Following the ClickStack convention these carry only
-//    proxy-safe VALUES (names, namespaces, versions, ports, endpoints) that
-//    serialize cleanly as CEL refs in KRO mode. Choices that decide WHICH
-//    resources exist are build-time options on `makeTraefikBootstrap(...)`.
-//
-// @see https://doc.traefik.io/traefik/reference/routing-configuration/kubernetes/crd/
+/**
+ * Traefik type definitions.
+ *
+ * **ArkType is the single source of truth.** Every configuration type in this
+ * file — the `traefik.io/v1alpha1` CRD specs, the middleware set, and the
+ * bootstrap composition's spec — is INFERRED from the ArkType schema declared
+ * next to it (`typeof XSchema.infer`), per `docs/advanced/integration-skill.md`
+ * Step 2. One declaration then validates at runtime, generates the KRO
+ * SimpleSchema, and types the factory, so the three cannot drift. Only STATUS
+ * types stay hand-written: they describe what a controller publishes rather
+ * than user input.
+ *
+ * Three layers live here:
+ *
+ * 1. **CRD spec schemas** — verified field-by-field against the
+ *    `traefik.io/v1alpha1` CRDs shipped by chart 41.5.0 (Traefik v3.7.13), read
+ *    back from a live API server with
+ *    `kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec}'`.
+ *    None of the Traefik CRDs has a `status` subresource, which is why the
+ *    resource factories register an always-ready evaluator (see
+ *    `resources/routing.ts`). Where a schema is stricter than the CRD it is
+ *    deliberate and noted inline.
+ * 2. **Helm chart values** — {@link TraefikManagedHelmValues} is a CLOSED,
+ *    precise description of the chart paths this factory maps, pins or reads
+ *    back (verified against chart 41.5.0's `values.schema.json`). It carries no
+ *    index signatures at any depth; {@link TraefikRawHelmValues} is the single,
+ *    explicitly named raw-passthrough boundary for the rest of the chart.
+ * 3. **Bootstrap contract** — the runtime spec/status of the bootstrap
+ *    composition. Following the ClickStack convention these carry only
+ *    proxy-safe VALUES (names, namespaces, versions, ports, endpoints) that
+ *    serialize cleanly as CEL refs in KRO mode. Choices that decide WHICH
+ *    resources exist are build-time options on `makeTraefikBootstrap(...)`.
+ *
+ * @see https://doc.traefik.io/traefik/reference/routing-configuration/kubernetes/crd/
+ */
 
 import { type } from 'arktype';
 import {
@@ -1655,19 +1657,22 @@ export const TraefikHelmReleaseConfigSchema = type({
   'id?': 'string > 0',
 });
 
-// **Accepted exception to schema-first inference, for `values` only.** Every
-// other field is inferred from {@link TraefikHelmReleaseConfigSchema}. `values`
-// is typed {@link TraefikMappedHelmValues}, which is
-// `TypeKroChartValues<TraefikHelmValues>` — a union of the chart values with
-// `KubernetesRef`/`CelExpression` PROXY types. Those describe graph wiring
-// that exists only at build time, not data an ArkType schema could validate at
-// runtime: by the time this object reaches Flux the refs are resolved, and
-// while it is being built the tree is deliberately not plain JSON. A schema
-// field here could only be `unknown`, which would erase the typed chart
-// surface the mapper exists to provide. The values themselves ARE schema-
-// checked — one level down, by {@link TraefikManagedHelmValues} and the
-// mapper's own tests.
-/** Configuration for the Traefik `HelmRelease`. */
+/**
+ * Configuration for the Traefik `HelmRelease`.
+ *
+ * **Accepted exception to schema-first inference, for `values` only.** Every
+ * other field is inferred from {@link TraefikHelmReleaseConfigSchema}. `values`
+ * is typed {@link TraefikMappedHelmValues}, which is
+ * `TypeKroChartValues<TraefikHelmValues>` — a union of the chart values with
+ * `KubernetesRef`/`CelExpression` PROXY types. Those describe graph wiring
+ * that exists only at build time, not data an ArkType schema could validate at
+ * runtime: by the time this object reaches Flux the refs are resolved, and
+ * while it is being built the tree is deliberately not plain JSON. A schema
+ * field here could only be `unknown`, which would erase the typed chart
+ * surface the mapper exists to provide. The values themselves ARE schema-
+ * checked — one level down, by {@link TraefikManagedHelmValues} and the
+ * mapper's own tests.
+ */
 export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.infer & {
   readonly values?: TraefikMappedHelmValues;
 };
@@ -1833,27 +1838,28 @@ export const TraefikBootstrapConfigSchema = type({
 /** Inferred runtime spec of {@link TraefikBootstrapConfigSchema}. */
 export type TraefikBootstrapConfig = typeof TraefikBootstrapConfigSchema.infer;
 
-// `loadBalancer` mirrors the entrypoint Service's
-// `status.loadBalancer.ingress[0]` and stays empty for `ClusterIP` /
-// `NodePort` services or while a cloud controller is still provisioning an
-// address.
-//
-// `version` is the chart version Flux actually installed, read back from the
-// owned `HelmRelease`'s `status.history[]` — an OBSERVED value rather than the
-// requested one, so a pinned-but-unavailable version can never be reported as
-// though it were live. It is empty until Flux records its first release.
-//
-// EVERY field here is a projection of a resource this composition owns, so it
-// hydrates identically in direct and KRO mode. That rules out literals: KRO
-// drops literal status fields, so declaring one would require a field the
-// instance never carries (#188). The entrypoint NAMES are therefore not in
-// this contract — they are fixed by this composition and exported as
-// `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
-// live port names off the Service named by `serviceName` if a consumer needs
-// them at runtime.
 /**
  * Status contract of the `traefikBootstrap` composition. `loadBalancer` is empty
  * until a controller assigns an address; `version` is the chart Flux installed.
+ *
+ * `loadBalancer` mirrors the entrypoint Service's
+ * `status.loadBalancer.ingress[0]` and stays empty for `ClusterIP` /
+ * `NodePort` services or while a cloud controller is still provisioning an
+ * address.
+ *
+ * `version` is the chart version Flux actually installed, read back from the
+ * owned `HelmRelease`'s `status.history[]` — an OBSERVED value rather than the
+ * requested one, so a pinned-but-unavailable version can never be reported as
+ * though it were live. It is empty until Flux records its first release.
+ *
+ * EVERY field here is a projection of a resource this composition owns, so it
+ * hydrates identically in direct and KRO mode. That rules out literals: KRO
+ * drops literal status fields, so declaring one would require a field the
+ * instance never carries (#188). The entrypoint NAMES are therefore not in
+ * this contract — they are fixed by this composition and exported as
+ * `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
+ * live port names off the Service named by `serviceName` if a consumer needs
+ * them at runtime.
  */
 export const TraefikBootstrapStatusSchema = type({
   ready: 'boolean',
@@ -2041,33 +2047,34 @@ export interface TraefikBootstrapBuildOptions {
    * @default DEFAULT_TRAEFIK_CRDS_POLICY (`'CreateReplace'`)
    */
   readonly crds?: HelmReleaseCrdsPolicy;
-  // This is the raw boundary, so it is typed as {@link TraefikRawHelmValues}
-  // rather than as the managed surface: an override often has to reach a
-  // SIBLING of a path TypeKro maps (`metrics.prometheus` next to the mapped
-  // `metrics.otlp`, say), which a closed type would reject. Type safety on
-  // this side of the boundary would be a fiction anyway — the shape belongs to
-  // whichever chart version is installed. What TypeKro writes is checked
-  // precisely; what a caller passes through is not, and the security pins
-  // still overwrite it.
-  //
-  // **Build-time only, on purpose.** The guide's per-instance passthrough
-  // pattern (a `spec.values` field serialized as
-  // `json.unmarshal(json.marshal(schema.spec.values))` and merged last) does
-  // not apply to this composition, because KRO's `map.merge()` is SHALLOW:
-  // - merging raw values LAST would let any KRO instance re-enable
-  //   `api.dashboard` / `api.insecure` or hand the entrypoint Service back to
-  //   the chart, which this factory's contract (#172) forbids; and
-  // - merging the pins last to prevent that would replace whole top-level
-  //   sections, silently discarding a user's sibling keys under `api`,
-  //   `ingressRoute`, `securityContext`, `podSecurityContext`, `service` and
-  //   `global`.
-  //
-  // A values contract with non-negotiable pins therefore has to resolve
-  // precedence at build time, where the merge can be deep and auditable. Pass
-  // chart surface this factory does not model here, at construction.
   /**
    * Raw chart values, merged BEFORE the mapped values and the security pins —
    * both of which win.
+   *
+   * This is the raw boundary, so it is typed as {@link TraefikRawHelmValues}
+   * rather than as the managed surface: an override often has to reach a
+   * SIBLING of a path TypeKro maps (`metrics.prometheus` next to the mapped
+   * `metrics.otlp`, say), which a closed type would reject. Type safety on
+   * this side of the boundary would be a fiction anyway — the shape belongs to
+   * whichever chart version is installed. What TypeKro writes is checked
+   * precisely; what a caller passes through is not, and the security pins
+   * still overwrite it.
+   *
+   * **Build-time only, on purpose.** The guide's per-instance passthrough
+   * pattern (a `spec.values` field serialized as
+   * `json.unmarshal(json.marshal(schema.spec.values))` and merged last) does
+   * not apply to this composition, because KRO's `map.merge()` is SHALLOW:
+   * - merging raw values LAST would let any KRO instance re-enable
+   *   `api.dashboard` / `api.insecure` or hand the entrypoint Service back to
+   *   the chart, which this factory's contract (#172) forbids; and
+   * - merging the pins last to prevent that would replace whole top-level
+   *   sections, silently discarding a user's sibling keys under `api`,
+   *   `ingressRoute`, `securityContext`, `podSecurityContext`, `service` and
+   *   `global`.
+   *
+   * A values contract with non-negotiable pins therefore has to resolve
+   * precedence at build time, where the merge can be deep and auditable. Pass
+   * chart surface this factory does not model here, at construction.
    */
   readonly values?: TraefikRawHelmValues;
 }
