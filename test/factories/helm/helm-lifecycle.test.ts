@@ -7,7 +7,10 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { load, loadAll } from 'js-yaml';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
-import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import {
+  KUBERNETES_REF_BRAND,
+  SCHEMA_REFERENCE_OPTIONAL_BRAND,
+} from '../../../src/core/constants/brands.js';
 import { evaluateSchemaCelExpression } from '../../../src/core/deployment/schema-cel-evaluator.js';
 import { createSchemaProxy } from '../../../src/core/references/schema-proxy.js';
 import { toResourceGraph } from '../../../src/core/serialization/index.js';
@@ -332,7 +335,9 @@ describe('lifecycle options in KRO mode', () => {
     );
     const yaml = graph.toYaml();
     expect(yaml).toContain('timeout: ${schema.spec.installTimeout}');
-    expect(yaml).toContain('retries: ${schema.spec.retries}');
+    // `retries` is an integer in the HelmRelease CRD and `'number'` is a KRO
+    // float, so even a required field goes through int().
+    expect(yaml).toContain('retries: ${int(schema.spec.retries)}');
     expect(yaml).toContain('crds: CreateReplace');
   });
 });
@@ -363,10 +368,13 @@ function celDefault(path: string, fallback: string): string {
   return `\${${guard} && dyn(schema.spec.${path}) != null ? schema.spec.${path} : ${fallback}}`;
 }
 
-/** An integer default (`retries`): the CEL fallback widened to dyn, then `int()`. */
-function intDefault(path: string, fallback: number): string {
-  const inner = celDefault(path, `(dyn(${fallback}))`).slice(2, -1);
-  return `\${int(${inner})}`;
+/** An integer leaf (`retries`): `int()` of the instance field when set, else the fallback. */
+function intDefault(path: string, fallback: number | 'omit()'): string {
+  const segments = path.split('.');
+  const guard = segments
+    .map((_, index) => `has(schema.spec.${segments.slice(0, index + 1).join('.')})`)
+    .join(' && ');
+  return `\${${guard} && dyn(schema.spec.${path}) != null ? int(schema.spec.${path}) : ${fallback}}`;
 }
 
 /** A schema field that has no default renders omitted when the instance leaves it unset. */
@@ -615,6 +623,80 @@ describe('lifecycle defaults in KRO mode: typing, references and Cilium', () => 
     });
     expect(install?.timeout).toBe(resourceField);
     expect(install?.remediation?.retries).toBe(resourceField as unknown as number);
+  });
+
+  it('gives a non-schema reference no fallback even if it carries the optional brand', () => {
+    // Only schema fields can be unset on an instance; any other reference keeps
+    // KRO's wait-for-the-field behaviour.
+    const brandedResourceField = {
+      [KUBERNETES_REF_BRAND]: true,
+      [SCHEMA_REFERENCE_OPTIONAL_BRAND]: true,
+      resourceId: 'settings',
+      fieldPath: 'data.timeout',
+    } as unknown as string;
+    const { install } = helmReleaseLifecycle({ install: { timeout: brandedResourceField } });
+    expect(install?.timeout).toBe(brandedResourceField);
+  });
+
+  it('passes a required float retries field through int(), which KRO needs for an integer', () => {
+    const schema = createSchemaProxy<{ retries: number }, { ready: boolean }>(
+      type({ retries: 'number' }).json
+    );
+    const { install } = helmReleaseLifecycle({
+      install: { remediation: { retries: schema.spec.retries } },
+    });
+    const retries = install?.remediation?.retries;
+    if (!isCelExpression(retries)) throw new Error('expected int() around the reference');
+    expect(retries.expression).toBe('int(schema.spec.retries)');
+  });
+
+  it('omits an optional integer field that has no default anywhere', () => {
+    const OptionalRetries = type({ 'install?': { 'remediation?': { 'retries?': 'number' } } });
+    const schema = createSchemaProxy<typeof OptionalRetries.infer, { ready: boolean }>(
+      OptionalRetries.json
+    );
+    const { install } = helmReleaseLifecycle({ install: schema.spec.install }, {});
+    const retries = install?.remediation?.retries;
+    if (!isCelExpression(retries)) throw new Error('expected a guarded int()');
+    expect(`\${${retries.expression}}`).toBe(intDefault('install.remediation.retries', 'omit()'));
+    expect(evaluateSchemaCelExpression(retries, {})).toBeUndefined();
+    expect(evaluateSchemaCelExpression(retries, { install: { remediation: { retries: 4 } } })).toBe(
+      4
+    );
+  });
+
+  it('guards a fallback that is itself an optional schema field (Cilium createNamespace)', () => {
+    const CiliumNs = type({
+      'createNamespace?': 'boolean',
+      'install?': { 'createNamespace?': 'boolean' },
+    });
+    type CiliumNsInstance = typeof CiliumNs.infer;
+    const schema = createSchemaProxy<CiliumNsInstance, { ready: boolean }>(CiliumNs.json);
+    const base = { name: 'cilium', repositoryName: 'cilium', repositoryNamespace: 'flux-system' };
+    const kro = ciliumHelmRelease({
+      ...base,
+      createNamespace: schema.spec.createNamespace as boolean,
+      install: schema.spec.install,
+    });
+    const createNamespace = kro.spec.install?.createNamespace;
+    if (!isCelExpression(createNamespace)) throw new Error('expected a CEL choice');
+    // A bare `schema.spec.createNamespace` in the fallback branch fails with
+    // "no such key" when the instance sets neither field.
+    expect(createNamespace.expression).toContain(
+      'has(schema.spec.createNamespace) && dyn(schema.spec.createNamespace) != null ? ' +
+        'schema.spec.createNamespace : (omit())'
+    );
+    for (const instance of [
+      {},
+      { createNamespace: true },
+      { install: { createNamespace: false }, createNamespace: true },
+      { install: {} },
+    ] satisfies CiliumNsInstance[]) {
+      const direct = ciliumHelmRelease({ ...base, ...instance });
+      expect(resolveForInstance(createNamespace, instance)).toBe(
+        direct.spec.install?.createNamespace
+      );
+    }
   });
 
   describe('Cilium per-action timeouts follow the release-wide timeout per instance', () => {

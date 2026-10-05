@@ -25,8 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HelmReleaseCrdsPolicy` types. In KRO mode the defaults also hold when an option is a schema
   reference, including a whole object such as `install: spec.install`: each defaulted field renders
   as a CEL fallback (the instance's value when set, otherwise the default), and fields the instance
-  schema does not declare are not read from it. A numeric default such as `retries` renders as an
-  integer, so the field can be declared as `'number'` or `'number.integer'`. A reference to another
+  schema does not declare are not read from it. A schema field passed as `retries` goes through
+  CEL `int()`, required or optional, because the HelmRelease takes an integer and an ArkType
+  `'number'` is a KRO float; declare it as `'number.integer'`, since `int()` truncates `2.5` to `2`.
+  An optional schema field used as a fallback (Cilium's flat `createNamespace`) is guarded, so an
+  instance that sets neither field omits it. A reference to another
   resource gets no fallback, so KRO still waits for that field. See "Install, upgrade and CRD
   policy" in the Flux docs.
 

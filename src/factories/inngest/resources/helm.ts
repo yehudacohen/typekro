@@ -107,7 +107,7 @@ export function inngestHelmRelease(
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    ...helmReleaseLifecycle(config, {}),
+    ...helmReleaseLifecycle(config),
     values: {
       ...(config.values || {}),
       // TypeKro owns the Namespace resource. The upstream chart otherwise

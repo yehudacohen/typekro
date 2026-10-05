@@ -9,7 +9,7 @@ import {
   type HelmRepositoryStatus,
   helmRepository,
 } from '../../helm/helm-repository.js';
-import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
+import { DEFAULT_HELM_RELEASE_LIFECYCLE, helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type { RookCephHelmReleaseConfig, RookCephHelmRepositoryConfig } from '../types.js';
@@ -64,7 +64,10 @@ export function rookCephOperatorHelmRelease(
       namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
+    ...helmReleaseLifecycle(config, {
+      ...DEFAULT_HELM_RELEASE_LIFECYCLE,
+      driftDetection: { mode: 'enabled' },
+    }),
     values: config.values ?? {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Rook Ceph')) as Enhanced<
@@ -90,7 +93,10 @@ export function rookCephClusterHelmRelease(
       namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
+    ...helmReleaseLifecycle(config, {
+      ...DEFAULT_HELM_RELEASE_LIFECYCLE,
+      driftDetection: { mode: 'enabled' },
+    }),
     values: config.values ?? {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Rook Ceph cluster')) as Enhanced<
