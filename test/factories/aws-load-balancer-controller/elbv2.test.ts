@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { ValidationError } from '../../../src/core/errors.js';
 import { getResourceScope } from '../../../src/core/metadata/resource-metadata.js';
 import {
   ingressClassParams,
+  type TargetGroupBindingSpec,
   targetGroupBinding,
   targetGroupBindingReadinessEvaluator,
 } from '../../../src/factories/aws-load-balancer-controller/index.js';
+
+const TARGET_GROUP_ARN =
+  'arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/web/0123456789abcdef';
+const serviceRef = { name: 'web', port: 80 };
 
 describe('targetGroupBinding', () => {
   it('creates an elbv2.k8s.aws/v1beta1 TargetGroupBinding', () => {
@@ -35,6 +43,73 @@ describe('targetGroupBinding', () => {
     expect(binding.spec.targetType).toBe('ip');
     expect(binding.spec.targetGroupProtocol).toBe('HTTP');
     expect(binding.readinessEvaluator).toBe(targetGroupBindingReadinessEvaluator);
+  });
+
+  it('accepts a target group by name, by ARN, or both', () => {
+    const byName = targetGroupBinding({
+      name: 'by-name',
+      spec: { serviceRef, targetGroupName: 'web' },
+    });
+    expect(byName.spec.targetGroupName).toBe('web');
+    const both = targetGroupBinding({
+      name: 'both',
+      spec: { serviceRef, targetGroupARN: TARGET_GROUP_ARN, targetGroupName: 'web' },
+    });
+    expect(both.spec.targetGroupARN).toBe(TARGET_GROUP_ARN);
+    expect(both.spec.targetGroupName).toBe('web');
+  });
+
+  it('requires a target group in the type', () => {
+    // @ts-expect-error neither targetGroupARN nor targetGroupName
+    const missing: TargetGroupBindingSpec = { serviceRef };
+    // @ts-expect-error both optional fields explicitly undefined
+    const undefinedBoth: TargetGroupBindingSpec = {
+      serviceRef,
+      targetGroupARN: undefined,
+      targetGroupName: undefined,
+    };
+    const byArn: TargetGroupBindingSpec = { serviceRef, targetGroupARN: TARGET_GROUP_ARN };
+    const byName: TargetGroupBindingSpec = { serviceRef, targetGroupName: 'web' };
+    expect([missing, undefinedBoth, byArn, byName]).toHaveLength(4);
+    expect(() =>
+      // @ts-expect-error the factory config carries the same requirement
+      targetGroupBinding({ name: 'web', spec: { serviceRef, targetType: 'ip' } })
+    ).toThrow(ValidationError);
+  });
+
+  it('rejects a binding with no target group at build time', () => {
+    const build = (spec: Partial<TargetGroupBindingSpec>) => () =>
+      targetGroupBinding({ name: 'web', spec: spec as TargetGroupBindingSpec });
+    expect(build({ serviceRef })).toThrow(
+      "TargetGroupBinding 'web' names no target group: set spec.targetGroupARN or spec.targetGroupName"
+    );
+    // The controller treats an empty string as unset.
+    expect(build({ serviceRef, targetGroupARN: '', targetGroupName: '' })).toThrow(ValidationError);
+    expect(build({ serviceRef, targetGroupARN: '', targetGroupName: 'web' })).not.toThrow();
+  });
+
+  it('accepts schema references, which only resolve per instance', () => {
+    const graph = kubernetesComposition(
+      {
+        name: 'tgb-refs',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TgbRefs',
+        spec: type({ service: 'string', targetGroupName: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        targetGroupBinding({
+          id: 'binding',
+          name: spec.service,
+          spec: {
+            serviceRef: { name: spec.service, port: 80 },
+            targetGroupName: spec.targetGroupName,
+          },
+        });
+        return { ready: true };
+      }
+    );
+    expect(graph.toYaml()).toContain('targetGroupName: ${schema.spec.targetGroupName}');
   });
 
   const evaluate = (resource: unknown) => targetGroupBindingReadinessEvaluator(resource);

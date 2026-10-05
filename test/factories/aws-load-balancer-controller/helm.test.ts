@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import {
   AWS_LBC_CHART_NAME,
   awsLoadBalancerControllerHelmRelease,
@@ -71,6 +73,42 @@ describe('awsLoadBalancerControllerHelmRelease', () => {
       remediation: { retries: 0, remediateLastFailure: true, strategy: 'rollback' },
     });
     expect(spec.driftDetection).toEqual({ mode: 'warn' });
+  });
+
+  it('keeps its CRD and retry defaults in KRO mode when install/upgrade are whole schema references', () => {
+    const graph = kubernetesComposition(
+      {
+        name: 'lbc-lifecycle',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'LbcLifecycle',
+        spec: type({
+          name: 'string',
+          'install?': { 'crds?': "'Skip' | 'Create' | 'CreateReplace'" },
+          'upgrade?': { 'crds?': "'Skip' | 'Create' | 'CreateReplace'" },
+        }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        awsLoadBalancerControllerHelmRelease({
+          id: 'lbc',
+          name: spec.name,
+          install: spec.install,
+          upgrade: spec.upgrade,
+        });
+        return { ready: true };
+      }
+    );
+    const yaml = graph.toYaml();
+    for (const action of ['install', 'upgrade']) {
+      expect(yaml).toContain(
+        `crds: '\${has(schema.spec.${action}) && has(schema.spec.${action}.crds) && ` +
+          `dyn(schema.spec.${action}.crds) != null ? schema.spec.${action}.crds : "CreateReplace"}'`
+      );
+    }
+    // Fields the instance schema does not declare keep their plain defaults.
+    expect(yaml).toContain('createNamespace: true');
+    expect(yaml).toContain('strategy: rollback');
+    expect(yaml).not.toContain('schema.spec.install.timeout');
   });
 
   it('passes values through and uses the Flux readiness evaluator', () => {

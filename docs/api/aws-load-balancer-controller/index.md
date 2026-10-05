@@ -186,6 +186,12 @@ targetGroupBinding({
 });
 ```
 
+Name the target group by `targetGroupARN`, by `targetGroupName` (the controller
+looks the ARN up), or both; with both set, the controller uses the ARN. The type
+requires at least one, and the factory throws a `ValidationError` when both are
+missing or empty, because the controller's webhook rejects such a binding. A
+schema reference counts as set, since its value is only known per instance.
+
 Readiness: ready once `status.observedGeneration` has reached
 `metadata.generation` and no condition is `False`.
 

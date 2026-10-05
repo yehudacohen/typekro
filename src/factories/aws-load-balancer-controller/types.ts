@@ -222,14 +222,33 @@ export const AwsLoadBalancerControllerHelmRepositorySingletonStatusSchema: Type<
 /** A port on a Service or pod: a number or a port name. */
 export type AwsLbcPort = number | string;
 
+/**
+ * The target group a `TargetGroupBinding` binds to: its ARN, its name, or both.
+ * The CRD makes neither field required, but the controller's webhook rejects a
+ * binding with neither, so the type requires at least one. With both set, the
+ * controller uses the ARN and does not look the name up.
+ */
+export type TargetGroupBindingTargetGroup =
+  | {
+      /** ARN of an existing target group. Takes precedence over `targetGroupName`. */
+      targetGroupARN: string;
+      /** Name of an existing target group. Ignored while `targetGroupARN` is set. */
+      targetGroupName?: string;
+    }
+  | {
+      /** ARN of an existing target group. Takes precedence over `targetGroupName`. */
+      targetGroupARN?: string;
+      /** Name of an existing target group, which the controller resolves to its ARN. */
+      targetGroupName: string;
+    };
+
 /** Spec of an `elbv2.k8s.aws/v1beta1` `TargetGroupBinding`. */
-export interface TargetGroupBindingSpec {
+export type TargetGroupBindingSpec = TargetGroupBindingSpecFields & TargetGroupBindingTargetGroup;
+
+/** The `TargetGroupBinding` spec fields other than the target group itself. */
+export interface TargetGroupBindingSpecFields {
   /** The Service (and its port) whose endpoints become targets. */
   serviceRef: { name: string; port: AwsLbcPort };
-  /** ARN of an existing target group. Set this or `targetGroupName`. */
-  targetGroupARN?: string;
-  /** Name of an existing target group. Set this or `targetGroupARN`. */
-  targetGroupName?: string;
   targetType?: 'instance' | 'ip';
   /** Protocol of a target group the controller looks up by name. */
   targetGroupProtocol?: 'HTTP' | 'HTTPS' | 'TCP' | 'TLS' | 'UDP' | 'TCP_UDP' | 'QUIC' | 'TCP_QUIC';

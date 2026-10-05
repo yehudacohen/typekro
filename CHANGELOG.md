@@ -23,11 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `install.crds` and `upgrade.crds` of `CreateReplace`, because the chart ships its CRDs in
   `crds/`. `makeAwsLoadBalancerControllerBootstrap` takes the release's install, upgrade and drift
   options and raw chart `values` at build time. Typed `targetGroupBinding` and
-  `ingressClassParams` factories cover the `elbv2.k8s.aws/v1beta1` resources. TypeKro creates no
+  `ingressClassParams` factories cover the `elbv2.k8s.aws/v1beta1` resources. A
+  `TargetGroupBinding` must name its target group by `targetGroupARN`, `targetGroupName` or both:
+  the type requires one, and the factory throws when neither is set. TypeKro creates no
   AWS resources; the docs list the IAM policy for the pinned version and the subnet discovery
   tags. With the Service webhook off, a Service opts in with
   `loadBalancerClass: service.k8s.aws/nlb`, which the docs explain. The integration is a subpath
-  export only and draws 18.2 KiB from the shared declaration pool.
+  export only and draws 19.1 KiB from the shared declaration pool.
 - **Every integration HelmRelease factory accepts `install`, `upgrade` and `driftDetection`.**
   That covers APISix, cert-manager, Cilium, ClickHouse, ClickStack (both releases), CNPG, Dagster,
   Envoy Gateway and Envoy AI Gateway, External-DNS, Harbor, Hatchet, Inngest, NATS, OpenSearch,
