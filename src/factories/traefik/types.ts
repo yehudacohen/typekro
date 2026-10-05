@@ -1850,14 +1850,17 @@ export interface TraefikBootstrapBuildOptions {
   // value is, and a schema reference could not express "no redirect".
   readonly redirectWebToWebsecure?: boolean;
   /**
-   * Accept trusted ranges with a `/0` prefix and `insecure` proxy-protocol or
-   * forwarded-header trust. Only for a Traefik that no client can reach
-   * directly. @default false
+   * Accept trusted ranges with a `/0` prefix, `insecure` proxy-protocol or
+   * forwarded-header trust, and trust settings TypeKro cannot see (`envFrom`,
+   * or `valueFrom` on a trust variable). Only for a Traefik that no client can
+   * reach directly. @default false
    */
   // Without it, a `/0` range in `entrypoints.*.{proxyProtocol,forwardedHeaders}
   // .trustedIPs` is refused at build time (direct mode) and by the generated
-  // CRD's `x-kubernetes-validations` (KRO mode), and an `insecure` flag reaching
-  // the final values (through `values` or `additionalArguments`) throws.
+  // CRD's `x-kubernetes-validations` (KRO mode). An `insecure` flag or `/0`
+  // range reaching the final values (through `values`, `additionalArguments`
+  // or `env`) throws, as does a non-empty `envFrom` or a trust variable in
+  // `env` whose value comes from `valueFrom`.
   readonly dangerouslyTrustAnySource?: boolean;
   /** Create a cluster-default `TLSOption` alongside the release. */
   readonly defaultTlsOption?: TraefikDefaultTlsOptionOptions;

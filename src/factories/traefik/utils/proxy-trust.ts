@@ -22,6 +22,15 @@
 //   an instance that asks for it.
 // Raw `values` and `additionalArguments` are build-time and concrete in both
 // modes, so the `insecure` half is always checked in JavaScript.
+//
+// Environment variables are a third route (`TRAEFIK_ENTRYPOINTS_<NAME>_...`).
+// Traefik reads them only when it has no CLI flags, and the chart always passes
+// flags, so today they are inert. The guard does not rely on that. It refuses
+// what it can see (a literal `insecure` or `/0` value) and also what it cannot:
+// a non-empty `envFrom`, which can load any variable from a Secret or
+// ConfigMap, and a trust variable whose value comes from `valueFrom` or a
+// schema reference. The chart reads `env` and `envFrom` only at the top level
+// of its values, for the Traefik container.
 
 import { TypeKroError } from '../../../core/errors.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
@@ -42,9 +51,20 @@ const TRUSTED_IP_SPEC_PATHS = [
 // bare or with any value Go's `strconv.ParseBool` reads as true. Traefik's
 // flag parser is case-insensitive.
 const INSECURE_ARGUMENT = /\.(proxyprotocol|forwardedheaders)\.insecure(=(1|t|true))?$/i;
+// `--entryPoints.<name>.proxyProtocol.trustedIPs=<ranges>` and the
+// forwardedHeaders twin, with the value after `=` or in the next argument.
+const TRUSTED_IPS_ARGUMENT =
+  /\.(proxyprotocol|forwardedheaders)\.trustedips(?:\[\d+\])?(?:=(.*))?$/i;
 // The same settings through Traefik's environment-variable configuration.
+// Traefik matches variable names case-insensitively.
 const INSECURE_ENV = /^TRAEFIK_ENTRYPOINTS_.+_(PROXYPROTOCOL|FORWARDEDHEADERS)_INSECURE$/i;
+// Any variable under an entrypoint's proxyProtocol or forwardedHeaders: the
+// names whose value must be visible for the guard to vouch for it.
+const TRUST_ENV = /^TRAEFIK_ENTRYPOINTS_.+_(PROXYPROTOCOL|FORWARDEDHEADERS)_/i;
 const TRUE_VALUE = /^(1|t|true)$/i;
+
+const HIDDEN_VALUE_FIX =
+  'TypeKro cannot see that value, so it cannot rule out trusting every source.';
 
 /** Whether a range trusts every address. */
 function trustsAnySource(range: string): boolean {
@@ -59,7 +79,9 @@ function isConcrete(value: unknown): boolean {
 /**
  * Problems with the proxy trust in final chart values; empty when there are none.
  *
- * Schema references are skipped: KRO mode checks those on the CRD.
+ * Schema references under `ports` are skipped: KRO mode checks those on the
+ * CRD. In `env` and `envFrom` nothing on the CRD checks them, so a value the
+ * guard cannot see counts as a problem.
  */
 export function traefikProxyTrustIssues(values: TraefikHelmValues): string[] {
   const issues: string[] = [];
@@ -85,33 +107,83 @@ export function traefikProxyTrustIssues(values: TraefikHelmValues): string[] {
       }
     }
   }
-  const env = values.env;
-  if (Array.isArray(env) && isConcrete(env)) {
-    for (const entry of env) {
-      if (
-        entry &&
-        typeof entry.name === 'string' &&
-        INSECURE_ENV.test(entry.name) &&
-        typeof entry.value === 'string' &&
-        TRUE_VALUE.test(entry.value)
-      ) {
-        issues.push(`env ${entry.name}=${entry.value} trusts every source.`);
-      }
-    }
-  }
+  issues.push(...envIssues(values));
   const args = values.additionalArguments;
   if (Array.isArray(args) && isConcrete(args)) {
-    for (const arg of args) {
-      if (typeof arg === 'string' && INSECURE_ARGUMENT.test(arg)) {
+    args.forEach((arg, index) => {
+      if (typeof arg !== 'string') return;
+      if (INSECURE_ARGUMENT.test(arg)) {
         issues.push(`additionalArguments contains ${arg}, which trusts every source.`);
+        return;
       }
+      const match = TRUSTED_IPS_ARGUMENT.exec(arg);
+      if (!match) return;
+      const next = args[index + 1];
+      const ranges = match[2] ?? (typeof next === 'string' ? next : '');
+      for (const range of ranges.split(',')) {
+        if (trustsAnySource(range)) {
+          issues.push(
+            `additionalArguments sets ${arg.split('=')[0]} to ${range.trim()}, which trusts every source.`
+          );
+        }
+      }
+    });
+  }
+  return issues;
+}
+
+/** A concrete object, as opposed to a schema reference or CEL expression. */
+function isLiteralRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && isConcrete(value);
+}
+
+/** Proxy-trust problems in the Traefik container's `env` and `envFrom`. */
+function envIssues(values: TraefikHelmValues): string[] {
+  const issues: string[] = [];
+  const envFrom: unknown = values.envFrom;
+  if (
+    envFrom !== undefined &&
+    envFrom !== null &&
+    !(Array.isArray(envFrom) && envFrom.length === 0)
+  ) {
+    issues.push(
+      'envFrom can load TRAEFIK_ENTRYPOINTS_* variables from a Secret or ConfigMap. ' +
+        `${HIDDEN_VALUE_FIX} Pass other variables as individual \`env\` entries, where \`valueFrom\` is fine.`
+    );
+  }
+  const env: unknown = values.env;
+  if (env === undefined || env === null) return issues;
+  if (!Array.isArray(env) || !isConcrete(env)) {
+    issues.push(
+      `env is not a literal list, so its variable names are unknown. ${HIDDEN_VALUE_FIX}`
+    );
+    return issues;
+  }
+  for (const entry of env) {
+    if (entry === undefined || entry === null) continue;
+    const name = isLiteralRecord(entry) ? entry.name : undefined;
+    if (!isLiteralRecord(entry) || typeof name !== 'string') {
+      issues.push(`env has an entry whose name is not a literal string. ${HIDDEN_VALUE_FIX}`);
+      continue;
+    }
+    if (!TRUST_ENV.test(name)) continue;
+    const { value, valueFrom } = entry;
+    if (valueFrom !== undefined || (value !== undefined && typeof value !== 'string')) {
+      issues.push(`env ${name} takes its value from a reference. ${HIDDEN_VALUE_FIX}`);
+      continue;
+    }
+    if (typeof value !== 'string') continue;
+    const insecure = INSECURE_ENV.test(name) && TRUE_VALUE.test(value.trim());
+    if (insecure || value.split(',').some((range) => trustsAnySource(range))) {
+      issues.push(`env ${name}=${value} trusts every source.`);
     }
   }
   return issues;
 }
 
 /**
- * Throw when final chart values trust every source for PROXY protocol or forwarded headers.
+ * Throw when final chart values trust every source for PROXY protocol or forwarded headers,
+ * or carry trust settings whose value TypeKro cannot see.
  *
  * @throws {TypeKroError} With code `TRAEFIK_UNTRUSTED_PROXY_SOURCE`.
  */
@@ -119,10 +191,12 @@ export function assertTraefikProxyTrust(values: TraefikHelmValues): void {
   const issues = traefikProxyTrustIssues(values);
   if (issues.length === 0) return;
   throw new TypeKroError(
-    `Traefik would trust any client to set its own source address: ${issues.join(' ')} ` +
-      'List the load balancer or proxy ranges instead (for an AWS NLB with IP targets, the VPC ' +
-      'CIDR). Pass `dangerouslyTrustAnySource: true` to makeTraefikBootstrap only for a Traefik ' +
-      'that no client can reach directly.',
+    `Traefik could trust any client to set its own source address: ${issues.join(' ')} ` +
+      'Set the trust through the typed `entrypoints.<name>.proxyProtocol` / `forwardedHeaders` ' +
+      'options instead, listing the load balancer or proxy ranges (for an AWS NLB with IP ' +
+      'targets, the VPC CIDR). If trusting any source is intended, pass ' +
+      '`dangerouslyTrustAnySource: true` to makeTraefikBootstrap, and only for a Traefik that no ' +
+      'client can reach directly.',
     'TRAEFIK_UNTRUSTED_PROXY_SOURCE',
     { issues }
   );

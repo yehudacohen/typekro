@@ -306,6 +306,111 @@ describe('entrypoint proxy trust', () => {
     ).toThrow(/trusts every source/);
   });
 
+  // Values TypeKro cannot see: a Secret or ConfigMap could hold
+  // TRAEFIK_ENTRYPOINTS_WEB_FORWARDEDHEADERS_INSECURE=true or a /0 trustedIPs.
+  const HIDDEN_TRUST_VALUES: Record<string, Record<string, unknown>> = {
+    'envFrom secretRef': { envFrom: [{ secretRef: { name: 'traefik-env' } }] },
+    'envFrom configMapRef': { envFrom: [{ configMapRef: { name: 'traefik-env' } }] },
+    'valueFrom on an insecure name': {
+      env: [
+        {
+          name: 'TRAEFIK_ENTRYPOINTS_WEB_FORWARDEDHEADERS_INSECURE',
+          valueFrom: { secretKeyRef: { name: 'traefik-env', key: 'insecure' } },
+        },
+      ],
+    },
+    'valueFrom on a lower-case PROXY protocol name': {
+      env: [
+        {
+          name: 'traefik_entrypoints_websecure_proxyprotocol_insecure',
+          valueFrom: { configMapKeyRef: { name: 'traefik-env', key: 'insecure' } },
+        },
+      ],
+    },
+    'valueFrom on a trustedIPs name': {
+      env: [
+        {
+          name: 'TRAEFIK_ENTRYPOINTS_METRICS_PROXYPROTOCOL_TRUSTEDIPS',
+          valueFrom: { secretKeyRef: { name: 'traefik-env', key: 'ranges' } },
+        },
+      ],
+    },
+  };
+
+  for (const [label, baseValues] of Object.entries(HIDDEN_TRUST_VALUES)) {
+    it(`refuses proxy trust it cannot see: ${label}`, () => {
+      expect(() => mapTraefikConfigToHelmValues({ name: 'traefik' }, { baseValues })).toThrow(
+        /cannot see that value[\s\S]*dangerouslyTrustAnySource: true/
+      );
+    });
+  }
+
+  it('refuses envFrom and hidden trust values from the bootstrap factory', () => {
+    for (const values of Object.values(HIDDEN_TRUST_VALUES)) {
+      expect(() =>
+        makeTraefikBootstrap({ name: 'traefik-hidden-trust', kind: 'TraefikHiddenTrust', values })
+      ).toThrow(/TypeKro cannot see that value/);
+    }
+  });
+
+  it('refuses a /0 trustedIPs set through a literal env value or an argument', () => {
+    expect(
+      traefikProxyTrustIssues({
+        env: [
+          {
+            name: 'TRAEFIK_ENTRYPOINTS_WEB_FORWARDEDHEADERS_TRUSTEDIPS',
+            value: '10.0.0.0/8,0.0.0.0/0',
+          },
+        ],
+      })
+    ).toEqual([expect.stringContaining('trusts every source')]);
+    for (const args of [
+      ['--entryPoints.web.proxyProtocol.trustedIPs=10.0.0.0/8,::/0'],
+      ['--entrypoints.web.forwardedheaders.trustedips', '0.0.0.0/0'],
+    ]) {
+      expect(traefikProxyTrustIssues({ additionalArguments: args })).toHaveLength(1);
+    }
+    expect(
+      traefikProxyTrustIssues({
+        additionalArguments: ['--entryPoints.web.proxyProtocol.trustedIPs=10.0.0.0/8'],
+      })
+    ).toEqual([]);
+  });
+
+  it('lets through env it can vouch for', () => {
+    expect(
+      traefikProxyTrustIssues({
+        envFrom: [],
+        env: [
+          // valueFrom is fine outside the trust variables...
+          { name: 'DNS_API_TOKEN', valueFrom: { secretKeyRef: { name: 'dns', key: 'token' } } },
+          // ...and a trust variable with a visible, safe value passes.
+          { name: 'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_TRUSTEDIPS', value: VPC_CIDR },
+          { name: 'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_INSECURE', value: 'false' },
+        ],
+      })
+    ).toEqual([]);
+  });
+
+  it('accepts the hidden sources behind the dangerouslyTrustAnySource escape hatch', () => {
+    for (const baseValues of Object.values(HIDDEN_TRUST_VALUES)) {
+      const values = mapTraefikConfigToHelmValues(
+        { name: 'traefik' },
+        { baseValues, dangerouslyTrustAnySource: true }
+      );
+      expect(values).toMatchObject(baseValues);
+
+      const bootstrap = makeTraefikBootstrap({
+        name: 'traefik-hidden-trust-allowed',
+        kind: 'TraefikHiddenTrustAllowed',
+        dangerouslyTrustAnySource: true,
+        values: baseValues,
+      });
+      expect(() => directDocuments({ name: 'traefik' }, bootstrap)).not.toThrow();
+      expect(() => bootstrap.toYaml()).not.toThrow();
+    }
+  });
+
   it('accepts both behind the dangerouslyTrustAnySource escape hatch', () => {
     const values = mapTraefikConfigToHelmValues(
       { name: 'traefik', entrypoints: { web: { proxyProtocol: { trustedIPs: ['0.0.0.0/0'] } } } },

@@ -21,8 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `entrypoints.{web,websecure}.proxyProtocol.trustedIPs` and `.forwardedHeaders.trustedIPs`.
     A `/0` range is refused: in direct mode when the values are mapped, and in KRO mode by
     `x-kubernetes-validations` on the generated CRD. An `insecure` proxy-protocol or
-    forwarded-header flag in raw `values`, `additionalArguments` or `env` throws too. The escape
-    hatch is the build option `dangerouslyTrustAnySource`.
+    forwarded-header flag, or a `/0` range, in raw `values`, `additionalArguments` or `env` throws
+    too. So does trust TypeKro cannot see: a non-empty `envFrom`, or an `env` entry for an
+    entrypoint's PROXY-protocol or forwarded-header variable whose value comes from `valueFrom`.
+    The escape hatch is the build option `dangerouslyTrustAnySource`.
   - `validateTraefikHelmValues(values, { serviceAnnotations })` warns when the NLB sends PROXY
     headers to an entrypoint that does not accept them, and about trusted ranges broader than
     `/8` (IPv4) or `/16` (IPv6).

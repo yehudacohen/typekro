@@ -340,10 +340,16 @@ unless another proxy, such as a CDN, sits in front and sets `X-Forwarded-For`.
 A range with a `/0` prefix (`0.0.0.0/0`, `::/0`) would let any client set its
 own source address, so it is refused. Direct mode refuses it when the
 composition runs, and KRO mode refuses it at admission through
-`x-kubernetes-validations` on the generated CRD. An `insecure` flag that
-reaches the final values throws as well, whether it comes through `values`
-(`ports.*.proxyProtocol.insecure`), `additionalArguments` (`=true`, `=1` or
-bare) or a `TRAEFIK_ENTRYPOINTS_*_INSECURE` entry in `env`. A range that is
+`x-kubernetes-validations` on the generated CRD. An `insecure` flag or a `/0`
+range that reaches the final values throws as well, whether it comes through
+`values` (`ports.*.proxyProtocol.insecure`), `additionalArguments` (`=true`,
+`=1` or bare for `insecure`, the `=` or next argument for `trustedIPs`) or a
+`TRAEFIK_ENTRYPOINTS_*` entry in `env`. Trust that TypeKro cannot see is
+refused too: any non-empty `envFrom`, since a Secret or ConfigMap can carry
+`TRAEFIK_ENTRYPOINTS_WEB_FORWARDEDHEADERS_INSECURE=true`, and an `env` entry
+for an entrypoint's `PROXYPROTOCOL_*` or `FORWARDEDHEADERS_*` variable whose
+value comes from `valueFrom`. Other variables may still use `valueFrom`; list
+them as individual `env` entries instead of `envFrom`. A range that is
 legal but very broad, with an IPv4 prefix shorter than `/8` or an IPv6 prefix
 shorter than `/16`, gets a `validateTraefikHelmValues` warning instead. The
 escape hatch is
