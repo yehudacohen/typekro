@@ -73,10 +73,12 @@ const MAX_LABEL_VALUE_NAME = 63;
 // What a schema proxy stringifies to inside a template literal.
 const KUBERNETES_REF_MARKER_PREFIX = '__KUBERNETES_REF_';
 // What the CRD's `int(x) >= 0` accepts: cel-go's int() parses like Go's
-// strconv.ParseInt, so a sign is allowed ('+5', and '-0', which is 0).
+// strconv.ParseInt into an int64, so a sign is allowed ('+5', and '-0', which
+// is 0) and anything above int64 max is refused.
 const SIGNED_INTEGER = /^[+-]?\d+$/;
+const INT64_MAX = 9223372036854775807n;
 function isNonNegativeInteger(value: string): boolean {
-  return SIGNED_INTEGER.test(value) && Number(value) >= 0;
+  return SIGNED_INTEGER.test(value) && BigInt(value) >= 0n && BigInt(value) <= INT64_MAX;
 }
 const VALUED_OPERATORS = ['In', 'Gt', 'Lt', 'Gte', 'Lte'];
 // Alias family -> the amiFamily values the CRD accepts alongside it.
