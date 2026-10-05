@@ -107,7 +107,7 @@ installed).
 
 | Option | Default | Notes |
 |---|---|---|
-| `storage` | `{ type: 'sqlite', size: '1Gi' }` | Or `{ type: 'postgres', host, database, user, passwordSecretRef, port?, sslMode? }`. CrowdSec substitutes the password into the YAML text before parsing it, so it goes in a literal block scalar: any single-line password works (quotes, `\`, `#`, leading or trailing spaces included); a newline would break the file. |
+| `storage` | `{ type: 'sqlite', size: '1Gi' }` | Or `{ type: 'postgres', host, database, user, passwordSecretRef, port?, sslMode? }`. Use a generated alphanumeric password (`-`, `_` and `.` are safe too). CrowdSec merges and re-encodes its config files, then substitutes the password and parses the result as a plain YAML scalar, then puts it unquoted into a Postgres connection string, and it has no password-file option. So the password must read back unchanged as a plain scalar: no whitespace or backslash, no leading quote or YAML indicator character (`-?:,[]{}#&*!\|>'"%@`), no `: ` or ` #`, and not `null` or `~` (avoid values YAML reads as booleans or numbers too). |
 | `lapi.replicas` | `1` | More than one needs Postgres. |
 | `lapi.env`, `agent.env` | none | Extra env, appended after the env this factory sets. Raw `values.lapi.env` / `values.agent.env` would be replaced, so use these. |
 | `lapi.pdb`, `appsec.pdb` | `true` | `maxUnavailable: 1`, which never blocks a drain. The chart has no PDB. |

@@ -320,8 +320,6 @@ function clusterIpOnly(): Record<string, unknown> {
   return { type: 'ClusterIP', externalIPs: [], loadBalancerIP: '', loadBalancerClass: '' };
 }
 
-const DB_PASSWORD_VAR = '$DB_PASSWORD';
-
 function configYamlLocal(options: CrowdsecBootstrapOptions): string {
   const storage = options.storage ?? { type: 'sqlite' };
   const server: Record<string, unknown> = {
@@ -337,12 +335,15 @@ function configYamlLocal(options: CrowdsecBootstrapOptions): string {
   if (options.centralApi && options.centralApi.communityBlocklist === false) {
     server.online_client = { pull: { community: false } };
   }
-  // CrowdSec expands `$VAR` in the file text BEFORE parsing the YAML, so the
-  // password lands in the file verbatim. A literal block scalar with an
-  // explicit indentation indicator (`|2-`) carries any single-line value as is,
-  // quotes, backslashes, `#`, flow and sequence indicators and leading or
-  // trailing spaces included; only a newline cannot be carried, which the docs
-  // state (the value lives in a Secret, so it cannot be checked here).
+  // The password reaches CrowdSec as the plain scalar `password: $DB_PASSWORD`
+  // whatever this file says: CrowdSec 1.8 first decodes config.yaml and this
+  // file, merges and re-encodes them (go-cs-lib's YAML patcher), and only then
+  // expands `$VAR` and parses the result, so no quoting or block style set here
+  // survives. It then puts the password unquoted into a key=value Postgres
+  // connection string. CrowdSec offers no password file or DSN alternative, so
+  // the password must read back unchanged as a plain YAML scalar and contain no
+  // whitespace or backslash; the docs say so (the value lives in a Secret, so it
+  // cannot be checked here).
   return yaml(
     {
       api: { server },
@@ -351,7 +352,7 @@ function configYamlLocal(options: CrowdsecBootstrapOptions): string {
             db_config: {
               type: 'postgresql',
               user: storage.user,
-              password: DB_PASSWORD_VAR,
+              password: '$DB_PASSWORD',
               db_name: storage.database,
               host: storage.host,
               port: storage.port ?? 5432,
@@ -361,9 +362,6 @@ function configYamlLocal(options: CrowdsecBootstrapOptions): string {
         : {}),
     },
     true
-  ).replace(
-    /^( *)password: "\$DB_PASSWORD"$/m,
-    (_, indent: string) => `${indent}password: |2-\n${indent}  ${DB_PASSWORD_VAR}`
   );
 }
 

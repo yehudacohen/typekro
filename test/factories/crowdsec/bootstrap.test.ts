@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type } from 'arktype';
-import { load, loadAll } from 'js-yaml';
+import { dump, load, loadAll } from 'js-yaml';
 
 import {
   assertCrowdsecBootstrapOptions,
@@ -416,7 +416,7 @@ describe('crowdsecBootstrap storage, CAPI and agents', () => {
     expect(CrowdsecBootstrapConfigSchema({ name: 'a'.repeat(34) })).toBeInstanceOf(type.errors);
   });
 
-  it('carries any single-line Postgres password through the pre-parse substitution', () => {
+  it('documents the password constraint that merge-then-expand config loading imposes', () => {
     const { values } = directValues({
       storage: {
         type: 'postgres',
@@ -426,28 +426,41 @@ describe('crowdsecBootstrap storage, CAPI and agents', () => {
         passwordSecretRef: { name: 'crowdsec-db', key: 'password' },
       },
     });
-    const text: string = values.config['config.yaml.local'];
-    expect(text).toContain('  password: |2-\n    $DB_PASSWORD\n');
-    // The chart renders the file as `config.yaml.local: |` with `indent 4`.
-    const configMap = `data:\n  config.yaml.local: |\n${text
-      .split('\n')
-      .map((line) => (line === '' ? '' : `    ${line}`))
-      .join('\n')}`;
-    const mounted = (load(configMap) as { data: Record<string, string> }).data['config.yaml.local'];
-    expect(mounted).toBe(text);
-    for (const password of [
-      "it's",
-      'p"a\\s#s: x',
-      '{x}',
-      '- x',
-      '  padded  ',
-      '#start',
-      '|>&*!%@`',
-    ]) {
-      const expanded = load((mounted ?? '').replace('$DB_PASSWORD', password)) as Values;
-      expect(expanded.db_config.password).toBe(password);
-      expect(expanded.db_config.db_name).toBe('crowdsec');
+    const local: string = values.config['config.yaml.local'];
+    // CrowdSec 1.8 decodes config.yaml and config.yaml.local, merges and
+    // re-encodes them, and only then expands $VAR and parses the result.
+    const base = {
+      api: { server: { listen_uri: '0.0.0.0:8080' } },
+      db_config: { type: 'sqlite', db_path: '/var/lib/crowdsec/data/crowdsec.db' },
+    };
+    const mergeInto = (target: Values, source: Values): Values => {
+      for (const [key, value] of Object.entries(source)) {
+        target[key] =
+          value && typeof value === 'object' && !Array.isArray(value)
+            ? mergeInto({ ...(target[key] ?? {}) }, value as Values)
+            : value;
+      }
+      return target;
+    };
+    const merged = dump(mergeInto(structuredClone(base) as Values, load(local) as Values));
+    expect(merged).toContain('password: $DB_PASSWORD\n');
+    const loaded = (password: string): unknown => {
+      try {
+        return (load(merged.replace('$DB_PASSWORD', password)) as Values).db_config.password;
+      } catch {
+        return 'parse error';
+      }
+    };
+    // What the docs recommend survives.
+    for (const password of ['Xk9mQ2vL7pR4', 'abc-DEF_123.xyz', 'p@ss!w0rd%']) {
+      expect(loaded(password)).toBe(password);
     }
+    // What the docs rule out does not: no quoting set in config.yaml.local can help.
+    for (const password of ["'quoted", 'p"a#s: x', '{x}', '- x', 'x: y', '[a]', 'a #b', '#start']) {
+      expect(loaded(password)).not.toBe(password);
+    }
+    expect(loaded('  padded  ')).toBe('padded');
+    expect(loaded('null')).toBeNull();
   });
 });
 
