@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `kedaReady(...)` and `kedaActive(...)` build the same checks for a composition's status. The
   factories throw on specs KEDA rejects (bad replica bounds, with an unset maximum counted as 100,
   cpu/memory-only scale to zero or fallback, duplicate trigger names, wrong metric types, a
-  non-zero `idleReplicaCount`, names over KEDA's limits: 54 characters for a ScaledObject without
+  non-zero `idleReplicaCount`, values below the CRD minimums, `useCachedMetrics` on cpu/memory/cron,
+  `scalingModifiers` without a formula or a positive numeric target, names over KEDA's limits: 54 characters for a ScaledObject without
   an explicit HPA name, 63 otherwise and for the HPA name and ScaledJob names) and warn when an HPA, or a VPA setting the resource
   a trigger scales on, targets the same workload in the same composition. The subpath draws on the
   shared declaration pool and is not re-exported from `typekro`.

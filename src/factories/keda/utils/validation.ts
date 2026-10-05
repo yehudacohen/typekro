@@ -46,6 +46,52 @@ const DNS_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0
 // What a schema proxy stringifies to inside a template literal.
 const KUBERNETES_REF_MARKER_PREFIX = '__KUBERNETES_REF_';
 
+// KEDA 2.21 `ValidateTriggers`: scalers that cannot serve cached metrics.
+const NO_CACHED_METRICS = ['cpu', 'memory', 'cron'];
+// Go's strconv.ParseFloat for plain decimal numbers.
+const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function isPositiveFloat(value: string): boolean {
+  return DECIMAL.test(value) && Number(value) > 0;
+}
+
+// CRD `Minimum` markers (KEDA 2.21), as dotted paths into the spec.
+const SCALED_OBJECT_MINIMUMS: [string, number][] = [
+  ['pollingInterval', 1],
+  ['cooldownPeriod', 0],
+  ['initialCooldownPeriod', 0],
+  ['minReplicaCount', 0],
+  ['maxReplicaCount', 1],
+  ['fallback.failureThreshold', 0],
+  ['fallback.replicas', 0],
+];
+const SCALED_JOB_MINIMUMS: [string, number][] = [
+  ['pollingInterval', 1],
+  ['successfulJobsHistoryLimit', 0],
+  ['failedJobsHistoryLimit', 0],
+  ['minReplicaCount', 0],
+  ['maxReplicaCount', 1],
+];
+
+function checkMinimums(
+  spec: object,
+  minimums: [string, number][],
+  error: (path: string, message: string) => void
+): void {
+  for (const [path, minimum] of minimums) {
+    let value: unknown = spec;
+    for (const key of path.split('.')) {
+      value =
+        value === undefined || value === null || isGraphValue(value)
+          ? undefined
+          : (value as Record<string, unknown>)[key];
+    }
+    if (typeof value === 'number' && !isGraphValue(value) && value < minimum) {
+      error(path, `${path} must be at least ${minimum}, got ${value}`);
+    }
+  }
+}
+
 function isGraphValue(value: unknown): boolean {
   return isKubernetesRef(value) || isCelExpression(value);
 }
@@ -71,9 +117,14 @@ function validateScaledObjectNames(
   error: (path: string, message: string) => void
 ): void {
   const hpaPath = 'advanced.horizontalPodAutoscalerConfig.name';
-  const rawHpaName = concrete(spec?.advanced)?.horizontalPodAutoscalerConfig?.name;
+  // A whole `advanced` (or HPA config) reference may carry an HPA name, so the
+  // generated-name limit cannot be judged at build time.
+  const advanced = spec?.advanced;
+  const hpaConfig = isGraphValue(advanced) ? undefined : advanced?.horizontalPodAutoscalerConfig;
+  const hpaNameUnknown = isGraphValue(advanced) || isGraphValue(hpaConfig);
+  const rawHpaName = hpaNameUnknown ? undefined : hpaConfig?.name;
   // KEDA treats an empty HPA name as unset.
-  const hpaNameSet = rawHpaName !== undefined && rawHpaName !== '';
+  const hpaNameSet = hpaNameUnknown || (rawHpaName !== undefined && rawHpaName !== '');
   const hpaName = concreteName(rawHpaName);
   const soName = concreteName(name);
   if (soName !== undefined && soName.length > MAX_NAME_LENGTH) {
@@ -143,6 +194,14 @@ function validateTriggers(
     }
     const type = concrete(trigger.type);
     const metricType = concrete(trigger.metricType as string | undefined);
+    const cached = concrete((trigger as { useCachedMetrics?: boolean }).useCachedMetrics);
+    if (cached === true && typeof type === 'string' && NO_CACHED_METRICS.includes(type)) {
+      issues.push({
+        severity: 'error',
+        path: `triggers[${index}].useCachedMetrics`,
+        message: `useCachedMetrics is not supported for ${type} triggers`,
+      });
+    }
     if (typeof type === 'string' && RESOURCE_TRIGGERS.includes(type) && metricType === 'Value') {
       issues.push({
         severity: 'error',
@@ -191,10 +250,15 @@ export function validateScaledObjectSpec(
   }
   validateTriggers(spec?.triggers, issues);
 
+  checkMinimums(spec, SCALED_OBJECT_MINIMUMS, error);
   const min = concrete(spec?.minReplicaCount);
   const max = concrete(spec?.maxReplicaCount);
   const idle = concrete(spec?.idleReplicaCount);
   const effectiveMin = typeof min === 'number' ? min : 0;
+  // The webhook compares idle against the HPA's minimum: 0 when
+  // minReplicaCount is unset, but at least 1 when it is set, so an explicit
+  // minReplicaCount: 0 still allows idleReplicaCount: 0.
+  const idleFloor = typeof min === 'number' ? Math.max(min, 1) : 0;
   // An unset maxReplicaCount is the CRD default, 100.
   const effectiveMax = typeof max === 'number' ? max : max === undefined ? 100 : undefined;
   if (effectiveMax !== undefined && effectiveMin > effectiveMax) {
@@ -207,7 +271,7 @@ export function validateScaledObjectSpec(
       'idleReplicaCount',
       `idleReplicaCount ${idle} is not supported; KEDA only supports 0 (an HPA limitation). Use 0, or leave it unset and raise minReplicaCount`
     );
-  } else if (typeof idle === 'number' && idle >= effectiveMin) {
+  } else if (typeof idle === 'number' && idle >= idleFloor) {
     error('idleReplicaCount', 'idleReplicaCount must be lower than minReplicaCount');
   }
 
@@ -224,6 +288,18 @@ export function validateScaledObjectSpec(
   }
 
   const modifiers = concrete(spec?.advanced?.scalingModifiers);
+  // KEDA validates scalingModifiers whenever any field is set.
+  const modifierFields = modifiers ? Object.values(modifiers).filter((v) => v !== undefined) : [];
+  if (modifiers && modifierFields.length > 0 && (modifiers.formula ?? '') === '') {
+    error('advanced.scalingModifiers.formula', 'scalingModifiers needs a formula');
+  }
+  const target = concrete(modifiers?.target);
+  if (typeof target === 'string' && target !== '' && !isPositiveFloat(target)) {
+    error(
+      'advanced.scalingModifiers.target',
+      `target "${target}" must be a number greater than 0, e.g. "10" or "0.5"`
+    );
+  }
   if (modifiers && concrete(modifiers.formula) !== undefined) {
     if (!concrete(modifiers.target)) {
       error('advanced.scalingModifiers.target', 'a formula needs a target');
@@ -302,6 +378,9 @@ export function validateScaledJobSpec(spec: ScaledJobSpec, name?: string): KedaV
         });
       }
     }
+  );
+  checkMinimums(spec, SCALED_JOB_MINIMUMS, (path, message) =>
+    issues.push({ severity: 'error', path, message })
   );
   const min = concrete(spec?.minReplicaCount);
   const max = spec?.maxReplicaCount === undefined ? 100 : concrete(spec.maxReplicaCount);

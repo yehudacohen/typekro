@@ -63,7 +63,10 @@ export interface KedaTriggerCommon {
   authenticationRef?: KedaAuthenticationRef;
   /** @default 'AverageValue' */
   metricType?: 'AverageValue' | 'Value';
-  /** Serve the HPA the value from the last poll instead of querying again. */
+  /**
+   * Serve the HPA the value from the last poll instead of querying again. Not
+   * supported on `cpu`, `memory` and `cron` triggers.
+   */
   useCachedMetrics?: boolean;
 }
 
@@ -177,7 +180,7 @@ export interface KedaRedisMetadata {
 
 /** Resource triggers (`cpu`, `memory`): the HPA's own resource metrics, which need requests on the pods. */
 export interface KedaResourceTrigger
-  extends Omit<KedaTriggerCommon, 'metricType' | 'authenticationRef'> {
+  extends Omit<KedaTriggerCommon, 'metricType' | 'authenticationRef' | 'useCachedMetrics'> {
   type: 'cpu' | 'memory';
   /** `Utilization` is a percentage of the request; `Value` is not allowed. */
   metricType: 'Utilization' | 'AverageValue';
@@ -190,7 +193,8 @@ export type KedaTypedTrigger =
   | (KedaTriggerCommon & { type: 'prometheus'; metadata: KedaPrometheusMetadata })
   | (KedaTriggerCommon & { type: 'aws-sqs-queue'; metadata: KedaAwsSqsQueueMetadata })
   | (KedaTriggerCommon & { type: 'aws-cloudwatch'; metadata: KedaAwsCloudWatchMetadata })
-  | (KedaTriggerCommon & { type: 'cron'; metadata: KedaCronMetadata })
+  // KEDA rejects useCachedMetrics on cron (and cpu/memory) triggers.
+  | (Omit<KedaTriggerCommon, 'useCachedMetrics'> & { type: 'cron'; metadata: KedaCronMetadata })
   | (KedaTriggerCommon & { type: 'metrics-api'; metadata: KedaMetricsApiMetadata })
   | (KedaTriggerCommon & { type: 'postgresql'; metadata: KedaPostgresqlMetadata })
   | (KedaTriggerCommon & { type: 'redis'; metadata: KedaRedisMetadata });

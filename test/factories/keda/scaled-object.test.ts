@@ -28,6 +28,7 @@ import {
   validateScaledJobSpec,
   validateScaledObjectSpec,
 } from '../../../src/factories/keda/utils/validation.js';
+import { REQUIRED_FIELD_SENTINEL } from '../../../src/core/serialization/schema.js';
 import { horizontalPodAutoscaler } from '../../../src/factories/kubernetes/autoscaling/horizontal-pod-autoscaler.js';
 import { deployment } from '../../../src/factories/kubernetes/workloads/deployment.js';
 import { createResource } from '../../../src/factories/shared.js';
@@ -169,9 +170,10 @@ describe('scaledObject', () => {
     expect(() =>
       scaledObject({ name: 'a', spec: { ...base, minReplicaCount: 5, maxReplicaCount: 2 } })
     ).toThrow('minReplicaCount must not exceed maxReplicaCount');
-    expect(() =>
-      scaledObject({ name: 'a', spec: { ...base, idleReplicaCount: 0, minReplicaCount: 0 } })
-    ).toThrow('idleReplicaCount must be lower than minReplicaCount');
+    // With minReplicaCount unset, KEDA's webhook compares idle against 0.
+    expect(() => scaledObject({ name: 'a', spec: { ...base, idleReplicaCount: 0 } })).toThrow(
+      'idleReplicaCount must be lower than minReplicaCount'
+    );
     expect(() =>
       scaledObject({ name: 'a', spec: { scaleTargetRef: { name: 'api' }, triggers: [cpu] } })
     ).toThrow('scaling to zero needs at least one trigger other than cpu or memory');
@@ -189,6 +191,9 @@ describe('scaledObject', () => {
       validateScaledObjectSpec({ ...base, ...spec }).map((issue) => issue.path);
 
     expect(paths({ idleReplicaCount: 0, minReplicaCount: 1 })).toEqual([]);
+    // An explicit minReplicaCount: 0 is read as the HPA minimum of 1, as the webhook does.
+    expect(paths({ idleReplicaCount: 0, minReplicaCount: 0 })).toEqual([]);
+    expect(paths({ idleReplicaCount: 0 })).toEqual(['idleReplicaCount']);
     expect(paths({ idleReplicaCount: 1, minReplicaCount: 3 })).toEqual(['idleReplicaCount']);
     expect(paths({ idleReplicaCount: 2, minReplicaCount: 10 })).toEqual(['idleReplicaCount']);
     expect(() =>
@@ -228,6 +233,124 @@ describe('scaledObject', () => {
     }
     // No name: nothing to check.
     expect(validateScaledObjectSpec(base)).toEqual([]);
+  });
+
+  it('rejects values below the CRD minimums', () => {
+    const base = { scaleTargetRef: { name: 'api' }, triggers: [inflight] };
+    const paths = (spec: Partial<ScaledObjectSpec>) =>
+      validateScaledObjectSpec({ ...base, ...spec }).map((issue) => issue.path);
+    expect(paths({ maxReplicaCount: 0 })).toEqual(['maxReplicaCount']);
+    expect(paths({ pollingInterval: 0 })).toEqual(['pollingInterval']);
+    expect(paths({ cooldownPeriod: -1, initialCooldownPeriod: -1 })).toEqual([
+      'cooldownPeriod',
+      'initialCooldownPeriod',
+    ]);
+    expect(paths({ fallback: { failureThreshold: -1, replicas: 2 } })).toEqual([
+      'fallback.failureThreshold',
+    ]);
+    expect(paths({ fallback: { failureThreshold: 3, replicas: -1 } })).toEqual([
+      'fallback.replicas',
+    ]);
+    expect(
+      paths({
+        maxReplicaCount: 1,
+        pollingInterval: 1,
+        fallback: { failureThreshold: 0, replicas: 0 },
+      })
+    ).toEqual([]);
+  });
+
+  it('rejects useCachedMetrics on cpu, memory and cron triggers', () => {
+    const cron: KedaTrigger = {
+      type: 'cron',
+      metadata: { timezone: 'UTC', start: '0 8 * * *', end: '0 18 * * *', desiredReplicas: '2' },
+    };
+    const paths = (trigger: KedaTrigger) =>
+      validateScaledObjectSpec({
+        scaleTargetRef: { name: 'api' },
+        minReplicaCount: 1,
+        triggers: [{ ...trigger, useCachedMetrics: true } as KedaTrigger],
+      }).map((issue) => issue.path);
+    expect(paths(cpu)).toEqual(['triggers[0].useCachedMetrics']);
+    expect(paths({ ...cpu, type: 'memory' } as KedaTrigger)).toEqual([
+      'triggers[0].useCachedMetrics',
+    ]);
+    expect(paths(cron)).toEqual(['triggers[0].useCachedMetrics']);
+    expect(paths(inflight)).toEqual([]);
+    // @ts-expect-error resource triggers have no useCachedMetrics
+    const typedCpu: KedaTrigger = { ...cpu, useCachedMetrics: true };
+    // @ts-expect-error cron triggers have no useCachedMetrics
+    const typedCron: KedaTrigger = { ...cron, useCachedMetrics: true };
+    expect([typedCpu, typedCron]).toHaveLength(2);
+  });
+
+  it('requires a formula and a positive numeric target for scalingModifiers', () => {
+    const base = { scaleTargetRef: { name: 'api' }, triggers: [inflight] };
+    const paths = (scalingModifiers: Record<string, string>) =>
+      validateScaledObjectSpec({
+        ...base,
+        advanced: { scalingModifiers: scalingModifiers as never },
+      }).map((issue) => issue.path);
+    expect(paths({ target: '10' })).toEqual(['advanced.scalingModifiers.formula']);
+    expect(paths({ formula: '', target: '10' })).toEqual(['advanced.scalingModifiers.formula']);
+    expect(paths({})).toEqual([]);
+    for (const target of ['0', '-1', 'ten', '1e', ' 5']) {
+      expect(paths({ formula: 'inflight', target })).toEqual(['advanced.scalingModifiers.target']);
+    }
+    for (const target of ['10', '0.5', '.5', '1e3']) {
+      expect(paths({ formula: 'inflight', target })).toEqual([]);
+    }
+  });
+
+  it('skips the 54-character rule when advanced is a whole reference', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'keda-ref-advanced',
+        kind: 'KedaRefAdvanced',
+        spec: type({ advanced: { horizontalPodAutoscalerConfig: { name: 'string' } } }),
+        status: type({ ok: 'boolean' }),
+      },
+      (spec) => {
+        scaledObject({
+          name: 'a'.repeat(60),
+          spec: {
+            scaleTargetRef: { name: 'api' },
+            triggers: [inflight],
+            advanced: spec.advanced,
+          },
+          id: 'scaler',
+        });
+        scaledObject({
+          name: 'b'.repeat(60),
+          spec: {
+            scaleTargetRef: { name: 'api' },
+            triggers: [inflight],
+            advanced: {
+              horizontalPodAutoscalerConfig: spec.advanced.horizontalPodAutoscalerConfig,
+            },
+          },
+          id: 'scaler2',
+        });
+        return { ok: true };
+      }
+    );
+    expect(() => composition.toYaml()).not.toThrow();
+  });
+
+  it('skips names carrying the defaults-pass placeholder', () => {
+    const placeholder = `${REQUIRED_FIELD_SENTINEL}-${'a'.repeat(60)}`;
+    expect(
+      validateScaledObjectSpec(
+        { scaleTargetRef: { name: 'api' }, triggers: [inflight] },
+        placeholder
+      )
+    ).toEqual([]);
+    expect(
+      validateScaledJobSpec(
+        { jobTargetRef: { template: { spec: { containers: [] } } }, triggers: [inflight] },
+        placeholder
+      )
+    ).toEqual([]);
   });
 
   it('skips the name limits for names only known at reconcile time', () => {
@@ -409,6 +532,24 @@ describe('scaledJob', () => {
     expect(issues.map((issue) => issue.path)).toEqual([
       'triggers[0].type',
       'triggers[1].metricType',
+    ]);
+  });
+
+  it('rejects ScaledJob values below the CRD minimums', () => {
+    expect(
+      validateScaledJobSpec({
+        jobTargetRef: { template: { spec: { containers: [] } } },
+        triggers: [inflight],
+        pollingInterval: 0,
+        maxReplicaCount: 0,
+        successfulJobsHistoryLimit: -1,
+        failedJobsHistoryLimit: -1,
+      }).map((issue) => issue.path)
+    ).toEqual([
+      'pollingInterval',
+      'successfulJobsHistoryLimit',
+      'failedJobsHistoryLimit',
+      'maxReplicaCount',
     ]);
   });
 

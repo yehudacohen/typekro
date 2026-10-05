@@ -402,7 +402,9 @@ validators return both. Values only known at reconcile time are skipped.
 |---|---|
 | No triggers; a trigger name used twice | error |
 | `minReplicaCount` above `maxReplicaCount` (100 when unset); `idleReplicaCount` not below `minReplicaCount` | error |
-| `idleReplicaCount` other than `0` (KEDA documents 0 as the only value that works, an HPA limitation) | error |
+| `idleReplicaCount` other than `0` (KEDA documents 0 as the only value that works, an HPA limitation); `idleReplicaCount: 0` with `minReplicaCount` unset (an explicit `minReplicaCount: 0` is fine, as in KEDA's webhook) | error |
+| Values below the CRD minimums: `pollingInterval` or `maxReplicaCount` below 1, negative cooldowns, `minReplicaCount`, `fallback.failureThreshold`/`replicas` or ScaledJob history limits | error |
+| `useCachedMetrics` on a `cpu`, `memory` or `cron` trigger; `scalingModifiers` without a `formula`, or with a `target` that is not a number above 0 | error |
 | A ScaledObject name over 63 characters, or over 54 without `advanced.horizontalPodAutoscalerConfig.name` (KEDA's webhook caps the generated `keda-hpa-<name>` at 63); an explicit HPA name over 63 characters or not a DNS-1123 subdomain; a ScaledJob name over 63 characters (a label value on every Job) | error |
 | Only `cpu`/`memory` triggers with `minReplicaCount` 0 (they cannot scale from zero) | error |
 | `metricType: 'Value'` on `cpu`/`memory`; `Utilization` on any other trigger | error |
