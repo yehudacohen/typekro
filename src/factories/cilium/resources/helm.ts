@@ -13,7 +13,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
-import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
+import { helmReleaseLifecycle, lifecycleDefault } from '../../helm/lifecycle.js';
 import { helmReleaseReadinessEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -128,10 +128,14 @@ export function ciliumHelmRepository(
 export function ciliumHelmRelease(
   config: CiliumHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
-  // Per-action timeouts fall back to 10m only when no release-wide `timeout`
-  // is set; Flux applies `spec.timeout` to every action that has none.
-  const installTimeout = config.installTimeout ?? (config.timeout ? undefined : '10m');
-  const upgradeTimeout = config.upgradeTimeout ?? (config.timeout ? undefined : '10m');
+  // Each action's timeout falls back to the release-wide `timeout`, then to
+  // the generic 10m. Spelled as a fallback chain rather than a test on
+  // `config.timeout`: in KRO mode a schema reference is always truthy at build
+  // time, so a truthiness test would drop the 10m even for an instance that
+  // leaves `timeout` unset. `lifecycleDefault` emits the chain as CEL then.
+  const releaseTimeout = lifecycleDefault(config.timeout, '10m');
+  const installTimeout = lifecycleDefault(config.installTimeout, releaseTimeout) as string;
+  const upgradeTimeout = lifecycleDefault(config.upgradeTimeout, releaseTimeout) as string;
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
@@ -159,16 +163,15 @@ export function ciliumHelmRelease(
         },
       },
       // The legacy flat fields seed the policy; nested install/upgrade fields
-      // win. A `timeout` without per-action timeouts must not be shadowed by
-      // the generic 10m action default, so it is only applied when unset.
+      // win.
       ...helmReleaseLifecycle(config, {
         install: {
-          ...(installTimeout && { timeout: installTimeout }),
+          timeout: installTimeout,
           ...(config.createNamespace !== undefined && { createNamespace: config.createNamespace }),
           remediation: { retries: 3 },
         },
         upgrade: {
-          ...(upgradeTimeout && { timeout: upgradeTimeout }),
+          timeout: upgradeTimeout,
           remediation: { retries: 3 },
         },
       }),

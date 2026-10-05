@@ -64,29 +64,47 @@ function readField(bag: unknown, key: string): unknown {
 }
 
 /**
- * Whether a value is read from the instance at reconcile time and may be
- * missing there: any graph reference except a schema field the schema
- * declares required.
+ * Whether a value is an optional field of the instance schema, which KRO may
+ * find unset. Only those get a CEL fallback. A required schema field always has
+ * a value. A reference to another resource keeps KRO's usual behaviour of
+ * waiting until the field exists, rather than applying the default first and
+ * changing the spec once the field appears.
  */
-function mayBeAbsentAtInstanceTime(value: unknown): value is KubernetesRef<unknown> {
-  if (!isKubernetesRef(value)) return false;
-  return !isSchemaReference(value) || Reflect.get(value, SCHEMA_REFERENCE_OPTIONAL_BRAND) === true;
+function isOptionalSchemaField(value: unknown): value is KubernetesRef<unknown> {
+  return (
+    isKubernetesRef(value) &&
+    isSchemaReference(value) &&
+    Reflect.get(value, SCHEMA_REFERENCE_OPTIONAL_BRAND) === true
+  );
 }
 
 /**
- * "Caller value when set, otherwise the default" for one leaf. With concrete
- * values that is `??`. A reference only resolves per instance, where `??` has
- * nothing to test at build time (a reference is never `undefined`), so the
- * choice is emitted as CEL instead: the instance field when present, else the
- * default. Direct mode passes concrete values and takes the `??` path.
+ * "Caller value when set, otherwise the default" for one lifecycle leaf. With
+ * concrete values (direct mode, or a plain object in KRO mode) that is `??`.
+ * An optional schema field is a reference that only resolves per instance, so
+ * `??` has nothing to test at build time; the choice is emitted as CEL instead:
+ * the instance field when present, else the default.
+ *
+ * Exported for factories whose defaults themselves depend on another field
+ * (Cilium's per-action timeouts fall back to its release-wide `timeout`).
  */
-function withDefault(override: unknown, fallback: unknown): unknown {
-  if (fallback !== undefined && mayBeAbsentAtInstanceTime(override)) {
-    // Leaves are scalars or (drift detection) objects; the emitted CEL is the
-    // same either way, so the object overload stands in for both.
-    return Cel.default<object | undefined>(override, fallback as RefOrValue<object>);
+export function lifecycleDefault(value: unknown, fallback: unknown): unknown {
+  if (fallback === undefined || !isOptionalSchemaField(value)) {
+    return value ?? fallback;
   }
-  return override ?? fallback;
+  if (typeof fallback === 'number' && Number.isInteger(fallback)) {
+    // KRO type-checks templates with cel-go, whose `?:` needs both branches
+    // of one type. An ArkType `'number'` field is a SimpleSchema `float`
+    // (a CEL double), so `field : 3` would be `double : int` and the RGD would
+    // be rejected. Widening the literal to dyn type-checks for an integer or a
+    // float field, and `int()` turns the result back into the integer Flux
+    // expects (it is the identity on an int, and truncates a double).
+    const widened = Cel.expr<number>(`dyn(${fallback})`);
+    return Cel.int(Cel.default<number | undefined>(value as KubernetesRef<number>, widened));
+  }
+  // Leaves are scalars or (drift detection) objects; the emitted CEL is the
+  // same either way, so the object overload stands in for both.
+  return Cel.default<object | undefined>(value, fallback as RefOrValue<object>);
 }
 
 function mergeFields(
@@ -105,7 +123,7 @@ function mergeFields(
             base?.remediation as FieldBag | undefined,
             readField(override, key)
           )
-        : withDefault(readField(override, key), base?.[key]);
+        : lifecycleDefault(readField(override, key), base?.[key]);
     if (value !== undefined) {
       merged[key] = value;
     }
@@ -145,7 +163,10 @@ export function helmReleaseLifecycle(
     readField(options, 'upgrade')
   );
   // Drift detection replaces the default as a whole, so it is one leaf.
-  const driftDetection = withDefault(readField(options, 'driftDetection'), defaults.driftDetection);
+  const driftDetection = lifecycleDefault(
+    readField(options, 'driftDetection'),
+    defaults.driftDetection
+  );
   const spec: HelmReleaseLifecycleSpec = {};
   if (install) spec.install = install as HelmReleaseInstallPolicy;
   if (upgrade) spec.upgrade = upgrade as HelmReleaseUpgradePolicy;

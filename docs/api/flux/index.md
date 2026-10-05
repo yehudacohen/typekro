@@ -139,7 +139,9 @@ In KRO mode the options can be schema references, either field by field
 `Cel.default(<instance field>, <default>)`, so an instance that leaves it unset
 still gets the factory's default, the same as in direct mode. Fields your schema
 does not declare keep their defaults and are never read from the instance.
-Declare `retries` as `'number.integer'` so its type matches the integer default.
+`retries` can be declared as `'number'` or `'number.integer'`; either way the
+release gets an integer. A reference to another resource (for example a
+ConfigMap field) gets no fallback: KRO waits for that field as usual.
 
 Unless a factory sets its own policy, it uses the defaults of the generic
 `helmRelease`: `install.timeout` and `upgrade.timeout` of `10m`, and 3

@@ -7,10 +7,12 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { load, loadAll } from 'js-yaml';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import { evaluateSchemaCelExpression } from '../../../src/core/deployment/schema-cel-evaluator.js';
 import { createSchemaProxy } from '../../../src/core/references/schema-proxy.js';
 import { toResourceGraph } from '../../../src/core/serialization/index.js';
 import type { KroCompatibleType } from '../../../src/core/types/serialization.js';
+import { checkCelDialectCompatibility } from '../../../src/core/validation/cel-dialect.js';
 import { apisixHelmRelease } from '../../../src/factories/apisix/index.js';
 import { certManagerHelmRelease } from '../../../src/factories/cert-manager/index.js';
 import { ciliumHelmRelease } from '../../../src/factories/cilium/index.js';
@@ -242,9 +244,20 @@ describe('factory-specific lifecycle defaults', () => {
       createNamespace: true,
     });
     expect(flat.spec.timeout).toBe('15m');
-    // spec.timeout bounds install; no 10m action default may shadow it.
-    expect(flat.spec.install).toEqual({ remediation: { retries: 3 }, createNamespace: true });
+    // An action without its own timeout takes the release-wide one, never 10m.
+    expect(flat.spec.install).toEqual({
+      timeout: '15m',
+      remediation: { retries: 3 },
+      createNamespace: true,
+    });
     expect(flat.spec.upgrade).toEqual({ timeout: '20m', remediation: { retries: 3 } });
+    const bare = ciliumHelmRelease({
+      name: 'cilium',
+      repositoryName: 'cilium',
+      repositoryNamespace: 'flux-system',
+    });
+    expect(bare.spec.install?.timeout).toBe('10m');
+    expect(bare.spec.upgrade?.timeout).toBe('10m');
   });
 
   it('apisix keeps namespace creation and leaves timeouts to spec.timeout', () => {
@@ -350,6 +363,12 @@ function celDefault(path: string, fallback: string): string {
   return `\${${guard} && dyn(schema.spec.${path}) != null ? schema.spec.${path} : ${fallback}}`;
 }
 
+/** An integer default (`retries`): the CEL fallback widened to dyn, then `int()`. */
+function intDefault(path: string, fallback: number): string {
+  const inner = celDefault(path, `(dyn(${fallback}))`).slice(2, -1);
+  return `\${int(${inner})}`;
+}
+
 /** A schema field that has no default renders omitted when the instance leaves it unset. */
 function omittedUnlessSet(path: string): string {
   const segments = path.split('.');
@@ -357,6 +376,28 @@ function omittedUnlessSet(path: string): string {
     .map((_, index) => `has(schema.spec.${segments.slice(0, index + 1).join('.')})`)
     .join(' && ');
   return `\${${guard} ? schema.spec.${path} : omit()}`;
+}
+
+// Resolve a KRO-mode lifecycle against one instance the way KRO would: CEL
+// is evaluated, a bare reference reads the instance, and `omit()` drops it.
+function resolveForInstance(value: unknown, instance: KroCompatibleType): unknown {
+  if (isCelExpression(value)) return evaluateSchemaCelExpression(value, instance);
+  if (isKubernetesRef(value)) {
+    return value.fieldPath
+      .replace(/^spec\./, '')
+      .split('.')
+      .reduce<unknown>(
+        (node, key) => (node as Record<string, unknown> | undefined)?.[key],
+        instance
+      );
+  }
+  if (value && typeof value === 'object') {
+    const resolved = Object.entries(value)
+      .map(([key, child]) => [key, resolveForInstance(child, instance)] as const)
+      .filter(([, child]) => child !== undefined);
+    return resolved.length > 0 ? Object.fromEntries(resolved) : undefined;
+  }
+  return value;
 }
 
 const wholeLifecycleGraph = kubernetesComposition(
@@ -418,7 +459,7 @@ describe('lifecycle defaults when an override is a whole schema reference', () =
     expect(spec.install).toEqual({
       timeout: celDefault('install.timeout', '"10m"'),
       remediation: {
-        retries: celDefault('install.remediation.retries', '3'),
+        retries: intDefault('install.remediation.retries', 3),
         remediateLastFailure: omittedUnlessSet('install.remediation.remediateLastFailure'),
       },
       crds: omittedUnlessSet('install.crds'),
@@ -426,7 +467,7 @@ describe('lifecycle defaults when an override is a whole schema reference', () =
     expect(spec.upgrade).toEqual({
       timeout: celDefault('upgrade.timeout', '"10m"'),
       remediation: {
-        retries: celDefault('upgrade.remediation.retries', '3'),
+        retries: intDefault('upgrade.remediation.retries', 3),
         strategy: omittedUnlessSet('upgrade.remediation.strategy'),
       },
     });
@@ -438,7 +479,7 @@ describe('lifecycle defaults when an override is a whole schema reference', () =
     const spec = rgdReleaseSpec('operator');
     expect(spec.install).toMatchObject({
       timeout: celDefault('install.timeout', '"10m"'),
-      remediation: { retries: celDefault('install.remediation.retries', '3') },
+      remediation: { retries: intDefault('install.remediation.retries', 3) },
     });
     expect(spec.driftDetection).toBe(
       '${has(schema.spec.driftDetection) && dyn(schema.spec.driftDetection) != null ? ' +
@@ -483,28 +524,6 @@ describe('lifecycle defaults when an override is a whole schema reference', () =
     });
     expect(set.driftDetection).toEqual({ mode: 'warn' });
   });
-
-  // Resolve a KRO-mode lifecycle against one instance the way KRO would: CEL
-  // is evaluated, a bare reference reads the instance, and `omit()` drops it.
-  function resolveForInstance(value: unknown, instance: KroCompatibleType): unknown {
-    if (isCelExpression(value)) return evaluateSchemaCelExpression(value, instance);
-    if (isKubernetesRef(value)) {
-      return value.fieldPath
-        .replace(/^spec\./, '')
-        .split('.')
-        .reduce<unknown>(
-          (node, key) => (node as Record<string, unknown> | undefined)?.[key],
-          instance
-        );
-    }
-    if (value && typeof value === 'object') {
-      const resolved = Object.entries(value)
-        .map(([key, child]) => [key, resolveForInstance(child, instance)] as const)
-        .filter(([, child]) => child !== undefined);
-      return resolved.length > 0 ? Object.fromEntries(resolved) : undefined;
-    }
-    return value;
-  }
 
   it.each<[string, WholeLifecycle]>([
     ['nothing set', { name: 'a' }],
@@ -554,5 +573,87 @@ describe('lifecycle defaults when an override is a whole schema reference', () =
     );
     const { install } = helmReleaseLifecycle({ install: { timeout: schema.spec.timeout } });
     expect(isKubernetesRef(install?.timeout)).toBe(true);
+  });
+});
+
+describe('lifecycle defaults in KRO mode: typing, references and Cilium', () => {
+  it('renders an integer default that type-checks against a float (`number`) field', () => {
+    const FloatRetries = type({
+      'install?': { 'remediation?': { 'retries?': 'number' } },
+    });
+    const schema = createSchemaProxy<typeof FloatRetries.infer, { ready: boolean }>(
+      FloatRetries.json
+    );
+    const { install } = helmReleaseLifecycle({ install: schema.spec.install });
+    const retries = install?.remediation?.retries;
+    if (!isCelExpression(retries)) throw new Error('expected a CEL default for retries');
+    // `field : 3` would be `double : int`, which cel-go rejects. The literal is
+    // widened to dyn, and int() hands Flux an integer either way.
+    expect(`\${${retries.expression}}`).toBe(intDefault('install.remediation.retries', 3));
+    expect(checkCelDialectCompatibility(retries.expression, 'retries')).toEqual([]);
+    expect(evaluateSchemaCelExpression(retries, {})).toBe(3);
+    expect(evaluateSchemaCelExpression(retries, { install: { remediation: { retries: 2 } } })).toBe(
+      2
+    );
+    expect(evaluateSchemaCelExpression(retries, { install: { remediation: { retries: 0 } } })).toBe(
+      0
+    );
+  });
+
+  it('keeps a reference to another resource as a plain reference, so KRO waits for it', () => {
+    // As a resource proxy hands it over, e.g. `settings.data.timeout`.
+    const resourceField = {
+      [KUBERNETES_REF_BRAND]: true,
+      resourceId: 'settings',
+      fieldPath: 'data.timeout',
+    } as unknown as string;
+    const { install } = helmReleaseLifecycle({
+      install: {
+        timeout: resourceField,
+        remediation: { retries: resourceField as unknown as number },
+      },
+    });
+    expect(install?.timeout).toBe(resourceField);
+    expect(install?.remediation?.retries).toBe(resourceField as unknown as number);
+  });
+
+  describe('Cilium per-action timeouts follow the release-wide timeout per instance', () => {
+    const CiliumSpec = type({
+      'timeout?': 'string',
+      'installTimeout?': 'string',
+      'upgradeTimeout?': 'string',
+    });
+    type CiliumInstance = typeof CiliumSpec.infer;
+    const base = { name: 'cilium', repositoryName: 'cilium', repositoryNamespace: 'flux-system' };
+
+    it('renders the fallback chain as CEL rather than deciding it at build time', () => {
+      const schema = createSchemaProxy<CiliumInstance, { ready: boolean }>(CiliumSpec.json);
+      const { spec } = ciliumHelmRelease({ ...base, timeout: schema.spec.timeout as string });
+      const timeout = spec.install?.timeout;
+      if (!isCelExpression(timeout)) throw new Error('expected a CEL default for the timeout');
+      expect(timeout.expression).toBe(
+        'has(schema.spec.timeout) && dyn(schema.spec.timeout) != null ? schema.spec.timeout : "10m"'
+      );
+    });
+
+    it.each<[string, CiliumInstance]>([
+      ['nothing set', {}],
+      ['release-wide timeout', { timeout: '15m' }],
+      ['per-action timeouts', { installTimeout: '30m', upgradeTimeout: '40m' }],
+      ['both', { timeout: '15m', upgradeTimeout: '40m' }],
+    ])('KRO and direct mode agree: %s', (_, instance) => {
+      const schema = createSchemaProxy<CiliumInstance, { ready: boolean }>(CiliumSpec.json);
+      const kro = ciliumHelmRelease({
+        ...base,
+        // The legacy fields are typed as plain strings; in KRO mode they carry
+        // the instance's (optional) fields.
+        timeout: schema.spec.timeout as string,
+        installTimeout: schema.spec.installTimeout as string,
+        upgradeTimeout: schema.spec.upgradeTimeout as string,
+      });
+      const direct = ciliumHelmRelease({ ...base, ...instance });
+      expect(resolveForInstance(kro.spec.install, instance)).toEqual(direct.spec.install);
+      expect(resolveForInstance(kro.spec.upgrade, instance)).toEqual(direct.spec.upgrade);
+    });
   });
 });

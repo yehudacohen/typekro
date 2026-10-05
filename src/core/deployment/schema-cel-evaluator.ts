@@ -71,6 +71,7 @@ function prepareSchemaExpression(expression: string): string {
       '__orValue($1, '
     );
     prepared = prepared.replace(/\bstring\(/g, '__string(');
+    prepared = prepared.replace(/\bint\(/g, '__int(');
     prepared = prepared.replace(/\bdyn\(/g, '__dyn(');
     prepared = prepared.replace(/schema\.spec\.(\w+)/g, '$1');
     prepared = prepared.replace(/\bspec\.(\w+)/g, '$1');
@@ -84,6 +85,8 @@ function createEvaluationScope(spec: KroCompatibleType): Record<string, unknown>
       __has: (path: string) => hasSchemaValue(path, spec),
       __orValue: (value: unknown, defaultValue: unknown) => value ?? defaultValue,
       __string: (value: unknown) => String(value ?? ''),
+      // CEL `int()` truncates a double toward zero and parses a decimal string.
+      __int: (value: unknown) => Math.trunc(Number(value)),
       // KRO uses dyn() only for static type widening; it is runtime identity.
       __dyn: (value: unknown) => value,
       omit: () => undefined,

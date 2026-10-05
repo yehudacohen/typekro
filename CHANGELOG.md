@@ -25,12 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HelmReleaseCrdsPolicy` types. In KRO mode the defaults also hold when an option is a schema
   reference, including a whole object such as `install: spec.install`: each defaulted field renders
   as a CEL fallback (the instance's value when set, otherwise the default), and fields the instance
-  schema does not declare are not read from it. An optional schema field passed as a lifecycle
-  field of the generic `helmRelease` therefore carries its default in the resource template
-  instead of in the RGD schema. See "Install, upgrade and CRD policy" in the Flux docs.
+  schema does not declare are not read from it. A numeric default such as `retries` renders as an
+  integer, so the field can be declared as `'number'` or `'number.integer'`. A reference to another
+  resource gets no fallback, so KRO still waits for that field. See "Install, upgrade and CRD
+  policy" in the Flux docs.
 
 ### Changed
 
+- **Behaviour change in KRO mode: a lifecycle default is no longer written into your own schema
+  field.** When an optional field of your composition's spec (say `spec.installTimeout`) was passed
+  as `install.timeout` to `helmRelease` (or to an integration factory with a lifecycle default),
+  the factory's default, say `10m`, used to become that field's default in the RGD schema
+  (`default="10m"`). The default now lives in the HelmRelease
+  template as a CEL fallback, and the field itself stays unset when the instance leaves it unset.
+  The HelmRelease gets the same value as before. Anything else that reads the field, such as a
+  ConfigMap built from `spec.installTimeout`, used to see `"10m"` and now sees it absent, which is
+  what direct mode has always done.
 - **Behaviour change: the cert-manager, Cilium, External-DNS and Pebble HelmReleases now get the
   generic `helmRelease` defaults.** These are `install.timeout` and `upgrade.timeout` of `10m` and
   `remediation.retries: 3` for each. They rendered no install or upgrade policy before, so Flux
@@ -50,9 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   They are now rendered.
 - **`ciliumHelmRelease` ignored `timeout`, `installTimeout`, `upgradeTimeout` and
   `createNamespace`.** They are now rendered as `spec.timeout`, `install.timeout`,
-  `upgrade.timeout` and `install.createNamespace`. When `timeout` is set without per-action
-  timeouts, no `10m` action default overrides it. `replace` and `cleanupOnFail` are still not
-  rendered.
+  `upgrade.timeout` and `install.createNamespace`. An action without its own timeout takes
+  `timeout`, and `10m` only when neither is set. In KRO mode this is decided per instance, so an
+  instance that leaves `timeout` unset still gets `10m`. `replace` and `cleanupOnFail` are still
+  not rendered.
 
 ## [0.44.1] - 2026-10-01
 
