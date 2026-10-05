@@ -136,11 +136,82 @@ describe('validateEC2NodeClassSpec', () => {
       validateEC2NodeClassSpec(spec({ amiSelectorTerms })).map((issue) => issue.path);
 
     expect(paths([])).toEqual(['amiSelectorTerms']);
-    expect(paths([{ alias: 'al2023@latest' }, { id: 'ami-0123' }])).toContain(
-      'amiSelectorTerms[0]'
-    );
+    expect(paths([{ alias: 'al2023@latest' }, { id: 'ami-0123' }])).toEqual(['amiSelectorTerms']);
     expect(paths([{ owner: 'self' }])).toEqual(['amiSelectorTerms[0]', 'amiFamily']);
     expect(paths([{ name: 'my-ami' }])).toEqual(['amiFamily']);
+  });
+
+  it('rejects an alias combined with any other AMI selector field, ssmParameter included', () => {
+    const errors = (amiSelectorTerms: EC2NodeClassSpec['amiSelectorTerms']) =>
+      validateEC2NodeClassSpec(spec({ amiSelectorTerms })).filter(
+        (issue) => issue.severity === 'error'
+      );
+
+    expect(errors([{ alias: 'al2023@latest', ssmParameter: '/my/custom/ami' }])).toEqual([
+      expect.objectContaining({
+        path: 'amiSelectorTerms[0]',
+        message: expect.stringContaining('ignore ssmParameter'),
+      }),
+    ]);
+    for (const other of [
+      { id: 'ami-0123' },
+      { name: 'my-ami' },
+      { tags: { team: 'a' } },
+      { owner: 'self' },
+    ]) {
+      expect(errors([{ alias: 'al2023@latest', ...other }]).map((issue) => issue.path)).toEqual([
+        'amiSelectorTerms[0]',
+      ]);
+    }
+    // An alias term must be the only term, whatever the other term selects by.
+    expect(
+      errors([{ alias: 'al2023@latest' }, { ssmParameter: '/my/custom/ami' }]).map(
+        (issue) => issue.path
+      )
+    ).toEqual(['amiSelectorTerms']);
+  });
+
+  it('rejects id or ssmParameter combined with fields Karpenter would ignore', () => {
+    const paths = (amiSelectorTerms: EC2NodeClassSpec['amiSelectorTerms']) =>
+      validateEC2NodeClassSpec(spec({ amiSelectorTerms, amiFamily: 'AL2023' })).map(
+        (issue) => issue.path
+      );
+
+    expect(paths([{ id: 'ami-0123', name: 'my-ami' }])).toEqual(['amiSelectorTerms[0]']);
+    expect(paths([{ id: 'ami-0123', owner: 'self' }])).toEqual(['amiSelectorTerms[0]']);
+    expect(paths([{ id: 'ami-0123', ssmParameter: '/my/custom/ami' }])).toEqual([
+      'amiSelectorTerms[0]',
+    ]);
+    expect(paths([{ ssmParameter: '/my/custom/ami', tags: { team: 'a' } }])).toEqual([
+      'amiSelectorTerms[0]',
+    ]);
+    // Separate terms are ORed and fine.
+    expect(
+      paths([{ id: 'ami-0123' }, { ssmParameter: '/my/custom/ami' }, { name: 'a', owner: 'self' }])
+    ).toEqual([]);
+  });
+
+  it('mirrors the remaining CRD limits on AMI selector terms', () => {
+    const paths = (amiSelectorTerms: EC2NodeClassSpec['amiSelectorTerms']) =>
+      validateEC2NodeClassSpec(spec({ amiSelectorTerms, amiFamily: 'AL2023' })).map(
+        (issue) => issue.path
+      );
+    const ids = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ id: `ami-${index}` }));
+    const tags = (count: number) =>
+      Object.fromEntries(Array.from({ length: count }, (_, index) => [`k${index}`, 'v']));
+
+    expect(paths(ids(30))).toEqual([]);
+    expect(paths(ids(31))).toEqual(['amiSelectorTerms']);
+    expect(paths([{ id: 'img-0123' }])).toEqual(['amiSelectorTerms[0].id']);
+    expect(paths([{ tags: tags(20) }])).toEqual([]);
+    expect(paths([{ tags: tags(21) }])).toEqual(['amiSelectorTerms[0].tags']);
+    expect(paths([{ tags: { '': 'v' } }])).toEqual(['amiSelectorTerms[0].tags']);
+    expect(paths([{ tags: { k: '' } }])).toEqual(['amiSelectorTerms[0].tags']);
+    expect(paths([{ alias: `bottlerocket@v${'1'.repeat(17)}` }])).toEqual([
+      'amiSelectorTerms[0].alias',
+      'amiFamily',
+    ]);
   });
 
   it('errors on empty or field-less subnet and security group selectors', () => {

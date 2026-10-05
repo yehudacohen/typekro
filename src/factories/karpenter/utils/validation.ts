@@ -31,6 +31,13 @@ const ALIAS_FAMILIES: Record<string, string> = {
   windows2022: 'Windows2022',
   windows2025: 'Windows2025',
 };
+// amiSelectorTerms limits from the pinned EC2NodeClass CRD.
+const MAX_AMI_SELECTOR_TERMS = 30;
+const MAX_AMI_SELECTOR_TAGS = 20;
+const MAX_ALIAS_LENGTH = 30;
+const AMI_TERM_FIELDS = ['alias', 'id', 'ssmParameter', 'name', 'tags', 'owner'] as const;
+// The CRD's `pattern: ami-[0-9a-z]+` (OpenAPI patterns are unanchored).
+const AMI_ID = /ami-[0-9a-z]+/;
 const logger = getComponentLogger('karpenter-validation');
 
 function isGraphValue(value: unknown): boolean {
@@ -170,6 +177,12 @@ export function validateEC2NodeClassSpec(spec: EC2NodeClassSpec): KarpenterValid
     error('role', 'Set exactly one of role or instanceProfile.');
   }
 
+  // Mirrors the amiSelectorTerms rules of the pinned EC2NodeClass CRD, plus one
+  // stricter rule: alias, id and ssmParameter each resolve an AMI on their own,
+  // and Karpenter ignores every other field in that term (alias wins over
+  // everything; id wins over ssmParameter; ssmParameter wins over name, tags and
+  // owner). The CRD leaves ssmParameter out of its exclusion rules, so without
+  // this check those fields would be applied and then silently dropped.
   const amiTerms = concreteArray(spec?.amiSelectorTerms);
   if (amiTerms?.length === 0) {
     error(
@@ -177,16 +190,47 @@ export function validateEC2NodeClassSpec(spec: EC2NodeClassSpec): KarpenterValid
       'At least one AMI selector term is required, e.g. { alias: "al2023@latest" }.'
     );
   }
+  if (amiTerms && amiTerms.length > MAX_AMI_SELECTOR_TERMS) {
+    error(
+      'amiSelectorTerms',
+      `At most ${MAX_AMI_SELECTOR_TERMS} AMI selector terms are allowed (got ${amiTerms.length}).`
+    );
+  }
+  if (amiTerms && amiTerms.length > 1 && amiTerms.some((term) => term.alias !== undefined)) {
+    error('amiSelectorTerms', 'An alias term must be the only AMI selector term.');
+  }
   amiTerms?.forEach((term, index) => {
     const path = `amiSelectorTerms[${index}]`;
     if (!hasAny(term, ['alias', 'id', 'name', 'tags', 'ssmParameter'])) {
       error(path, 'An AMI selector term needs alias, id, name, tags or ssmParameter.');
     }
-    if (
-      term.alias !== undefined &&
-      (hasAny(term, ['id', 'name', 'tags', 'owner']) || amiTerms.length > 1)
-    ) {
-      error(path, 'An alias must be the only AMI selector term and the only field in it.');
+    // Karpenter resolves the first of these that is set and ignores the rest.
+    const winner = (['alias', 'id', 'ssmParameter'] as const).find(
+      (field) => term[field] !== undefined
+    );
+    const ignored = AMI_TERM_FIELDS.filter(
+      (field) => field !== winner && term[field] !== undefined
+    );
+    if (winner !== undefined && ignored.length > 0) {
+      error(
+        path,
+        `${winner} must be the only field in its AMI selector term; Karpenter would ignore ${ignored.join(', ')}.`
+      );
+    }
+    if (isConcreteString(term.id) && !AMI_ID.test(term.id)) {
+      error(`${path}.id`, `AMI id "${term.id}" must look like ami-0123456789abcdef0.`);
+    }
+    if (term.tags !== undefined && !isGraphValue(term.tags)) {
+      const entries = Object.entries(term.tags);
+      if (entries.length > MAX_AMI_SELECTOR_TAGS) {
+        error(`${path}.tags`, `At most ${MAX_AMI_SELECTOR_TAGS} tags are allowed in one term.`);
+      }
+      if (entries.some(([key, value]) => key === '' || (isConcreteString(value) && value === ''))) {
+        error(`${path}.tags`, 'Tag keys and values must not be empty.');
+      }
+    }
+    if (isConcreteString(term.alias) && term.alias.length > MAX_ALIAS_LENGTH) {
+      error(`${path}.alias`, `An alias must be at most ${MAX_ALIAS_LENGTH} characters.`);
     }
     if (isConcreteString(term.alias)) {
       const [family = '', version] = term.alias.split('@');

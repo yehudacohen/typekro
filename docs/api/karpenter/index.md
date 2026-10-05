@@ -258,7 +258,7 @@ reconcile time are skipped.
 | NodePool with empty `requirements` | warning |
 | NodePool without `limits` | warning |
 | EC2NodeClass with both or neither of `role` and `instanceProfile` | error |
-| Empty or field-less AMI, subnet or security group selectors; `alias` mixed with other terms; no `amiFamily` without an alias; two root volumes | error |
+| Empty or field-less AMI, subnet or security group selectors; `alias` mixed with other terms; `alias`, `id` or `ssmParameter` combined with another field in the same term (Karpenter would ignore the others); more than 30 AMI terms or 20 tags in a term, empty tag keys or values, a malformed AMI `id`; no `amiFamily` without an alias; two root volumes | error |
 | Alias not `<family>@<version>`, an unknown family, a Windows alias other than `@latest`, or an `amiFamily` other than the alias's family or `Custom` | error |
 | EBS mapping with neither `volumeSize` nor `snapshotID` | error |
 | `metadataOptions.httpTokens: 'optional'` (IMDSv1) | warning |

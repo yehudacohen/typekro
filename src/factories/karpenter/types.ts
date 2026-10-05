@@ -148,7 +148,8 @@ export interface NodePoolConfig {
 
 /**
  * AMI selector term. An `alias` (`al2023@latest`, `bottlerocket@v1.30.0`, ...)
- * must be the only term; `id` excludes the other fields.
+ * must be the only term. `alias`, `id` and `ssmParameter` each select an AMI on
+ * their own and must be the only field in their term.
  */
 export interface EC2NodeClassAMISelectorTerm {
   alias?: string;
