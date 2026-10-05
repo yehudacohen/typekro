@@ -91,6 +91,42 @@ describe('plugin declarations', () => {
     ).toThrow(/both as a registry and a local plugin/);
   });
 
+  it('puts local-plugin mount paths through the static-configuration check', () => {
+    const stamp: TraefikLocalPluginDeclaration = {
+      moduleName: 'example.com/stamp',
+      type: 'localPath',
+      volumeName: 'plugins',
+    };
+    // The typed mount path is derived under /plugins-local/src, and moduleName
+    // can't start with "/" or contain "..", so it never reaches /etc/traefik.
+    for (const moduleName of ['/etc/traefik', 'x/../../../etc/traefik', '.']) {
+      expect(() =>
+        mapTraefikConfigToHelmValues(
+          { name: 'traefik' },
+          { localPlugins: { stamp: { ...stamp, moduleName } } }
+        )
+      ).toThrow(/Invalid Traefik plugin declaration/);
+    }
+    // A raw local plugin kept beside the typed ones is checked in the final values.
+    const baseValues = {
+      experimental: {
+        localPlugins: { legacy: { moduleName: 'legacy', type: 'localPath', mountPath: '/etc' } },
+      },
+    };
+    expect(() =>
+      mapTraefikConfigToHelmValues({ name: 'traefik' }, { localPlugins: { stamp }, baseValues })
+    ).toThrow(/experimental\.localPlugins\.legacy\.mountPath mounts \/etc/);
+    expect(() =>
+      mapTraefikConfigToHelmValues(
+        { name: 'traefik' },
+        { localPlugins: { stamp }, baseValues, dangerouslyTrustAnySource: true }
+      )
+    ).not.toThrow();
+    expect(() =>
+      mapTraefikConfigToHelmValues({ name: 'traefik' }, { localPlugins: { stamp } })
+    ).not.toThrow();
+  });
+
   it('refuses plugin fields that would inject YAML into the chart templates', () => {
     // The chart writes these unescaped, e.g.
     // "--experimental.plugins.<name>.moduleName={{ $plugin.moduleName }}", so a
