@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, spyOn } from 'bun:test';
 import { type } from 'arktype';
+import { evaluate } from 'cel-js';
 import { loadAll } from 'js-yaml';
 
 import * as crowdsec from '../../../src/factories/crowdsec/index.js';
@@ -15,6 +16,7 @@ import {
   DEFAULT_CROWDSEC_BOUNCER_PLUGIN_HASH,
 } from '../../../src/factories/crowdsec/index.js';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { Cel } from '../../../src/core/references/cel.js';
 import { getComponentLogger } from '../../../src/core/logging/index.js';
 import { assertCrowdsecBootstrapOptions } from '../../../src/factories/crowdsec/utils/helm-values-mapper.js';
 import * as factories from '../../../src/factories/index.js';
@@ -232,21 +234,91 @@ describe('crowdsecBouncerMiddleware with values known only at reconcile time', (
       ?.plugin?.crowdsec;
   };
 
+  const failOpenCel = '(has(schema.spec.failOpen) ? schema.spec.failOpen : true)';
+  const toleranceCel = '(has(schema.spec.failClosedAfter) ? int(schema.spec.failClosedAfter) : 4)';
+  const unwrap = (value: unknown) => String(value).replace(/^\$\{([\s\S]*)\}$/, '$1');
+  // cel-js has no int(); cel-go's truncates a double toward zero.
+  const evaluateCel = (value: unknown, spec: Record<string, unknown>) =>
+    evaluate(unwrap(value), { schema: { spec } }, { int: Math.trunc });
+
   it('emits the fail-open choice as CEL instead of deciding it at build time', () => {
     expect(kroPlugin()).toMatchObject({
-      updateMaxFailure:
-        '${schema.spec.failOpen ? -1 : schema.spec.failClosedAfter < 0 ? 0 : schema.spec.failClosedAfter}',
-      crowdsecAppsecUnreachableBlock: '${!schema.spec.failOpen}',
-      crowdsecAppsecFailureBlock: '${!schema.spec.failOpen}',
-      crowdsecAppsecUnreadableBodyBlock: '${!schema.spec.failOpen}',
+      updateMaxFailure: `\${${failOpenCel} ? -1 : (${toleranceCel} < 0 ? 0 : ${toleranceCel})}`,
+      crowdsecAppsecUnreachableBlock: `\${!${failOpenCel}}`,
+      crowdsecAppsecFailureBlock: `\${!${failOpenCel}}`,
+      crowdsecAppsecUnreadableBodyBlock: `\${!${failOpenCel}}`,
     });
+  });
+
+  it('casts a number failClosedAfter (a CEL double) to int, so both branches are int', () => {
+    const expression = unwrap(kroPlugin()?.updateMaxFailure);
+    // Every use of the field is inside int() (or has()); -1, 0 and 4 are int literals.
+    expect(expression).toContain('int(schema.spec.failClosedAfter)');
+    expect(
+      expression
+        .replaceAll('int(schema.spec.failClosedAfter)', '')
+        .replaceAll('has(schema.spec.failClosedAfter)', '')
+    ).not.toContain('schema.spec.failClosedAfter');
+    const umf = kroPlugin()?.updateMaxFailure;
+    expect(evaluateCel(umf, { failOpen: false, failClosedAfter: 2.0 })).toBe(2);
+    expect(evaluateCel(umf, { failOpen: false, failClosedAfter: 2.7 })).toBe(2);
+    expect(evaluateCel(umf, { failOpen: false, failClosedAfter: -3 })).toBe(0);
+    expect(evaluateCel(umf, { failOpen: true, failClosedAfter: 2 })).toBe(-1);
+  });
+
+  it('falls back to the direct-mode defaults when optional fields are unset', () => {
+    const plugin = kroPlugin();
+    expect(evaluateCel(plugin?.updateMaxFailure, {})).toBe(-1);
+    expect(evaluateCel(plugin?.updateMaxFailure, { failOpen: false })).toBe(4);
+    expect(evaluateCel(plugin?.crowdsecAppsecUnreachableBlock, {})).toBe(false);
+    expect(evaluateCel(plugin?.crowdsecAppsecUnreachableBlock, { failOpen: false })).toBe(true);
+    expect(evaluateCel(plugin?.crowdsecAppsecEnabled, {})).toBe(false);
+    expect(evaluateCel(plugin?.crowdsecAppsecEnabled, { appsecHost: '' })).toBe(false);
+    expect(evaluateCel(plugin?.crowdsecAppsecEnabled, { appsecHost: 'appsec:7422' })).toBe(true);
   });
 
   it('turns AppSec on only when the host reference is not empty', () => {
     expect(kroPlugin()).toMatchObject({
-      crowdsecAppsecEnabled: '${schema.spec.appsecHost != ""}',
+      crowdsecAppsecEnabled:
+        '${(has(schema.spec.appsecHost) ? schema.spec.appsecHost != "" : false)}',
       crowdsecAppsecHost: expect.stringContaining('schema.spec.appsecHost'),
     });
+  });
+
+  it('parenthesises a CEL expression passed as failOpen', () => {
+    const fromMode = kubernetesComposition(
+      {
+        name: 'crowdsec-bouncer-mode',
+        kind: 'CrowdsecBouncerMode',
+        spec: type({ mode: 'string' }),
+        status: type({ ok: 'boolean' }),
+      },
+      (spec) => {
+        traefikMiddleware({
+          name: 'crowdsec',
+          namespace: 'traefik',
+          id: 'bouncer',
+          spec: crowdsecBouncerMiddleware({
+            lapiHost: 'lapi:8080',
+            appsecHost: 'appsec:7422',
+            failOpen: Cel.expr<boolean>(spec.mode, ' == "open"'),
+            apiKeySecret: BASE.apiKeySecret,
+          }),
+        });
+        return { ok: true };
+      }
+    );
+    const rgd = loadAll(fromMode.toYaml()) as Array<{
+      spec?: { resources?: Array<{ template?: PluginDoc }> };
+    }>;
+    const plugin = rgd[0]?.spec?.resources?.find((r) => r.template?.kind === 'Middleware')?.template
+      ?.spec?.plugin?.crowdsec;
+    const block = unwrap(plugin?.crowdsecAppsecUnreachableBlock);
+    expect(block.startsWith('!(')).toBe(true);
+    expect(evaluateCel(plugin?.crowdsecAppsecUnreachableBlock, { mode: 'open' })).toBe(false);
+    expect(evaluateCel(plugin?.crowdsecAppsecUnreachableBlock, { mode: 'closed' })).toBe(true);
+    expect(evaluateCel(plugin?.updateMaxFailure, { mode: 'open' })).toBe(-1);
+    expect(evaluateCel(plugin?.updateMaxFailure, { mode: 'closed' })).toBe(4);
   });
 
   it('resolves to concrete values in direct mode', () => {
@@ -329,13 +401,25 @@ describe('crowdsecBouncerMiddleware validation', () => {
       rejects({ [list]: ['0.0.0.0/0'] }, /matches every address/);
       rejects({ [list]: ['::/0'] }, /matches every address/);
       rejects({ [list]: ['10.0.0.0/00'] }, /matches every address/);
+      // Go matches IPv4 clients against the last 32 bits of a mapped mask.
+      rejects({ [list]: ['::ffff:0.0.0.0/96'] }, /matches every address/);
+      rejects({ [list]: ['::ffff:10.0.0.0/80'] }, /matches every address/);
+      rejects({ [list]: ['::ffff:0:0/96'] }, /matches every address/);
+      rejects({ [list]: ['0:0:0:0:0:ffff:c000:201/90'] }, /matches every address/);
+      rejects({ [list]: ['::ffff:01.2.3.4/120'] }, /not an IP address or CIDR range/);
     }
     rejects({ clientTrustedIps: ['0.0.0.0/0'] }, /bypass the bouncer/);
     rejects({ forwardedHeadersTrustedIps: ['::/0'] }, /X-Forwarded-For/);
     expect(() =>
       crowdsecBouncerMiddleware({
         ...BASE,
-        forwardedHeadersTrustedIps: ['10.0.0.0/8', '::ffff:192.0.2.1', '2001:db8::/32'],
+        forwardedHeadersTrustedIps: [
+          '10.0.0.0/8',
+          '::ffff:192.0.2.1',
+          '::ffff:10.0.0.0/104',
+          '2001:db8::/32',
+          '::/96',
+        ],
         clientTrustedIps: ['192.0.2.1'],
       })
     ).not.toThrow();

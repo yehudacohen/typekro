@@ -41,7 +41,36 @@ export function isCidr(value: string): boolean {
   return isIp(address) && Number(bits) <= (isIP(address) === 6 ? 128 : 32);
 }
 
-/** A range that matches every address: `0.0.0.0/0`, `::/0`, or any other `/0`. */
+// The eight 16-bit groups of a valid IPv6 address (dotted IPv4 tail included).
+function ipv6Groups(address: string): number[] {
+  let text = address.toLowerCase();
+  const dotted = /^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (dotted) {
+    const [, head = '', a, b, c, d] = dotted;
+    const octets = [a, b, c, d].map(Number) as [number, number, number, number];
+    text = `${head}${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const [head = '', tail] = text.split('::');
+  const left = head === '' ? [] : head.split(':');
+  const right = tail === undefined || tail === '' ? [] : tail.split(':');
+  const fill = tail === undefined ? [] : Array(8 - left.length - right.length).fill('0');
+  return [...left, ...fill, ...right].map((group) => Number.parseInt(group, 16));
+}
+
+/** An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`), which Go treats as IPv4. */
+function isIpv4Mapped(address: string): boolean {
+  if (isIP(address) !== 6) return false;
+  const groups = ipv6Groups(address);
+  return groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
+}
+
+/**
+ * A range that matches every address: any `/0`, or an IPv4-mapped range with
+ * at most 96 bits (`::ffff:0.0.0.0/96`). Go's `net.IPNet` matches IPv4 clients
+ * against the last 32 bits of such a mask, which are then all zero.
+ */
 export function isAnyAddressRange(value: string): boolean {
-  return isCidr(value) && /\/0+$/.test(value);
+  if (!isCidr(value)) return false;
+  const [address = '', bits = ''] = value.split('/');
+  return Number(bits) === 0 || (isIpv4Mapped(address) && Number(bits) <= 96);
 }

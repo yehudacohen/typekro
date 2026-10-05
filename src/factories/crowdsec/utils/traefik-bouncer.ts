@@ -10,6 +10,7 @@ import { TypeKroError } from '../../../core/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../../core/constants/brands.js';
+import { REQUIRED_FIELD_SENTINEL } from '../../../core/serialization/schema.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   CROWDSEC_BOUNCER_PLUGIN_MODULE,
@@ -63,24 +64,50 @@ function assertHost(name: string, value: unknown): void {
 }
 
 /**
- * `crowdsecAppsecEnabled` for a host only known at reconcile time: CEL
- * `host != ""`, so the bootstrap's `status.appsecHost` (`''` with AppSec off)
- * turns AppSec off instead of pointing the plugin at `http:///`.
+ * A reference as CEL parts: the reference itself (so its dependency is
+ * tracked), a CEL expression, or the path of a template literal holding exactly
+ * one reference. `undefined` for a template with literal text around references.
  */
-function deferredAppsecEnabled(host: unknown): boolean {
-  if (isKubernetesRef(host) || isCelExpression(host)) {
-    return Cel.expr<boolean>(host, ' != ""');
+function referenceOperand(value: unknown): unknown {
+  if (isKubernetesRef(value) || isCelExpression(value)) return value;
+  const exact = new RegExp(`^${KUBERNETES_REF_MARKER_SOURCE}$`).exec(String(value));
+  if (!exact) return undefined;
+  const [, resourceId, fieldPath] = exact;
+  return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+}
+
+/**
+ * CEL parts for `(has(v) ? <set> : <fallback>)`. A field left unset on the
+ * instance then takes the same default as in direct mode, instead of failing
+ * the whole Middleware with "no such key". A CEL expression has no presence to
+ * test and is used as is.
+ */
+function guarded(
+  value: unknown,
+  set: (operand: unknown) => unknown[],
+  fallback: string
+): unknown[] {
+  const operand = referenceOperand(value);
+  if (isCelExpression(value)) return ['(', ...set(['(', value, ')']), ')'];
+  return ['(has(', operand, ') ? ', ...set(operand), ' : ', fallback, ')'];
+}
+
+// Flatten nested part lists (an operand may itself be a parts list).
+function parts(list: unknown[]): unknown[] {
+  return list.flatMap((part) => (Array.isArray(part) ? parts(part) : [part]));
+}
+
+/** Whether `value` is the placeholder the defaults-extraction pass substitutes. */
+function isPlaceholder(value: unknown): boolean {
+  return typeof value === 'string' && value.includes(REQUIRED_FIELD_SENTINEL);
+}
+
+function assertReference(name: string, value: unknown): void {
+  if (referenceOperand(value) === undefined) {
+    invalid(
+      `${name} built from a template literal: pass the reference itself, or a concrete value.`
+    );
   }
-  const text = String(host);
-  const exact = new RegExp(`^${KUBERNETES_REF_MARKER_SOURCE}$`).exec(text);
-  if (exact) {
-    const [, resourceId, fieldPath] = exact;
-    const path = resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
-    return Cel.expr<boolean>(`${path} != ""`);
-  }
-  // A template with literal text around the references is never empty.
-  if (text.replace(new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g'), '').trim() !== '') return true;
-  invalid('appsecHost built only from references: pass the reference itself, or a concrete host.');
 }
 
 // A copy of a concrete list; a reference to a whole list stays as it is.
@@ -233,11 +260,14 @@ export function crowdsecBouncerMiddleware(
     'every client would bypass the bouncer and AppSec.'
   );
 
-  // `failOpen` and `failClosedAfter` may be references (KRO mode). A reference
-  // is truthy at build time, so branching on it in JavaScript would always pick
-  // fail-open; the decision is emitted as CEL instead.
-  const failOpen = options.failOpen ?? true;
+  // `failOpen`, `failClosedAfter` and `appsecHost` may be references (KRO
+  // mode). A reference is truthy at build time, so branching on it in
+  // JavaScript would always pick fail-open; the decision is emitted as CEL,
+  // with `has()` so an unset optional field takes the direct-mode default.
+  const failOpenOption = isPlaceholder(options.failOpen) ? undefined : options.failOpen;
+  const failOpen = failOpenOption ?? true;
   const deferredFailOpen = isDeferredValue(failOpen);
+  if (deferredFailOpen) assertReference('failOpen', failOpen);
   // A warning, not an error: a composition may wire both from its spec, and a
   // fail-open instance with the schema's failClosedAfter default is legitimate.
   if (
@@ -249,29 +279,52 @@ export function crowdsecBouncerMiddleware(
       'crowdsecBouncerMiddleware: failClosedAfter is ignored with failOpen: true (the default); set failOpen: false to fail closed.'
     );
   }
-  const tolerance = options.failClosedAfter ?? 4;
-  // A negative reference would mean "never block" (-1) or be refused by the
-  // plugin; clamp to 0, the fail-closed side.
-  const failClosedMaxFailure = isDeferredValue(tolerance)
-    ? Cel.expr<number>(tolerance, ' < 0 ? 0 : ', tolerance)
-    : tolerance;
+  const toleranceOption = isPlaceholder(options.failClosedAfter)
+    ? undefined
+    : options.failClosedAfter;
+  const tolerance = toleranceOption ?? 4;
+  const deferredTolerance = isDeferredValue(tolerance);
+  if (deferredTolerance) assertReference('failClosedAfter', tolerance);
+  // CEL parts, all of type int: a schema `number` is a CEL double, and cel-go
+  // refuses a conditional mixing int and double branches, hence int(). A
+  // negative value would mean "never block" (-1) or be refused by the plugin,
+  // so it is clamped to 0, the fail-closed side.
+  const toleranceInt = guarded(tolerance, (x) => ['int(', x, ')'], '4');
+  const failClosedMaxFailure: unknown[] = deferredTolerance
+    ? ['(', toleranceInt, ' < 0 ? 0 : ', toleranceInt, ')']
+    : [String(tolerance)];
+  const failOpenBool = guarded(failOpen, (x) => [x], 'true');
   const updateMaxFailure = deferredFailOpen
-    ? Cel.expr<number>(failOpen, ' ? -1 : ', failClosedMaxFailure)
+    ? Cel.expr<number>(...parts([failOpenBool, ' ? -1 : ', failClosedMaxFailure]))
     : failOpen
       ? -1
-      : failClosedMaxFailure;
-  const block = deferredFailOpen ? Cel.expr<boolean>('!', failOpen) : !failOpen;
+      : deferredTolerance
+        ? Cel.expr<number>(...parts(failClosedMaxFailure))
+        : tolerance;
+  const block = deferredFailOpen ? Cel.expr<boolean>(...parts(['!', failOpenBool])) : !failOpen;
 
   // An empty host means AppSec is off: the bootstrap's `status.appsecHost` is
   // `''` then, and the plugin would otherwise call `http:///`.
-  const appsecHost = options.appsecHost;
+  const appsecHost = isPlaceholder(options.appsecHost) ? undefined : options.appsecHost;
   const deferredAppsecHost = isDeferredValue(appsecHost);
   if (!deferredAppsecHost && concreteString(appsecHost)?.trim() !== '') {
     assertHost('appsecHost', appsecHost);
   }
-  const appsecEnabled = deferredAppsecHost
-    ? deferredAppsecEnabled(appsecHost)
-    : appsecHost !== undefined && appsecHost.trim() !== '';
+  let appsecEnabled: boolean;
+  if (!deferredAppsecHost) {
+    appsecEnabled = appsecHost !== undefined && appsecHost.trim() !== '';
+  } else if (referenceOperand(appsecHost) !== undefined) {
+    appsecEnabled = Cel.expr<boolean>(...parts(guarded(appsecHost, (x) => [x, ' != ""'], 'false')));
+  } else {
+    // A template with literal text around the references is never empty.
+    const text = String(appsecHost).replace(new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g'), '');
+    if (text.trim() === '') {
+      invalid(
+        'appsecHost built only from references: pass the reference itself, or a concrete host.'
+      );
+    }
+    appsecEnabled = true;
+  }
 
   const config: Record<string, unknown> = {
     enabled: true,

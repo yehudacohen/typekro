@@ -416,7 +416,7 @@ describe('crowdsecBootstrap storage, CAPI and agents', () => {
     expect(CrowdsecBootstrapConfigSchema({ name: 'a'.repeat(34) })).toBeInstanceOf(type.errors);
   });
 
-  it('single-quotes the Postgres password, which CrowdSec substitutes before parsing', () => {
+  it('carries any single-line Postgres password through the pre-parse substitution', () => {
     const { values } = directValues({
       storage: {
         type: 'postgres',
@@ -427,10 +427,27 @@ describe('crowdsecBootstrap storage, CAPI and agents', () => {
       },
     });
     const text: string = values.config['config.yaml.local'];
-    expect(text).toContain("password: '$DB_PASSWORD'");
-    // What CrowdSec parses after substituting a password with ", \ and #.
-    const expanded = load(text.replace('$DB_PASSWORD', 'p"a\\s#s: x')) as Values;
-    expect(expanded.db_config.password).toBe('p"a\\s#s: x');
+    expect(text).toContain('  password: |2-\n    $DB_PASSWORD\n');
+    // The chart renders the file as `config.yaml.local: |` with `indent 4`.
+    const configMap = `data:\n  config.yaml.local: |\n${text
+      .split('\n')
+      .map((line) => (line === '' ? '' : `    ${line}`))
+      .join('\n')}`;
+    const mounted = (load(configMap) as { data: Record<string, string> }).data['config.yaml.local'];
+    expect(mounted).toBe(text);
+    for (const password of [
+      "it's",
+      'p"a\\s#s: x',
+      '{x}',
+      '- x',
+      '  padded  ',
+      '#start',
+      '|>&*!%@`',
+    ]) {
+      const expanded = load((mounted ?? '').replace('$DB_PASSWORD', password)) as Values;
+      expect(expanded.db_config.password).toBe(password);
+      expect(expanded.db_config.db_name).toBe('crowdsec');
+    }
   });
 });
 

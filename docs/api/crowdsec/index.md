@@ -107,7 +107,7 @@ installed).
 
 | Option | Default | Notes |
 |---|---|---|
-| `storage` | `{ type: 'sqlite', size: '1Gi' }` | Or `{ type: 'postgres', host, database, user, passwordSecretRef, port?, sslMode? }`. CrowdSec substitutes the password into the YAML text before parsing it, so it goes in a single-quoted scalar: any character works except `'` and a newline, which would break the file. |
+| `storage` | `{ type: 'sqlite', size: '1Gi' }` | Or `{ type: 'postgres', host, database, user, passwordSecretRef, port?, sslMode? }`. CrowdSec substitutes the password into the YAML text before parsing it, so it goes in a literal block scalar: any single-line password works (quotes, `\`, `#`, leading or trailing spaces included); a newline would break the file. |
 | `lapi.replicas` | `1` | More than one needs Postgres. |
 | `lapi.env`, `agent.env` | none | Extra env, appended after the env this factory sets. Raw `values.lapi.env` / `values.agent.env` would be replaced, so use these. |
 | `lapi.pdb`, `appsec.pdb` | `true` | `maxUnavailable: 1`, which never blocks a drain. The chart has no PDB. |
@@ -261,10 +261,14 @@ parser ignores private addresses, so nothing is ever banned.
 | Body cannot be buffered for AppSec (HTTP/2 stream without length) | Forward headers only (`crowdsecAppsecUnreadableBodyBlock: false`). | Block it. |
 | Traefik starts while LAPI is down | The first pull waits up to 10 s, then serves. | The first pull fails; traffic flows until `failClosedAfter` pulls have failed, then everything is blocked. |
 
-`failOpen` and `failClosedAfter` may be schema references in KRO mode: the
-fail-open choice is then emitted as CEL (`failOpen ? -1 : failClosedAfter`, and
-`!failOpen` for the AppSec blocks), never decided at build time, and a negative
-`failClosedAfter` reference counts as 0, which blocks at the first failure.
+`failOpen`, `failClosedAfter` and `appsecHost` may be schema references in KRO
+mode: the fail-open choice is then emitted as CEL (`failOpen ? -1 :
+int(failClosedAfter)`, and `!(failOpen)` for the AppSec blocks), never decided
+at build time. Each reference is guarded with `has()`, so a field left unset on
+the instance takes the same default as in direct mode (fail open, 4 failed
+pulls, AppSec off). `int()` keeps both branches int when the schema field is a
+`number`, and a negative `failClosedAfter` counts as 0, which blocks at the
+first failure.
 
 Known bans keep working while LAPI is down either way: they are cached in
 Traefik. The bouncer only bans. It configures no captcha provider, so a
