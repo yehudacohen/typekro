@@ -271,3 +271,103 @@ describe('validateNodePoolSpec', () => {
     ]);
   });
 });
+
+describe('validateNodePoolSpec: names and CRD mirrors', () => {
+  const paths = (input: NodePoolSpec, name?: string) =>
+    validateNodePoolSpec(input, name)
+      .filter((issue) => issue.severity === 'error')
+      .map((issue) => issue.path);
+  const withTemplate = (
+    template: Partial<NodePoolSpec['template']['spec']>,
+    labels?: Record<string, string>
+  ) => {
+    const base = spec();
+    return spec({
+      template: {
+        ...(labels ? { metadata: { labels } } : {}),
+        spec: { ...base.template.spec, ...template },
+      },
+    });
+  };
+
+  it('caps the name at 63, the karpenter.sh/nodepool label value', () => {
+    expect(paths(spec(), 'a'.repeat(63))).toEqual([]);
+    expect(paths(spec(), 'a'.repeat(64))).toEqual(['name']);
+    expect(() => nodePool({ name: 'a'.repeat(64), spec: spec() })).toThrow(
+      /NodePool name is 64 characters/
+    );
+    // Names only known at reconcile time are skipped.
+    expect(paths(spec(), `__KUBERNETES_REF___schema___spec.name__${'a'.repeat(60)}`)).toEqual([]);
+  });
+
+  it('rejects restricted label domains in requirements and template labels', () => {
+    const requirement = (key: string) =>
+      paths(
+        withTemplate({
+          requirements: [
+            { key: KARPENTER_LABELS.capacityType, operator: 'In', values: ['spot'] },
+            { key, operator: 'Exists' },
+          ],
+        })
+      );
+    expect(requirement('karpenter.sh/nodeclaim')).toEqual(['template.spec.requirements[1].key']);
+    expect(requirement('example.karpenter.sh/x')).toEqual(['template.spec.requirements[1].key']);
+    expect(requirement('karpenter.k8s.aws/made-up')).toEqual(['template.spec.requirements[1].key']);
+    expect(requirement('karpenter.k8s.aws/instance-gpu-count')).toEqual([]);
+    expect(requirement('karpenter.k8s.aws/capacity-reservation-id')).toEqual([]);
+    expect(requirement('kubernetes.io/hostname')).toEqual(['template.spec.requirements[1].key']);
+    expect(requirement('example.com/team')).toEqual([]);
+
+    expect(paths(withTemplate({}, { 'karpenter.sh/nodepool': 'x' }))).toEqual([
+      'template.metadata.labels.karpenter.sh/nodepool',
+    ]);
+    expect(paths(withTemplate({}, { 'karpenter.k8s.aws/foo': 'x', team: 'a' }))).toEqual([
+      'template.metadata.labels.karpenter.k8s.aws/foo',
+    ]);
+    expect(paths(withTemplate({}, { 'karpenter.sh/capacity-type': 'spot' }))).toEqual([]);
+  });
+
+  it('checks durations and budget values against the CRD patterns', () => {
+    expect(paths(withTemplate({ expireAfter: '720h', terminationGracePeriod: '48h' }))).toEqual([]);
+    expect(paths(withTemplate({ expireAfter: 'Never' }))).toEqual([]);
+    expect(paths(withTemplate({ expireAfter: '30d' }))).toEqual(['template.spec.expireAfter']);
+    expect(paths(withTemplate({ terminationGracePeriod: 'Never' }))).toEqual([
+      'template.spec.terminationGracePeriod',
+    ]);
+    expect(paths(spec({ disruption: { consolidateAfter: '1 minute' } }))).toEqual([
+      'disruption.consolidateAfter',
+    ]);
+    expect(
+      paths(
+        spec({
+          disruption: {
+            consolidateAfter: '0s',
+            budgets: [
+              { nodes: '10%' },
+              { nodes: '5', schedule: '@daily', duration: '1h30m' },
+              { nodes: '101%' },
+              { nodes: 'ten', schedule: '@daily', duration: '30s' },
+            ],
+          },
+        })
+      )
+    ).toEqual([
+      'disruption.budgets[2].nodes',
+      'disruption.budgets[3].nodes',
+      'disruption.budgets[3].duration',
+    ]);
+  });
+
+  it('allows only limits.nodes and no weight on static NodePools', () => {
+    const staticPool = (overrides: Partial<NodePoolSpec>) =>
+      ({ ...spec(overrides), replicas: 3 }) as NodePoolSpec;
+    expect(paths(staticPool({ limits: { nodes: '5' } }))).toEqual([]);
+    expect(paths(staticPool({ limits: { cpu: '100' } }))).toEqual(['limits']);
+    expect(paths(staticPool({ limits: { nodes: '5' }, weight: 10 }))).toEqual(['weight']);
+    // No "no limits" warning for a static pool: replicas bound it.
+    const { limits: _limits, ...unbounded } = spec();
+    expect(
+      validateNodePoolSpec({ ...unbounded, replicas: 3 } as NodePoolSpec).map((i) => i.path)
+    ).toEqual([]);
+  });
+});

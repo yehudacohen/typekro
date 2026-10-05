@@ -44,7 +44,7 @@ export function ec2NodeClass(
   config: Composable<EC2NodeClassConfig>
 ): Enhanced<EC2NodeClassSpec, EC2NodeClassStatus> {
   const spec = config.spec as EC2NodeClassSpec;
-  const issues = validateEC2NodeClassSpec(spec);
+  const issues = validateEC2NodeClassSpec(spec, config.name as string);
   assertNoKarpenterErrors('EC2NodeClass', config.name, issues);
   warnKarpenterIssues('ec2NodeClass', issues);
   return createResource<EC2NodeClassSpec, EC2NodeClassStatus>(

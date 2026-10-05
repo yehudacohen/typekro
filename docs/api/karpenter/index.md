@@ -253,12 +253,14 @@ reconcile time are skipped.
 | NodePool without `nodeClassRef` | error |
 | `In`/`Gt`/`Lt`/`Gte`/`Lte` with missing or empty values; `Gt` etc. without exactly one integer; `minValues` outside 1-50 or above the number of values | error |
 | `disruption` without `consolidateAfter` (the CRD requires it once `disruption` is set) | error |
-| Requirement on `karpenter.sh/nodepool` or `kubernetes.io/hostname` | error |
+| Requirement or template label on `karpenter.sh/nodepool`, `kubernetes.io/hostname`, or a key in the `karpenter.sh` or `karpenter.k8s.aws` domains outside the CRD's allowlist of well-known labels | error |
+| A NodePool or EC2NodeClass name over 63 characters (Karpenter puts it in a label value on every NodeClaim and Node) | error |
+| `expireAfter`, `terminationGracePeriod`, `consolidateAfter`, budget `nodes` or `duration` not matching the CRD pattern; a static NodePool (`replicas` set) with `weight` or limits other than `nodes` | error |
 | Budget `schedule` without `duration`, or the reverse; `weight` outside 1-100 | error |
 | NodePool with empty `requirements` | warning |
 | NodePool without `limits` | warning |
-| EC2NodeClass with both or neither of `role` and `instanceProfile` | error |
-| Empty or field-less AMI, subnet or security group selectors; `alias` mixed with other terms; `alias`, `id` or `ssmParameter` combined with another field in the same term (Karpenter would ignore the others); more than 30 AMI terms or 20 tags in a term, empty tag keys or values, a malformed AMI `id`; no `amiFamily` without an alias; two root volumes | error |
+| EC2NodeClass with both or neither of `role` and `instanceProfile`, or an empty one; empty or reserved `spec.tags` keys (`eks:eks-cluster-name`, `kubernetes.io/cluster/*`, `karpenter.sh/nodepool`, `karpenter.sh/nodeclaim`, `karpenter.k8s.aws/ec2nodeclass`) | error |
+| Empty or field-less AMI, subnet or security group selectors; `alias` mixed with other terms; `alias`, `id` or `ssmParameter` combined with another field in the same term (Karpenter would ignore the others); a subnet or security group term whose `id` (or security group `name`) is combined with another field, which Karpenter would ignore; more than 30 AMI terms or 20 tags in a term, empty selector tag keys or values, a malformed AMI, subnet or security group `id`; no `amiFamily` without an alias; two root volumes | error |
 | Alias not `<family>@<version>`, an unknown family, a Windows alias other than `@latest`, or an `amiFamily` other than the alias's family or `Custom` | error |
 | EBS mapping with neither `volumeSize` nor `snapshotID` | error |
 | `metadataOptions.httpTokens: 'optional'` (IMDSv1) | warning |

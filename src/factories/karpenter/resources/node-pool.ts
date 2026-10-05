@@ -77,7 +77,7 @@ export function nodePool(
   config: Composable<NodePoolConfig>
 ): Enhanced<NodePoolSpec, NodePoolStatus> {
   const spec = config.spec as NodePoolSpec;
-  const issues = validateNodePoolSpec(spec);
+  const issues = validateNodePoolSpec(spec, config.name as string);
   assertNoKarpenterErrors('NodePool', config.name, issues);
   warnKarpenterIssues('nodePool', issues);
   return createResource<NodePoolSpec, NodePoolStatus>(

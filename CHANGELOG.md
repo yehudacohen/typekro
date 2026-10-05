@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   factories evaluate readiness from the `Ready` condition and ignore one left from an earlier
   generation. `karpenterReady(...)` builds the same check for a composition's status. The factories
   throw on specs the CRDs would reject (and on an `alias`, `id` or `ssmParameter` AMI selector term
-  with other fields, which Karpenter would ignore), and `validateNodePoolSpec`, `validateEC2NodeClassSpec` and
+  with other fields, which Karpenter would ignore, the same for subnet and security group terms,
+  restricted label domains, and names over 63 characters, which Karpenter puts in label values), and `validateNodePoolSpec`, `validateEC2NodeClassSpec` and
   `validateKarpenterBootstrapConfig` also warn about empty requirements, a NodePool without limits,
   IMDSv1 and a controller allowed onto its own nodes. TypeKro creates no AWS resources; the docs list
   the IAM, SQS, EventBridge, tagging and access-entry prerequisites. The subpath draws on the shared

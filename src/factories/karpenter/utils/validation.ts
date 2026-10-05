@@ -8,6 +8,7 @@
 import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
+import { REQUIRED_FIELD_SENTINEL } from '../../../core/serialization/schema.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type { EC2NodeClassSpec, KarpenterBootstrapConfig, NodePoolSpec } from '../types.js';
 
@@ -20,6 +21,57 @@ export interface KarpenterValidationIssue {
 }
 
 const RESTRICTED_LABELS = ['karpenter.sh/nodepool', 'kubernetes.io/hostname'];
+// Keys in the restricted `karpenter.sh` and `karpenter.k8s.aws` label domains
+// the pinned NodePool CRD still accepts in requirements and template labels.
+const ALLOWED_KARPENTER_SH_LABELS = ['karpenter.sh/capacity-type', 'karpenter.sh/nodepool'];
+const ALLOWED_KARPENTER_AWS_LABELS = [
+  'instance-tenancy',
+  'capacity-reservation-type',
+  'capacity-reservation-id',
+  'capacity-reservation-interruptible',
+  'ec2nodeclass',
+  'instance-encryption-in-transit-supported',
+  'instance-category',
+  'instance-hypervisor',
+  'instance-family',
+  'instance-generation',
+  'instance-local-nvme',
+  'instance-size',
+  'instance-cpu',
+  'instance-cpu-manufacturer',
+  'instance-cpu-sustained-clock-speed-mhz',
+  'instance-memory',
+  'instance-ebs-bandwidth',
+  'instance-network-bandwidth',
+  'instance-gpu-name',
+  'instance-gpu-manufacturer',
+  'instance-gpu-count',
+  'instance-gpu-memory',
+  'instance-accelerator-name',
+  'instance-accelerator-manufacturer',
+  'instance-accelerator-count',
+  'instance-capability-flex',
+  'placement-group-id',
+  'placement-group-partition',
+].map((name) => `karpenter.k8s.aws/${name}`);
+// Duration patterns from the pinned NodePool CRD.
+const EXPIRE_AFTER = /^(([0-9]+(s|m|h))+|Never)$/;
+const CONSOLIDATE_AFTER = /^(([0-9]+(s|m|h))+|Never)$/;
+const TERMINATION_GRACE_PERIOD = /^([0-9]+(s|m|h))+$/;
+const BUDGET_DURATION = /^((([0-9]+(h|m))|([0-9]+h[0-9]+m))(0s)?)$/;
+const BUDGET_NODES = /^((100|[0-9]{1,2})%|[0-9]+)$/;
+// EC2NodeClass `spec.tags` keys the CRD reserves for EKS and Karpenter.
+const RESTRICTED_TAGS = [
+  'eks:eks-cluster-name',
+  'karpenter.sh/nodepool',
+  'karpenter.sh/nodeclaim',
+  'karpenter.k8s.aws/ec2nodeclass',
+];
+// Karpenter puts NodePool and EC2NodeClass names in label values on every
+// NodeClaim and Node (`karpenter.sh/nodepool`, `karpenter.k8s.aws/ec2nodeclass`).
+const MAX_LABEL_VALUE_NAME = 63;
+// What a schema proxy stringifies to inside a template literal.
+const KUBERNETES_REF_MARKER_PREFIX = '__KUBERNETES_REF_';
 const INTEGER = /^\d+$/;
 const VALUED_OPERATORS = ['In', 'Gt', 'Lt', 'Gte', 'Lte'];
 // Alias family -> the amiFamily values the CRD accepts alongside it.
@@ -53,6 +105,49 @@ function isConcreteString(value: unknown): value is string {
   return typeof value === 'string' && !isGraphValue(value);
 }
 
+/** A name a build-time check can judge (not a reference, template over one, or placeholder). */
+function isConcreteName(value: unknown): value is string {
+  return (
+    isConcreteString(value) &&
+    !value.includes(KUBERNETES_REF_MARKER_PREFIX) &&
+    !value.includes(REQUIRED_FIELD_SENTINEL)
+  );
+}
+
+/** Why the CRD rejects this requirement or template label key, or undefined. */
+function restrictedLabelReason(key: string): string | undefined {
+  if (RESTRICTED_LABELS.includes(key)) return `${key} is reserved.`;
+  const domain = /^([^/]+)/.exec(key)?.[1] ?? '';
+  if (domain.endsWith('karpenter.sh') && !ALLOWED_KARPENTER_SH_LABELS.includes(key)) {
+    return `the label domain "karpenter.sh" is restricted (only karpenter.sh/capacity-type is allowed).`;
+  }
+  if (domain.endsWith('karpenter.k8s.aws') && !ALLOWED_KARPENTER_AWS_LABELS.includes(key)) {
+    return `the label domain "karpenter.k8s.aws" is restricted to Karpenter's well-known labels.`;
+  }
+  return undefined;
+}
+
+function checkName(kind: string, name: unknown, error: (path: string, message: string) => void) {
+  if (isConcreteName(name) && name.length > MAX_LABEL_VALUE_NAME) {
+    error(
+      'name',
+      `${kind} name is ${name.length} characters; at most ${MAX_LABEL_VALUE_NAME}, because Karpenter puts it in a label value on every NodeClaim and Node.`
+    );
+  }
+}
+
+function checkPattern(
+  path: string,
+  value: unknown,
+  pattern: RegExp,
+  example: string,
+  error: (path: string, message: string) => void
+) {
+  if (isConcreteString(value) && !pattern.test(value)) {
+    error(path, `"${value}" is not a valid value here, e.g. ${example}.`);
+  }
+}
+
 function hasAny(term: object, keys: readonly string[]): boolean {
   return keys.some((key) => (term as Record<string, unknown>)[key] !== undefined);
 }
@@ -65,13 +160,17 @@ function hasAny(term: object, keys: readonly string[]): boolean {
  * const errors = validateNodePoolSpec(spec).filter((issue) => issue.severity === 'error');
  * ```
  */
-export function validateNodePoolSpec(spec: NodePoolSpec): KarpenterValidationIssue[] {
+export function validateNodePoolSpec(
+  spec: NodePoolSpec,
+  name?: string
+): KarpenterValidationIssue[] {
   const issues: KarpenterValidationIssue[] = [];
-  if (isGraphValue(spec)) return issues;
   const error = (path: string, message: string) =>
     issues.push({ severity: 'error', path, message });
   const warn = (path: string, message: string) =>
     issues.push({ severity: 'warning', path, message });
+  checkName('NodePool', name, error);
+  if (isGraphValue(spec)) return issues;
 
   const template = spec?.template?.spec;
   if (!template?.nodeClassRef) {
@@ -99,8 +198,11 @@ export function validateNodePoolSpec(spec: NodePoolSpec): KarpenterValidationIss
     ) {
       error(`${path}.minValues`, 'minValues must be between 1 and 50.');
     }
-    if (isConcreteString(requirement.key) && RESTRICTED_LABELS.includes(requirement.key)) {
-      error(`${path}.key`, `${requirement.key} is reserved and cannot be a requirement.`);
+    const restricted = isConcreteString(requirement.key)
+      ? restrictedLabelReason(requirement.key)
+      : undefined;
+    if (restricted) {
+      error(`${path}.key`, `${requirement.key} cannot be a requirement: ${restricted}`);
     }
     if (requirement.operator === 'In' && values?.length === 0) {
       error(`${path}.values`, "Operator 'In' needs at least one value.");
@@ -127,7 +229,46 @@ export function validateNodePoolSpec(spec: NodePoolSpec): KarpenterValidationIss
     }
   });
 
-  if (spec?.limits === undefined) {
+  const labels = spec?.template?.metadata?.labels;
+  if (labels !== undefined && !isGraphValue(labels)) {
+    for (const key of Object.keys(labels)) {
+      const restricted = restrictedLabelReason(key);
+      if (restricted) {
+        error(
+          `template.metadata.labels.${key}`,
+          `${key} cannot be a template label: ${restricted}`
+        );
+      }
+    }
+  }
+  checkPattern(
+    'template.spec.expireAfter',
+    template?.expireAfter,
+    EXPIRE_AFTER,
+    "'720h' or 'Never'",
+    error
+  );
+  checkPattern(
+    'template.spec.terminationGracePeriod',
+    template?.terminationGracePeriod,
+    TERMINATION_GRACE_PERIOD,
+    "'48h'",
+    error
+  );
+
+  // Static NodePools (`replicas` set; not typed, alpha) take neither weight nor
+  // limits other than `nodes`.
+  const replicas = (spec as { replicas?: unknown } | undefined)?.replicas;
+  if (replicas !== undefined) {
+    if (spec.weight !== undefined) error('weight', 'weight is not supported on static NodePools.');
+    const limitKeys =
+      spec.limits !== undefined && !isGraphValue(spec.limits) ? Object.keys(spec.limits) : [];
+    if (limitKeys.some((key) => key !== 'nodes')) {
+      error('limits', 'Only limits.nodes is supported on static NodePools.');
+    }
+  }
+
+  if (replicas === undefined && spec?.limits === undefined) {
     warn(
       'limits',
       'No limits: this NodePool can scale without bound. Set limits.cpu and limits.memory.'
@@ -145,10 +286,33 @@ export function validateNodePoolSpec(spec: NodePoolSpec): KarpenterValidationIss
     );
   }
 
+  if (spec?.disruption !== undefined && !isGraphValue(spec.disruption)) {
+    checkPattern(
+      'disruption.consolidateAfter',
+      spec.disruption.consolidateAfter,
+      CONSOLIDATE_AFTER,
+      "'0s', '1m' or 'Never'",
+      error
+    );
+  }
   concreteArray(spec?.disruption?.budgets)?.forEach((budget, index) => {
     if ((budget.schedule === undefined) !== (budget.duration === undefined)) {
       error(`disruption.budgets[${index}]`, 'A budget schedule and duration must be set together.');
     }
+    checkPattern(
+      `disruption.budgets[${index}].nodes`,
+      budget.nodes,
+      BUDGET_NODES,
+      "'10%' or '5'",
+      error
+    );
+    checkPattern(
+      `disruption.budgets[${index}].duration`,
+      budget.duration,
+      BUDGET_DURATION,
+      "'8h' or '1h30m'",
+      error
+    );
   });
 
   if (typeof spec?.weight === 'number' && (spec.weight < 1 || spec.weight > 100)) {
@@ -167,14 +331,32 @@ export function validateNodePoolSpec(spec: NodePoolSpec): KarpenterValidationIss
  * // [{ severity: 'warning', path: 'metadataOptions.httpTokens', ... }]
  * ```
  */
-export function validateEC2NodeClassSpec(spec: EC2NodeClassSpec): KarpenterValidationIssue[] {
+export function validateEC2NodeClassSpec(
+  spec: EC2NodeClassSpec,
+  name?: string
+): KarpenterValidationIssue[] {
   const issues: KarpenterValidationIssue[] = [];
-  if (isGraphValue(spec)) return issues;
   const error = (path: string, message: string) =>
     issues.push({ severity: 'error', path, message });
+  checkName('EC2NodeClass', name, error);
+  if (isGraphValue(spec)) return issues;
 
   if ((spec?.role === undefined) === (spec?.instanceProfile === undefined)) {
     error('role', 'Set exactly one of role or instanceProfile.');
+  }
+  for (const field of ['role', 'instanceProfile'] as const) {
+    if (isConcreteString(spec?.[field]) && spec[field] === '') {
+      error(field, `${field} must not be empty.`);
+    }
+  }
+  const tags = spec?.tags;
+  if (tags !== undefined && !isGraphValue(tags)) {
+    for (const key of Object.keys(tags)) {
+      if (key === '') error('tags', 'Tag keys must not be empty.');
+      else if (RESTRICTED_TAGS.includes(key) || key.startsWith('kubernetes.io/cluster')) {
+        error(`tags.${key}`, `The tag ${key} is reserved for EKS and Karpenter.`);
+      }
+    }
   }
 
   // Mirrors the amiSelectorTerms rules of the pinned EC2NodeClass CRD, plus one
@@ -259,16 +441,51 @@ export function validateEC2NodeClassSpec(spec: EC2NodeClassSpec): KarpenterValid
     error('amiFamily', 'amiFamily is required when amiSelectorTerms do not use an alias.');
   }
 
+  // `precedence`: the provider resolves the first of these that is set and
+  // ignores the rest of the term (subnet.go / securitygroup.go getFilterSets).
   const selectors = [
-    ['subnetSelectorTerms', spec?.subnetSelectorTerms, ['tags', 'id']],
-    ['securityGroupSelectorTerms', spec?.securityGroupSelectorTerms, ['tags', 'id', 'name']],
+    {
+      field: 'subnetSelectorTerms',
+      value: spec?.subnetSelectorTerms,
+      keys: ['tags', 'id'],
+      precedence: ['id'],
+      idPattern: /subnet-[0-9a-z]+/,
+      example: 'subnet-0123456789abcdef0',
+    },
+    {
+      field: 'securityGroupSelectorTerms',
+      value: spec?.securityGroupSelectorTerms,
+      keys: ['tags', 'id', 'name'],
+      precedence: ['id', 'name'],
+      idPattern: /sg-[0-9a-z]+/,
+      example: 'sg-0123456789abcdef0',
+    },
   ] as const;
-  for (const [field, value, keys] of selectors) {
-    const terms = concreteArray<object>(value);
+  for (const { field, value, keys, precedence, idPattern, example } of selectors) {
+    const terms = concreteArray<object>(value) as readonly Record<string, unknown>[] | undefined;
     if (terms?.length === 0) error(field, `At least one ${field} entry is required.`);
     terms?.forEach((term, index) => {
-      if (!hasAny(term, keys))
-        error(`${field}[${index}]`, `Each term needs one of: ${keys.join(', ')}.`);
+      const path = `${field}[${index}]`;
+      if (!hasAny(term, keys)) error(path, `Each term needs one of: ${keys.join(', ')}.`);
+      const winner = precedence.find((key) => term[key] !== undefined);
+      const ignored = keys.filter((key) => key !== winner && term[key] !== undefined);
+      if (winner !== undefined && ignored.length > 0) {
+        error(
+          path,
+          `${winner} must be the only field in its term; Karpenter would ignore ${ignored.join(', ')}.`
+        );
+      }
+      checkPattern(`${path}.id`, term.id, idPattern, example, error);
+      const termTags = term.tags;
+      if (
+        termTags !== undefined &&
+        !isGraphValue(termTags) &&
+        Object.entries(termTags as Record<string, unknown>).some(
+          ([key, tag]) => key === '' || (isConcreteString(tag) && tag === '')
+        )
+      ) {
+        error(`${path}.tags`, 'Tag keys and values must not be empty.');
+      }
     });
   }
 

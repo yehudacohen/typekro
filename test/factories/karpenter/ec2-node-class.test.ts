@@ -291,3 +291,75 @@ describe('validateEC2NodeClassSpec', () => {
     );
   });
 });
+
+describe('validateEC2NodeClassSpec: names and CRD mirrors', () => {
+  const paths = (input: EC2NodeClassSpec, name?: string) =>
+    validateEC2NodeClassSpec(input, name)
+      .filter((issue) => issue.severity === 'error')
+      .map((issue) => issue.path);
+
+  it('caps the name at 63, the karpenter.k8s.aws/ec2nodeclass label value', () => {
+    expect(paths(spec(), 'a'.repeat(63))).toEqual([]);
+    expect(paths(spec(), 'a'.repeat(64))).toEqual(['name']);
+    expect(() => ec2NodeClass({ name: 'a'.repeat(64), spec: spec() })).toThrow(
+      /EC2NodeClass name is 64 characters/
+    );
+  });
+
+  it('rejects an empty role or instance profile', () => {
+    expect(paths(spec({ role: '' } as Partial<EC2NodeClassSpecBase>))).toEqual(['role']);
+    const { role: _role, ...rest } = spec() as EC2NodeClassSpec & { role: string };
+    expect(paths({ ...rest, instanceProfile: '' } as EC2NodeClassSpec)).toEqual([
+      'instanceProfile',
+    ]);
+  });
+
+  it('rejects reserved and empty spec.tags keys', () => {
+    expect(paths(spec({ tags: { team: 'a', 'karpenter.sh/discovery': 'demo' } }))).toEqual([]);
+    for (const key of [
+      'eks:eks-cluster-name',
+      'kubernetes.io/cluster/demo',
+      'karpenter.sh/nodepool',
+      'karpenter.sh/nodeclaim',
+      'karpenter.k8s.aws/ec2nodeclass',
+    ]) {
+      expect(paths(spec({ tags: { [key]: 'x' } }))).toEqual([`tags.${key}`]);
+    }
+    expect(paths(spec({ tags: { '': 'x' } }))).toEqual(['tags']);
+  });
+
+  it('makes id (and name for security groups) exclusive within a selector term', () => {
+    expect(paths(spec({ subnetSelectorTerms: [{ id: 'subnet-0123', tags: discovery }] }))).toEqual([
+      'subnetSelectorTerms[0]',
+    ]);
+    expect(paths(spec({ securityGroupSelectorTerms: [{ id: 'sg-0123', name: 'nodes' }] }))).toEqual(
+      ['securityGroupSelectorTerms[0]']
+    );
+    expect(
+      paths(spec({ securityGroupSelectorTerms: [{ name: 'nodes', tags: discovery }] }))
+    ).toEqual(['securityGroupSelectorTerms[0]']);
+    expect(
+      paths(
+        spec({
+          subnetSelectorTerms: [{ id: 'subnet-0123' }, { tags: discovery }],
+          securityGroupSelectorTerms: [{ id: 'sg-0123' }, { name: 'nodes' }, { tags: discovery }],
+        })
+      )
+    ).toEqual([]);
+  });
+
+  it('checks selector ids and tag values', () => {
+    expect(paths(spec({ subnetSelectorTerms: [{ id: 'net-0123' }] }))).toEqual([
+      'subnetSelectorTerms[0].id',
+    ]);
+    expect(paths(spec({ securityGroupSelectorTerms: [{ id: 'group-1' }] }))).toEqual([
+      'securityGroupSelectorTerms[0].id',
+    ]);
+    expect(
+      paths(spec({ subnetSelectorTerms: [{ tags: { 'karpenter.sh/discovery': '' } }] }))
+    ).toEqual(['subnetSelectorTerms[0].tags']);
+    expect(paths(spec({ securityGroupSelectorTerms: [{ tags: { '': 'x' } }] }))).toEqual([
+      'securityGroupSelectorTerms[0].tags',
+    ]);
+  });
+});
