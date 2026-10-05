@@ -32,8 +32,22 @@ const VERSION = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const VOLUME_NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
 // A relative path inside the volume.
 const SUB_PATH = /^[A-Za-z0-9._-][A-Za-z0-9._/-]*$/;
-// A ConfigMap key.
+// A ConfigMap key: `[-._a-zA-Z0-9]+`, at most 253 characters, and neither
+// `.`, `..` nor anything starting with `..` (Kubernetes' IsConfigMapKey).
 const FILE_NAME = /^[-._A-Za-z0-9]{1,253}$/;
+// A local plugin's name becomes a volume name (`inlinePlugin`) and part of the
+// ConfigMap the chart creates, `<release>-local-plugin-<name>`, so it must be
+// a DNS-1123 label. The release part is at most 63 characters (the chart
+// truncates it), so that name is at most 63 + 14 + 63 = 140 characters, well
+// inside the 253 a ConfigMap name allows.
+const LOCAL_PLUGIN_NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+// Volumes the chart itself adds to the pod, which an inline plugin's volume
+// (named after the plugin) would collide with.
+const CHART_VOLUME_NAMES = new Set(['data', 'tmp', 'plugins', 'hub-token', 'traefik-extra-config']);
+
+function isConfigMapKey(key: string): boolean {
+  return FILE_NAME.test(key) && key !== '.' && !key.startsWith('..');
+}
 
 function hasParentSegment(path: string): boolean {
   return path.split('/').includes('..');
@@ -63,8 +77,14 @@ export function traefikPluginIssues(
     }
   }
   for (const [name, plugin] of Object.entries(localPlugins)) {
-    if (!PLUGIN_NAME.test(name))
-      issues.push(`local plugin name ${name} must match ${PLUGIN_NAME}.`);
+    if (!LOCAL_PLUGIN_NAME.test(name)) {
+      issues.push(
+        `local plugin name ${name} must be a DNS-1123 label (lowercase letters, digits and "-", ` +
+          'at most 63 characters): the chart uses it in a volume and a ConfigMap name.'
+      );
+    } else if (plugin.type === 'inlinePlugin' && CHART_VOLUME_NAMES.has(name)) {
+      issues.push(`local plugin name ${name} is a volume name the chart already uses.`);
+    }
     if (name in plugins)
       issues.push(`plugin ${name} is declared both as a registry and a local plugin.`);
     if (!MODULE_NAME.test(plugin.moduleName) || plugin.moduleName.includes('..')) {
@@ -73,10 +93,10 @@ export function traefikPluginIssues(
     if (plugin.type === 'inlinePlugin') {
       const files = Object.keys(plugin.source);
       if (files.length === 0) issues.push(`local plugin ${name} has no source files.`);
-      for (const file of files.filter((file) => !FILE_NAME.test(file))) {
+      for (const file of files.filter((file) => !isConfigMapKey(file))) {
         issues.push(
           `local plugin ${name} source file ${JSON.stringify(file)} must be a ConfigMap key ` +
-            '(letters, digits, "-", "_" and ".").'
+            '(letters, digits, "-", "_" and ".", not "." or starting with "..").'
         );
       }
     } else {

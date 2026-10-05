@@ -706,7 +706,10 @@ const bouncer = traefik.traefikPluginMiddleware({
   `inlinePlugin` ships its `source` files in a ConfigMap the chart creates. A
   `localPath` plugin mounts a volume you declare in raw
   `values.deployment.additionalVolumes`. The mount path is always
-  `/plugins-local/src/<moduleName>`, which is where Traefik looks.
+  `/plugins-local/src/<moduleName>`, which is where Traefik looks. A local
+  plugin's name must be a DNS-1123 label, because the chart turns it into a
+  volume name and into the ConfigMap `<release>-local-plugin-<name>`. Inline
+  source file names must be ConfigMap keys.
 - `abortOnPluginFailure` defaults to `true` when any plugin is declared. If a
   security plugin fails to load, Traefik refuses to start, so the previous
   replicas keep serving. Otherwise Traefik would start without the plugin.

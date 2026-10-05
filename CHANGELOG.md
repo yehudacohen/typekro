@@ -59,7 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `/plugins-local/src/<moduleName>`) and `abortOnPluginFailure`. The last defaults to `true`
     once any plugin is declared. The chart writes plugin fields into its templates unescaped, so
     `moduleName`, `version`, `volumeName`, `subPath` and inline source file names are limited to
-    the characters their real forms use.
+    the characters their real forms use. Local plugin names must be DNS-1123 labels (the chart
+    makes volume and ConfigMap names from them), and inline source file names ConfigMap keys.
   - `traefikPluginMiddleware`, and `traefikSecretValue(secret, key)` for the `urn:k8s:secret`
     values Traefik resolves in plugin configuration.
   - `traefikForwardAuthSecurePair` chains a `headers` Middleware that strips the

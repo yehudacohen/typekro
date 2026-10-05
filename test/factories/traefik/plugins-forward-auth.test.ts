@@ -127,6 +127,67 @@ describe('plugin declarations', () => {
     ).not.toThrow();
   });
 
+  it('holds local plugin names to what the chart can turn into volume and ConfigMap names', () => {
+    const inline = (name: string, file = 'stamp.go'): TraefikLocalPluginDeclaration => ({
+      moduleName: 'example.com/stamp',
+      type: 'inlinePlugin',
+      source: { [file]: 'package stamp\n' },
+    });
+    const map = (localPlugins: Record<string, TraefikLocalPluginDeclaration>) => () =>
+      mapTraefikConfigToHelmValues({ name: 'traefik' }, { localPlugins });
+    // The chart names the volume after the plugin and the ConfigMap
+    // `<release>-local-plugin-<name>`; the API server needs DNS-1123 there.
+    for (const name of ['Stamp', 'my_plugin', 'a'.repeat(64), '-stamp', 'tmp', 'plugins']) {
+      expect(map({ [name]: inline(name) })).toThrow(/Invalid Traefik plugin declaration/);
+    }
+    for (const name of ['Stamp', 'my_plugin']) {
+      expect(
+        map({ [name]: { moduleName: 'example.com/stamp', type: 'localPath', volumeName: 'v' } })
+      ).toThrow(/DNS-1123 label/);
+    }
+    const longest = 'p'.repeat(63);
+    expect(map({ [longest]: inline(longest) })).not.toThrow();
+    // The release part is truncated to 63 characters by the chart.
+    expect(`${'r'.repeat(63)}-local-plugin-${longest}`.length).toBeLessThanOrEqual(253);
+    // Remote plugin names only become flag keys, so they keep the wider rule.
+    expect(() =>
+      mapTraefikConfigToHelmValues({ name: 'traefik' }, { plugins: { My_Bouncer: BOUNCER } })
+    ).not.toThrow();
+  });
+
+  it('holds inline source file names to the ConfigMap key rule', () => {
+    for (const file of ['.', '..', '..x', 'a/b', '']) {
+      expect(() =>
+        mapTraefikConfigToHelmValues(
+          { name: 'traefik' },
+          {
+            localPlugins: {
+              stamp: {
+                moduleName: 'example.com/stamp',
+                type: 'inlinePlugin',
+                source: { [file]: 'package stamp\n', 'go.mod': 'module stamp\n' },
+              },
+            },
+          }
+        )
+      ).toThrow(/ConfigMap key/);
+    }
+    expect(() =>
+      mapTraefikConfigToHelmValues(
+        { name: 'traefik' },
+        {
+          localPlugins: {
+            stamp: {
+              moduleName: 'example.com/stamp',
+              type: 'inlinePlugin',
+              source: { '.traefik.yml': 'displayName: stamp\n', 'stamp.go': 'package stamp\n' },
+            },
+          },
+        }
+      )
+    ).not.toThrow();
+  });
+
   it('refuses plugin fields that would inject YAML into the chart templates', () => {
     // The chart writes these unescaped, e.g.
     // "--experimental.plugins.<name>.moduleName={{ $plugin.moduleName }}", so a
