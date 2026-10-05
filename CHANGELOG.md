@@ -19,8 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     no certificate inputs, and it throws on ambiguous attribute combinations the controller would
     silently resolve, and on malformed values.
   - `entrypoints.{web,websecure}.proxyProtocol.trustedIPs` and `.forwardedHeaders.trustedIPs`.
-    A `/0` range is refused: in direct mode when the values are mapped, and in KRO mode by
-    `x-kubernetes-validations` on the generated CRD. An `insecure` proxy-protocol or
+    Each entry must be one IP address or CIDR range in a strict format (no spaces, commas,
+    leading zeros or IPv4-mapped addresses, at most 64 entries), since Go reads `0.0.0.0/00` and
+    `::ffff:0:0/96` as trust-all. A `/0` range is refused: in direct mode when the values are
+    mapped; in KRO mode by a cost-bounded `x-kubernetes-validations` rule on the generated CRD,
+    and the rendered values keep only entries in the strict format. An `insecure` proxy-protocol or
     forwarded-header flag, or a `/0` range, in raw `values`, `additionalArguments` or `env` throws
     too. So does trust TypeKro cannot see: a non-empty `envFrom`, or an `env` entry for an
     entrypoint's PROXY-protocol or forwarded-header variable whose value comes from `valueFrom`.

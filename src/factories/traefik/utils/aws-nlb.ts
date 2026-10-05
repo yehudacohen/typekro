@@ -11,7 +11,9 @@
 // the NLB connects to the pod from its own private address, so without the
 // header every request appears to come from the NLB. The matching Traefik side
 // is `entrypoints.<name>.proxyProtocol.trustedIPs` on the bootstrap spec, set to
-// the ranges the NLB connects from (the VPC CIDR, or the NLB subnets).
+// the NLB's subnet CIDRs, which is where it connects from. Not the VPC CIDR:
+// with the VPC CNI every pod has a VPC address, so any pod could then send a
+// forged PROXY header or `X-Forwarded-For`.
 //
 // Annotation names are those of AWS Load Balancer Controller v2
 // (https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/service/annotations/).

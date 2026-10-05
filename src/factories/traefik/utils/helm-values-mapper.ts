@@ -25,7 +25,11 @@ import {
   TRAEFIK_WEB_ENTRYPOINT,
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
-import { assertTraefikProxyTrust, traefikBroadTrustWarnings } from './proxy-trust.js';
+import {
+  assertTraefikProxyTrust,
+  traefikBroadTrustWarnings,
+  traefikStrictTrustedIPs,
+} from './proxy-trust.js';
 import type {
   TraefikBootstrapConfig,
   TraefikContainerSecurityContext,
@@ -320,7 +324,7 @@ export function mapTraefikConfigToHelmValues(
   const webPort: TraefikPortValues = {
     exposedPort: Cel.default(config.entrypoints?.web?.exposedPort, DEFAULT_TRAEFIK_WEB_PORT),
     expose: { default: true },
-    ...entrypointTrust(config.entrypoints?.web),
+    ...entrypointTrust(config.entrypoints?.web, options.dangerouslyTrustAnySource ?? false),
     ...(redirect
       ? {
           // The redirect router Traefik generates for an entrypoint redirection
@@ -359,7 +363,7 @@ export function mapTraefikConfigToHelmValues(
       DEFAULT_TRAEFIK_WEBSECURE_PORT
     ),
     expose: { default: true },
-    ...entrypointTrust(config.entrypoints?.websecure),
+    ...entrypointTrust(config.entrypoints?.websecure, options.dangerouslyTrustAnySource ?? false),
     // TLS lives under `http` in chart 41.5.0 — `ports.websecure.tls` is
     // rejected outright by the chart's values.schema.json.
     http: { tls: { enabled: true } },
@@ -464,14 +468,19 @@ export function mapTraefikConfigToHelmValues(
  * is wrapped in `has() ? ... : omit()` by serialization.
  */
 function entrypointTrust(
-  entrypoint: NonNullable<TraefikBootstrapConfig['entrypoints']>['web']
+  entrypoint: NonNullable<TraefikBootstrapConfig['entrypoints']>['web'],
+  allowAnySource: boolean
 ): Pick<TraefikPortValues, 'proxyProtocol' | 'forwardedHeaders'> {
   return {
     ...(entrypoint?.proxyProtocol !== undefined && {
-      proxyProtocol: { trustedIPs: entrypoint.proxyProtocol.trustedIPs },
+      proxyProtocol: {
+        trustedIPs: traefikStrictTrustedIPs(entrypoint.proxyProtocol.trustedIPs, allowAnySource),
+      },
     }),
     ...(entrypoint?.forwardedHeaders !== undefined && {
-      forwardedHeaders: { trustedIPs: entrypoint.forwardedHeaders.trustedIPs },
+      forwardedHeaders: {
+        trustedIPs: traefikStrictTrustedIPs(entrypoint.forwardedHeaders.trustedIPs, allowAnySource),
+      },
     }),
   };
 }

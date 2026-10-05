@@ -277,7 +277,8 @@ so Traefik keeps SNI, ALPN and client certificates.
 ```typescript
 import * as traefik from 'typekro/traefik';
 
-const VPC_CIDR = '10.0.0.0/16';
+// The NLB's subnets, one per zone: the addresses it connects to targets from.
+const NLB_SUBNETS = ['10.0.1.0/24', '10.0.2.0/24', '10.0.3.0/24'];
 
 const edge = traefik.makeTraefikBootstrap({
   name: 'public-edge',
@@ -305,9 +306,10 @@ await edge.factory('direct', { namespace: 'flux-system', waitForReady: true, kub
     }),
   },
   entrypoints: {
-    // The NLB connects from its own private addresses, so trust the VPC.
-    web: { proxyProtocol: { trustedIPs: [VPC_CIDR] } },
-    websecure: { proxyProtocol: { trustedIPs: [VPC_CIDR] } },
+    // Trust the NLB's subnets, not the whole VPC: with the VPC CNI every pod
+    // has a VPC address and could otherwise forge the PROXY header.
+    web: { proxyProtocol: { trustedIPs: NLB_SUBNETS } },
+    websecure: { proxyProtocol: { trustedIPs: NLB_SUBNETS } },
   },
   providers: { crd: true, kubernetesIngress: true }, // Ingress: for the HTTP-01 solver
 });
@@ -337,18 +339,31 @@ send a PROXY header, and `forwardedHeaders.trustedIPs` lists the sources whose
 `X-Forwarded-*` headers Traefik keeps. Behind an NLB with PROXY protocol, the
 client address comes from the PROXY header. Leave `forwardedHeaders` unset
 unless another proxy, such as a CDN, sits in front and sets `X-Forwarded-For`.
-A range with a `/0` prefix (`0.0.0.0/0`, `::/0`) would let any client set its
-own source address, so it is refused. Direct mode refuses it when the
-composition runs, and KRO mode refuses it at admission through
-`x-kubernetes-validations` on the generated CRD. An `insecure` flag or a `/0`
-range that reaches the final values throws as well, whether it comes through
+Each entry must be one IPv4 or IPv6 address or CIDR range: no spaces, no
+commas, no leading zeros in octets or prefixes, no zone, no IPv4-mapped
+(`::ffff:`) address, and at most 64 entries. Go, which Traefik uses, reads
+`0.0.0.0/00` as `/0` and `::ffff:0:0/96` as every IPv4 client, and the chart
+joins a list with commas, so a looser check could be fooled. A range with a
+`/0` prefix (`0.0.0.0/0`, `::/0`) would let any client set its own source
+address, so it is refused. Direct mode refuses a malformed or `/0` entry when
+the composition runs. In KRO mode, the API server can only afford a cheap CEL
+rule over list items whose length it can't bound, so admission refuses the
+common cases (`/0`, `/00`, a leading or trailing space or comma, `::ffff:`, an
+entry longer than 43 characters), and the rendered values keep only the
+entries in the strict format. An entry that slips past admission is dropped
+before Traefik sees it, which narrows trust and never widens it. An `insecure`
+flag or a malformed or `/0` range that reaches the final values throws as
+well, whether it comes through
 `values` (`ports.*.proxyProtocol.insecure`), `additionalArguments` (`=true`,
 `=1` or bare for `insecure`, the `=` or next argument for `trustedIPs`) or a
-`TRAEFIK_ENTRYPOINTS_*` entry in `env`. Trust that TypeKro cannot see is
+`TRAEFIK_ENTRYPOINTS_*` entry in `env`, where lists are split on commas and
+trimmed the way Traefik reads them. Trust that TypeKro cannot see is
 refused too: any non-empty `envFrom`, since a Secret or ConfigMap can carry
 `TRAEFIK_ENTRYPOINTS_WEB_FORWARDEDHEADERS_INSECURE=true`, and an `env` entry
 for an entrypoint's `PROXYPROTOCOL_*` or `FORWARDEDHEADERS_*` variable whose
-value comes from `valueFrom`. Other variables may still use `valueFrom`; list
+value comes from `valueFrom` or uses a `$(VAR)` reference, which Kubernetes
+expands (so does an argument that sets a trust flag or names its flag through
+one). Other variables may still use `valueFrom`; list
 them as individual `env` entries instead of `envFrom`. A static configuration
 file replaces Traefik's flags entirely, so `--configFile` in
 `additionalArguments` is refused, and so is a raw-values mount at or above a

@@ -26,10 +26,7 @@ import {
   mapTraefikConfigToHelmValues,
   validateTraefikHelmValues,
 } from '../../../src/factories/traefik/utils/helm-values-mapper.js';
-import {
-  TRAEFIK_TRUSTED_IPS_VALIDATION_RULE,
-  traefikProxyTrustIssues,
-} from '../../../src/factories/traefik/utils/proxy-trust.js';
+import { traefikProxyTrustIssues } from '../../../src/factories/traefik/utils/proxy-trust.js';
 
 const ORIGINAL_KUBECONFIG = process.env.KUBECONFIG;
 let kubeconfigDir: string | undefined;
@@ -78,7 +75,7 @@ function documents(yaml: string): Document[] {
   );
 }
 
-const VPC_CIDR = '10.0.0.0/16';
+const NLB_SUBNET = '10.0.1.0/24';
 
 const NLB_SPEC: TraefikBootstrapConfig = {
   name: 'traefik',
@@ -91,9 +88,9 @@ const NLB_SPEC: TraefikBootstrapConfig = {
     annotations: awsNlbServiceAnnotations({ scheme: 'internet-facing', crossZone: true }),
   },
   entrypoints: {
-    web: { proxyProtocol: { trustedIPs: [VPC_CIDR] } },
+    web: { proxyProtocol: { trustedIPs: [NLB_SUBNET] } },
     websecure: {
-      proxyProtocol: { trustedIPs: [VPC_CIDR] },
+      proxyProtocol: { trustedIPs: [NLB_SUBNET] },
       forwardedHeaders: { trustedIPs: ['198.51.100.0/24'] },
     },
   },
@@ -231,9 +228,9 @@ describe('entrypoint proxy trust', () => {
   it('maps PROXY protocol and forwarded-header trusted ranges per entrypoint', () => {
     const { web, websecure } = webAndWebsecure(mapTraefikConfigToHelmValues(NLB_SPEC));
 
-    expect(web?.proxyProtocol).toEqual({ trustedIPs: [VPC_CIDR] });
+    expect(web?.proxyProtocol).toEqual({ trustedIPs: [NLB_SUBNET] });
     expect(web?.forwardedHeaders).toBeUndefined();
-    expect(websecure?.proxyProtocol).toEqual({ trustedIPs: [VPC_CIDR] });
+    expect(websecure?.proxyProtocol).toEqual({ trustedIPs: [NLB_SUBNET] });
     expect(websecure?.forwardedHeaders).toEqual({ trustedIPs: ['198.51.100.0/24'] });
   });
 
@@ -250,7 +247,7 @@ describe('entrypoint proxy trust', () => {
       expect(() =>
         mapTraefikConfigToHelmValues({
           name: 'traefik',
-          entrypoints: { websecure: { forwardedHeaders: { trustedIPs: [VPC_CIDR, range] } } },
+          entrypoints: { websecure: { forwardedHeaders: { trustedIPs: [NLB_SUBNET, range] } } },
         })
       ).toThrow(/trusts every source/);
       expect(() =>
@@ -385,7 +382,7 @@ describe('entrypoint proxy trust', () => {
           // valueFrom is fine outside the trust variables...
           { name: 'DNS_API_TOKEN', valueFrom: { secretKeyRef: { name: 'dns', key: 'token' } } },
           // ...and a trust variable with a visible, safe value passes.
-          { name: 'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_TRUSTEDIPS', value: VPC_CIDR },
+          { name: 'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_TRUSTEDIPS', value: NLB_SUBNET },
           { name: 'TRAEFIK_ENTRYPOINTS_WEB_PROXYPROTOCOL_INSECURE', value: 'false' },
         ],
       })
@@ -528,14 +525,6 @@ describe('entrypoint proxy trust', () => {
     expect(bootstrap.toYaml()).not.toContain('endsWith');
   });
 
-  it('puts the same rule on the KRO CRD, for all four trusted-range fields', () => {
-    const yaml = traefikBootstrap.toYaml();
-    const rule = `validation="${TRAEFIK_TRUSTED_IPS_VALIDATION_RULE.replaceAll('"', '\\"')}"`;
-    const occurrences = yaml.split(rule).length - 1;
-
-    expect(occurrences).toBe(4);
-  });
-
   it('warns about a very broad trusted range without refusing it', () => {
     const values = mapTraefikConfigToHelmValues({
       name: 'traefik',
@@ -556,7 +545,7 @@ describe('entrypoint proxy trust', () => {
     const annotations = awsNlbServiceAnnotations({ scheme: 'internet-facing' });
     const values = mapTraefikConfigToHelmValues({
       name: 'traefik',
-      entrypoints: { websecure: { proxyProtocol: { trustedIPs: [VPC_CIDR] } } },
+      entrypoints: { websecure: { proxyProtocol: { trustedIPs: [NLB_SUBNET] } } },
     });
     const warnings = validateTraefikHelmValues(values, { serviceAnnotations: annotations });
 

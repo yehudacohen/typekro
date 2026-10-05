@@ -50,6 +50,7 @@ import type {
 import { gatewayApiClusterResourceMetadataShape } from '../gateway-api/types.js';
 import type { HelmReleaseCrdsPolicy } from '../helm/types.js';
 import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js';
+import { parseTraefikTrustedRange } from './utils/trusted-range.js';
 
 /**
  * Every Kubernetes name this factory derives from the `name` a caller supplies.
@@ -1649,13 +1650,23 @@ const traefikServiceTypeSchema = '"LoadBalancer" | "NodePort" | "ClusterIP"';
 
 // Which upstream sources an entrypoint believes. `trustedIPs` is required
 // inside each block: an empty block would read as "configured" while trusting
-// nothing. A `/0` range is rejected unless the build-time escape hatch
-// `dangerouslyTrustAnySource` is set (see `utils/proxy-trust.ts`).
+// nothing. Each entry must be one IP address or CIDR range in the strict
+// format of `utils/trusted-range.ts`. A `/0` range is rejected unless the
+// build-time escape hatch `dangerouslyTrustAnySource` is set (see
+// `utils/proxy-trust.ts`). At most 64 entries, which keeps the KRO CRD's
+// admission rule inside the API server's cost budget.
+const traefikTrustedRanges = type('string[] <= 64').narrow(
+  (ranges, ctx) =>
+    ranges.every((range) => parseTraefikTrustedRange(range) !== undefined) ||
+    ctx.mustBe(
+      'IP addresses or CIDR ranges, one per entry, with no spaces, commas, leading zeros or IPv4-mapped addresses'
+    )
+);
 const traefikEntrypointTrustShape = {
-  /** Sources allowed to send a PROXY protocol header, e.g. the VPC CIDR behind an NLB. */
-  'proxyProtocol?': { trustedIPs: 'string[]' },
+  /** Sources allowed to send a PROXY protocol header, e.g. the NLB's subnet CIDRs. */
+  'proxyProtocol?': { trustedIPs: traefikTrustedRanges },
   /** Sources whose `X-Forwarded-*` headers Traefik keeps instead of overwriting. */
-  'forwardedHeaders?': { trustedIPs: 'string[]' },
+  'forwardedHeaders?': { trustedIPs: traefikTrustedRanges },
 } as const;
 
 /**

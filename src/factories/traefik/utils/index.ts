@@ -32,3 +32,9 @@ export {
   traefikProxyTrustIssues,
   traefikProxyTrustSchemaFieldValidations,
 } from './proxy-trust.js';
+export {
+  parseTraefikTrustedRange,
+  TRAEFIK_IPV4_MAPPED_PATTERN,
+  TRAEFIK_TRUSTED_RANGE_PATTERN,
+  type TraefikTrustedRange,
+} from './trusted-range.js';
