@@ -128,7 +128,7 @@ describe('plugin declarations', () => {
   });
 
   it('holds local plugin names to what the chart can turn into volume and ConfigMap names', () => {
-    const inline = (name: string, file = 'stamp.go'): TraefikLocalPluginDeclaration => ({
+    const inline = (_name: string, file = 'stamp.go'): TraefikLocalPluginDeclaration => ({
       moduleName: 'example.com/stamp',
       type: 'inlinePlugin',
       source: { [file]: 'package stamp\n' },
@@ -152,6 +152,32 @@ describe('plugin declarations', () => {
     // Remote plugin names only become flag keys, so they keep the wider rule.
     expect(() =>
       mapTraefikConfigToHelmValues({ name: 'traefik' }, { plugins: { My_Bouncer: BOUNCER } })
+    ).not.toThrow();
+  });
+
+  it('refuses an inline plugin named like a volume the raw values add', () => {
+    const stamp = (name: string): Record<string, TraefikLocalPluginDeclaration> => ({
+      [name]: {
+        moduleName: 'example.com/stamp',
+        type: 'inlinePlugin',
+        source: { 'stamp.go': 'package stamp\n' },
+      },
+    });
+    const baseValues = {
+      volumes: [{ name: 'extra.config', mountPath: '/config', type: 'configMap' }],
+      persistence: { name: 'state', path: '/state' },
+      deployment: { additionalVolumes: [{ name: 'plugin-src', emptyDir: {} }] },
+    };
+    for (const name of ['extra-config', 'state', 'plugin-src']) {
+      expect(() =>
+        mapTraefikConfigToHelmValues({ name: 'traefik' }, { localPlugins: stamp(name), baseValues })
+      ).toThrow(/volume name the pod already has/);
+    }
+    expect(() =>
+      mapTraefikConfigToHelmValues(
+        { name: 'traefik' },
+        { localPlugins: stamp('stamp'), baseValues }
+      )
     ).not.toThrow();
   });
 

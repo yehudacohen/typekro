@@ -45,6 +45,33 @@ const LOCAL_PLUGIN_NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
 // (named after the plugin) would collide with.
 const CHART_VOLUME_NAMES = new Set(['data', 'tmp', 'plugins', 'hub-token', 'traefik-extra-config']);
 
+/**
+ * Volume names raw chart values add to the Traefik pod, where they are
+ * literal: `volumes[].name` (with "." turned into "-", as the chart does),
+ * `persistence.name` and `deployment.additionalVolumes[].name`.
+ */
+export function traefikRawVolumeNames(values: Readonly<Record<string, unknown>>): string[] {
+  const names: string[] = [];
+  const nameOf = (entry: unknown): unknown =>
+    typeof entry === 'object' && entry !== null ? Reflect.get(entry, 'name') : undefined;
+  const listNames = (list: unknown, transform: (name: string) => string) => {
+    if (!Array.isArray(list)) return;
+    for (const entry of list) {
+      const name = nameOf(entry);
+      // A templated name is only known at render time; skip it.
+      if (typeof name === 'string' && !name.includes('{{')) names.push(transform(name));
+    }
+  };
+  listNames(values.volumes, (name) => name.replaceAll('.', '-'));
+  const persistenceName = nameOf(values.persistence);
+  if (typeof persistenceName === 'string') names.push(persistenceName);
+  const deployment = values.deployment;
+  if (typeof deployment === 'object' && deployment !== null) {
+    listNames(Reflect.get(deployment, 'additionalVolumes'), (name) => name);
+  }
+  return names;
+}
+
 function isConfigMapKey(key: string): boolean {
   return FILE_NAME.test(key) && key !== '.' && !key.startsWith('..');
 }
@@ -61,9 +88,11 @@ export function traefikLocalPluginMountPath(moduleName: string): string {
 /** Problems with plugin declarations; empty when there are none. */
 export function traefikPluginIssues(
   plugins: Readonly<Record<string, TraefikPluginDeclaration>> = {},
-  localPlugins: Readonly<Record<string, TraefikLocalPluginDeclaration>> = {}
+  localPlugins: Readonly<Record<string, TraefikLocalPluginDeclaration>> = {},
+  rawVolumeNames: readonly string[] = []
 ): string[] {
   const issues: string[] = [];
+  const takenVolumeNames = new Set([...CHART_VOLUME_NAMES, ...rawVolumeNames]);
   for (const [name, plugin] of Object.entries(plugins)) {
     if (!PLUGIN_NAME.test(name)) issues.push(`plugin name ${name} must match ${PLUGIN_NAME}.`);
     if (!MODULE_NAME.test(plugin.moduleName)) {
@@ -82,8 +111,11 @@ export function traefikPluginIssues(
         `local plugin name ${name} must be a DNS-1123 label (lowercase letters, digits and "-", ` +
           'at most 63 characters): the chart uses it in a volume and a ConfigMap name.'
       );
-    } else if (plugin.type === 'inlinePlugin' && CHART_VOLUME_NAMES.has(name)) {
-      issues.push(`local plugin name ${name} is a volume name the chart already uses.`);
+    } else if (plugin.type === 'inlinePlugin' && takenVolumeNames.has(name)) {
+      issues.push(
+        `local plugin name ${name} is a volume name the pod already has (the chart's own, ` +
+          'or one from raw volumes, persistence or deployment.additionalVolumes).'
+      );
     }
     if (name in plugins)
       issues.push(`plugin ${name} is declared both as a registry and a local plugin.`);
@@ -121,9 +153,10 @@ export function traefikPluginIssues(
  */
 export function assertTraefikPlugins(
   plugins?: Readonly<Record<string, TraefikPluginDeclaration>>,
-  localPlugins?: Readonly<Record<string, TraefikLocalPluginDeclaration>>
+  localPlugins?: Readonly<Record<string, TraefikLocalPluginDeclaration>>,
+  rawVolumeNames?: readonly string[]
 ): void {
-  const issues = traefikPluginIssues(plugins, localPlugins);
+  const issues = traefikPluginIssues(plugins, localPlugins, rawVolumeNames);
   if (issues.length === 0) return;
   throw new TypeKroError(
     `Invalid Traefik plugin declaration: ${issues.join(' ')}`,

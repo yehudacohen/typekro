@@ -27,7 +27,11 @@ import {
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
 import { traefikAccessLogFields } from './access-log.js';
-import { assertTraefikPlugins, traefikLocalPluginMountPath } from './plugins.js';
+import {
+  assertTraefikPlugins,
+  traefikLocalPluginMountPath,
+  traefikRawVolumeNames,
+} from './plugins.js';
 import {
   assertTraefikProxyTrust,
   traefikBroadTrustWarnings,
@@ -558,7 +562,7 @@ function pluginValues(
   if (Object.keys(plugins).length === 0 && Object.keys(localPlugins).length === 0) {
     return undefined;
   }
-  assertTraefikPlugins(plugins, localPlugins);
+  assertTraefikPlugins(plugins, localPlugins, traefikRawVolumeNames(base));
   const baseExperimental = sectionOf(base.experimental);
   return {
     plugins: {
