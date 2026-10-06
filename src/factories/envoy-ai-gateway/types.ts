@@ -1,7 +1,7 @@
 import { type } from 'arktype';
 import type { TypeKroChartValue, TypeKroValue } from '../../core/types/common.js';
 import type { GatewayClassSpec as GatewayApiGatewayClassSpec } from '../gateway-api/types.js';
-import type { HelmReleaseValuesFromSource } from '../helm/types.js';
+import type { HelmReleaseLifecycleOptions, HelmReleaseValuesFromSource } from '../helm/types.js';
 
 const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 40');
 const kubernetesDnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
@@ -89,7 +89,7 @@ export interface EnvoyAIGatewayPlatformBuildOptions {
   readonly profile?: 'development' | 'production';
 }
 
-export interface EnvoyGatewayHelmReleaseConfig {
+export interface EnvoyGatewayHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   readonly name: string;
   readonly namespace: string;
   readonly version: string;

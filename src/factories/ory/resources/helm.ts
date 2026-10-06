@@ -14,6 +14,7 @@ import {
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
 import { helmRelease } from '../../helm/helm-release.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type {
@@ -93,6 +94,7 @@ function createOryHelmRelease<TValues extends OryChartValues>(
       name: config.repositoryName ?? 'ory',
       namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
     },
+    ...helmReleaseLifecycle(config, {}),
     ...(config.values && { values: config.values }),
     ...(config.postRenderers && { postRenderers: config.postRenderers }),
   }).withReadinessEvaluator(oryHelmReleaseReadinessEvaluator);

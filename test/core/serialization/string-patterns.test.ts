@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type, type Type } from 'arktype';
+import { load } from 'js-yaml';
 
 import { kubernetesComposition, simple } from '../../../src/index.js';
 
@@ -84,12 +85,118 @@ describe('KRO string pattern serialization', () => {
 
   it('preserves constraints on array elements and on the array itself', () => {
     const schema = type({ names: 'string > 0[] > 0' });
+    const spec = kroSpec(schema);
 
-    expect(rgdObject(schema)).toContain(
-      "names: '[]string | minLength=1 | minItems=1'",
-    );
+    // KRO applies the markers after `|` to the field, and refuses minLength on
+    // a list, so the element constraint lives on a named custom type.
+    const itemType = /^\[\](\w+) \| minItems=1$/.exec(String(spec.fields.names))?.[1];
+    expect(itemType).toStartWith('StringPatternObjectTestNamesItem');
+    expect(spec.types[itemType ?? '']).toBe('string | minLength=1');
+  });
+
+  // Each list must keep its own item type: a shared name would hand one list
+  // the other's constraint.
+  for (const [label, schema, paths] of [
+    [
+      'siblings that differ only in case',
+      type({ trustedIps: '(string <= 5)[]', trustedIPs: '(string > 2)[]' }),
+      [['trustedIps'], ['trustedIPs']],
+    ],
+    [
+      'nested fields under parents that differ only in case',
+      type({ ab: { c: '(string <= 5)[]' }, aB: { c: '(string > 2)[]' } }),
+      [
+        ['ab', 'c'],
+        ['aB', 'c'],
+      ],
+    ],
+    [
+      'paths that differ only in where the underscore is',
+      type({ a_b: { c: '(string <= 5)[]' }, a: { b_c: '(string > 2)[]' } }),
+      [
+        ['a_b', 'c'],
+        ['a', 'b_c'],
+      ],
+    ],
+  ] as const) {
+    it(`gives each list its own item type: ${label}`, () => {
+      const spec = kroSpec(schema);
+      const [first, second] = paths.map((path) => itemTypeAt(spec, path));
+      expect(first).not.toBe(second);
+      expect(spec.types[first ?? '']).toBe('string | maxLength=5');
+      expect(spec.types[second ?? '']).toBe('string | minLength=3');
+    });
+  }
+
+  it('keeps a list item type apart from a validated structured field of the same stem', () => {
+    const spec = kroSpec(type({ foo: '(string <= 5)[]', foo_item: { x: 'string' } }), {
+      foo_item: 'has(self.x)',
+    });
+    const itemType = itemTypeAt(spec, ['foo']);
+    expect(spec.fields.foo_item).toBe('StringPatternObjectTestFooItem | validation="has(self.x)"');
+    expect(itemType).not.toBe('StringPatternObjectTestFooItem');
+    expect(spec.types[itemType ?? '']).toBe('string | maxLength=5');
+    expect(spec.types.StringPatternObjectTestFooItem).toEqual({ x: 'string' });
+  });
+
+  it('keeps type names to letters and digits, whatever the field key holds', () => {
+    const spec = kroSpec(type({ 'a|b': '(string <= 5)[]', 'c.d e': '(string <= 5)[]' }));
+    for (const key of ['a|b', 'c.d e']) {
+      expect(itemTypeAt(spec, [key])).toMatch(/^[A-Za-z0-9]+$/);
+    }
+  });
+
+  it('refuses two validated structured fields whose type names would clash', () => {
+    expect(() =>
+      kroSpec(type({ a_b: { c: { x: 'string' } }, a: { b_c: { y: 'number' } } }), {
+        'a_b.c': 'has(self.x)',
+        'a.b_c': 'has(self.y)',
+      })
+    ).toThrow(/would replace a different type of the same name/);
   });
 });
+
+interface KroSpecView {
+  readonly fields: Record<string, unknown>;
+  readonly types: Record<string, unknown>;
+}
+
+/** The KRO SimpleSchema `spec` and `types` the RGD carries for `schema`. */
+function kroSpec(
+  schema: Type<object>,
+  schemaFieldValidations?: Record<string, string>
+): KroSpecView {
+  const yaml = kubernetesComposition(
+    {
+      name: 'string-pattern-object-test',
+      kind: 'StringPatternObjectTest',
+      spec: schema,
+      status: type({ ready: 'boolean' }),
+    },
+    () => ({ ready: true }),
+    schemaFieldValidations ? { schemaFieldValidations } : undefined
+  )
+    .factory('kro')
+    .toYaml();
+  const schemaNode = ['spec', 'schema'].reduce<unknown>(
+    (node, key) => (typeof node === 'object' && node !== null ? Reflect.get(node, key) : undefined),
+    load(yaml)
+  );
+  const record = (value: unknown): Record<string, unknown> =>
+    typeof value === 'object' && value !== null ? Object.fromEntries(Object.entries(value)) : {};
+  return {
+    fields: record(Reflect.get(record(schemaNode), 'spec')),
+    types: record(Reflect.get(record(schemaNode), 'types')),
+  };
+}
+
+function itemTypeAt(spec: KroSpecView, path: readonly string[]): string | undefined {
+  let node: unknown = spec.fields;
+  for (const segment of path) {
+    node = typeof node === 'object' && node !== null ? Reflect.get(node, segment) : undefined;
+  }
+  return /^\[\](\w+)/.exec(String(node))?.[1];
+}
 
 function rgd(nameSchema: Type<string>): string {
   return kubernetesComposition(
@@ -107,17 +214,5 @@ function rgd(nameSchema: Type<string>): string {
       });
       return { ready: true };
     },
-  ).factory('kro').toYaml();
-}
-
-function rgdObject(schema: Type<object>): string {
-  return kubernetesComposition(
-    {
-      name: 'string-pattern-object-test',
-      kind: 'StringPatternObjectTest',
-      spec: schema,
-      status: type({ ready: 'boolean' }),
-    },
-    () => ({ ready: true }),
   ).factory('kro').toYaml();
 }

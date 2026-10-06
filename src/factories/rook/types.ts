@@ -11,6 +11,7 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 const resourceRequirementsSchemaShape = {
   'requests?': { 'cpu?': 'string', 'memory?': 'string' },
@@ -317,9 +318,10 @@ export const RookCephHelmReleaseConfigSchema = type({
 export type RookCephHelmReleaseConfig = Omit<
   typeof RookCephHelmReleaseConfigSchema.infer,
   'values'
-> & {
-  values?: TypeKroChartValue<Record<string, unknown>>;
-};
+> &
+  HelmReleaseLifecycleOptions & {
+    values?: TypeKroChartValue<Record<string, unknown>>;
+  };
 
 const cephDaemonResourcesSchemaShape = {
   mon: resourceRequirementsSchemaShape,

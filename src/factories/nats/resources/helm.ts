@@ -1,8 +1,13 @@
 import type { Enhanced } from '../../../core/types/index.js';
 import { helmRelease } from '../../helm/helm-release.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import { helmRepository } from '../../helm/helm-repository.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import type {
+  HelmReleaseLifecycleOptions,
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+} from '../../helm/types.js';
 import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
 import type { NatsHelmValues } from '../types.js';
 
@@ -27,17 +32,19 @@ export function natsHelmRepository(config: {
   }) as Enhanced<HelmRepositorySpec, HelmRepositoryStatus>;
 }
 
-function natsChartRelease(config: {
-  name: string;
-  namespace: string;
-  chart: 'nats' | 'nack';
-  version: string;
-  values: NatsHelmValues;
-  repositoryName?: string;
-  repositoryNamespace?: string;
-  repositoryUrl?: string;
-  id?: string;
-}): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+function natsChartRelease(
+  config: {
+    name: string;
+    namespace: string;
+    chart: 'nats' | 'nack';
+    version: string;
+    values: NatsHelmValues;
+    repositoryName?: string;
+    repositoryNamespace?: string;
+    repositoryUrl?: string;
+    id?: string;
+  } & HelmReleaseLifecycleOptions
+): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   return helmRelease({
     name: config.name,
     namespace: config.namespace,
@@ -51,7 +58,7 @@ function natsChartRelease(config: {
       namespace: config.repositoryNamespace ?? config.namespace,
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
+    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
     values: config.values,
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('NATS')) as Enhanced<
