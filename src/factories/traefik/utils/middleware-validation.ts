@@ -1,20 +1,18 @@
-/**
- * `Middleware` spec validation.
- *
- * A Traefik `Middleware` configures exactly one behavior. Two keys in one
- * object is not a merge — Traefik picks one and silently drops the other — so
- * this is a real misconfiguration worth rejecting.
- *
- * The type system already makes it a compile error (see
- * `TraefikMiddlewareSpec`), but the same rule is re-checked at runtime for
- * JavaScript callers and for specs assembled dynamically.
- *
- * **Why this check is safe outside a status builder:** it only inspects which
- * KEYS a spec object carries, never their values. Keys are always written by
- * the author and are concrete in both direct and KRO mode, so this never
- * inspects a schema proxy. Value-level validation, which would have to reason
- * about refs, is deliberately absent.
- */
+// `Middleware` spec validation.
+//
+// A Traefik `Middleware` configures exactly one behavior. Two keys in one
+// object is not a merge — Traefik picks one and silently drops the other — so
+// this is a real misconfiguration worth rejecting.
+//
+// The type system already makes it a compile error (see
+// `TraefikMiddlewareSpec`), but the same rule is re-checked at runtime for
+// JavaScript callers and for specs assembled dynamically.
+//
+// **Why this check is safe outside a status builder:** it only inspects which
+// KEYS a spec object carries, never their values. Keys are always written by
+// the author and are concrete in both direct and KRO mode, so this never
+// inspects a schema proxy. Value-level validation, which would have to reason
+// about refs, is deliberately absent.
 
 import { TypeKroError } from '../../../core/errors.js';
 import { TRAEFIK_MIDDLEWARE_KINDS } from '../constants.js';

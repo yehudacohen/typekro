@@ -2,6 +2,16 @@
  * Traefik utilities.
  */
 export {
+  TRAEFIK_ACCESS_LOG_DROPPED_HEADERS,
+  TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS,
+  traefikAccessLogFields,
+} from './access-log.js';
+export {
+  type AwsNlbHealthCheckOptions,
+  type AwsNlbServiceAnnotationOptions,
+  awsNlbServiceAnnotations,
+} from './aws-nlb.js';
+export {
   applyTraefikOwnershipPins,
   applyTraefikSecurityPins,
   mapTraefikConfigToHelmValues,
@@ -20,3 +30,22 @@ export {
   traefikMiddlewareKeys,
   validateTraefikMiddlewareSpec,
 } from './middleware-validation.js';
+export {
+  assertTraefikProxyTrust,
+  TRAEFIK_TRUSTED_IPS_VALIDATION_RULE,
+  traefikBroadTrustWarnings,
+  traefikProxyTrustIssues,
+  traefikProxyTrustSchemaFieldValidations,
+} from './proxy-trust.js';
+export {
+  parseTraefikTrustedRange,
+  TRAEFIK_IPV4_MAPPED_PATTERN,
+  TRAEFIK_TRUSTED_RANGE_PATTERN,
+  type TraefikTrustedRange,
+} from './trusted-range.js';
+export {
+  assertTraefikPlugins,
+  traefikLocalPluginMountPath,
+  traefikPluginIssues,
+  traefikSecretValue,
+} from './plugins.js';
