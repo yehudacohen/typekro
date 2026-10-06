@@ -235,8 +235,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limit and rule exclusions. Every component has resource requests and memory limits (no CPU
   limits), LAPI and AppSec get a PodDisruptionBudget, and
   status (`ready`, `phase`, `lapiHost`, `appsecHost`, `version`) is read from the owned
-  HelmRelease in both direct and KRO mode. On the Traefik side, `crowdsecTraefikPlugin()` declares
-  the bouncer plugin v1.7.1 with its archive SHA-256, and `crowdsecBouncerMiddleware()` returns a
+  HelmRelease in both direct and KRO mode. `makeCrowdsecBootstrap` and `crowdsecHelmRelease` take
+  the Flux `install`, `upgrade` and `driftDetection` options and render them through
+  `helmReleaseLifecycle`, like the other integrations. On the Traefik side,
+  `crowdsecTraefikPlugin()` declares the bouncer plugin v1.7.1 with its archive SHA-256 for the
+  Traefik bootstrap's `plugins` option (use it with the `crowdsec` access-log preset), and
+  `crowdsecBouncerMiddleware()` returns a
   stream-mode, ban-only Middleware spec that fails open by default; `failOpen: false` blocks after
   `failClosedAfter` failed decision pulls (default 4). See `docs/api/crowdsec`.
 

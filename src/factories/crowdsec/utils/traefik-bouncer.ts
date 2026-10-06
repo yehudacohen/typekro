@@ -1,8 +1,9 @@
 /**
  * Traefik side of CrowdSec: the bouncer plugin declaration and a Middleware
- * spec that runs it. Both are plain objects, so this module needs nothing from
- * `typekro/traefik`; pass them to `makeTraefikBootstrap` and
- * `traefikMiddleware`.
+ * spec that runs it. Both are plain objects; pass them to `makeTraefikBootstrap`
+ * (`plugins`) and `traefikMiddleware`. The only thing taken from the Traefik
+ * factories is the plugin-name rule, a runtime constant that appears in no
+ * CrowdSec type, so `typekro/crowdsec` declarations stay free of Traefik.
  */
 
 import { getCurrentCompositionContext } from '../../../core/composition/context.js';
@@ -12,6 +13,7 @@ import { Cel } from '../../../core/references/cel.js';
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../../core/constants/brands.js';
 import { REQUIRED_FIELD_SENTINEL } from '../../../core/serialization/schema.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import { TRAEFIK_PLUGIN_NAME } from '../../traefik/utils/plugins.js';
 import {
   CROWDSEC_BOUNCER_PLUGIN_MODULE,
   DEFAULT_CROWDSEC_BOUNCER_PLUGIN_HASH,
@@ -29,10 +31,6 @@ import { isAnyAddressRange, isCidr, isDeferredValue, isIp } from './net.js';
 const logger = getComponentLogger('crowdsec-bouncer');
 const SHA256 = /^[0-9a-f]{64}$/;
 const EXACT_VERSION = /^v\d+\.\d+\.\d+$/;
-// Plugin names become Traefik CLI flag segments (`--experimental.plugins.<name>...`)
-// and `Middleware.spec.plugin` keys, so they stay one flag-safe word. The same
-// rule as Traefik's own plugin declarations.
-const PLUGIN_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/;
 // Kubernetes object names (DNS-1123 subdomain) and Secret data keys.
 const DNS_SUBDOMAIN =
   /^(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
@@ -227,9 +225,10 @@ export function crowdsecBouncerMiddleware(
     throw new TypeKroError('apiKeyFile must not be empty.', 'CROWDSEC_INVALID_SECRET_REF');
   }
   const pluginName = options.pluginName ?? DEFAULT_CROWDSEC_PLUGIN_NAME;
-  if (!PLUGIN_NAME.test(pluginName)) {
+  // The rule the Traefik bootstrap applies to the `plugins` key it declares.
+  if (!TRAEFIK_PLUGIN_NAME.test(pluginName)) {
     invalid(
-      `Plugin name "${pluginName}" must match ${PLUGIN_NAME}, the name Traefik's experimental.plugins declares.`,
+      `Plugin name "${pluginName}" must match ${TRAEFIK_PLUGIN_NAME}, the name Traefik's experimental.plugins declares.`,
       { pluginName }
     );
   }

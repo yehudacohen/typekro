@@ -4,8 +4,9 @@
  * 1. `makeCrowdsecBootstrap` — LAPI (Postgres, two replicas), the agent
  *    DaemonSet reading Traefik's access logs, AppSec with virtual patching and
  *    out-of-band CRS, an allowlist, and global simulation for the first rollout.
- * 2. `makeTraefikBootstrap` — Traefik with the hash-pinned bouncer plugin and
- *    the User-Agent kept in its JSON access log, which the CrowdSec parser reads.
+ * 2. `makeTraefikBootstrap` — Traefik with the hash-pinned bouncer plugin
+ *    (`plugins`, so Traefik refuses to start without it) and the CrowdSec
+ *    access-log preset, which keeps every field the CrowdSec parser reads.
  * 3. `crowdsecBouncerMiddleware` — the bouncer as a Traefik Middleware, first
  *    in the IngressRoute's chain, failing open while CrowdSec is unreachable.
  *
@@ -66,10 +67,8 @@ export const exampleCrowdsec = makeCrowdsecBootstrap({
 export const exampleEdge = makeTraefikBootstrap({
   name: 'example-crowdsec-edge',
   kind: 'ExampleCrowdsecEdge',
-  values: {
-    experimental: { plugins: { crowdsec: crowdsecTraefikPlugin() } },
-    accessLog: { fields: { headers: { names: { 'User-Agent': 'keep' } } } },
-  },
+  plugins: { crowdsec: crowdsecTraefikPlugin() },
+  accessLog: { preset: 'crowdsec' },
 });
 
 /** The API route: the bouncer first, then the backend. */

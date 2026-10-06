@@ -116,11 +116,9 @@ describeOrSkip('CrowdSec bootstrap + Traefik bouncer integration', () => {
     kind: 'TraefikCrowdsecE2e',
     namespaceOwnership: 'external',
     redirectWebToWebsecure: false,
-    values: {
-      experimental: { plugins: { crowdsec: crowdsecTraefikPlugin() } },
-      // The CrowdSec Traefik parser reads the User-Agent from the JSON log.
-      accessLog: { fields: { headers: { names: { 'User-Agent': 'keep' } } } },
-    },
+    plugins: { crowdsec: crowdsecTraefikPlugin() },
+    // Keeps the fields the CrowdSec Traefik parser reads, User-Agent included.
+    accessLog: { preset: 'crowdsec' },
   });
 
   const route = kubernetesComposition(

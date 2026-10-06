@@ -84,7 +84,7 @@ const instance = await security
 | `crowdsecHelmRepositoryBootstrap` | The shared `HelmRepository`, owned by a singleton. |
 | `crowdsecHelmRepository`, `crowdsecHelmRelease` | The Flux resources, if you assemble your own graph. |
 | `mapCrowdsecConfigToHelmValues` | The values mapper the bootstrap uses. |
-| `crowdsecTraefikPlugin({ version?, hash? })` | One `experimental.plugins` entry for Traefik. |
+| `crowdsecTraefikPlugin({ version?, hash? })` | One entry for the Traefik bootstrap's `plugins` option (Traefik's `experimental.plugins`). |
 | `crowdsecBouncerMiddleware(options)` | A Traefik `Middleware.spec` that runs the bouncer. Throws on what the plugin would refuse (Traefik then drops every route using it) and on unsafe trust: a blank `apiKeyFile` or `lapiHost`, a host with a scheme, `updateIntervalSeconds` below 1, a negative `appsecBodyLimit`, a `pluginName` that is not a flag-safe word (`^[A-Za-z][A-Za-z0-9_-]*$`, as Traefik's plugin declarations require), trusted IPs that are not IPs or CIDRs, any `/0` range in `forwardedHeadersTrustedIps` (any client could spoof `X-Forwarded-For`) or `clientTrustedIps` (it would turn the bouncer off). Warns when `failClosedAfter` is set without `failOpen: false`. An empty `appsecHost` leaves AppSec off. |
 | `crowdsecSecretUrn(secret)` | `urn:k8s:secret:<name>:<key>`, which Traefik resolves in plugin config. Throws on a name that is not a DNS-1123 subdomain or a key outside `[-._a-zA-Z0-9]+`. |
 
@@ -122,6 +122,7 @@ installed).
 | `appsec` | absent: off | See [AppSec](#appsec). |
 | `metrics` | metrics on, no monitors | Every pod serves Prometheus on `:6060`. `serviceMonitor` / `podMonitor` need the Prometheus Operator CRDs. |
 | `agent.containerRuntime` | `'containerd'` | The container log format on the nodes. |
+| `install`, `upgrade`, `driftDetection` | see below | The Flux lifecycle options every TypeKro HelmRelease factory takes. See [Install, upgrade and CRD policy](/api/flux/#install-upgrade-and-crd-policy) |
 | `values` | none | Raw chart values, merged first. Everything this factory sets wins. |
 
 Default requests: LAPI 100m CPU / 256Mi, agent 100m / 192Mi, AppSec 200m /
@@ -146,36 +147,32 @@ CloudWatch, ...), pass it through raw `values.agent.additionalAcquisition`.
 
 Three things on the Traefik side:
 
-1. **Declare the plugin** in `experimental.plugins`. `crowdsecTraefikPlugin()`
-   returns `{ moduleName, version: 'v1.7.1', hash }`, where `hash` is the
-   SHA-256 of the archive Traefik downloads. Traefik refuses an archive whose
-   hash differs. Any other version needs its own `hash`.
-2. **Keep the User-Agent** in Traefik's JSON access log. The CrowdSec Traefik
-   parser reads it, and the chart drops headers by default.
+1. **Declare the plugin** with the bootstrap's `plugins` option.
+   `crowdsecTraefikPlugin()` returns `{ moduleName, version: 'v1.7.1', hash }`,
+   where `hash` is the SHA-256 of the archive Traefik downloads. Traefik refuses
+   an archive whose hash differs. Any other version needs its own `hash`.
+2. **Keep the fields the CrowdSec parser reads** in Traefik's JSON access log,
+   with the `crowdsec` access-log preset. It keeps the User-Agent, which the
+   chart drops by default.
 3. **Create the Middleware** with `crowdsecBouncerMiddleware(...)` and put it
    first in each route's middleware list.
-
-On the current `typekro/traefik`, use the raw `values` passthrough:
 
 ```typescript
 import { crowdsecTraefikPlugin } from 'typekro/crowdsec';
 import { makeTraefikBootstrap } from 'typekro/traefik';
 
 export const edge = makeTraefikBootstrap({
-  values: {
-    experimental: { plugins: { crowdsec: crowdsecTraefikPlugin() } },
-    accessLog: { fields: { headers: { names: { 'User-Agent': 'keep' } } } },
-  },
+  plugins: { crowdsec: crowdsecTraefikPlugin() },
+  accessLog: { preset: 'crowdsec' },
 });
 ```
 
-The Traefik plugin work in #281 adds typed equivalents. Once it lands,
-pass the same declaration as `plugins: { crowdsec: crowdsecTraefikPlugin() }`
-(its `abortOnPluginFailure` default then stops Traefik from starting without
-the bouncer), use its CrowdSec access-log preset, and prefer `localPlugins` to
-vendor the plugin so a plugin-registry outage cannot block a Traefik start.
-`crowdsecBouncerMiddleware` keeps working unchanged: it is a plain Middleware
-spec that names the plugin.
+Declaring a plugin turns on `abortOnPluginFailure`, so Traefik refuses to start
+without the bouncer instead of starting without it. To keep a plugin-registry
+outage from blocking a Traefik start, vendor the plugin with `localPlugins`
+instead. `crowdsecBouncerMiddleware` is a plain Middleware spec that names the
+plugin, so it works with either. The plugin name (`pluginName`, default
+`crowdsec`) follows the same rule as the bootstrap's `plugins` keys.
 
 ### The route: bouncer first
 
@@ -288,12 +285,11 @@ win. Use one bouncer Middleware per Traefik installation and reference it from
 every route.
 
 **The plugin download is a startup dependency.** Traefik downloads the plugin
-from plugins.traefik.io when a pod starts. With the chart's default
-`experimental.abortOnPluginFailure: false` (the case on the current
-`typekro/traefik`), a pod that cannot reach the registry starts without the
-plugin, and every route that references the CrowdSec Middleware fails,
-whatever `failOpen` says. Once #281 lands, vendor the plugin with
-`localPlugins` so a pod start no longer depends on the registry.
+from plugins.traefik.io when a pod starts. With `abortOnPluginFailure` (the
+default once `plugins` declares one), a pod that cannot reach the registry does
+not start. Without it, the pod starts without the plugin, and every route that
+references the CrowdSec Middleware fails, whatever `failOpen` says. Vendor the
+plugin with `localPlugins` so a pod start no longer depends on the registry.
 
 ## Simulation-first rollout
 

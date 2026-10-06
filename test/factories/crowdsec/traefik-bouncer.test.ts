@@ -20,6 +20,7 @@ import { Cel } from '../../../src/core/references/cel.js';
 import { getComponentLogger } from '../../../src/core/logging/index.js';
 import { assertCrowdsecBootstrapOptions } from '../../../src/factories/crowdsec/utils/helm-values-mapper.js';
 import * as factories from '../../../src/factories/index.js';
+import { makeTraefikBootstrap } from '../../../src/factories/traefik/compositions/traefik-bootstrap.js';
 import { traefikMiddleware } from '../../../src/factories/traefik/resources/middleware.js';
 
 const BASE = {
@@ -452,6 +453,41 @@ describe('crowdsecBouncerMiddleware validation', () => {
         /not an IPv4 or IPv6 address/
       );
     }
+  });
+});
+
+describe('with the Traefik bootstrap', () => {
+  it('declares the plugin through the hash-pinned plugins option the Middleware names', () => {
+    const edge = makeTraefikBootstrap({
+      plugins: { crowdsec: crowdsecTraefikPlugin() },
+      accessLog: { preset: 'crowdsec' },
+    });
+    const release = (
+      loadAll(edge.factory('direct', { namespace: 'traefik' }).toYaml({ name: 'traefik' })) as {
+        kind?: string;
+        spec?: { values?: Record<string, any> };
+      }[]
+    ).find((doc) => doc?.kind === 'HelmRelease');
+    const values = release?.spec?.values ?? {};
+    expect(values.experimental?.plugins).toEqual({ crowdsec: crowdsecTraefikPlugin() });
+    expect(values.experimental?.abortOnPluginFailure).toBe(true);
+    expect(values.accessLog?.fields?.headers?.names?.['User-Agent']).toBe('keep');
+
+    // The Middleware's plugin key is the name the bootstrap declared.
+    const spec = crowdsecBouncerMiddleware(BASE);
+    expect(Object.keys(spec.plugin)).toEqual(Object.keys(values.experimental.plugins));
+  });
+
+  it('applies the bootstrap plugin-name rule to pluginName', () => {
+    for (const pluginName of ['1crowdsec', 'crowd.sec', 'crowd sec', '']) {
+      expect(() => crowdsecBouncerMiddleware({ ...BASE, pluginName })).toThrow(/must match/);
+      expect(() =>
+        makeTraefikBootstrap({ plugins: { [pluginName]: crowdsecTraefikPlugin() } })
+          .factory('direct', { namespace: 'traefik' })
+          .toYaml({ name: 'traefik' })
+      ).toThrow(/must match/);
+    }
+    expect(() => crowdsecBouncerMiddleware({ ...BASE, pluginName: 'crowdsec_v1-7' })).not.toThrow();
   });
 });
 
