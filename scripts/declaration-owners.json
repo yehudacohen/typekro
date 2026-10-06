@@ -132,7 +132,9 @@
     },
     {
       "owner": "karpenter",
-      "paths": ["factories/karpenter/**"]
+      "paths": [
+        "factories/karpenter/**"
+      ]
     },
     {
       "owner": "nats",
