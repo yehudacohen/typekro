@@ -48,7 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **KRO SimpleSchema: constrained array items.** A list whose items carry a length or pattern
   constraint (`'(string <= 43)[]'`) was emitted as `[]string | maxLength=43`, which KRO applies to
-  the list and rejects. The item constraint is now a named custom type in `spec.schema.types`.
+  the list and rejects. The item constraint is now a named custom type in `spec.schema.types`,
+  named from the field path plus a short hash of it, so fields whose names differ only in case or
+  punctuation get separate types. Type names keep to letters and digits, and two different types
+  that would share a name (for example two validated structured fields) now throw
+  `KRO_CUSTOM_TYPE_NAME_COLLISION` instead of one replacing the other.
 - **The Traefik `web` → `websecure` redirect blocked ACME HTTP-01 challenges.** Traefik gives the
   router it generates for an entrypoint redirection priority `MaxInt - 1`, so it outranked the route
   cert-manager's HTTP-01 solver creates on `web` and answered `/.well-known/acme-challenge/<token>`

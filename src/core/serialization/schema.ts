@@ -10,7 +10,7 @@ import type { Type } from 'arktype';
 import { RE2JS } from 're2js';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
-import { pascalCase } from '../../utils/string.js';
+import { pascalCase, shortStableHash } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
@@ -73,18 +73,56 @@ const SCHEMA_MARKER_PATTERN_SOURCE = KUBERNETES_REF_SCHEMA_MARKER_SOURCE;
  * Handles single-quoted literals, arrays, booleans, integer divisors,
  * and literal unions (→ Kro enum format).
  */
+/** KRO SimpleSchema custom types (`spec.schema.types`) being built for one schema. */
+type KroCustomTypes = Record<string, Record<string, unknown> | string>;
+
+/**
+ * Add a custom type, refusing a second, different definition under the same
+ * name: overwriting would silently give one field another field's type.
+ */
+function registerKroCustomType(
+  customTypes: KroCustomTypes,
+  name: string,
+  definition: Record<string, unknown> | string,
+  path: string
+): void {
+  const existing = customTypes[name];
+  if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(definition)) {
+    throw new TypeKroError(
+      `KRO SimpleSchema custom type ${name} (for schema.spec.${path}) would replace a different ` +
+        'type of the same name. Rename one of the fields involved.',
+      'KRO_CUSTOM_TYPE_NAME_COLLISION',
+      { name, path }
+    );
+  }
+  customTypes[name] = definition;
+}
+
+/**
+ * The readable part of a custom type name for a field path: PascalCase
+ * segments with anything but ASCII letters and digits removed, since `|`, a
+ * space or a dot would break the KRO type string. Not unique on its own.
+ */
+function kroTypeNameStem(kind: string, path: readonly string[]): string {
+  return `${kind}${path.map((segment) => pascalCase(segment)).join('')}`.replace(
+    /[^A-Za-z0-9]/g,
+    ''
+  );
+}
+
 /**
  * Where a field sits, so a constrained array element can be named as a KRO
  * custom type (`spec.schema.types`).
  */
 interface KroFieldContext {
-  readonly customTypes: Record<string, string>;
-  /** Custom type name for this field, e.g. `MyKindEntrypointsWebTrustedIPs`. */
-  readonly typeName: string;
+  readonly customTypes: KroCustomTypes;
+  readonly kind: string;
+  /** The field's path under `spec`, case and punctuation intact. */
+  readonly path: readonly string[];
 }
 
 function fieldContext(context: KroFieldContext | undefined, key: string) {
-  return context && { ...context, typeName: `${context.typeName}${pascalCase(key)}` };
+  return context && { ...context, path: [...context.path, key] };
 }
 
 function getKroTypeFromJson(node: unknown, context?: KroFieldContext): string {
@@ -112,8 +150,13 @@ function getKroTypeFromJson(node: unknown, context?: KroFieldContext): string {
       // named custom type instead, whose markers apply to each item.
       let itemType = elementType;
       if (context && elementType.startsWith('string | ') && !elementType.includes('enum=')) {
-        itemType = `${context.typeName}Item`;
-        context.customTypes[itemType] = elementType;
+        // The stem keeps the name readable; the hash of the exact path keeps
+        // `trustedIps` and `trustedIPs`, or `a_b.c` and `a.b_c`, apart.
+        const path = context.path.join('.');
+        itemType = `${kroTypeNameStem(context.kind, context.path)}Item${shortStableHash(
+          JSON.stringify(context.path)
+        )}`;
+        registerKroCustomType(context.customTypes, itemType, elementType, path);
       }
       const arrayType = `[]${itemType}`;
       const markers: string[] = [];
@@ -1848,10 +1891,13 @@ export function arktypeToKroSchema(
     );
   }
 
-  const itemTypes: Record<string, string> = {};
+  // One registry for list item types and validated structured fields, so a
+  // name clash between them throws instead of one replacing the other.
+  const customTypes: KroCustomTypes = {};
   const specFields = arktypeJsonToKroFields(schemaDefinition.spec.json, {
-    customTypes: itemTypes,
-    typeName: schemaDefinition.kind,
+    customTypes,
+    kind: schemaDefinition.kind,
+    path: [],
   });
 
   if (!specFields.name) {
@@ -2099,10 +2145,7 @@ export function arktypeToKroSchema(
     (schemaDefinition.apiVersion.includes('/')
       ? schemaDefinition.apiVersion.split('/')[0]
       : undefined);
-  const customTypes: Record<string, Record<string, unknown> | string> = {
-    ...itemTypes,
-    ...applySchemaFieldValidations(specFields, schemaDefinition.kind, schemaFieldValidations),
-  };
+  applySchemaFieldValidations(specFields, schemaDefinition.kind, schemaFieldValidations, customTypes);
 
   const schema: KroSimpleSchemaWithMetadata = {
     apiVersion: schemaApiVersion,
@@ -2203,9 +2246,9 @@ export function generateKroSchemaFromArktype<
 function applySchemaFieldValidations(
   specFields: Record<string, unknown>,
   kind: string,
-  validations: Readonly<Record<string, string>> | undefined
-): Record<string, Record<string, unknown>> {
-  const customTypes: Record<string, Record<string, unknown>> = {};
+  validations: Readonly<Record<string, string>> | undefined,
+  customTypes: KroCustomTypes
+): void {
   for (const [path, rule] of Object.entries(validations ?? {}).sort(
     ([left], [right]) => right.split('.').length - left.split('.').length
   )) {
@@ -2234,9 +2277,8 @@ function applySchemaFieldValidations(
     if (!current || typeof current !== 'object' || Array.isArray(current)) {
       throw new Error(`Schema field validation path ${path} cannot carry a KRO validation marker.`);
     }
-    const typeName = `${kind}${segments.map((segment) => pascalCase(segment)).join('')}`;
-    customTypes[typeName] = current as Record<string, unknown>;
+    const typeName = kroTypeNameStem(kind, segments);
+    registerKroCustomType(customTypes, typeName, current as Record<string, unknown>, path);
     parent[field] = `${typeName} | ${marker}`;
   }
-  return customTypes;
 }
