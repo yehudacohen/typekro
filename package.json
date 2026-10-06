@@ -126,6 +126,10 @@
       "import": "./dist/factories/hatchet/index.js",
       "types": "./dist/factories/hatchet/index.d.ts"
     },
+    "./karpenter": {
+      "import": "./dist/factories/karpenter/index.js",
+      "types": "./dist/factories/karpenter/index.d.ts"
+    },
     "./containers": {
       "import": "./dist/core/containers/index.js",
       "types": "./dist/core/containers/index.d.ts"

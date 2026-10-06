@@ -9,7 +9,8 @@
   },
   "sharedPoolBytes": 241152,
   "pooledOwners": [
-    "aws-load-balancer-controller"
+    "aws-load-balancer-controller",
+    "karpenter"
   ],
   "docDropFraction": 0.2,
   "owners": {

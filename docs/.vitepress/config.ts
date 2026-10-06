@@ -101,6 +101,7 @@ export default withMermaid(
               { text: 'Traefik', link: '/api/traefik/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
               { text: 'Inngest', link: '/api/inngest/' },
+              { text: 'Karpenter', link: '/api/karpenter/' },
               { text: 'ClickStack (HyperDX)', link: '/api/clickstack/' },
               { text: 'Dagster OSS', link: '/api/dagster/' },
               { text: 'Ory', link: '/api/ory/' },
