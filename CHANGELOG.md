@@ -138,6 +138,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The integration suite pins how the Redis-backed rate limit fails: 500 while Valkey is down,
     then recovery. The docs list mitigations.
 
+- **`certManagerBootstrap`: `crds`, PodDisruptionBudgets and topology spread constraints.**
+  `crds.enabled` and `crds.keep` (both default `true`) replace `installCRDs`.
+  `controller`, `webhook` and `cainjector` each take `podDisruptionBudget` (`enabled`, and
+  `minAvailable` or `maxUnavailable` as a string such as `'1'` or `'50%'`) and
+  `topologySpreadConstraints`. The schema also declares `serviceAccount.annotations` for all three,
+  so KRO instances can set them too, for example for workload identity. The lease namespace
+  defaults to the install namespace instead of `kube-system`.
+
 ### Changed
 
 - **Behaviour change in KRO mode: a lifecycle default is no longer written into your own schema
@@ -185,6 +193,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Raw `values` that already set `podDisruptionBudget` or `topologySpreadConstraints` keep them.
   Raw `accessLog.fields` are replaced by the access-log policy.
 
+- **Behaviour change: cert-manager now renders `crds.enabled` / `crds.keep` instead of
+  `installCRDs`.** Chart v1.17 and later refuse `installCRDs` together with `crds.enabled`.
+  `installCRDs` is deprecated. The bootstrap maps it to `crds.enabled` when that is unset, and
+  `certManagerHelmRelease` adds no `crds` default when your `values` still set `installCRDs`.
+  `installCRDs: true` already meant `crds.enabled: true` plus `crds.keep: true`, so an existing
+  release renders the same CRDs. Direct-mode `customValues` that still set `installCRDs` own the
+  CRD setting, so no `crds` is rendered next to it. A whole `values` object passed to
+  `certManagerHelmRelease` as one schema reference cannot be inspected at build time: it must not
+  carry `installCRDs: true`. See "Migrating from installCRDs" in the cert-manager docs.
+- **Behaviour change: existing KRO instances move their leader-election lease.** They used to
+  take it in `kube-system` (the chart default); it now defaults to the install namespace. While
+  the Deployment rolls, the old pod holds the lease in `kube-system` and the new one takes the
+  lease in the install namespace, so two controllers can briefly both act as leader. Set
+  `global.leaderElection.namespace: kube-system` to keep the old lease.
+- **Behaviour change: the bootstrap no longer pins chart defaults explicitly.** Image
+  repositories and tags, `serviceAccount`, `nodeSelector`, `strategy`, `logLevel`,
+  `podSecurityPolicy` and the ServiceMonitor settings are rendered only when the spec sets them,
+  so the chart's own defaults apply. The image tags already matched the chart's `appVersion`.
+  TypeKro's own defaults stay: the resource requests and limits, `startupapicheck.timeout: 5m`
+  and `prometheus.enabled: false`. Config fields that the bootstrap schema does not declare
+  (`controller.tolerations`, `affinity`, `env`, `customValues`, ...) still apply in direct mode
+  only.
+
 ### Fixed
 
 - **`helmRelease` dropped `install.crds` and `upgrade.crds`.** The types accepted them, but the
@@ -223,6 +254,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `requestPolicy.default` were dropped by the same typed serialization; ResourceSlices are now
   sent as raw JSON. A scan of every client-node model field whose name differs from its wire
   name found no other affected kind (ListMeta `continue` appears only in list responses).
+
+- **`certManagerBootstrap` lost most of its settings in KRO mode.** `certManagerHelmRelease`
+  stripped every schema reference and CEL expression out of the chart values, and the bootstrap
+  applied its defaults with JavaScript `||`, which collapses a schema reference to the default.
+  A KRO instance therefore always ran 1 controller replica and took its leader-election lease in
+  the chart's `kube-system` default, and its image, resources, webhook and cainjector settings
+  were ignored. The values now carry schema references, with `Cel.default` for TypeKro's own
+  defaults. KRO and direct mode render the same values, which a new parity test checks for a
+  minimal spec, a namespace-only spec, a legacy `installCRDs` spec and a highly available spec.
+  The image tag was also rendered as `''` in KRO mode when `version` was unset.
+- **cert-manager `strategy.rollingUpdate.maxSurge` / `maxUnavailable` digit strings were rejected.**
+  The schema types them as strings, and the API server accepts a string only as a percentage, so
+  `'1'` failed. A digit-only string now renders as an integer in direct and KRO mode; a percentage
+  such as `'25%'` stays a string.
 
 ## [0.44.1] - 2026-10-01
 
