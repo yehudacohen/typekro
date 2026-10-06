@@ -18,9 +18,15 @@
  */
 
 import type { Composable, Enhanced } from '../../../core/types/index.js';
+import { certificate } from '../../cert-manager/resources/certificates.js';
+import type { CertificateConfig, CertificateStatus } from '../../cert-manager/types.js';
 import { createResource } from '../../shared.js';
 import { TRAEFIK_API_VERSION } from '../constants.js';
-import type { TraefikTLSOptionSpec, TraefikTLSStoreSpec } from '../types.js';
+import type {
+  TraefikTLSOptionSpec,
+  TraefikTLSStoreSpec,
+  TraefikTlsCertificateConfig,
+} from '../types.js';
 import {
   type TraefikResourceConfig,
   traefikResourceDefinition,
@@ -110,4 +116,46 @@ export function traefikTLSStore(
     traefikResourceDefinition(TRAEFIK_API_VERSION, 'TLSStore', config),
     { scope: 'namespaced' }
   ).withReadinessEvaluator(traefikStatuslessReadinessEvaluator('TLSStore'));
+}
+
+/**
+ * A cert-manager `Certificate` whose Secret Traefik serves.
+ *
+ * Reference the Secret from `IngressRoute.spec.tls.secretName` (same namespace)
+ * or from the default `TLSStore`. Issues an ECDSA P-256 key that rotates on
+ * every renewal.
+ *
+ * @example
+ * ```typescript
+ * const cert = traefikTlsCertificate({
+ *   name: 'api',
+ *   namespace: 'edge',
+ *   hostnames: ['api.example.com'],
+ *   issuerRef: { name: 'letsencrypt' },
+ *   id: 'apiCertificate',
+ * });
+ * // IngressRoute: tls: { secretName: 'api-tls' }
+ * ```
+ */
+export function traefikTlsCertificate(
+  config: Composable<TraefikTlsCertificateConfig>
+): Enhanced<CertificateConfig['spec'], CertificateStatus> {
+  // ECDSA P-256 is what Let's Encrypt and every current client handle best,
+  // and `rotationPolicy: Always` means a leaked key stops working at the next
+  // renewal instead of living for the life of the Secret. cert-manager 1.18
+  // made `Always` its default; it is stated so older controllers agree.
+  return certificate({
+    name: config.name,
+    namespace: config.namespace,
+    spec: {
+      secretName: config.secretName ?? `${config.name}-tls`,
+      // Passed through, not spread: in a composition it may be a schema reference.
+      dnsNames: config.hostnames as string[],
+      issuerRef: { name: config.issuerRef.name, kind: config.issuerRef.kind ?? 'ClusterIssuer' },
+      privateKey: { algorithm: 'ECDSA', size: 256, rotationPolicy: 'Always' },
+      ...(config.duration !== undefined && { duration: config.duration }),
+      ...(config.renewBefore !== undefined && { renewBefore: config.renewBefore }),
+    },
+    ...(config.id !== undefined && { id: config.id }),
+  });
 }

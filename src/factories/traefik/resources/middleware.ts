@@ -21,11 +21,13 @@ import type {
   TraefikInFlightReqMiddlewareConfig,
   TraefikMiddlewareMetadata,
   TraefikMiddlewareSpec,
+  TraefikPluginMiddlewareConfig,
   TraefikRateLimitMiddleware,
   TraefikRateLimitMiddlewareConfig,
   TraefikRedirectSchemeMiddleware,
   TraefikRedirectSchemeMiddlewareConfig,
 } from '../types.js';
+import { TypeKroError } from '../../../core/errors.js';
 import { assertTraefikMiddlewareSpec } from '../utils/middleware-validation.js';
 import {
   type TraefikResourceConfig,
@@ -286,6 +288,98 @@ export function traefikChainMiddleware(
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   const chain: Composable<TraefikChainMiddleware> = { middlewares: [...config.middlewares] };
   return middlewareResource(metadataOf(config), { chain });
+}
+
+/**
+ * A `Middleware` that runs a plugin declared on the bootstrap.
+ *
+ * @example
+ * ```typescript
+ * traefikPluginMiddleware({
+ *   name: 'crowdsec-bouncer',
+ *   namespace: 'edge',
+ *   plugin: 'crowdsec',
+ *   config: { enabled: true, crowdsecLapiKey: traefikSecretValue('crowdsec-bouncer', 'api-key') },
+ *   id: 'crowdsecBouncer',
+ * });
+ * ```
+ */
+export function traefikPluginMiddleware(
+  config: Composable<TraefikPluginMiddlewareConfig>
+): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
+  // The plugin name is a map KEY in the spec, so it must be concrete.
+  return middlewareResource(metadataOf(config), {
+    plugin: { [config.plugin as string]: config.config },
+  });
+}
+
+/** The three Middlewares {@link traefikForwardAuthSecurePair} creates. */
+export interface TraefikForwardAuthSecurePair {
+  /** Removes `authResponseHeaders` from the client's request. */
+  readonly stripIdentityHeaders: Enhanced<TraefikMiddlewareSpec, TraefikNoStatus>;
+  readonly forwardAuth: Enhanced<TraefikMiddlewareSpec, TraefikNoStatus>;
+  /** Strip, then authorize. Reference this one from routes. */
+  readonly chain: Enhanced<TraefikMiddlewareSpec, TraefikNoStatus>;
+}
+
+/**
+ * `forwardAuth` paired with a `headers` Middleware that strips the identity
+ * headers from the client's request first, chained under `name`.
+ *
+ * The strip runs as `<name>-strip-identity`, the authorizer as
+ * `<name>-forward-auth`. Header names must be concrete.
+ *
+ * @throws {TypeKroError} `TRAEFIK_FORWARD_AUTH_INVALID` when `authRequestHeaders`
+ *   forwards one of the `authResponseHeaders`.
+ */
+export function traefikForwardAuthSecurePair(
+  config: Composable<TraefikForwardAuthMiddlewareConfig>
+): TraefikForwardAuthSecurePair {
+  // Traefik 3.7 already replaces each `authResponseHeaders` entry with the
+  // authorizer's value (or removes it) on success, so the upstream never sees
+  // the client's. It does NOT stop the client's value reaching the authorizer:
+  // without an `authRequestHeaders` allowlist every client header is forwarded,
+  // and an authorizer that reads, logs or echoes `X-Auth-User` can be fooled.
+  // Stripping first closes that, and also holds for older Traefik releases and
+  // for anything a later middleware in the chain does with those headers.
+  const responseHeaders = [...config.authResponseHeaders];
+  const lower = new Set(responseHeaders.map((header) => header.toLowerCase()));
+  const forwarded = (config.authRequestHeaders ?? []).filter((header) =>
+    lower.has(header.toLowerCase())
+  );
+  if (forwarded.length > 0) {
+    throw new TypeKroError(
+      `forwardAuth "${String(config.name)}" forwards ${forwarded.join(', ')} to the authorizer, ` +
+        'but those are identity headers it returns. They are stripped from the client request.',
+      'TRAEFIK_FORWARD_AUTH_INVALID',
+      { forwarded }
+    );
+  }
+
+  const metadata = metadataOf(config);
+  const id = config.id;
+  const stripIdentityHeaders = traefikHeadersMiddleware({
+    ...metadata,
+    name: `${config.name}-strip-identity`,
+    // An empty value removes the header.
+    headers: {
+      customRequestHeaders: Object.fromEntries(responseHeaders.map((header) => [header, ''])),
+    },
+    ...(id ? { id: `${id}StripIdentity` } : {}),
+  });
+  const forwardAuth = traefikForwardAuthMiddleware({
+    ...config,
+    name: `${config.name}-forward-auth`,
+    ...(id ? { id: `${id}ForwardAuth` } : {}),
+  });
+  const ref = (name: string) => ({ name, namespace: config.namespace });
+  const chain = traefikChainMiddleware({
+    ...metadata,
+    middlewares: [ref(`${config.name}-strip-identity`), ref(`${config.name}-forward-auth`)],
+  });
+  chain.dependsOn(stripIdentityHeaders);
+  chain.dependsOn(forwardAuth);
+  return { stripIdentityHeaders, forwardAuth, chain };
 }
 
 function metadataOf(
