@@ -153,6 +153,45 @@ describe('vpaBootstrap — direct mode', () => {
     expect(spec.install.createNamespace).toBe(true);
   });
 
+  it('renders its lifecycle policy through the shared helper, with caller overrides', () => {
+    const lifecycle = (spec: ReleaseSpec) => {
+      const { install, upgrade, driftDetection, timeout } = spec as unknown as Record<
+        string,
+        unknown
+      >;
+      return { timeout, install, upgrade, driftDetection };
+    };
+    expect(lifecycle(release(direct()))).toEqual({
+      timeout: '10m',
+      install: { remediation: { retries: 3 }, createNamespace: true, crds: 'CreateReplace' },
+      upgrade: {
+        remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
+        crds: 'CreateReplace',
+      },
+      driftDetection: { mode: 'enabled' },
+    });
+
+    const tuned = makeVpaBootstrap({
+      install: { timeout: '20m' },
+      upgrade: { crds: 'Skip', remediation: { retries: 5 } },
+      driftDetection: { mode: 'warn' },
+    });
+    expect(lifecycle(release(direct(SPEC, tuned)))).toEqual({
+      timeout: '10m',
+      install: {
+        timeout: '20m',
+        remediation: { retries: 3 },
+        createNamespace: true,
+        crds: 'CreateReplace',
+      },
+      upgrade: {
+        remediation: { retries: 5, remediateLastFailure: true, strategy: 'rollback' },
+        crds: 'Skip',
+      },
+      driftDetection: { mode: 'warn' },
+    });
+  });
+
   it('maps components, flags and placement onto chart values', () => {
     const values = release(direct()).values;
     expect(values.fullnameOverride as unknown).toBe('vpa');

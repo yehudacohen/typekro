@@ -8,6 +8,7 @@
 // @see https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/api.md
 
 import { type Type, type } from 'arktype';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // ============================================================================
 // Shared Kubernetes shapes
@@ -367,8 +368,12 @@ export const VpaHelmRepositorySingletonStatusSchema: Type<{ ready: boolean }> = 
 /**
  * Build-time options for {@link makeVpaBootstrap}. These decide which
  * resources exist, so they must be concrete.
+ *
+ * `install`, `upgrade` and `driftDetection` are the Flux lifecycle options
+ * every TypeKro HelmRelease factory takes. They override the release's
+ * defaults field by field.
  */
-export interface VpaBootstrapBuildOptions {
+export interface VpaBootstrapBuildOptions extends HelmReleaseLifecycleOptions {
   /** Composition name. @default 'vpa-bootstrap' */
   readonly name?: string;
   /** KRO kind. @default 'VpaBootstrap' */
@@ -396,7 +401,7 @@ export interface VpaHelmRepositoryConfig {
 }
 
 /** Configuration for {@link vpaHelmRelease}. */
-export interface VpaHelmReleaseConfig {
+export interface VpaHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   /** `HelmRelease` name, also pinned as the Helm release name. */
   name: string;
   /** Namespace of the `HelmRelease` object. @default 'flux-system' */

@@ -97,6 +97,9 @@ export function makeVpaBootstrap(
         repositoryName: DEFAULT_VPA_REPOSITORY_NAME,
         repositoryNamespace: DEFAULT_FLUX_NAMESPACE,
         createNamespace: !ownsNamespace,
+        ...(options.install ? { install: options.install } : {}),
+        ...(options.upgrade ? { upgrade: options.upgrade } : {}),
+        ...(options.driftDetection ? { driftDetection: options.driftDetection } : {}),
         values: mapVpaConfigToHelmValues(spec, options.values),
         id: 'vpaHelmRelease',
       });

@@ -179,7 +179,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `VPA_CERT_MANAGER_TLS_SECRET_KEYS`). Recommender flags are typed (minimum CPU and memory,
   target percentiles, margin, decay half-lives, memory aggregation window, checkpoint or Prometheus
   history and `historyLength`, recommender name), as are the updater's `minReplicas` and
-  `evictionTolerance`. Flux creates and replaces the chart's `crds/` on every upgrade. A typed
+  `evictionTolerance`. Flux creates and replaces the chart's `crds/` on every upgrade.
+  `makeVpaBootstrap` and `vpaHelmRelease` take the Flux `install`, `upgrade` and `driftDetection`
+  options and render them through `helmReleaseLifecycle`, like the other integrations. A typed
   `verticalPodAutoscaler` factory (`autoscaling.k8s.io/v1`) covers `targetRef`, every update mode,
   `minReplicas`, eviction requirements, container policies and `recommenders`, and is ready on
   `RecommendationProvided=True` (or once stored, with `readiness: 'accepted'`).
