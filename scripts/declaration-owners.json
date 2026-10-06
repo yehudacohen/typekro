@@ -90,7 +90,9 @@
     },
     {
       "owner": "crowdsec",
-      "paths": ["factories/crowdsec/**"]
+      "paths": [
+        "factories/crowdsec/**"
+      ]
     },
     {
       "owner": "dagster",
