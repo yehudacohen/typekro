@@ -17,6 +17,10 @@ export type {
 // helm-repository.ts
 export { createHelmRepositoryReadinessEvaluator, helmRepository } from './helm-repository.js';
 
+// lifecycle.ts
+export type { HelmReleaseLifecycleSpec } from './lifecycle.js';
+export { helmReleaseLifecycle } from './lifecycle.js';
+
 // readiness-evaluators.ts
 export {
   createComprehensiveHelmReadinessEvaluator,
@@ -33,11 +37,15 @@ export { helmReleaseConditionSummary } from './status.js';
 
 // types.ts
 export type {
+  HelmReleaseCrdsPolicy,
+  HelmReleaseInstallPolicy,
+  HelmReleaseLifecycleOptions,
   HelmReleasePostRenderer,
   HelmReleasePostRendererImage,
   HelmReleasePostRendererPatch,
   HelmReleasePostRendererPatchTarget,
   HelmReleaseSpec,
   HelmReleaseStatus,
+  HelmReleaseUpgradePolicy,
   HelmReleaseValuesFromSource,
 } from './types.js';

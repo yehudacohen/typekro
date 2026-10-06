@@ -1,5 +1,6 @@
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 const externalSecretShape = {
   name: 'string',
@@ -114,9 +115,7 @@ export const HatchetHelmReleaseConfigSchema = type({
   'id?': 'string',
 });
 
-export type HatchetHelmReleaseConfig = Omit<
-  typeof HatchetHelmReleaseConfigSchema.infer,
-  'values'
-> & {
-  values?: TypeKroChartValue<Record<string, unknown>>;
-};
+export type HatchetHelmReleaseConfig = Omit<typeof HatchetHelmReleaseConfigSchema.infer, 'values'> &
+  HelmReleaseLifecycleOptions & {
+    values?: TypeKroChartValue<Record<string, unknown>>;
+  };

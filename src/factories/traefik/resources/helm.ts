@@ -14,6 +14,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -139,15 +140,19 @@ export function traefikHelmRelease(
       // name from moving when a caller changes the install namespace, which
       // Helm treats as a different release entirely.
       releaseName: config.name,
-      install: {
-        createNamespace: config.createNamespace ?? false,
-        crds,
-        remediation: { retries: 3 },
-      },
-      upgrade: {
-        crds,
-        remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
-      },
+      // Nested install/upgrade fields override these defaults field by field,
+      // so `install.crds` / `upgrade.crds` can still split the shared policy.
+      ...helmReleaseLifecycle(config, {
+        install: {
+          createNamespace: config.createNamespace ?? false,
+          crds,
+          remediation: { retries: 3 },
+        },
+        upgrade: {
+          crds,
+          remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
+        },
+      }),
       // The mapper's output is a graph-aware value tree — refs and CEL
       // expressions live inside it — so it is handed to Flux as-is. The cast
       // re-states that: `Composable<>` widens every optional branch of the
