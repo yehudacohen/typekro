@@ -25,7 +25,7 @@ export type TraefikResourceConfig<TSpec extends object> = TraefikResourceMetadat
 };
 
 /**
- * Readiness evaluator for a Traefik CRD.
+ * Readiness evaluator for a Traefik CRD: always ready, as none has a status subresource.
  *
  * **Why always-ready:** none of the `traefik.io/v1alpha1` kinds
  * (`IngressRoute`, `IngressRouteTCP`, `Middleware`, `TLSOption`, `TLSStore`,

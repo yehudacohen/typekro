@@ -14,6 +14,7 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // ============================================================================
 // Shared Schema Shapes
@@ -230,10 +231,8 @@ export const InngestHelmReleaseConfigSchema = type({
 });
 
 /** Configuration for the Inngest Helm release. */
-export type InngestHelmReleaseConfig = Omit<
-  typeof InngestHelmReleaseConfigSchema.infer,
-  'values'
-> & {
-  /** Graph-aware Helm values serialized recursively by TypeKro. */
-  values?: TypeKroChartValues<Record<string, unknown>>;
-};
+export type InngestHelmReleaseConfig = Omit<typeof InngestHelmReleaseConfigSchema.infer, 'values'> &
+  HelmReleaseLifecycleOptions & {
+    /** Graph-aware Helm values serialized recursively by TypeKro. */
+    values?: TypeKroChartValues<Record<string, unknown>>;
+  };

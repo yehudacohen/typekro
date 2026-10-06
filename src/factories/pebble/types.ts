@@ -3,6 +3,7 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // Common Kubernetes types
 export interface ResourceRequirements {
@@ -124,7 +125,7 @@ export interface PebbleHelmRepositoryConfig {
 }
 
 // Pebble Helm Release Configuration
-export interface PebbleHelmReleaseConfig {
+export interface PebbleHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   name: string;
   namespace?: string;
   chart?: {

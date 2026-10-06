@@ -37,6 +37,16 @@ interface MapShape {
 }
 type SchemaShape = ObjectShape | MapShape | undefined;
 
+/**
+ * Key a schema reference enumerates when its shape is a map or unknown, so
+ * `Object.keys(spec.X).length > 0` holds during analysis. Reserved: a user spec
+ * must not declare a field with this name.
+ */
+const UNKNOWN_SHAPE_KEY = '__typekroSchemaKey';
+
+/** Reads the ArkType JSON node a schema reference was created with. Internal. */
+const SCHEMA_NODE = Symbol('typekro.schemaNode');
+
 function appendFieldPathSegment(
   fieldPath: string,
   prop: string | symbol,
@@ -133,6 +143,10 @@ function createSchemaRefFactory<T = unknown>(
         prop === 'fieldPath'
       ) {
         return target[prop as keyof typeof target];
+      }
+
+      if (prop === SCHEMA_NODE) {
+        return schemaNode;
       }
 
       // Handle toString specially to return a detectable string for template literals
@@ -258,7 +272,7 @@ function createSchemaRefFactory<T = unknown>(
         // Sentinel key for map/unknown shapes so `Object.keys(spec.X).length > 0`
         // evaluates to true. This is a **reserved property name** — user specs
         // must not declare a field literally named `__typekroSchemaKey`.
-        keys.add('__typekroSchemaKey');
+        keys.add(UNKNOWN_SHAPE_KEY);
       }
       return [...keys];
     },
@@ -275,9 +289,9 @@ function createSchemaRefFactory<T = unknown>(
           configurable: true,
         };
       }
-      if (prop === '__typekroSchemaKey') {
+      if (prop === UNKNOWN_SHAPE_KEY) {
         return {
-          value: createSchemaRefFactory(`${fieldPath}.__typekroSchemaKey`, undefined, optional),
+          value: createSchemaRefFactory(`${fieldPath}.${UNKNOWN_SHAPE_KEY}`, undefined, optional),
           writable: false,
           enumerable: true,
           configurable: true,
@@ -441,6 +455,44 @@ export function createSchemaProxy<
  */
 export function isSchemaReference(ref: KubernetesRef<unknown>): boolean {
   return ref.resourceId === '__schema__';
+}
+
+/**
+ * The child fields a schema reference's ArkType shape declares, or `undefined`
+ * when that is unknown: a reference that is not into the schema, or a schema
+ * field typed as a map, a scalar, or with no schema threaded through.
+ *
+ * An undeclared field can never be set on an instance, so a caller that reads
+ * fields off a whole-object reference can skip the ones not listed here instead
+ * of emitting CEL that selects a field the schema does not have.
+ */
+export function declaredSchemaFields(ref: KubernetesRef<unknown>): ReadonlySet<string> | undefined {
+  if (!isSchemaReference(ref)) return undefined;
+  const keys = Object.keys(ref);
+  return keys.includes(UNKNOWN_SHAPE_KEY) ? undefined : new Set(keys);
+}
+
+/**
+ * Whether a schema reference is declared as an integer or a float, as KRO's
+ * SimpleSchema will type it (`'number.integer'` is `integer`, a plain
+ * `'number'` is `float`), or `undefined` when that is unknown: a reference that
+ * is not into the schema, or a field typed as a union, a map or a non-number.
+ */
+export function declaredSchemaNumberKind(
+  ref: KubernetesRef<unknown>
+): 'integer' | 'float' | undefined {
+  if (!isSchemaReference(ref)) return undefined;
+  const node: unknown = Reflect.get(ref, SCHEMA_NODE);
+  if (node === 'number') return 'float';
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return undefined;
+  const { domain, divisor, unit } = node as { domain?: unknown; divisor?: unknown; unit?: unknown };
+  if (typeof unit === 'number') return Number.isInteger(unit) ? 'integer' : 'float';
+  if (domain !== 'number') return undefined;
+  const rule =
+    typeof divisor === 'object' && divisor !== null
+      ? (divisor as { rule?: unknown }).rule
+      : divisor;
+  return rule === 1 ? 'integer' : 'float';
 }
 
 /**

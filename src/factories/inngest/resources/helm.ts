@@ -17,6 +17,7 @@ import {
   type HelmRepositoryStatus,
   helmRepository,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type { InngestHelmReleaseConfig, InngestHelmRepositoryConfig } from '../types.js';
@@ -106,6 +107,7 @@ export function inngestHelmRelease(
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
+    ...helmReleaseLifecycle(config, {}),
     values: {
       ...(config.values || {}),
       // TypeKro owns the Namespace resource. The upstream chart otherwise

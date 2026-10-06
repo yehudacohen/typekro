@@ -10,6 +10,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type { OpenSearchOperatorHelmReleaseConfig } from '../types.js';
@@ -58,7 +59,7 @@ export function openSearchOperatorHelmRelease(
       namespace: config.repositoryNamespace,
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
+    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
     values: isKubernetesRef(config.values)
       ? Cel.default(config.values, {})
       : (config.values ?? {}),
