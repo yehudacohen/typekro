@@ -158,6 +158,34 @@ describe('kedaBootstrap — direct mode', () => {
     expect(spec.install.createNamespace).toBe(true);
   });
 
+  it('renders its lifecycle policy through the shared helper, with caller overrides', () => {
+    const lifecycle = (spec: ReleaseSpec) => {
+      const { install, upgrade, driftDetection, timeout } = spec as unknown as Record<
+        string,
+        unknown
+      >;
+      return { timeout, install, upgrade, driftDetection };
+    };
+    expect(lifecycle(release(direct()))).toEqual({
+      timeout: '10m',
+      install: { remediation: { retries: 3 }, createNamespace: true },
+      upgrade: { remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' } },
+      driftDetection: { mode: 'enabled' },
+    });
+
+    const tuned = makeKedaBootstrap({
+      install: { timeout: '20m' },
+      upgrade: { remediation: { retries: 5 } },
+      driftDetection: { mode: 'warn' },
+    });
+    expect(lifecycle(release(direct(SPEC, tuned)))).toEqual({
+      timeout: '10m',
+      install: { timeout: '20m', remediation: { retries: 3 }, createNamespace: true },
+      upgrade: { remediation: { retries: 5, remediateLastFailure: true, strategy: 'rollback' } },
+      driftDetection: { mode: 'warn' },
+    });
+  });
+
   it('maps every component onto the chart layout', () => {
     const values = release(direct()).values;
     expect(values.watchNamespace as unknown).toBe('shop,jobs');

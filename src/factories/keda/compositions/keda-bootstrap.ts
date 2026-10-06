@@ -95,6 +95,9 @@ export function makeKedaBootstrap(
         repositoryName: DEFAULT_KEDA_REPOSITORY_NAME,
         repositoryNamespace: DEFAULT_FLUX_NAMESPACE,
         createNamespace: !ownsNamespace,
+        ...(options.install ? { install: options.install } : {}),
+        ...(options.upgrade ? { upgrade: options.upgrade } : {}),
+        ...(options.driftDetection ? { driftDetection: options.driftDetection } : {}),
         values: mapKedaConfigToHelmValues(spec, options.values, { keepCrds }),
         id: 'kedaHelmRelease',
       });

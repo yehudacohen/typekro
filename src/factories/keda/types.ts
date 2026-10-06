@@ -12,6 +12,7 @@
 
 import type { V1JobSpec } from '@kubernetes/client-node';
 import { type Type, type } from 'arktype';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // ============================================================================
 // Shared shapes
@@ -592,8 +593,12 @@ export const KedaHelmRepositorySingletonStatusSchema: Type<{ ready: boolean }> =
 /**
  * Build-time options for {@link makeKedaBootstrap}. These decide which
  * resources exist, so they must be concrete.
+ *
+ * `install`, `upgrade` and `driftDetection` are the Flux lifecycle options
+ * every TypeKro HelmRelease factory takes. They override the release's
+ * defaults field by field.
  */
-export interface KedaBootstrapBuildOptions {
+export interface KedaBootstrapBuildOptions extends HelmReleaseLifecycleOptions {
   /** Composition name. @default 'keda-bootstrap' */
   readonly name?: string;
   /** KRO kind. @default 'KedaBootstrap' */
@@ -626,7 +631,7 @@ export interface KedaHelmRepositoryConfig {
 }
 
 /** Configuration for {@link kedaHelmRelease}. */
-export interface KedaHelmReleaseConfig {
+export interface KedaHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   /** `HelmRelease` name, also pinned as the Helm release name. */
   name: string;
   /** Namespace of the `HelmRelease` object. @default 'flux-system' */

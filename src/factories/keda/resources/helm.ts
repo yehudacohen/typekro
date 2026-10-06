@@ -8,6 +8,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -85,14 +86,19 @@ export function kedaHelmRelease(
       targetNamespace: config.targetNamespace ?? DEFAULT_KEDA_NAMESPACE,
       // Pinned so Flux does not compose `<targetNamespace>-<name>`.
       releaseName: config.name,
-      install: {
-        createNamespace: config.createNamespace ?? false,
-        remediation: { retries: 3 },
-      },
-      upgrade: {
-        remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
-      },
-      driftDetection: { mode: 'enabled' },
+      // The KEDA policy, through the shared lifecycle helper: caller `install`,
+      // `upgrade` and `driftDetection` override it field by field. Install and
+      // upgrade take their timeout from `spec.timeout`.
+      ...helmReleaseLifecycle(config, {
+        install: {
+          createNamespace: config.createNamespace ?? false,
+          remediation: { retries: 3 },
+        },
+        upgrade: {
+          remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
+        },
+        driftDetection: { mode: 'enabled' },
+      }),
       ...(config.values ? { values: config.values as Record<string, unknown> } : {}),
     },
   }).withReadinessEvaluator(kedaHelmReleaseReadinessEvaluator);
