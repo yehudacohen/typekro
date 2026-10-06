@@ -7,7 +7,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type } from 'arktype';
+import * as k8s from '@kubernetes/client-node';
+import { of } from '@kubernetes/client-node/dist/gen/rxjsStub.js';
 import { dump, load, loadAll } from 'js-yaml';
+
+import { createBunCompatibleKubernetesObjectApi } from '../../../src/core/kubernetes/bun-api-client.js';
 
 import {
   assertCrowdsecBootstrapOptions,
@@ -390,6 +394,49 @@ describe('crowdsecBootstrap storage, CAPI and agents', () => {
       from: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'edge' } } }],
       ports: [{ port: 7422, protocol: 'TCP' }],
     });
+  });
+
+  it('keeps the NetworkPolicy peers on the direct-mode wire path', async () => {
+    const { all } = directValues({
+      appsec: {},
+      networkPolicy: { traefikNamespace: 'edge', metricsNamespace: 'monitoring' },
+    });
+    const policies = all.filter((d) => d.kind === 'NetworkPolicy');
+    expect(policies).toHaveLength(2);
+
+    // The object client direct mode deploys through, with the HTTP layer stubbed.
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: 'wire', server: 'https://127.0.0.1:6443', skipTLSVerify: true }],
+      users: [{ name: 'wire', token: 'wire' }],
+      contexts: [{ name: 'wire', cluster: 'wire', user: 'wire' }],
+      currentContext: 'wire',
+    });
+    const client = createBunCompatibleKubernetesObjectApi(kubeConfig);
+    Reflect.set(client, 'resource', async () => ({
+      kind: 'NetworkPolicy',
+      name: 'networkpolicies',
+      namespaced: true,
+    }));
+    const bodies: unknown[] = [];
+    Reflect.set(Reflect.get(client, 'configuration'), 'httpApi', {
+      send(request: { getBody(): unknown }) {
+        bodies.push(JSON.parse(String(request.getBody())));
+        return of({
+          httpStatusCode: 200,
+          headers: { 'content-type': 'application/json' },
+          body: { text: async () => '{}' },
+        });
+      },
+    });
+
+    for (const policy of policies) await client.create(policy as k8s.KubernetesObject);
+    expect(bodies).toHaveLength(2);
+    for (const [index, policy] of policies.entries()) {
+      const sent = bodies[index] as { spec: { ingress: { from: unknown[] }[] } };
+      expect(sent.spec as unknown).toEqual(policy.spec);
+      for (const rule of sent.spec.ingress) expect(rule.from.length).toBeGreaterThan(0);
+    }
   });
 
   it('lets raw values fill gaps but never re-expose LAPI', () => {
