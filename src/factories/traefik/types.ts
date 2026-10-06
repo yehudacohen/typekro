@@ -50,7 +50,7 @@ import type {
   Toleration,
 } from '../cert-manager/types.js';
 import { gatewayApiClusterResourceMetadataShape } from '../gateway-api/types.js';
-import type { HelmReleaseCrdsPolicy } from '../helm/types.js';
+import type { HelmReleaseCrdsPolicy, HelmReleaseLifecycleOptions } from '../helm/types.js';
 import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js';
 import { parseTraefikTrustedRange } from './utils/trusted-range.js';
 
@@ -1673,9 +1673,10 @@ export const TraefikHelmReleaseConfigSchema = type({
  * checked — one level down, by {@link TraefikManagedHelmValues} and the
  * mapper's own tests.
  */
-export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.infer & {
-  readonly values?: TraefikMappedHelmValues;
-};
+export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.infer &
+  HelmReleaseLifecycleOptions & {
+    readonly values?: TraefikMappedHelmValues;
+  };
 
 // ============================================================================
 // Bootstrap composition contract (ArkType)
