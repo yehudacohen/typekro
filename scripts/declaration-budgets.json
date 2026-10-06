@@ -10,7 +10,8 @@
   "sharedPoolBytes": 241152,
   "pooledOwners": [
     "aws-load-balancer-controller",
-    "karpenter"
+    "karpenter",
+    "vpa"
   ],
   "docDropFraction": 0.2,
   "owners": {

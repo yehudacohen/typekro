@@ -185,6 +185,12 @@
       ]
     },
     {
+      "owner": "vpa",
+      "paths": [
+        "factories/vpa/**"
+      ]
+    },
+    {
       "owner": "webapp",
       "paths": [
         "factories/webapp/**"
