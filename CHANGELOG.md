@@ -7,7 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Direct-mode NetworkPolicies kept their ports but lost their peers, so they allowed any
+  source.** `@kubernetes/client-node` models `ingress[].from` as `_from`, while TypeKro manifests
+  carry the wire spelling `from`. In direct mode, the SDK's typed serialization dropped `from` on
+  create and patch, so every ingress rule admitted traffic from anywhere on its ports. Affected
+  versions: up to and including 0.44.1. Affected in direct mode: `networkPolicy` and
+  `simple.NetworkPolicy`, the policies of the Harbor and OpenSearch compositions, and
+  NetworkPolicies loaded from YAML files or manifests (`yamlFile`, `createResource`). KRO mode is
+  not affected, because the KRO controller applies the templates. `egress[].to` is not renamed by
+  the SDK and was not affected. The object client now sends and reads NetworkPolicies as raw
+  JSON, as it already did for CRDs, and rewrites the SDK spellings (`_from`, `_default`, `_int`)
+  to the wire fields so an object built with the SDK's types is not stripped either. Re-deploy
+  direct-mode NetworkPolicies to restore their peers.
+
 ### Added
+
+- **New integration: `typekro/aws-load-balancer-controller`.** `awsLoadBalancerControllerBootstrap`
+  installs the AWS Load Balancer Controller from eks-charts (chart 3.5.0, controller v3.5.0)
+  through a Flux `HelmRepository` singleton and a `HelmRelease`. It works in both direct and KRO
+  mode, and a unit test checks that both render the same values. The spec covers `clusterName`,
+  `region`, `vpcId`, the service account (an IRSA annotation, or a pinned name for an EKS Pod
+  Identity association), replicas, a PodDisruptionBudget (default `maxUnavailable: 1`), topology
+  spread constraints, `enableServiceMutatorWebhook` (default `false`, so Services that belong to
+  another controller are not taken over), `createIngressClassResource`, `defaultTargetType`
+  (default `ip`), resources, node selector, tolerations and log level. `keepTLSSecret` is on, so
+  upgrades keep the chart-generated webhook certificate. Status (`ready`, `failed`,
+  `phase` and the installed chart `version`) comes from the HelmRelease. The release defaults to
+  `install.crds` and `upgrade.crds` of `CreateReplace`, because the chart ships its CRDs in
+  `crds/`. `makeAwsLoadBalancerControllerBootstrap` takes the release's install, upgrade and drift
+  options and raw chart `values` at build time. Typed `targetGroupBinding` and
+  `ingressClassParams` factories cover the `elbv2.k8s.aws/v1beta1` resources. A
+  `TargetGroupBinding` must name its target group by `targetGroupARN`, `targetGroupName` or both:
+  the type requires one, and the factory throws when neither is set. It also throws on the
+  webhook's static rules: `nodeSelector` with `ip` targets, `iamRoleArnToAssume` or a QUIC
+  protocol with `instance` targets, and a malformed `vpcID`. Raw `values` are for chart
+  settings the spec does not map: setting a mapped value (`image`, `serviceAccount.annotations`,
+  `resources`, ...) throws and names the spec field to use, so an instance's IRSA annotation or
+  image is never silently dropped. A build-time `podDisruptionBudget` (e.g. a percentage) becomes
+  the default PDB, and an instance's own PDB replaces it whole. TypeKro creates no
+  AWS resources; the docs list the IAM policy for the pinned version and the subnet discovery
+  tags. With the Service webhook off, a Service opts in with
+  `loadBalancerClass: service.k8s.aws/nlb`, which the docs explain. The integration is a subpath
+  export only and draws 20.3 KiB from the shared declaration pool.
+- **Every integration HelmRelease factory accepts `install`, `upgrade` and `driftDetection`.**
+  That covers APISix, cert-manager, Cilium, ClickHouse, ClickStack (both releases), CNPG, Dagster,
+  Envoy Gateway and Envoy AI Gateway, External-DNS, Harbor, Hatchet, Inngest, NATS, OpenSearch,
+  Ory (all four charts), Pebble, Rook Ceph (both charts), Traefik and Valkey. The options are the
+  ones the generic `helmRelease` already takes: install and upgrade `timeout`, the CRD policy
+  (`crds`: `Skip`, `Create` or `CreateReplace`), `remediation` (`retries`, `remediateLastFailure`,
+  `ignoreTestFailures`, and `strategy` on upgrade), `install.createNamespace`, and drift detection.
+  Each field you set overrides the factory's default for that field. A release whose chart ships
+  CRDs in its `crds/` directory can now set `upgrade.crds: CreateReplace` directly instead of
+  patching the HelmRelease with an aspect. (cert-manager's CRDs are chart templates, so the Flux
+  CRD policy does not affect them; its chart value `crds.enabled` does.) They all share one helper, `helmReleaseLifecycle`, which
+  `typekro/helm` exports for custom integration factories, together with the
+  `HelmReleaseLifecycleOptions`, `HelmReleaseInstallPolicy`, `HelmReleaseUpgradePolicy` and
+  `HelmReleaseCrdsPolicy` types. In KRO mode the defaults also hold when an option is a schema
+  reference, including a whole object such as `install: spec.install`: each defaulted field renders
+  as a CEL fallback (the instance's value when set, otherwise the default), and fields the instance
+  schema does not declare are not read from it. A schema field passed as `retries` must be declared
+  `'number.integer'`: a plain ArkType `'number'` is a KRO float, which the HelmRelease's integer
+  field rejects, so the factory throws a `ValidationError` at build time, as it does in direct mode
+  for a fractional value such as `2.7`. TypeKro never coerces the value.
+  An optional schema field used as a fallback (Cilium's flat `createNamespace`) is guarded, so an
+  instance that sets neither field omits it. A reference to another
+  resource gets no fallback, so KRO still waits for that field. See "Install, upgrade and CRD
+  policy" in the Flux docs.
+
+- **Traefik behind an AWS NLB, with TLS from cert-manager.** The bootstrap can now front a public
+  API with a TCP-passthrough NLB, with TLS terminated in Traefik.
+  - `service.loadBalancerClass`, `service.externalTrafficPolicy` and
+    `service.loadBalancerSourceRanges` on the owned entrypoint Service. Each is emitted only when
+    set (guarded with `omit()` in KRO mode), so a `ClusterIP` Service stays valid.
+  - `awsNlbServiceAnnotations({ scheme, targetType, proxyProtocol, crossZone, ... })` returns AWS
+    Load Balancer Controller annotations for IP targets with PROXY protocol v2 by default. It has
+    no certificate inputs, and it throws on ambiguous attribute combinations the controller would
+    silently resolve, and on malformed values.
+  - `entrypoints.{web,websecure}.proxyProtocol.trustedIPs` and `.forwardedHeaders.trustedIPs`.
+    Each entry must be one IP address or CIDR range in a strict format (no spaces, commas,
+    leading zeros or IPv4-mapped addresses, at most 64 entries), since Go reads `0.0.0.0/00` and
+    `::ffff:0:0/96` as trust-all. A `/0` range is refused: in direct mode when the values are
+    mapped; in KRO mode by an `x-kubernetes-validations` rule on the generated CRD (the items are
+    bounded to 43 characters through a SimpleSchema custom type so the rule fits the CEL cost
+    budget), and the rendered values keep only entries in the strict format as a second line of
+    defence. An `insecure` proxy-protocol or
+    forwarded-header flag, or a `/0` range, in raw `values`, `additionalArguments` or `env` throws
+    too, including an `insecure` value other than `false` (the chart treats `'false'` as true), a
+    raw `trustedIPs` string, and a value carrying a newline or other control character. So does trust TypeKro cannot see: a non-empty `envFrom`, or an `env` entry for an
+    entrypoint's PROXY-protocol or forwarded-header variable whose value comes from `valueFrom`.
+    A static configuration file would replace the flags, so `--configFile` and raw-values mounts
+    at or above the files Traefik searches (`/etc/traefik/traefik.*`, `/traefik.*`,
+    `/.config/traefik.*`) are refused as well. The escape hatch is the build option
+    `dangerouslyTrustAnySource`. Raw `values` are trusted input: the guard catches
+    misconfiguration, not deliberate YAML injection through raw values.
+  - `validateTraefikHelmValues(values, { serviceAnnotations })` warns when the NLB sends PROXY
+    headers to an entrypoint that does not accept them, and about trusted ranges broader than
+    `/8` (IPv4) or `/16` (IPv6).
+  - `traefikTlsCertificate({ name, namespace, hostnames, issuerRef })` creates a cert-manager
+    `Certificate` (ECDSA P-256, `rotationPolicy: Always`) for an `IngressRoute`'s
+    `tls.secretName`. `defaultTlsStore.certificate` makes the bootstrap own the `Certificate`
+    behind the default `TLSStore`.
+  - The Traefik docs describe the HTTP-01 flow with an Ingress or Gateway solver.
+- **Traefik production options.**
+  - Entrypoint shutdown timing (`requestAcceptGraceTimeout`, `graceTimeOut`) and
+    `terminationGracePeriodSeconds`. `validateTraefikHelmValues` warns when Kubernetes would kill
+    Traefik mid-drain.
+  - `podDisruptionBudget`, plus `scheduling.{nodeSelector,tolerations,priorityClassName,zoneSpread,nodeSpread}`.
+  - `providers.allowEmptyServices` (default `true`: a route with no endpoints answers 503), `providers.namespaces`
+    and `providers.allowCrossNamespace`.
+  - The build option `accessLog` (`preset: 'default' | 'crowdsec'`, per-header and per-field
+    modes, `queryParameters`). `TRAEFIK_CROWDSEC_ACCESS_LOG_FIELDS` lists the fields the CrowdSec
+    preset pins.
+- **Traefik plugins and the forwardAuth secure pair.**
+  - The build options `plugins` (`moduleName`, exact `version`, and a required SHA-256 `hash`,
+    which Traefik verifies), `localPlugins` (`inlinePlugin` or `localPath`, mounted at
+    `/plugins-local/src/<moduleName>`) and `abortOnPluginFailure`. The last defaults to `true`
+    once any plugin is declared. The chart writes plugin fields into its templates unescaped, so
+    `moduleName`, `version`, `volumeName`, `subPath` and inline source file names are limited to
+    the characters their real forms use. Local plugin names must be DNS-1123 labels (the chart
+    makes volume and ConfigMap names from them), and inline source file names ConfigMap keys.
+  - `traefikPluginMiddleware`, and `traefikSecretValue(secret, key)` for the `urn:k8s:secret`
+    values Traefik resolves in plugin configuration.
+  - `traefikForwardAuthSecurePair` chains a `headers` Middleware that strips the
+    `authResponseHeaders` from the client's request in front of the `forwardAuth`, so a client
+    can't hand the authorizer its own identity headers.
+  - `validateTraefikHelmValues` warns about raw-values plugins that carry no hash.
+  - `entrypoints.{web,websecure}.aliasHeadersStrategy` (`keep`, `delete` or `reject`).
+  - The integration suite pins how the Redis-backed rate limit fails: 500 while Valkey is down,
+    then recovery. The docs list mitigations.
+
+- **`certManagerBootstrap`: `crds`, PodDisruptionBudgets and topology spread constraints.**
+  `crds.enabled` and `crds.keep` (both default `true`) replace `installCRDs`.
+  `controller`, `webhook` and `cainjector` each take `podDisruptionBudget` (`enabled`, and
+  `minAvailable` or `maxUnavailable` as a string such as `'1'` or `'50%'`) and
+  `topologySpreadConstraints`. The schema also declares `serviceAccount.annotations` for all three,
+  so KRO instances can set them too, for example for workload identity. The lease namespace
+  defaults to the install namespace instead of `kube-system`.
 
 - **`typekro/karpenter`: Karpenter for EKS.** `karpenterBootstrap` installs the controller with
   Flux from the official OCI charts, pinned to 1.14.1. As upstream recommends for GitOps, the CRDs
@@ -28,6 +165,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IMDSv1 and a controller allowed onto its own nodes. TypeKro creates no AWS resources; the docs list
   the IAM, SQS, EventBridge, tagging and access-entry prerequisites. The subpath draws on the shared
   declaration pool and is not re-exported from `typekro`.
+
+### Changed
+
+- **Behaviour change in KRO mode: a lifecycle default is no longer written into your own schema
+  field.** When an optional field of your composition's spec (say `spec.installTimeout`) was passed
+  as `install.timeout` to `helmRelease` (or to an integration factory with a lifecycle default),
+  the factory's default, say `10m`, used to become that field's default in the RGD schema
+  (`default="10m"`). The default now lives in the HelmRelease
+  template as a CEL fallback, and the field itself stays unset when the instance leaves it unset.
+  The HelmRelease gets the same value as before. Anything else that reads the field, such as a
+  ConfigMap built from `spec.installTimeout`, used to see `"10m"` and now sees it absent, which is
+  what direct mode has always done.
+- **Behaviour change: the cert-manager, Cilium, External-DNS and Pebble HelmReleases now get the
+  generic `helmRelease` defaults.** These are `install.timeout` and `upgrade.timeout` of `10m` and
+  `remediation.retries: 3` for each. They rendered no install or upgrade policy before, so Flux
+  used a 5m timeout with no retries, and a slow first install stayed Stalled until someone ran
+  `flux reconcile --reset`. With `retries` above 0, Flux also remediates every failure, the last
+  one included: a failed install is uninstalled and tried again, and a failed upgrade is rolled
+  back and tried again. Existing releases pick up the new policy on their next reconcile. The
+  chart and its values do not change. Every other factory renders the same fields with the same
+  values as before when the new options are not set. In the APISix and Traefik releases,
+  `createNamespace` and `crds` now come after `remediation`, which reorders the keys in
+  direct-mode YAML. The objects are identical, and RGD text does not change, because it is
+  emitted with sorted keys.
+
+- **Traefik bootstrap production defaults.** These change a default deployment:
+  - Both entrypoints now accept for 10s and drain for 30s on shutdown (Traefik's default is no
+    accept grace and a 10s drain), inside a pinned 60s termination grace period (the chart's
+    default, now stated explicitly).
+  - A PodDisruptionBudget with `maxUnavailable: 1` is created.
+  - Replicas spread softly across zones and nodes, counted per ReplicaSet (`matchLabelKeys:
+    [pod-template-hash]`).
+  - Prometheus is pinned to the internal `metrics` entrypoint, which is never exposed.
+  - JSON access logs keep `User-Agent` and always drop `Authorization`, `Proxy-Authorization`,
+    `Cookie` and `Set-Cookie`. Before, every header was dropped by the chart's default.
+  - `allowEmptyServices: true` (the chart's default) and `allowCrossNamespace: false` are now
+    stated explicitly. A route whose Service has no ready endpoints answers 503; set
+    `providers.allowEmptyServices: false` to drop such routes instead (a 404, or another router
+    takes the request).
+  - Both entrypoints delete request headers whose names alias another (`X_Auth_User`,
+    `X.Auth.User`) through `aliasHeadersStrategy: delete`. Traefik's default keeps them. Without
+    this, a client could get an identity header past the forwardAuth strip step to a backend that
+    folds `_` into `-`. Headers with `_` or `.` in their names are now dropped; set the strategy
+    to `keep` per entrypoint to restore them.
+
+  Raw `values` that already set `podDisruptionBudget` or `topologySpreadConstraints` keep them.
+  Raw `accessLog.fields` are replaced by the access-log policy.
+
+- **Behaviour change: cert-manager now renders `crds.enabled` / `crds.keep` instead of
+  `installCRDs`.** Chart v1.17 and later refuse `installCRDs` together with `crds.enabled`.
+  `installCRDs` is deprecated. The bootstrap maps it to `crds.enabled` when that is unset, and
+  `certManagerHelmRelease` adds no `crds` default when your `values` still set `installCRDs`.
+  `installCRDs: true` already meant `crds.enabled: true` plus `crds.keep: true`, so an existing
+  release renders the same CRDs. Direct-mode `customValues` that still set `installCRDs` own the
+  CRD setting, so no `crds` is rendered next to it. A whole `values` object passed to
+  `certManagerHelmRelease` as one schema reference cannot be inspected at build time: it must not
+  carry `installCRDs: true`. See "Migrating from installCRDs" in the cert-manager docs.
+- **Behaviour change: existing KRO instances move their leader-election lease.** They used to
+  take it in `kube-system` (the chart default); it now defaults to the install namespace. While
+  the Deployment rolls, the old pod holds the lease in `kube-system` and the new one takes the
+  lease in the install namespace, so two controllers can briefly both act as leader. Set
+  `global.leaderElection.namespace: kube-system` to keep the old lease.
+- **Behaviour change: the bootstrap no longer pins chart defaults explicitly.** Image
+  repositories and tags, `serviceAccount`, `nodeSelector`, `strategy`, `logLevel`,
+  `podSecurityPolicy` and the ServiceMonitor settings are rendered only when the spec sets them,
+  so the chart's own defaults apply. The image tags already matched the chart's `appVersion`.
+  TypeKro's own defaults stay: the resource requests and limits, `startupapicheck.timeout: 5m`
+  and `prometheus.enabled: false`. Config fields that the bootstrap schema does not declare
+  (`controller.tolerations`, `affinity`, `env`, `customValues`, ...) still apply in direct mode
+  only.
+
+### Fixed
+
+- **`helmRelease` dropped `install.crds` and `upgrade.crds`.** The types accepted them, but the
+  factory did not render them, so the release silently kept Flux's `Create` / `Skip` defaults.
+  They are now rendered.
+- **`ciliumHelmRelease` ignored `timeout`, `installTimeout`, `upgradeTimeout` and
+  `createNamespace`.** They are now rendered as `spec.timeout`, `install.timeout`,
+  `upgrade.timeout` and `install.createNamespace`. An action without its own timeout takes
+  `timeout`, and `10m` only when neither is set. In KRO mode this is decided per instance, so an
+  instance that leaves `timeout` unset still gets `10m`. `replace` and `cleanupOnFail` are still
+  not rendered.
+
+- **KRO SimpleSchema: constrained array items.** A list whose items carry a length or pattern
+  constraint (`'(string <= 43)[]'`) was emitted as `[]string | maxLength=43`, which KRO applies to
+  the list and rejects. The item constraint is now a named custom type in `spec.schema.types`,
+  named from the field path plus a short hash of it, so fields whose names differ only in case or
+  punctuation get separate types. Type names keep to letters and digits, and two different types
+  that would share a name (for example two validated structured fields) now throw
+  `KRO_CUSTOM_TYPE_NAME_COLLISION` instead of one replacing the other.
+- **The Traefik `web` → `websecure` redirect blocked ACME HTTP-01 challenges.** Traefik gives the
+  router it generates for an entrypoint redirection priority `MaxInt - 1`, so it outranked the route
+  cert-manager's HTTP-01 solver creates on `web` and answered `/.well-known/acme-challenge/<token>`
+  with a 301. Certificates could not be issued over HTTP-01 while `redirectWebToWebsecure` was on,
+  which is the default. The bootstrap now sets Traefik's `allowACMEByPass` on `web` whenever it
+  emits the redirect. Traefik then leaves `/.well-known/acme-challenge/` to the routers on `web` and
+  still redirects every other path. The redirect's priority is unchanged, so a route that names no
+  entrypoint is still redirected instead of served over plain HTTP. `TraefikPortValues` gains
+  `allowACMEByPass`. The integration suite proves the challenge path reaches a solver route on `web`
+  while a sibling path still gets a 301.
+
+- **LimitRange defaults in YAML and KRO mode.** `limitRange` emitted client-node's `_default`
+  instead of the wire field `limits[].default`, so YAML and KRO deployments created LimitRanges
+  without their default limits. The factory now writes `default` (`_default` stays a read-only
+  alias), and LimitRanges go over the wire as raw JSON so direct mode keeps the field too.
+- **ResourceSlice wire fields in direct mode.** Device attribute `int` and capacity
+  `requestPolicy.default` were dropped by the same typed serialization; ResourceSlices are now
+  sent as raw JSON. A scan of every client-node model field whose name differs from its wire
+  name found no other affected kind (ListMeta `continue` appears only in list responses).
+
+- **`certManagerBootstrap` lost most of its settings in KRO mode.** `certManagerHelmRelease`
+  stripped every schema reference and CEL expression out of the chart values, and the bootstrap
+  applied its defaults with JavaScript `||`, which collapses a schema reference to the default.
+  A KRO instance therefore always ran 1 controller replica and took its leader-election lease in
+  the chart's `kube-system` default, and its image, resources, webhook and cainjector settings
+  were ignored. The values now carry schema references, with `Cel.default` for TypeKro's own
+  defaults. KRO and direct mode render the same values, which a new parity test checks for a
+  minimal spec, a namespace-only spec, a legacy `installCRDs` spec and a highly available spec.
+  The image tag was also rendered as `''` in KRO mode when `version` was unset.
+- **cert-manager `strategy.rollingUpdate.maxSurge` / `maxUnavailable` digit strings were rejected.**
+  The schema types them as strings, and the API server accepts a string only as a percentage, so
+  `'1'` failed. A digit-only string now renders as an integer in direct and KRO mode; a percentage
+  such as `'25%'` stays a string.
 
 ## [0.44.1] - 2026-10-01
 
