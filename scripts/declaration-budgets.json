@@ -7,8 +7,13 @@
     "minBytes": 4096,
     "fraction": 0.02
   },
-  "sharedPoolBytes": 259072,
-  "pooledOwners": ["keda"],
+  "sharedPoolBytes": 241152,
+  "pooledOwners": [
+    "aws-load-balancer-controller",
+    "karpenter",
+    "keda",
+    "vpa"
+  ],
   "docDropFraction": 0.2,
   "owners": {
     "advanced": 8448,
@@ -35,7 +40,7 @@
     "pebble": 14336,
     "rook": 38912,
     "searxng": 15360,
-    "traefik": 148224,
+    "traefik": 166144,
     "valkey": 21248,
     "webapp": 16640
   }
