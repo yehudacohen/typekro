@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New integration: `typekro/aws-load-balancer-controller`.** `awsLoadBalancerControllerBootstrap`
+  installs the AWS Load Balancer Controller from eks-charts (chart 3.5.0, controller v3.5.0)
+  through a Flux `HelmRepository` singleton and a `HelmRelease`. It works in both direct and KRO
+  mode, and a unit test checks that both render the same values. The spec covers `clusterName`,
+  `region`, `vpcId`, the service account (an IRSA annotation, or a pinned name for an EKS Pod
+  Identity association), replicas, a PodDisruptionBudget (default `maxUnavailable: 1`), topology
+  spread constraints, `enableServiceMutatorWebhook` (default `false`, so Services that belong to
+  another controller are not taken over), `createIngressClassResource`, `defaultTargetType`
+  (default `ip`), resources, node selector, tolerations and log level. `keepTLSSecret` is on, so
+  upgrades keep the chart-generated webhook certificate. Status (`ready`, `failed`,
+  `phase` and the installed chart `version`) comes from the HelmRelease. The release defaults to
+  `install.crds` and `upgrade.crds` of `CreateReplace`, because the chart ships its CRDs in
+  `crds/`. `makeAwsLoadBalancerControllerBootstrap` takes the release's install, upgrade and drift
+  options and raw chart `values` at build time. Typed `targetGroupBinding` and
+  `ingressClassParams` factories cover the `elbv2.k8s.aws/v1beta1` resources. A
+  `TargetGroupBinding` must name its target group by `targetGroupARN`, `targetGroupName` or both:
+  the type requires one, and the factory throws when neither is set. It also throws on the
+  webhook's static rules: `nodeSelector` with `ip` targets, `iamRoleArnToAssume` or a QUIC
+  protocol with `instance` targets, and a malformed `vpcID`. Raw `values` are for chart
+  settings the spec does not map: setting a mapped value (`image`, `serviceAccount.annotations`,
+  `resources`, ...) throws and names the spec field to use, so an instance's IRSA annotation or
+  image is never silently dropped. A build-time `podDisruptionBudget` (e.g. a percentage) becomes
+  the default PDB, and an instance's own PDB replaces it whole. TypeKro creates no
+  AWS resources; the docs list the IAM policy for the pinned version and the subnet discovery
+  tags. With the Service webhook off, a Service opts in with
+  `loadBalancerClass: service.k8s.aws/nlb`, which the docs explain. The integration is a subpath
+  export only and draws 20.3 KiB from the shared declaration pool.
+- **Every integration HelmRelease factory accepts `install`, `upgrade` and `driftDetection`.**
+  That covers APISix, cert-manager, Cilium, ClickHouse, ClickStack (both releases), CNPG, Dagster,
+  Envoy Gateway and Envoy AI Gateway, External-DNS, Harbor, Hatchet, Inngest, NATS, OpenSearch,
+  Ory (all four charts), Pebble, Rook Ceph (both charts), Traefik and Valkey. The options are the
+  ones the generic `helmRelease` already takes: install and upgrade `timeout`, the CRD policy
+  (`crds`: `Skip`, `Create` or `CreateReplace`), `remediation` (`retries`, `remediateLastFailure`,
+  `ignoreTestFailures`, and `strategy` on upgrade), `install.createNamespace`, and drift detection.
+  Each field you set overrides the factory's default for that field. A release whose chart ships
+  CRDs in its `crds/` directory can now set `upgrade.crds: CreateReplace` directly instead of
+  patching the HelmRelease with an aspect. (cert-manager's CRDs are chart templates, so the Flux
+  CRD policy does not affect them; its chart value `crds.enabled` does.) They all share one helper, `helmReleaseLifecycle`, which
+  `typekro/helm` exports for custom integration factories, together with the
+  `HelmReleaseLifecycleOptions`, `HelmReleaseInstallPolicy`, `HelmReleaseUpgradePolicy` and
+  `HelmReleaseCrdsPolicy` types. In KRO mode the defaults also hold when an option is a schema
+  reference, including a whole object such as `install: spec.install`: each defaulted field renders
+  as a CEL fallback (the instance's value when set, otherwise the default), and fields the instance
+  schema does not declare are not read from it. A schema field passed as `retries` must be declared
+  `'number.integer'`: a plain ArkType `'number'` is a KRO float, which the HelmRelease's integer
+  field rejects, so the factory throws a `ValidationError` at build time, as it does in direct mode
+  for a fractional value such as `2.7`. TypeKro never coerces the value.
+  An optional schema field used as a fallback (Cilium's flat `createNamespace`) is guarded, so an
+  instance that sets neither field omits it. A reference to another
+  resource gets no fallback, so KRO still waits for that field. See "Install, upgrade and CRD
+  policy" in the Flux docs.
+
 - **Traefik behind an AWS NLB, with TLS from cert-manager.** The bootstrap can now front a public
   API with a TCP-passthrough NLB, with TLS terminated in Traefik.
   - `service.loadBalancerClass`, `service.externalTrafficPolicy` and
@@ -98,6 +150,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Behaviour change in KRO mode: a lifecycle default is no longer written into your own schema
+  field.** When an optional field of your composition's spec (say `spec.installTimeout`) was passed
+  as `install.timeout` to `helmRelease` (or to an integration factory with a lifecycle default),
+  the factory's default, say `10m`, used to become that field's default in the RGD schema
+  (`default="10m"`). The default now lives in the HelmRelease
+  template as a CEL fallback, and the field itself stays unset when the instance leaves it unset.
+  The HelmRelease gets the same value as before. Anything else that reads the field, such as a
+  ConfigMap built from `spec.installTimeout`, used to see `"10m"` and now sees it absent, which is
+  what direct mode has always done.
+- **Behaviour change: the cert-manager, Cilium, External-DNS and Pebble HelmReleases now get the
+  generic `helmRelease` defaults.** These are `install.timeout` and `upgrade.timeout` of `10m` and
+  `remediation.retries: 3` for each. They rendered no install or upgrade policy before, so Flux
+  used a 5m timeout with no retries, and a slow first install stayed Stalled until someone ran
+  `flux reconcile --reset`. With `retries` above 0, Flux also remediates every failure, the last
+  one included: a failed install is uninstalled and tried again, and a failed upgrade is rolled
+  back and tried again. Existing releases pick up the new policy on their next reconcile. The
+  chart and its values do not change. Every other factory renders the same fields with the same
+  values as before when the new options are not set. In the APISix and Traefik releases,
+  `createNamespace` and `crds` now come after `remediation`, which reorders the keys in
+  direct-mode YAML. The objects are identical, and RGD text does not change, because it is
+  emitted with sorted keys.
+
 - **Traefik bootstrap production defaults.** These change a default deployment:
   - Both entrypoints now accept for 10s and drain for 30s on shutdown (Traefik's default is no
     accept grace and a 10s drain), inside a pinned 60s termination grace period (the chart's
@@ -144,6 +218,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emitted with sorted keys.
 
 ### Fixed
+
+- **`helmRelease` dropped `install.crds` and `upgrade.crds`.** The types accepted them, but the
+  factory did not render them, so the release silently kept Flux's `Create` / `Skip` defaults.
+  They are now rendered.
+- **`ciliumHelmRelease` ignored `timeout`, `installTimeout`, `upgradeTimeout` and
+  `createNamespace`.** They are now rendered as `spec.timeout`, `install.timeout`,
+  `upgrade.timeout` and `install.createNamespace`. An action without its own timeout takes
+  `timeout`, and `10m` only when neither is set. In KRO mode this is decided per instance, so an
+  instance that leaves `timeout` unset still gets `10m`. `replace` and `cleanupOnFail` are still
+  not rendered.
 
 - **KRO SimpleSchema: constrained array items.** A list whose items carry a length or pattern
   constraint (`'(string <= 43)[]'`) was emitted as `[]string | maxLength=43`, which KRO applies to
