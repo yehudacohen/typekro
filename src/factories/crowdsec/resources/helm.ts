@@ -9,8 +9,13 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import type {
+  HelmReleaseLifecycleOptions,
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+} from '../../helm/types.js';
 import { createResource } from '../../shared.js';
 import {
   DEFAULT_CROWDSEC_CHART_NAME,
@@ -31,7 +36,7 @@ export interface CrowdsecHelmRepositoryConfig {
 }
 
 /** Configuration of {@link crowdsecHelmRelease}. */
-export interface CrowdsecHelmReleaseConfig {
+export interface CrowdsecHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   /** Release name, pinned as Helm's `releaseName`. */
   name: string;
   /** Namespace of the HelmRelease object. @default the Flux namespace */
@@ -109,13 +114,18 @@ export function crowdsecHelmRelease(
       // Without it Flux composes `<targetNamespace>-<name>`, and every chart
       // resource name (`<release>-service`, ...) would change with it.
       releaseName: config.name,
-      install: {
-        createNamespace: config.createNamespace ?? false,
-        remediation: { retries: 3 },
-      },
-      upgrade: {
-        remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
-      },
+      // The CrowdSec policy, through the shared lifecycle helper: caller
+      // `install`, `upgrade` and `driftDetection` override it field by field.
+      // Install and upgrade take their timeout from `spec.timeout`.
+      ...helmReleaseLifecycle(config, {
+        install: {
+          createNamespace: config.createNamespace ?? false,
+          remediation: { retries: 3 },
+        },
+        upgrade: {
+          remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
+        },
+      }),
       ...(config.values ? { values: config.values as Record<string, unknown> } : {}),
     },
   }).withReadinessEvaluator(crowdsecHelmReleaseReadinessEvaluator);

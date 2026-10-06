@@ -10,6 +10,7 @@ import type {
   V1TopologySpreadConstraint,
 } from '@kubernetes/client-node';
 import { type Type, type } from 'arktype';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // Runtime spec and status (KRO-safe values only)
 
@@ -185,8 +186,14 @@ export interface CrowdsecNetworkPolicyOptions {
   readonly metricsNamespace?: string;
 }
 
-/** Build-time options of {@link makeCrowdsecBootstrap}. */
-export interface CrowdsecBootstrapOptions {
+/**
+ * Build-time options of {@link makeCrowdsecBootstrap}.
+ *
+ * `install`, `upgrade` and `driftDetection` are the Flux lifecycle options
+ * every TypeKro HelmRelease factory takes. They override the release's
+ * defaults field by field.
+ */
+export interface CrowdsecBootstrapOptions extends HelmReleaseLifecycleOptions {
   /** @default 'crowdsec-bootstrap' */
   readonly name?: string;
   /** @default 'CrowdsecBootstrap' */

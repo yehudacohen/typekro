@@ -160,6 +160,7 @@ policy:
 | `envoyGatewayHelmRelease` and the Envoy AI Gateway releases | 15m timeouts, `remediateLastFailure`, rollback when an upgrade fails |
 | `traefikHelmRelease` | `crds: CreateReplace` on install and upgrade (from its `crds` option), rollback when an upgrade fails, timeouts from `spec.timeout` |
 | `apisixHelmRelease` | `install.createNamespace: true`, timeouts from `spec.timeout` |
+| `crowdsecHelmRelease` | Rollback when an upgrade fails, timeouts from `spec.timeout` (`15m`, for the registration Jobs and first-start hub downloads), no drift detection |
 | `kedaHelmRelease` | Rollback when an upgrade fails, drift detection enabled, timeouts from `spec.timeout` (`10m`). Its CRDs are chart templates (`crds.install`), so no Flux CRD policy is set |
 | `vpaHelmRelease` | `crds: CreateReplace` on install and upgrade, rollback when an upgrade fails, drift detection enabled, timeouts from `spec.timeout` (`10m`) |
 | `karpenterHelmRelease`, `karpenterCrdHelmRelease` | `crds: Skip` on install and upgrade for the controller chart, rollback when an upgrade fails, drift detection enabled, timeouts from `spec.timeout` (`10m`) |

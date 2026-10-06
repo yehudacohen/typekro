@@ -107,6 +107,9 @@ export function makeCrowdsecBootstrap(
         repositoryName: DEFAULT_CROWDSEC_REPOSITORY_NAME,
         repositoryNamespace: DEFAULT_FLUX_NAMESPACE,
         createNamespace: !ownsNamespace,
+        ...(options.install ? { install: options.install } : {}),
+        ...(options.upgrade ? { upgrade: options.upgrade } : {}),
+        ...(options.driftDetection ? { driftDetection: options.driftDetection } : {}),
         values: mapCrowdsecConfigToHelmValues(spec, options),
         id: RELEASE_ID,
       });

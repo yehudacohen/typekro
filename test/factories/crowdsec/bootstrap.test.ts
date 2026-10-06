@@ -102,6 +102,32 @@ describe('crowdsecBootstrap defaults', () => {
     expect(release.spec?.targetNamespace).toBe('crowdsec');
   });
 
+  it('renders its lifecycle policy through the shared helper, with caller overrides', () => {
+    const lifecycle = (docs: Doc[]) => {
+      const spec = (docs.find((d) => d.kind === 'HelmRelease') as Doc).spec as Values;
+      const { install, upgrade, driftDetection, timeout } = spec;
+      return { timeout, install, upgrade, driftDetection };
+    };
+    expect(lifecycle(all)).toEqual({
+      timeout: '15m',
+      install: { remediation: { retries: 3 }, createNamespace: false },
+      upgrade: { remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' } },
+      driftDetection: undefined,
+    });
+
+    const tuned = directValues({
+      install: { timeout: '20m' },
+      upgrade: { remediation: { retries: 5 } },
+      driftDetection: { mode: 'warn' },
+    });
+    expect(lifecycle(tuned.all)).toEqual({
+      timeout: '15m',
+      install: { timeout: '20m', remediation: { retries: 3 }, createNamespace: false },
+      upgrade: { remediation: { retries: 5, remediateLastFailure: true, strategy: 'rollback' } },
+      driftDetection: { mode: 'warn' },
+    });
+  });
+
   it('runs LAPI on SQLite with one replica, offline, and never exposed', () => {
     expect(values.lapi.replicas).toBe(1);
     expect(values.lapi.persistentVolume.data.enabled).toBe(true);
