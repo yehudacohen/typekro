@@ -127,6 +127,9 @@ import { certificate, clusterIssuer, issuer } from 'typekro/cert-manager';
 // Flux GitOps
 import { gitRepository } from 'typekro/flux';
 
+// KEDA event-driven autoscaling
+import { kedaBootstrap, scaledObject, triggerAuthentication } from 'typekro/keda';
+
 // APISIX gateway
 import * as apisix from 'typekro/apisix';
 

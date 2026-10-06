@@ -26,6 +26,10 @@
       "import": "./dist/factories/helm/index.js",
       "types": "./dist/factories/helm/index.d.ts"
     },
+    "./keda": {
+      "import": "./dist/factories/keda/index.js",
+      "types": "./dist/factories/keda/index.d.ts"
+    },
     "./harbor": {
       "import": "./dist/factories/harbor/index.js",
       "types": "./dist/factories/harbor/index.d.ts"

@@ -11,6 +11,7 @@
   "pooledOwners": [
     "aws-load-balancer-controller",
     "karpenter",
+    "keda",
     "vpa"
   ],
   "docDropFraction": 0.2,

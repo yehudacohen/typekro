@@ -191,6 +191,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same composition scales the target on CPU or memory that the VPA also sets. The subpath draws on
   the shared declaration pool and is not re-exported from `typekro`.
 
+- **`typekro/keda`: KEDA event-driven autoscaling.** `kedaBootstrap` installs the operator, metrics
+  API server and admission webhooks with Flux from the official kedacore chart, pinned to 2.21.0,
+  CRDs included and kept on uninstall unless `keepCrdsOnUninstall: false`. The spec covers each
+  component's replicas, resources (the chart's requests and limits by default), disruption budget,
+  placement, topology spread and log level, plus `watchNamespace`, the log format, the operator's
+  service account annotations, IRSA, Azure Workload Identity and GKE Workload Identity, the webhooks'
+  switch and failure policy, cert-manager certificates and the priority class. `makeKedaBootstrap`
+  and `kedaHelmRelease` take the Flux `install`, `upgrade` and `driftDetection` options and render
+  them through `helmReleaseLifecycle`, like the other integrations. Typed `scaledObject`
+  and `scaledJob` factories (`keda.sh/v1alpha1`) cover the full spec: replica bounds,
+  `idleReplicaCount`, polling and cooldown, `fallback`, the HPA `behavior`,
+  `restoreToOriginalReplicaCount` and `scalingModifiers`. `scaleTargetRef` also takes the workload
+  resource itself, which orders the ScaledObject after it (KEDA's webhook rejects a ScaledObject
+  whose target does not exist yet). `triggers` is a union typed per scaler
+  (prometheus, cpu, memory, aws-sqs-queue, aws-cloudwatch, cron, metrics-api, postgresql, redis),
+  each with `authenticationRef` and `metricType`, and `kedaTrigger(type, metadata)` covers any
+  other scaler. ScaledJob triggers have their own type, without `metricType` and the cpu/memory
+  scalers, as in the ScaledJob CRD. `triggerAuthentication` and `clusterTriggerAuthentication` cover Secret, ConfigMap,
+  env, pod identity (aws with `roleArn`/`externalID`, azure-workload, gcp), bound service account
+  token and file sources, with the Vault, Key Vault, Secret Manager and OAuth2 sources passed
+  through untyped.
+  ScaledObjects and ScaledJobs are ready on `Ready=True`, with the `Active` state in the message,
+  and `kedaReady(...)` and `kedaActive(...)` build the same checks for a composition's status. The
+  factories throw on specs KEDA rejects (bad replica bounds, with an unset maximum counted as 100,
+  cpu/memory-only scale to zero or fallback, duplicate trigger names, wrong metric types, a
+  non-zero `idleReplicaCount`, values below the CRD minimums, `useCachedMetrics` on cpu/memory/cron,
+  `scalingModifiers` without a formula or a positive numeric target, names over KEDA's limits: 54 characters for a ScaledObject without
+  an explicit HPA name, 63 otherwise and for the HPA name and ScaledJob names) and warn when an HPA, or a VPA setting the resource
+  a trigger scales on, targets the same workload in the same composition. `verticalPodAutoscaler`
+  makes the same check the other way round, so the overlap is flagged whichever of the two is
+  declared first. The subpath draws on the
+  shared declaration pool and is not re-exported from `typekro`.
+
 ### Changed
 
 - **Behaviour change in KRO mode: a lifecycle default is no longer written into your own schema
