@@ -80,7 +80,7 @@ export function dagsterHelmRelease(
       namespace: config.repositoryNamespace || DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    ...helmReleaseLifecycle(config),
+    ...helmReleaseLifecycle(config, {}),
     ...(config.values !== undefined && { values: config.values }),
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Dagster')) as Enhanced<

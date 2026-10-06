@@ -9,13 +9,18 @@
 // generic `helmRelease`.
 
 import { SCHEMA_REFERENCE_OPTIONAL_BRAND } from '../../core/constants/brands.js';
+import { ValidationError } from '../../core/errors.js';
 import { Cel } from '../../core/references/cel.js';
-import { declaredSchemaFields, isSchemaReference } from '../../core/references/schema-proxy.js';
+import {
+  declaredSchemaFields,
+  declaredSchemaNumberKind,
+  isSchemaReference,
+} from '../../core/references/schema-proxy.js';
 import { getInnerCelPath } from '../../core/serialization/cel-references.js';
 import type { KubernetesRef } from '../../core/types/common.js';
 import type { Composable } from '../../core/types/composable.js';
 import type { RefOrValue } from '../../core/types/references.js';
-import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { isKubernetesRef } from '../../utils/type-guards.js';
 import type {
   HelmReleaseInstallPolicy,
   HelmReleaseLifecycleOptions,
@@ -33,12 +38,7 @@ export type HelmReleaseLifecycleSpec = Pick<
 // (a database, a webhook, a CRD from another release) routinely needs more than
 // Flux's 5m, and a retry budget turns a transient failure into a self-healing
 // one instead of a Stalled release.
-//
-// A factory that wraps `helmRelease` spreads these into its own defaults rather
-// than leaving them to `helmRelease`: the first pass already resolves each
-// schema-field leaf to its final CEL (an unset optional integer field becomes
-// `omit()`), and the second pass cannot add a default to that any more.
-export const DEFAULT_HELM_RELEASE_LIFECYCLE: HelmReleaseLifecycleSpec = {
+const DEFAULT_LIFECYCLE: HelmReleaseLifecycleSpec = {
   install: { timeout: '10m', remediation: { retries: 3 } },
   upgrade: { timeout: '10m', remediation: { retries: 3 } },
 };
@@ -87,14 +87,6 @@ function isOptionalSchemaField(value: unknown): value is KubernetesRef<unknown> 
 /** Lifecycle leaves Flux types as integers. */
 const INTEGER_KEYS: ReadonlySet<string> = new Set(['retries']);
 
-/** `has()` on every hop of a schema path, so an unset parent object is safe. */
-function presenceGuard(path: string): string {
-  const segments = path.replace(/^schema\.spec\./, '').split('.');
-  return segments
-    .map((_, index) => `has(schema.spec.${segments.slice(0, index + 1).join('.')})`)
-    .join(' && ');
-}
-
 /**
  * An optional schema field used as a fallback inside a CEL choice. A bare
  * reference to it would fail at reconcile time with "no such key" when the
@@ -107,36 +99,30 @@ function guardedFallback(fallback: unknown): unknown {
 }
 
 /**
- * An integer leaf (`retries`). KRO type-checks templates with cel-go against
- * the HelmRelease CRD, which types `retries` as an integer. An ArkType
- * `'number'` field is a SimpleSchema `float`, a CEL double, so a schema field
- * is always passed through `int()`: KRO rejects a bare double there, and a
- * `double : int` choice too. `int()` is the identity on an int and truncates a
- * double, so `'number.integer'` is the declaration to prefer.
+ * Reject an integer leaf (`retries`) that cannot be an integer, so direct and
+ * KRO mode fail alike instead of KRO silently coercing a value. A concrete
+ * non-integer fails here, as the HelmRelease CRD would reject it. A schema
+ * field declared as a plain ArkType `'number'` is a KRO `float`, which KRO's
+ * type checker rejects for an integer field only after the RGD is applied, so
+ * it fails at build time with the declaration to use. When the declared type
+ * is unknown (a resource reference, a union, a map), the reference is passed
+ * through unchanged and KRO's type checker decides.
  */
-function integerLeaf(value: unknown, fallback: unknown): unknown {
-  if (!isKubernetesRef(value) || !isSchemaReference(value)) {
-    if (value !== undefined) return value;
-    return isKubernetesRef(fallback) && isSchemaReference(fallback)
-      ? integerLeaf(fallback, undefined)
-      : fallback;
+function assertIntegerLeaf(value: unknown, path: string): void {
+  const fail = (message: string): never => {
+    throw new ValidationError(message, 'HelmRelease', path, path, [
+      `Declare the schema field as 'number.integer', or pass a whole number.`,
+    ]);
+  };
+  if (typeof value === 'number' && !Number.isInteger(value)) {
+    fail(`HelmRelease ${path} must be a whole number; got ${value}.`);
   }
-  const path = getInnerCelPath(value);
-  if (!isOptionalSchemaField(value)) return Cel.int(value);
-  return Cel.expr<number>(
-    `${presenceGuard(path)} && dyn(${path}) != null ? int(${path}) : ${integerFallbackSource(fallback)}`
-  );
-}
-
-/** CEL source for the fallback branch of an integer leaf. */
-function integerFallbackSource(fallback: unknown): string {
-  if (fallback === undefined) return 'omit()';
-  if (isCelExpression(fallback)) return `(${fallback.expression})`;
-  if (isKubernetesRef(fallback)) {
-    const resolved = integerLeaf(fallback, undefined);
-    return isCelExpression(resolved) ? `(${resolved.expression})` : getInnerCelPath(fallback);
+  if (isKubernetesRef(value) && declaredSchemaNumberKind(value) === 'float') {
+    fail(
+      `HelmRelease ${path} is the schema field ${getInnerCelPath(value)}, declared as 'number', ` +
+        "which KRO types as a float. Flux requires an integer: declare it as 'number.integer'."
+    );
   }
-  return String(fallback);
 }
 
 /**
@@ -149,12 +135,7 @@ function integerFallbackSource(fallback: unknown): string {
  * Exported for factories whose defaults themselves depend on another field
  * (Cilium's per-action timeouts fall back to its release-wide `timeout`).
  */
-export function lifecycleDefault(
-  value: unknown,
-  fallback: unknown,
-  options: { readonly integer?: boolean } = {}
-): unknown {
-  if (options.integer) return integerLeaf(value, fallback);
+export function lifecycleDefault(value: unknown, fallback: unknown): unknown {
   if (fallback === undefined || !isOptionalSchemaField(value)) {
     return value ?? fallback;
   }
@@ -167,21 +148,28 @@ function mergeFields(
   keys: readonly string[],
   remediationKeys: readonly string[],
   base: FieldBag | undefined,
-  override: unknown
+  override: unknown,
+  path: string
 ): FieldBag | undefined {
   const merged: Record<string, unknown> = {};
   for (const key of keys) {
-    const value =
-      key === 'remediation'
-        ? mergeFields(
-            remediationKeys,
-            [],
-            base?.remediation as FieldBag | undefined,
-            readField(override, key)
-          )
-        : lifecycleDefault(readField(override, key), base?.[key], {
-            integer: INTEGER_KEYS.has(key),
-          });
+    let value: unknown;
+    if (key === 'remediation') {
+      value = mergeFields(
+        remediationKeys,
+        [],
+        base?.remediation as FieldBag | undefined,
+        readField(override, key),
+        `${path}.remediation`
+      );
+    } else {
+      const callerValue = readField(override, key);
+      if (INTEGER_KEYS.has(key)) {
+        assertIntegerLeaf(callerValue, `spec.${path}.${key}`);
+        assertIntegerLeaf(base?.[key], `spec.${path}.${key}`);
+      }
+      value = lifecycleDefault(callerValue, base?.[key]);
+    }
     if (value !== undefined) {
       merged[key] = value;
     }
@@ -206,19 +194,21 @@ function mergeFields(
  */
 export function helmReleaseLifecycle(
   options: Composable<HelmReleaseLifecycleOptions> | undefined,
-  defaults: HelmReleaseLifecycleSpec = DEFAULT_HELM_RELEASE_LIFECYCLE
+  defaults: HelmReleaseLifecycleSpec = DEFAULT_LIFECYCLE
 ): HelmReleaseLifecycleSpec {
   const install = mergeFields(
     INSTALL_KEYS,
     INSTALL_REMEDIATION_KEYS,
     defaults.install,
-    readField(options, 'install')
+    readField(options, 'install'),
+    'install'
   );
   const upgrade = mergeFields(
     UPGRADE_KEYS,
     UPGRADE_REMEDIATION_KEYS,
     defaults.upgrade,
-    readField(options, 'upgrade')
+    readField(options, 'upgrade'),
+    'upgrade'
   );
   // Drift detection replaces the default as a whole, so it is one leaf.
   const driftDetection = lifecycleDefault(

@@ -94,7 +94,7 @@ function createOryHelmRelease<TValues extends OryChartValues>(
       name: config.repositoryName ?? 'ory',
       namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
     },
-    ...helmReleaseLifecycle(config),
+    ...helmReleaseLifecycle(config, {}),
     ...(config.values && { values: config.values }),
     ...(config.postRenderers && { postRenderers: config.postRenderers }),
   }).withReadinessEvaluator(oryHelmReleaseReadinessEvaluator);

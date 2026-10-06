@@ -139,9 +139,11 @@ In KRO mode the options can be schema references, either field by field
 `Cel.default(<instance field>, <default>)`, so an instance that leaves it unset
 still gets the factory's default, the same as in direct mode. Fields your schema
 does not declare keep their defaults and are never read from the instance.
-Declare `retries` as `'number.integer'`. The HelmRelease takes an integer, so
-TypeKro passes a schema field through CEL `int()`; a `'number'` field still
-works, but KRO then truncates a value like `2.5` to `2` instead of rejecting it.
+A schema field passed as `retries` must be declared `'number.integer'`: the
+HelmRelease takes an integer, and KRO types a plain `'number'` as a float. The
+factory throws a `ValidationError` at build time for a `'number'` field, and in
+direct mode for a fractional value such as `2.7`, so both modes reject what the
+CRD would. TypeKro never rounds or truncates the value.
 A reference to another resource (for example a ConfigMap field) gets no
 fallback: KRO waits for that field as usual.
 

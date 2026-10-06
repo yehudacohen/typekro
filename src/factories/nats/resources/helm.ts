@@ -1,6 +1,6 @@
 import type { Enhanced } from '../../../core/types/index.js';
 import { helmRelease } from '../../helm/helm-release.js';
-import { DEFAULT_HELM_RELEASE_LIFECYCLE, helmReleaseLifecycle } from '../../helm/lifecycle.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import { helmRepository } from '../../helm/helm-repository.js';
 import type {
@@ -58,10 +58,7 @@ function natsChartRelease(
       namespace: config.repositoryNamespace ?? config.namespace,
       kind: 'HelmRepository',
     },
-    ...helmReleaseLifecycle(config, {
-      ...DEFAULT_HELM_RELEASE_LIFECYCLE,
-      driftDetection: { mode: 'enabled' },
-    }),
+    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
     values: config.values,
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('NATS')) as Enhanced<

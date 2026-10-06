@@ -25,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HelmReleaseCrdsPolicy` types. In KRO mode the defaults also hold when an option is a schema
   reference, including a whole object such as `install: spec.install`: each defaulted field renders
   as a CEL fallback (the instance's value when set, otherwise the default), and fields the instance
-  schema does not declare are not read from it. A schema field passed as `retries` goes through
-  CEL `int()`, required or optional, because the HelmRelease takes an integer and an ArkType
-  `'number'` is a KRO float; declare it as `'number.integer'`, since `int()` truncates `2.5` to `2`.
+  schema does not declare are not read from it. A schema field passed as `retries` must be declared
+  `'number.integer'`: a plain ArkType `'number'` is a KRO float, which the HelmRelease's integer
+  field rejects, so the factory throws a `ValidationError` at build time, as it does in direct mode
+  for a fractional value such as `2.7`. TypeKro never coerces the value.
   An optional schema field used as a fallback (Cilium's flat `createNamespace`) is guarded, so an
   instance that sets neither field omits it. A reference to another
   resource gets no fallback, so KRO still waits for that field. See "Install, upgrade and CRD
