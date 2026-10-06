@@ -14,6 +14,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { helmRelease } from '../../helm/helm-release.js';
@@ -88,7 +89,7 @@ export function cnpgHelmRelease(
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
+    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
     // Layer the chart default UNDER the caller's values. Spreading here would
     // enumerate a whole-object schema reference at build time and lose it.
     values: withChartValueDefaults({ crds: { create: true } }, config.values) as Record<

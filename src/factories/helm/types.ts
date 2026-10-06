@@ -128,6 +128,28 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
     mode: 'enabled' | 'warn' | 'disabled';
     ignore?: Record<string, unknown>[];
   };
+  /** HelmReleases Flux must find Ready before installing or upgrading this one. */
+  dependsOn?: { name: string; namespace?: string }[];
+}
+
+/** Flux install policy accepted by every TypeKro HelmRelease factory. */
+export type HelmReleaseInstallPolicy = NonNullable<HelmReleaseSpec['install']>;
+
+/** Flux upgrade policy accepted by every TypeKro HelmRelease factory. */
+export type HelmReleaseUpgradePolicy = NonNullable<HelmReleaseSpec['upgrade']>;
+
+/**
+ * Flux lifecycle settings every TypeKro HelmRelease factory accepts. Set fields
+ * override the factory's defaults, and nested `remediation` fields merge.
+ * @see docs/api/flux/index.md
+ */
+export interface HelmReleaseLifecycleOptions {
+  /** Install timeout, CRD policy, remediation and namespace creation. */
+  install?: HelmReleaseSpec['install'];
+  /** Upgrade timeout, CRD policy and remediation. */
+  upgrade?: HelmReleaseSpec['upgrade'];
+  /** Flux drift detection. Replaces the factory's default as a whole. */
+  driftDetection?: HelmReleaseSpec['driftDetection'];
 }
 
 export interface HelmReleaseStatus {

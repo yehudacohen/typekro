@@ -84,6 +84,7 @@ export default withMermaid(
             text: 'Ecosystems',
             items: [
               { text: 'Kubernetes', link: '/api/kubernetes/' },
+              { text: 'AWS Load Balancer Controller', link: '/api/aws-load-balancer-controller/' },
               { text: 'Caddy', link: '/api/caddy/' },
               { text: 'Cilium', link: '/api/cilium/' },
               { text: 'Cert-Manager', link: '/api/cert-manager/' },
@@ -100,6 +101,7 @@ export default withMermaid(
               { text: 'Traefik', link: '/api/traefik/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
               { text: 'Inngest', link: '/api/inngest/' },
+              { text: 'Karpenter', link: '/api/karpenter/' },
               { text: 'ClickStack (HyperDX)', link: '/api/clickstack/' },
               { text: 'Dagster OSS', link: '/api/dagster/' },
               { text: 'Ory', link: '/api/ory/' },

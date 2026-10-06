@@ -17,6 +17,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { helmRelease } from '../../helm/helm-release.js';
@@ -99,7 +100,7 @@ export function valkeyHelmRelease(
       namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
+    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
     values: config.values ?? {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Valkey')) as Enhanced<

@@ -102,6 +102,86 @@ names and namespaces may come from schema or resource references. Prefer
 chart-native values for ordinary configuration; use post-rendering when an
 upstream chart cannot express a required manifest transformation.
 
+## Install, upgrade and CRD policy
+
+Every TypeKro HelmRelease factory accepts the same three Flux lifecycle
+options. That covers the generic `helmRelease` and every integration factory
+(`certManagerHelmRelease`, `traefikHelmRelease`, `cnpgHelmRelease`, ...):
+
+| Option | Fields |
+|---|---|
+| `install` | `timeout`, `crds` (`Skip` / `Create` / `CreateReplace`), `createNamespace`, `remediation.retries`, `remediation.remediateLastFailure`, `remediation.ignoreTestFailures` |
+| `upgrade` | `timeout`, `crds`, `remediation.retries`, `remediation.remediateLastFailure`, `remediation.ignoreTestFailures`, `remediation.strategy` |
+| `driftDetection` | `mode` (`enabled` / `warn` / `disabled`), `ignore` |
+
+Each field you set overrides the factory's default for that field, and
+`remediation` is merged field by field too. `driftDetection` replaces the
+default as a whole.
+
+```typescript
+import { traefikHelmRelease } from 'typekro/traefik';
+
+const release = traefikHelmRelease({
+  name: 'traefik',
+  install: { timeout: '20m' },
+  upgrade: { crds: 'CreateReplace', remediation: { retries: 5 } },
+});
+```
+
+With `remediation.retries` above 0, Flux remediates every failure, the last one
+included: a failed install is uninstalled and tried again, and a failed upgrade
+is rolled back (or uninstalled, with `strategy: 'uninstall'`) and tried again.
+Set `retries: 0` for a chart that must never be rolled back automatically.
+
+In KRO mode the options can be schema references, either field by field
+(`install: { timeout: spec.installTimeout }`) or as whole objects
+(`install: spec.install`). Each field that has a default renders as
+`Cel.default(<instance field>, <default>)`, so an instance that leaves it unset
+still gets the factory's default, the same as in direct mode. Fields your schema
+does not declare keep their defaults and are never read from the instance.
+A schema field passed as `retries` must be declared `'number.integer'`: the
+HelmRelease takes an integer, and KRO types a plain `'number'` as a float. The
+factory throws a `ValidationError` at build time for a `'number'` field, and in
+direct mode for a fractional value such as `2.7`, so both modes reject what the
+CRD would. TypeKro never rounds or truncates the value.
+A reference to another resource (for example a ConfigMap field) gets no
+fallback: KRO waits for that field as usual.
+
+Unless a factory sets its own policy, it uses the defaults of the generic
+`helmRelease`: `install.timeout` and `upgrade.timeout` of `10m`, and 3
+remediation retries for each. Without them Flux uses a 5m timeout and no
+retries, so a slow first install stays Stalled until someone runs
+`flux reconcile helmrelease <name> --reset`. These factories set their own
+policy:
+
+| Factory | Default |
+|---|---|
+| `hatchetHelmRelease`, `harborHelmRelease` | 20m timeouts. Failed upgrades are not retried or rolled back, because they may run database migrations |
+| `envoyGatewayHelmRelease` and the Envoy AI Gateway releases | 15m timeouts, `remediateLastFailure`, rollback when an upgrade fails |
+| `traefikHelmRelease` | `crds: CreateReplace` on install and upgrade (from its `crds` option), rollback when an upgrade fails, timeouts from `spec.timeout` |
+| `apisixHelmRelease` | `install.createNamespace: true`, timeouts from `spec.timeout` |
+| `karpenterHelmRelease`, `karpenterCrdHelmRelease` | `crds: Skip` on install and upgrade for the controller chart, rollback when an upgrade fails, drift detection enabled, timeouts from `spec.timeout` (`10m`) |
+| `ciliumHelmRelease` | Timeouts from its `installTimeout` and `upgradeTimeout` options, or from `timeout` for both. `10m` when none is set |
+
+Flux's own CRD defaults are `Create` on install and `Skip` on upgrade. A chart
+that ships CRDs in its `crds/` directory therefore keeps the CRDs of the version
+it was first installed at, until you set `upgrade.crds: CreateReplace`.
+The CRD policy applies only to files in a chart's `crds/` directory. Charts
+that render their CRDs as templates, such as cert-manager (`crds.enabled`),
+ignore it.
+
+A custom integration factory can reuse the same merge through
+`helmReleaseLifecycle` from `typekro/helm`:
+
+```typescript
+import { helmReleaseLifecycle } from 'typekro/helm';
+
+declare const config: { install?: { timeout?: string } };
+
+// Spread into the HelmRelease spec the factory builds itself.
+const lifecycle = helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } });
+```
+
 ## helmRepository()
 
 Creates a Flux HelmRepository resource.

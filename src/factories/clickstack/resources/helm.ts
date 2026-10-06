@@ -31,6 +31,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type {
@@ -163,7 +164,7 @@ export function clickstackHelmRelease(
       namespace: config.repositoryNamespace || DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
+    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
     values: config.values || {},
     ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
     ...(config.postRenderers && { postRenderers: config.postRenderers }),
@@ -193,7 +194,7 @@ export function otelCollectorHelmRelease(
       namespace: config.repositoryNamespace || DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
+    ...helmReleaseLifecycle(config, { driftDetection: { mode: 'enabled' } }),
     values: config.values || {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(

@@ -264,9 +264,80 @@ cert.status.notBefore      // Certificate valid from
 cert.status.renewalTime    // Next renewal time
 ```
 
+## Installing cert-manager with certManagerBootstrap
+
+`certManagerBootstrap` installs cert-manager through a Flux `HelmRepository` and
+`HelmRelease`. It renders the same chart values in direct and KRO mode.
+
+```typescript
+import { certManagerBootstrap } from 'typekro/cert-manager';
+
+const factory = certManagerBootstrap.factory('kro', { namespace: 'platform' });
+
+await factory.deploy({
+  name: 'cert-manager',
+  namespace: 'cert-manager',
+  replicaCount: 2,
+  crds: { enabled: true, keep: true },
+  controller: {
+    podDisruptionBudget: { enabled: true, minAvailable: '1' },
+    topologySpreadConstraints: [
+      {
+        maxSkew: 1,
+        topologyKey: 'topology.kubernetes.io/zone',
+        whenUnsatisfiable: 'ScheduleAnyway',
+        labelSelector: { matchLabels: { 'app.kubernetes.io/component': 'controller' } },
+      },
+    ],
+  },
+  webhook: { replicaCount: 2, podDisruptionBudget: { enabled: true } },
+  cainjector: { replicaCount: 2, podDisruptionBudget: { enabled: true } },
+});
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `crds.enabled` | `true` | Installs the CRDs with the chart |
+| `crds.keep` | `true` | Keeps the CRDs, and with them every Certificate and Issuer, when the release is uninstalled |
+| `global.leaderElection.namespace` | the install namespace | The chart's own default is `kube-system`. KRO instances created before this default moved their lease; set `kube-system` to keep it |
+| `strategy.rollingUpdate.maxSurge` / `maxUnavailable` | chart | Strings. A digit-only string (`'1'`) is rendered as an integer, a percentage (`'25%'`) as a string |
+| `replicaCount`, `webhook.replicaCount`, `cainjector.replicaCount` | chart default (1) | With more than 1 replica, also enable that component's `podDisruptionBudget` |
+| `controller` / `webhook` / `cainjector` `.podDisruptionBudget` | off | `enabled`, plus `minAvailable` or `maxUnavailable`, not both. Each is a string holding an integer (`'1'`) or a percentage (`'50%'`); the chart renders it unquoted. The chart defaults to `minAvailable: 1` |
+| `controller` / `webhook` / `cainjector` `.topologySpreadConstraints` | none | Passed to the chart unchanged. Give each constraint a `labelSelector` that matches that component's pods (`app.kubernetes.io/component: controller`, `webhook` or `cainjector`) |
+| `controller` / `webhook` / `cainjector` / `startupapicheck` `.resources` | requests `10m` / `32Mi`, limits `100m` / `128Mi` | Each field is defaulted on its own |
+| `startupapicheck.timeout` | `5m` | The chart's default is `1m` |
+| `prometheus.enabled` | `false` | The chart's default is `true` |
+
+The cert-manager CRDs are chart templates, not files in the chart's `crds/`
+directory. So `crds.enabled` decides whether they are installed, and Flux's
+`install.crds` / `upgrade.crds` policy does not apply to them.
+
+Fields of the TypeScript config that the bootstrap schema does not declare
+(`controller.tolerations`, `controller.affinity`, `controller.env`,
+`customValues`, ...) apply in direct mode only. A KRO instance cannot carry them.
+
+### Migrating from installCRDs
+
+`installCRDs` is deprecated. cert-manager chart v1.17 and later refuse
+`installCRDs` together with `crds.enabled`, so TypeKro now renders only `crds`:
+
+- The bootstrap maps `installCRDs` to `crds.enabled` when `crds.enabled` is
+  unset, so `installCRDs: false` still disables the CRDs. Replace it with
+  `crds: { enabled: false }`.
+- `certManagerHelmRelease` now defaults to `crds: { enabled: true, keep: true }`
+  instead of `installCRDs: true`. If your `values` still set `installCRDs`, the
+  factory adds no `crds` default, so the chart sees only your setting.
+- Direct-mode `customValues` that still set `installCRDs` own the CRD setting:
+  the bootstrap then renders no `crds`. A `values` object passed to
+  `certManagerHelmRelease` as one schema reference cannot be inspected at build
+  time, so it must not carry `installCRDs: true`; the chart would refuse it
+  next to the `crds.enabled` default.
+- An existing release keeps its CRDs. `installCRDs: true` already meant
+  `crds.enabled: true` with `crds.keep: true`, so the rendered CRDs are the same.
+
 ## Prerequisites
 
-Cert-manager must be installed in your cluster:
+To install cert-manager without TypeKro:
 
 ```bash
 # Using Helm
@@ -274,7 +345,7 @@ helm repo add jetstack https://charts.jetstack.io
 helm install cert-manager jetstack/cert-manager \
   --namespace cert-manager \
   --create-namespace \
-  --set installCRDs=true
+  --set crds.enabled=true
 ```
 
 ## Next Steps
