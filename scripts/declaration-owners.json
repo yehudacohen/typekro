@@ -120,7 +120,9 @@
     },
     {
       "owner": "keda",
-      "paths": ["factories/keda/**"]
+      "paths": [
+        "factories/keda/**"
+      ]
     },
     {
       "owner": "hatchet",
