@@ -170,6 +170,59 @@ describe('karpenterBootstrap — direct mode', () => {
     expect(crds.releaseName).toBe('karpenter-crd');
   });
 
+  it('renders its lifecycle policy through the shared helper, with caller overrides', () => {
+    const lifecycle = (spec: ReleaseSpec) => {
+      const { install, upgrade, driftDetection, timeout } = spec as unknown as Record<
+        string,
+        unknown
+      >;
+      return { timeout, install, upgrade, driftDetection };
+    };
+    const defaults = direct();
+    expect(lifecycle(release(defaults, 'karpenter'))).toEqual({
+      timeout: '10m',
+      install: { remediation: { retries: 3 }, createNamespace: true, crds: 'Skip' },
+      upgrade: {
+        remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
+        crds: 'Skip',
+      },
+      driftDetection: { mode: 'enabled' },
+    });
+    expect(lifecycle(release(defaults, 'karpenter-crd'))).toEqual({
+      timeout: '10m',
+      install: { remediation: { retries: 3 }, createNamespace: true },
+      upgrade: { remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' } },
+      driftDetection: { mode: 'enabled' },
+    });
+
+    const tuned = direct(
+      SPEC,
+      makeKarpenterBootstrap({
+        install: { timeout: '20m' },
+        upgrade: { remediation: { retries: 5 } },
+        driftDetection: { mode: 'warn' },
+      })
+    );
+    expect(lifecycle(release(tuned, 'karpenter'))).toEqual({
+      timeout: '10m',
+      install: {
+        timeout: '20m',
+        remediation: { retries: 3 },
+        createNamespace: true,
+        crds: 'Skip',
+      },
+      upgrade: {
+        remediation: { retries: 5, remediateLastFailure: true, strategy: 'rollback' },
+        crds: 'Skip',
+      },
+      driftDetection: { mode: 'warn' },
+    });
+    // The overrides are for the controller; the CRD release keeps its policy.
+    expect(lifecycle(release(tuned, 'karpenter-crd'))).toEqual(
+      lifecycle(release(defaults, 'karpenter-crd'))
+    );
+  });
+
   it('keeps the CRDs on uninstall by default', () => {
     expect(release(direct(), 'karpenter-crd').values).toEqual({
       additionalAnnotations: { 'helm.sh/resource-policy': 'keep' },

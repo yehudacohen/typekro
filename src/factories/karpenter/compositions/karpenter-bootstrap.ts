@@ -107,10 +107,17 @@ export function makeKarpenterBootstrap(
       };
 
       const values = mapKarpenterConfigToHelmValues(spec, options.values);
+      // Caller lifecycle overrides for the controller release.
+      const lifecycle = {
+        ...(options.install ? { install: options.install } : {}),
+        ...(options.upgrade ? { upgrade: options.upgrade } : {}),
+        ...(options.driftDetection ? { driftDetection: options.driftDetection } : {}),
+      };
 
       if (!manageCrds) {
         const controller = karpenterHelmRelease({
           ...releaseCommon,
+          ...lifecycle,
           name: spec.name,
           values,
           id: 'karpenterHelmRelease',
@@ -132,6 +139,7 @@ export function makeKarpenterBootstrap(
       });
       const controller = karpenterHelmRelease({
         ...releaseCommon,
+        ...lifecycle,
         name: spec.name,
         values,
         // Flux holds every install AND upgrade of the controller until the CRD

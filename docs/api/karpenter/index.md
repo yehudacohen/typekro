@@ -124,6 +124,7 @@ has no webhooks, so there are no webhook settings to configure.
 | `crds` | `'karpenter-crd'` | `'external'` installs only the controller |
 | `keepCrdsOnUninstall` | `true` | Annotate the CRDs with `helm.sh/resource-policy: keep` |
 | `namespaceOwnership` | `'external'` | `'external'` lets Flux create a missing namespace (`install.createNamespace`); `'owned'` makes it part of the graph (not for `kube-system`) |
+| `install`, `upgrade`, `driftDetection` | see below | The Flux lifecycle options every TypeKro HelmRelease factory takes, for the controller release. See [Install, upgrade and CRD policy](/api/flux/#install-upgrade-and-crd-policy) |
 | `values` | none | Raw chart values, deep-merged last (objects merge, lists replace) |
 | `name`, `kind` | `karpenter-bootstrap`, `KarpenterBootstrap` | RGD name and kind |
 

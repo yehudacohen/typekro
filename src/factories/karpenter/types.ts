@@ -9,6 +9,7 @@
 // @see https://karpenter.sh/docs/concepts/nodeclasses/
 
 import { type Type, type } from 'arktype';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 import type { KARPENTER_LABELS } from './constants.js';
 
 // ============================================================================
@@ -444,8 +445,12 @@ export const KarpenterHelmRepositorySingletonStatusSchema: Type<{ ready: boolean
 /**
  * Build-time options for {@link makeKarpenterBootstrap}. These decide which
  * resources exist, so they must be concrete.
+ *
+ * `install`, `upgrade` and `driftDetection` are the Flux lifecycle options
+ * every TypeKro HelmRelease factory takes. They apply to the controller
+ * release and override its defaults field by field.
  */
-export interface KarpenterBootstrapBuildOptions {
+export interface KarpenterBootstrapBuildOptions extends HelmReleaseLifecycleOptions {
   /** Composition name. @default 'karpenter-bootstrap' */
   readonly name?: string;
   /** KRO kind. @default 'KarpenterBootstrap' */
@@ -486,7 +491,7 @@ export interface KarpenterHelmRepositoryConfig {
 }
 
 /** Configuration for the Karpenter `HelmRelease` factories. */
-export interface KarpenterHelmReleaseConfig {
+export interface KarpenterHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   /** `HelmRelease` name, also pinned as the Helm release name. */
   name: string;
   /** Namespace of the `HelmRelease` object. @default 'flux-system' */

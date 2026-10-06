@@ -8,6 +8,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type {
   HelmReleaseCrdsPolicy,
@@ -87,16 +88,21 @@ function karpenterRelease(
       targetNamespace: config.targetNamespace ?? DEFAULT_KARPENTER_NAMESPACE,
       // Pinned so Flux does not compose `<targetNamespace>-<name>`.
       releaseName: config.name,
-      install: {
-        createNamespace: config.createNamespace ?? false,
-        ...(crds ? { crds } : {}),
-        remediation: { retries: 3 },
-      },
-      upgrade: {
-        ...(crds ? { crds } : {}),
-        remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
-      },
-      driftDetection: { mode: 'enabled' },
+      // Karpenter's own policy, through the shared lifecycle helper: caller
+      // `install`, `upgrade` and `driftDetection` override it field by field.
+      // Install and upgrade take their timeout from `spec.timeout`.
+      ...helmReleaseLifecycle(config, {
+        install: {
+          createNamespace: config.createNamespace ?? false,
+          ...(crds ? { crds } : {}),
+          remediation: { retries: 3 },
+        },
+        upgrade: {
+          ...(crds ? { crds } : {}),
+          remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
+        },
+        driftDetection: { mode: 'enabled' },
+      }),
       ...(config.dependsOn
         ? { dependsOn: config.dependsOn as { name: string; namespace?: string }[] }
         : {}),

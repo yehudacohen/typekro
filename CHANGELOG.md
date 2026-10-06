@@ -155,8 +155,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clusterEndpoint`, `interruptionQueue`, the service account (IRSA annotation or EKS Pod Identity),
   replicas, the disruption budget, scheduling, resources, `logLevel` and `dnsPolicy`;
   `makeKarpenterBootstrap` takes build-time options (`crds: 'external'`, namespace ownership, raw
-  chart values). Typed `nodePool` (`karpenter.sh/v1`) and `ec2NodeClass` (`karpenter.k8s.aws/v1`)
-  factories evaluate readiness from the `Ready` condition and ignore one left from an earlier
+  chart values) and the Flux `install`, `upgrade` and `driftDetection` options for the controller
+  release. `karpenterHelmRelease` and `karpenterCrdHelmRelease` take the same options and render
+  them through `helmReleaseLifecycle`, like the other integration factories. Typed `nodePool`
+  (`karpenter.sh/v1`) and `ec2NodeClass` (`karpenter.k8s.aws/v1`) factories evaluate readiness from the `Ready` condition and ignore one left from an earlier
   generation. `karpenterReady(...)` builds the same check for a composition's status. The factories
   throw on specs the CRDs would reject (and on an `alias`, `id` or `ssmParameter` AMI selector term
   with other fields, which Karpenter would ignore, the same for subnet and security group terms,

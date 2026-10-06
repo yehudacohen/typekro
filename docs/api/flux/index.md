@@ -160,6 +160,7 @@ policy:
 | `envoyGatewayHelmRelease` and the Envoy AI Gateway releases | 15m timeouts, `remediateLastFailure`, rollback when an upgrade fails |
 | `traefikHelmRelease` | `crds: CreateReplace` on install and upgrade (from its `crds` option), rollback when an upgrade fails, timeouts from `spec.timeout` |
 | `apisixHelmRelease` | `install.createNamespace: true`, timeouts from `spec.timeout` |
+| `karpenterHelmRelease`, `karpenterCrdHelmRelease` | `crds: Skip` on install and upgrade for the controller chart, rollback when an upgrade fails, drift detection enabled, timeouts from `spec.timeout` (`10m`) |
 | `ciliumHelmRelease` | Timeouts from its `installTimeout` and `upgradeTimeout` options, or from `timeout` for both. `10m` when none is set |
 
 Flux's own CRD defaults are `Create` on install and `Skip` on upgrade. A chart
