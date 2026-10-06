@@ -16,6 +16,7 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 import {
   ClickHouseClusterNameSchema,
   ClickHouseKeeperClusterNameSchema,
@@ -180,9 +181,10 @@ export const ClickHouseOperatorHelmReleaseConfigSchema = type({
 export type ClickHouseOperatorHelmReleaseConfig = Omit<
   typeof ClickHouseOperatorHelmReleaseConfigSchema.infer,
   'values'
-> & {
-  values?: TypeKroChartValue<Record<string, unknown>>;
-};
+> &
+  HelmReleaseLifecycleOptions & {
+    values?: TypeKroChartValue<Record<string, unknown>>;
+  };
 
 // ============================================================================
 // Storage: PVC (default) vs S3-backed object storage

@@ -255,6 +255,71 @@ export function createBunCompatibleApiextensionsV1Api(
  * @param timeoutConfig - Optional HTTP timeout configuration for Bun runtime
  * @returns KubernetesObjectApi instance
  */
+/**
+ * Kinds sent and read as raw JSON, because the SDK's typed models rename a
+ * wire field and drop the wire spelling TypeKro manifests carry:
+ *
+ * - CustomResourceDefinition: `enum`, `default`, `$ref`, `x-kubernetes-*`
+ *   (V1JSONSchemaProps).
+ * - NetworkPolicy: `ingress[].from` (V1NetworkPolicyIngressRule `_from`).
+ *   `egress[].to` is not renamed.
+ * - LimitRange: `limits[].default` (V1LimitRangeItem `_default`).
+ * - ResourceSlice, every served version: device attribute `int` and capacity
+ *   `requestPolicy.default`.
+ *
+ * Found by listing every attributeTypeMap entry whose `name` differs from its
+ * `baseName` and walking up to the top-level kinds that embed it. The only
+ * other one, ListMeta `_continue`, appears only in list responses.
+ */
+const RAW_WIRE_KINDS: ReadonlySet<string> = new Set([
+  'apiextensions.k8s.io/v1/CustomResourceDefinition',
+  'networking.k8s.io/v1/NetworkPolicy',
+  'v1/LimitRange',
+  'resource.k8s.io/v1/ResourceSlice',
+  'resource.k8s.io/v1beta2/ResourceSlice',
+  'resource.k8s.io/v1beta1/ResourceSlice',
+  'resource.k8s.io/v1alpha3/ResourceSlice',
+  'resource.k8s.io/v1alpha2/ResourceSlice',
+]);
+
+/** SDK property names that differ from the Kubernetes wire field. */
+const SDK_TO_WIRE: Readonly<Record<string, string>> = {
+  _from: 'from',
+  _default: 'default',
+  _int: 'int',
+};
+
+/** Raw kinds whose objects may still arrive with the SDK's spelling. */
+const SDK_SPELLING_KINDS: ReadonlySet<string> = new Set(
+  [...RAW_WIRE_KINDS].filter((kind) => !kind.endsWith('/CustomResourceDefinition'))
+);
+
+/**
+ * Rewrite the SDK spellings (`_from`, `_default`, `_int`) to the wire field.
+ *
+ * The raw path skips the SDK serializer that used to do this, and the API
+ * server drops unknown fields, so an object built with the SDK's typed models
+ * (through `createResource`, say) would lose them. For a NetworkPolicy that
+ * means an allow-all rule. None of these kinds has user-chosen map keys that
+ * may start with `_`, so renaming keys anywhere in the object is safe.
+ *
+ * @throws {Error} When both spellings are present with different values.
+ */
+function toWireSpelling<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => toWireSpelling(item)) as T;
+  if (value === null || typeof value !== 'object') return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const wire = SDK_TO_WIRE[key] ?? key;
+    const converted = toWireSpelling(child);
+    if (wire in result && JSON.stringify(result[wire]) !== JSON.stringify(converted)) {
+      throw new Error(`Object sets "${wire}" twice, with and without the SDK spelling.`);
+    }
+    result[wire] = converted;
+  }
+  return result as T;
+}
+
 export function createBunCompatibleKubernetesObjectApi(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
@@ -264,6 +329,10 @@ export function createBunCompatibleKubernetesObjectApi(
   // serialization-type hook, so preserve the raw CRD at the request boundary.
   // AsyncLocalStorage keeps concurrent object operations independent while the
   // SDK continues to own paths, query parameters, authentication and retries.
+  //
+  // NetworkPolicy, LimitRange and ResourceSlice have the same problem; see
+  // RAW_WIRE_KINDS. For NetworkPolicy it dropped every ingress peer and turned
+  // each rule into "allow from anywhere" on its ports.
   class SchemaPreservingKubernetesObjectApi extends getKubernetesClientNode().KubernetesObjectApi {
     private readonly rawCrd = new AsyncLocalStorage<
       | {
@@ -281,10 +350,17 @@ export function createBunCompatibleKubernetesObjectApi(
       spec: { apiVersion?: string | undefined; kind?: string | undefined },
       operation: () => Promise<T>
     ): Promise<T> {
-      const rawSpec =
-        spec.apiVersion === 'apiextensions.k8s.io/v1' && spec.kind === 'CustomResourceDefinition'
-          ? spec
+      const key = `${spec.apiVersion}/${spec.kind}`;
+      let rawSpec: typeof spec | undefined;
+      try {
+        rawSpec = RAW_WIRE_KINDS.has(key)
+          ? SDK_SPELLING_KINDS.has(key)
+            ? toWireSpelling(spec)
+            : spec
           : undefined;
+      } catch (error) {
+        return Promise.reject(error);
+      }
       return this.rawCrd.run(rawSpec, operation);
     }
 

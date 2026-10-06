@@ -220,9 +220,12 @@ describe('OpenSearch integration', () => {
     expect(yaml).toContain('OpenSearchClusterInstallation');
     expect(yaml).not.toContain('__KUBERNETES_REF__');
     expect(yaml).toContain('${schema.spec.storage.size}');
-    expect(yaml).toContain(
-      'adminDn: \'[]string | minLength=1 | minItems=1 validation="size(self) > 0 && self.all(dn, size(dn) > 0)"\''
-    );
+    // The item constraint is a custom type: KRO refuses minLength on a list.
+    const adminDnItem = /adminDn: '\[\](OpenSearchClusterInstallationTlsAdmindnItem\w+) \| minItems=1 validation="size\(self\) > 0 && self\.all\(dn, size\(dn\) > 0\)"'/.exec(
+      yaml
+    )?.[1];
+    expect(adminDnItem).toBeDefined();
+    expect(yaml).toContain(`${adminDnItem}: string | minLength=1`);
     expect(yaml).toContain('${cluster.status.availableNodes}');
     expect(yaml).toContain('${cluster.status.health}');
     expect(yaml).toContain('${cluster.status.version}');

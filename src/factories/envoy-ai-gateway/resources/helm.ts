@@ -7,6 +7,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/index.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { helmRelease } from '../../helm/helm-release.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { DEFAULT_ENVOY_PROXY_REPOSITORY_URL } from '../constants.js';
@@ -58,22 +59,24 @@ function envoyHelmRelease(
     },
     values: config.values as TypeKroChartValue<Record<string, unknown>>,
     ...(config.valuesFrom ? { valuesFrom: config.valuesFrom } : {}),
-    install: {
-      timeout: '15m',
-      remediation: {
-        retries: 3,
-        remediateLastFailure: true,
+    ...helmReleaseLifecycle(config, {
+      install: {
+        timeout: '15m',
+        remediation: {
+          retries: 3,
+          remediateLastFailure: true,
+        },
       },
-    },
-    upgrade: {
-      timeout: '15m',
-      remediation: {
-        retries: 3,
-        remediateLastFailure: true,
-        strategy: 'rollback',
+      upgrade: {
+        timeout: '15m',
+        remediation: {
+          retries: 3,
+          remediateLastFailure: true,
+          strategy: 'rollback',
+        },
       },
-    },
-    driftDetection: { mode: 'enabled' },
+      driftDetection: { mode: 'enabled' },
+    }),
     ...(config.id ? { id: config.id } : {}),
   });
 }

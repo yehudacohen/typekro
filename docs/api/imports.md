@@ -142,6 +142,9 @@ import * as externalDns from 'typekro/external-dns';
 // Pebble ACME test server
 import * as pebble from 'typekro/pebble';
 
+// Vertical Pod Autoscaler
+import { verticalPodAutoscaler, vpaBootstrap, vpaRecommendOnly } from 'typekro/vpa';
+
 // CloudNativePG PostgreSQL
 import { cluster, pooler, backup } from 'typekro/cnpg';
 
@@ -150,6 +153,9 @@ import { valkey } from 'typekro/valkey';
 
 // Inngest workflow engine
 import { inngestBootstrap } from 'typekro/inngest';
+
+// Karpenter node autoscaling (EKS)
+import { ec2NodeClass, karpenterBootstrap, nodePool } from 'typekro/karpenter';
 
 // Full-stack web app compositions
 import { webAppWithProcessing } from 'typekro/webapp';

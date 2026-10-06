@@ -46,6 +46,10 @@
       "import": "./dist/factories/kubernetes/index.js",
       "types": "./dist/factories/kubernetes/index.d.ts"
     },
+    "./vpa": {
+      "import": "./dist/factories/vpa/index.js",
+      "types": "./dist/factories/vpa/index.d.ts"
+    },
     "./traefik": {
       "import": "./dist/factories/traefik/index.js",
       "types": "./dist/factories/traefik/index.d.ts"
@@ -130,9 +134,17 @@
       "import": "./dist/factories/hatchet/index.js",
       "types": "./dist/factories/hatchet/index.d.ts"
     },
+    "./karpenter": {
+      "import": "./dist/factories/karpenter/index.js",
+      "types": "./dist/factories/karpenter/index.d.ts"
+    },
     "./containers": {
       "import": "./dist/core/containers/index.js",
       "types": "./dist/core/containers/index.d.ts"
+    },
+    "./aws-load-balancer-controller": {
+      "import": "./dist/factories/aws-load-balancer-controller/index.js",
+      "types": "./dist/factories/aws-load-balancer-controller/index.d.ts"
     },
     "./searxng": {
       "import": "./dist/factories/searxng/index.js",
