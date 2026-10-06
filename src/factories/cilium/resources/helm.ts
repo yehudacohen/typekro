@@ -13,6 +13,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle, lifecycleDefault } from '../../helm/lifecycle.js';
 import { helmReleaseReadinessEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -127,6 +128,14 @@ export function ciliumHelmRepository(
 export function ciliumHelmRelease(
   config: CiliumHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+  // Each action's timeout falls back to the release-wide `timeout`, then to
+  // the generic 10m. Spelled as a fallback chain rather than a test on
+  // `config.timeout`: in KRO mode a schema reference is always truthy at build
+  // time, so a truthiness test would drop the 10m even for an instance that
+  // leaves `timeout` unset. `lifecycleDefault` emits the chain as CEL then.
+  const releaseTimeout = lifecycleDefault(config.timeout, '10m');
+  const installTimeout = lifecycleDefault(config.installTimeout, releaseTimeout) as string;
+  const upgradeTimeout = lifecycleDefault(config.upgradeTimeout, releaseTimeout) as string;
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
@@ -141,6 +150,7 @@ export function ciliumHelmRelease(
     },
     spec: {
       interval: config.interval || '5m',
+      ...(config.timeout && { timeout: config.timeout }),
       chart: {
         spec: {
           chart: 'cilium',
@@ -152,6 +162,19 @@ export function ciliumHelmRelease(
           },
         },
       },
+      // The legacy flat fields seed the policy; nested install/upgrade fields
+      // win.
+      ...helmReleaseLifecycle(config, {
+        install: {
+          timeout: installTimeout,
+          ...(config.createNamespace !== undefined && { createNamespace: config.createNamespace }),
+          remediation: { retries: 3 },
+        },
+        upgrade: {
+          timeout: upgradeTimeout,
+          remediation: { retries: 3 },
+        },
+      }),
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator);

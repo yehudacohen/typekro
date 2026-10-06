@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Every integration HelmRelease factory accepts `install`, `upgrade` and `driftDetection`.**
+  That covers APISix, cert-manager, Cilium, ClickHouse, ClickStack (both releases), CNPG, Dagster,
+  Envoy Gateway and Envoy AI Gateway, External-DNS, Harbor, Hatchet, Inngest, NATS, OpenSearch,
+  Ory (all four charts), Pebble, Rook Ceph (both charts), Traefik and Valkey. The options are the
+  ones the generic `helmRelease` already takes: install and upgrade `timeout`, the CRD policy
+  (`crds`: `Skip`, `Create` or `CreateReplace`), `remediation` (`retries`, `remediateLastFailure`,
+  `ignoreTestFailures`, and `strategy` on upgrade), `install.createNamespace`, and drift detection.
+  Each field you set overrides the factory's default for that field. A release whose chart ships
+  CRDs in its `crds/` directory can now set `upgrade.crds: CreateReplace` directly instead of
+  patching the HelmRelease with an aspect. (cert-manager's CRDs are chart templates, so the Flux
+  CRD policy does not affect them; its chart value `crds.enabled` does.) They all share one helper, `helmReleaseLifecycle`, which
+  `typekro/helm` exports for custom integration factories, together with the
+  `HelmReleaseLifecycleOptions`, `HelmReleaseInstallPolicy`, `HelmReleaseUpgradePolicy` and
+  `HelmReleaseCrdsPolicy` types. In KRO mode the defaults also hold when an option is a schema
+  reference, including a whole object such as `install: spec.install`: each defaulted field renders
+  as a CEL fallback (the instance's value when set, otherwise the default), and fields the instance
+  schema does not declare are not read from it. A schema field passed as `retries` must be declared
+  `'number.integer'`: a plain ArkType `'number'` is a KRO float, which the HelmRelease's integer
+  field rejects, so the factory throws a `ValidationError` at build time, as it does in direct mode
+  for a fractional value such as `2.7`. TypeKro never coerces the value.
+  An optional schema field used as a fallback (Cilium's flat `createNamespace`) is guarded, so an
+  instance that sets neither field omits it. A reference to another
+  resource gets no fallback, so KRO still waits for that field. See "Install, upgrade and CRD
+  policy" in the Flux docs.
+
+### Changed
+
+- **Behaviour change in KRO mode: a lifecycle default is no longer written into your own schema
+  field.** When an optional field of your composition's spec (say `spec.installTimeout`) was passed
+  as `install.timeout` to `helmRelease` (or to an integration factory with a lifecycle default),
+  the factory's default, say `10m`, used to become that field's default in the RGD schema
+  (`default="10m"`). The default now lives in the HelmRelease
+  template as a CEL fallback, and the field itself stays unset when the instance leaves it unset.
+  The HelmRelease gets the same value as before. Anything else that reads the field, such as a
+  ConfigMap built from `spec.installTimeout`, used to see `"10m"` and now sees it absent, which is
+  what direct mode has always done.
+- **Behaviour change: the cert-manager, Cilium, External-DNS and Pebble HelmReleases now get the
+  generic `helmRelease` defaults.** These are `install.timeout` and `upgrade.timeout` of `10m` and
+  `remediation.retries: 3` for each. They rendered no install or upgrade policy before, so Flux
+  used a 5m timeout with no retries, and a slow first install stayed Stalled until someone ran
+  `flux reconcile --reset`. With `retries` above 0, Flux also remediates every failure, the last
+  one included: a failed install is uninstalled and tried again, and a failed upgrade is rolled
+  back and tried again. Existing releases pick up the new policy on their next reconcile. The
+  chart and its values do not change. Every other factory renders the same fields with the same
+  values as before when the new options are not set. In the APISix and Traefik releases,
+  `createNamespace` and `crds` now come after `remediation`, which reorders the keys in
+  direct-mode YAML. The objects are identical, and RGD text does not change, because it is
+  emitted with sorted keys.
+
+### Fixed
+
+- **`helmRelease` dropped `install.crds` and `upgrade.crds`.** The types accepted them, but the
+  factory did not render them, so the release silently kept Flux's `Create` / `Skip` defaults.
+  They are now rendered.
+- **`ciliumHelmRelease` ignored `timeout`, `installTimeout`, `upgradeTimeout` and
+  `createNamespace`.** They are now rendered as `spec.timeout`, `install.timeout`,
+  `upgrade.timeout` and `install.createNamespace`. An action without its own timeout takes
+  `timeout`, and `10m` only when neither is set. In KRO mode this is decided per instance, so an
+  instance that leaves `timeout` unset still gets `10m`. `replace` and `cleanupOnFail` are still
+  not rendered.
+
 ## [0.44.1] - 2026-10-01
 
 ### Fixed

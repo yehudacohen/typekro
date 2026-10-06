@@ -7,6 +7,7 @@ import {
   type HelmRepositoryStatus,
   helmRepository,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type { HarborHelmReleaseConfig, HarborHelmRepositoryConfig } from '../types.js';
@@ -48,15 +49,18 @@ export function harborHelmRelease(
       namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    driftDetection: { mode: 'enabled' },
-    install: { timeout: '20m', remediation: { retries: 3 } },
     // Harbor may migrate its external database during an upgrade. Retrying the
     // same revision is bounded, but an automatic rollback to an older chart is
-    // not universally safe once that migration has committed.
-    upgrade: {
-      timeout: '20m',
-      remediation: { retries: 0, remediateLastFailure: false },
-    },
+    // not universally safe once that migration has committed. Callers may still
+    // override any field.
+    ...helmReleaseLifecycle(config, {
+      driftDetection: { mode: 'enabled' },
+      install: { timeout: '20m', remediation: { retries: 3 } },
+      upgrade: {
+        timeout: '20m',
+        remediation: { retries: 0, remediateLastFailure: false },
+      },
+    }),
     values: config.values ?? {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Harbor')) as Enhanced<

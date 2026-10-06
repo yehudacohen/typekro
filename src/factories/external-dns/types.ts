@@ -3,6 +3,7 @@
 
 import { type Type, type } from 'arktype';
 import type { CelExpression, TypeKroChartValues } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // Re-export common types from cert-manager for consistency
 export type {
@@ -115,7 +116,7 @@ export interface ExternalDnsHelmRepositoryConfig {
 /**
  * Configuration interface for External-DNS HelmRelease
  */
-export interface ExternalDnsHelmReleaseConfig {
+export interface ExternalDnsHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   name: string;
   namespace?: string;
   repositoryName: string;
