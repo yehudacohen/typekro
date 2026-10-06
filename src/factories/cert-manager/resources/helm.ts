@@ -16,6 +16,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -181,6 +182,9 @@ export function certManagerHelmRelease(
           },
         },
       },
+      // Same bounded-retry defaults as the generic helmRelease: Flux's own
+      // 5m / no-retry default left a slow first install Stalled.
+      ...helmReleaseLifecycle(config),
       values: finalValues,
     },
   }).withReadinessEvaluator(certManagerHelmReleaseReadinessEvaluator);

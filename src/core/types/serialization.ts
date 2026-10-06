@@ -43,8 +43,11 @@ export interface KroSimpleSchema {
   group?: string;
   /** Spec fields — nested objects represent KRO SimpleSchema nested types. */
   spec: Record<string, unknown>;
-  /** Reusable KRO SimpleSchema custom types used by validated structured fields. */
-  types?: Record<string, Record<string, unknown>>;
+  /**
+   * Reusable KRO SimpleSchema custom types: structured fields that carry
+   * validation, and aliases (`string | maxLength=43`) for constrained array items.
+   */
+  types?: Record<string, Record<string, unknown> | string>;
   /** Status fields may be plain CEL expression strings, nested objects, or arrays for status mappings. */
   status?: Record<string, string | Record<string, unknown> | unknown[]>;
 }

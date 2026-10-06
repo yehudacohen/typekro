@@ -1,38 +1,36 @@
-/**
- * `traefikBootstrap` — the composition that stands Traefik up as a cluster edge.
- *
- * It owns the whole install: the (optional) namespace, the Flux `HelmRelease`,
- * the entrypoint `Service`, and optionally the cluster-default
- * `TLSOption`/`TLSStore`. The shared chart `HelmRepository` is delegated to a
- * singleton composition so one instance's teardown cannot break another's
- * chart source.
- *
- * **Why the entrypoint Service is owned rather than observed.** The status
- * contract publishes the edge's load-balancer address, which means projecting
- * the entrypoint Service's `status.loadBalancer`. A projection requires the
- * resource to be in the graph. Observing the chart-created Service instead
- * (`observedResource`) made every FRESH direct deployment fail: the direct
- * engine resolves external references before it applies anything, so it read a
- * `Service` that the release had not created yet and treated the `404` as
- * fatal — and `dependsOn` cannot reorder that, because the read happens before
- * the dependency graph is walked. So the chart's Service is disabled through
- * values and this composition creates a typed one selecting the chart's pods.
- * The graph therefore has no external reference to any Kubernetes API object.
- *
- * **Build-time vs runtime.** Options that decide WHICH resources exist — the
- * namespace lifecycle, the default TLS resources, the `web` → `websecure`
- * redirect, raw chart values — are arguments to {@link makeTraefikBootstrap}
- * and are always concrete, so plain JavaScript branches on them are safe. The
- * runtime spec carries only values, which may arrive as schema references in
- * KRO mode and are therefore only ever placed into the values tree, never
- * branched on. This is the ClickStack convention.
- *
- * @security The dashboard and the insecure API are not reachable through this
- * contract: the spec's `dashboard` field is typed as the literal `false`, and
- * `mapTraefikConfigToHelmValues` pins `api.dashboard`, `api.insecure`,
- * `api.debug` and the dashboard `IngressRoute` off after every other values
- * source has been merged.
- */
+// `traefikBootstrap` — the composition that stands Traefik up as a cluster edge.
+//
+// It owns the whole install: the (optional) namespace, the Flux `HelmRelease`,
+// the entrypoint `Service`, and optionally the cluster-default
+// `TLSOption`/`TLSStore`. The shared chart `HelmRepository` is delegated to a
+// singleton composition so one instance's teardown cannot break another's
+// chart source.
+//
+// **Why the entrypoint Service is owned rather than observed.** The status
+// contract publishes the edge's load-balancer address, which means projecting
+// the entrypoint Service's `status.loadBalancer`. A projection requires the
+// resource to be in the graph. Observing the chart-created Service instead
+// (`observedResource`) made every FRESH direct deployment fail: the direct
+// engine resolves external references before it applies anything, so it read a
+// `Service` that the release had not created yet and treated the `404` as
+// fatal — and `dependsOn` cannot reorder that, because the read happens before
+// the dependency graph is walked. So the chart's Service is disabled through
+// values and this composition creates a typed one selecting the chart's pods.
+// The graph therefore has no external reference to any Kubernetes API object.
+//
+// **Build-time vs runtime.** Options that decide WHICH resources exist — the
+// namespace lifecycle, the default TLS resources, the `web` → `websecure`
+// redirect, raw chart values — are arguments to {@link makeTraefikBootstrap}
+// and are always concrete, so plain JavaScript branches on them are safe. The
+// runtime spec carries only values, which may arrive as schema references in
+// KRO mode and are therefore only ever placed into the values tree, never
+// branched on. This is the ClickStack convention.
+//
+// @security The dashboard and the insecure API are not reachable through this
+// contract: the spec's `dashboard` field is typed as the literal `false`, and
+// `mapTraefikConfigToHelmValues` pins `api.dashboard`, `api.insecure`,
+// `api.debug` and the dashboard `IngressRoute` off after every other values
+// source has been merged.
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
@@ -57,7 +55,7 @@ import {
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
 import { traefikHelmRelease } from '../resources/helm.js';
-import { traefikTLSOption, traefikTLSStore } from '../resources/tls.js';
+import { traefikTLSOption, traefikTLSStore, traefikTlsCertificate } from '../resources/tls.js';
 import {
   type TraefikBootstrapBuildOptions,
   TraefikBootstrapConfigSchema,
@@ -65,8 +63,10 @@ import {
 } from '../types.js';
 import {
   mapTraefikConfigToHelmValues,
+  traefikEntrypointServiceLoadBalancer,
   traefikEntrypointServiceType,
 } from '../utils/helm-values-mapper.js';
+import { traefikProxyTrustSchemaFieldValidations } from '../utils/proxy-trust.js';
 import { traefikHelmRepositoryBootstrap } from './traefik-helm-repository.js';
 
 /**
@@ -170,6 +170,7 @@ export function makeTraefikBootstrap(
   const defaultTlsOption = options.defaultTlsOption;
   const defaultTlsStore = options.defaultTlsStore;
   const crdsPolicy = options.crds ?? DEFAULT_TRAEFIK_CRDS_POLICY;
+  const dangerouslyTrustAnySource = options.dangerouslyTrustAnySource ?? false;
 
   return kubernetesComposition(
     {
@@ -209,6 +210,13 @@ export function makeTraefikBootstrap(
 
       const values = mapTraefikConfigToHelmValues(spec, {
         redirectWebToWebsecure,
+        dangerouslyTrustAnySource,
+        ...(options.accessLog ? { accessLog: options.accessLog } : {}),
+        ...(options.plugins ? { plugins: options.plugins } : {}),
+        ...(options.localPlugins ? { localPlugins: options.localPlugins } : {}),
+        ...(options.abortOnPluginFailure === undefined
+          ? {}
+          : { abortOnPluginFailure: options.abortOnPluginFailure }),
         targetNamespace: installNamespace,
         ...(options.values ? { baseValues: options.values } : {}),
       });
@@ -252,6 +260,21 @@ export function makeTraefikBootstrap(
         tlsOption.dependsOn(release);
       }
 
+      if (defaultTlsStore?.certificate) {
+        // No `dependsOn` between the two: a TLSStore whose Secret does not exist
+        // yet is valid, and Traefik serves its self-signed default until
+        // cert-manager writes it. Ordering them would hold the store back for
+        // the whole ACME order.
+        traefikTlsCertificate({
+          name: defaultTlsStore.certificate.name ?? defaultTlsStore.defaultCertificateSecretName,
+          namespace: installNamespace,
+          hostnames: [...defaultTlsStore.certificate.hostnames],
+          issuerRef: defaultTlsStore.certificate.issuerRef,
+          secretName: defaultTlsStore.defaultCertificateSecretName,
+          id: 'traefikDefaultCertificate',
+        });
+      }
+
       if (defaultTlsStore) {
         const tlsStore = traefikTLSStore({
           name: defaultTlsStore.name ?? TRAEFIK_DEFAULT_TLS_STORE_NAME,
@@ -289,6 +312,12 @@ export function makeTraefikBootstrap(
         },
         spec: {
           type: traefikEntrypointServiceType(spec),
+          // Present only when the spec carries them. Built outside this
+          // function: the composition analyzer rewrites expressions it finds in
+          // this body, and a conditional spread here made it re-wrap every
+          // mixed template in the values tree as a nested `${...}`, which KRO
+          // rejects.
+          ...traefikEntrypointServiceLoadBalancer(spec),
           // The chart stamps these two labels on the Traefik pods, and the
           // values mapper pins both of their sources (`nameOverride`,
           // `instanceLabelOverride`) so this selector is exact.
@@ -348,7 +377,12 @@ export function makeTraefikBootstrap(
         // a deploy-time literal here (#188).
         version: Cel.expr<string>(chartVersionExpression('traefikHelmRelease')),
       };
-    }
+    },
+    // The KRO-mode half of the proxy-trust check: direct mode refuses a `/0`
+    // range in the values mapper, KRO mode on the generated CRD.
+    dangerouslyTrustAnySource
+      ? {}
+      : { schemaFieldValidations: traefikProxyTrustSchemaFieldValidations() }
   );
 }
 

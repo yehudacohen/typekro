@@ -29,6 +29,7 @@ import type {
 import type { TypeKroChartValue, TypeKroValue } from '../../core/types/common.js';
 import type { HelmRepositorySpec, HelmRepositoryStatus } from '../helm/helm-repository.js';
 import type {
+  HelmReleaseLifecycleOptions,
   HelmReleasePostRenderer,
   HelmReleaseSpec,
   HelmReleaseStatus,
@@ -697,7 +698,8 @@ export interface OryHelmRepositoryConfig {
 }
 
 /** Shared config for Ory service HelmRelease wrappers. */
-export interface OryHelmReleaseConfigBase<TValues extends object> {
+export interface OryHelmReleaseConfigBase<TValues extends object>
+  extends HelmReleaseLifecycleOptions {
   /** HelmRelease name. */
   name: string;
   /** HelmRelease namespace and chart target namespace. */

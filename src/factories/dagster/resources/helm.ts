@@ -16,6 +16,7 @@ import {
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
 import { helmRelease } from '../../helm/helm-release.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type {
@@ -79,6 +80,7 @@ export function dagsterHelmRelease(
       namespace: config.repositoryNamespace || DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
+    ...helmReleaseLifecycle(config, {}),
     ...(config.values !== undefined && { values: config.values }),
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Dagster')) as Enhanced<
