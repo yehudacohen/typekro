@@ -24,43 +24,69 @@
     },
     {
       "owner": "alchemy",
-      "paths": ["alchemy/**"]
+      "paths": [
+        "alchemy/**"
+      ]
     },
     {
       "owner": "advanced",
-      "paths": ["advanced/**"]
+      "paths": [
+        "advanced/**"
+      ]
     },
     {
       "owner": "experimental/planning",
-      "paths": ["experimental-planning.d.ts"]
+      "paths": [
+        "experimental-planning.d.ts"
+      ]
     },
     {
       "owner": "apisix",
-      "paths": ["factories/apisix/**"]
+      "paths": [
+        "factories/apisix/**"
+      ]
+    },
+    {
+      "owner": "aws-load-balancer-controller",
+      "paths": [
+        "factories/aws-load-balancer-controller/**"
+      ]
     },
     {
       "owner": "caddy",
-      "paths": ["factories/caddy/**"]
+      "paths": [
+        "factories/caddy/**"
+      ]
     },
     {
       "owner": "cert-manager",
-      "paths": ["factories/cert-manager/**"]
+      "paths": [
+        "factories/cert-manager/**"
+      ]
     },
     {
       "owner": "cilium",
-      "paths": ["factories/cilium/**"]
+      "paths": [
+        "factories/cilium/**"
+      ]
     },
     {
       "owner": "clickhouse",
-      "paths": ["factories/clickhouse/**"]
+      "paths": [
+        "factories/clickhouse/**"
+      ]
     },
     {
       "owner": "clickstack",
-      "paths": ["factories/clickstack/**"]
+      "paths": [
+        "factories/clickstack/**"
+      ]
     },
     {
       "owner": "cnpg",
-      "paths": ["factories/cnpg/**"]
+      "paths": [
+        "factories/cnpg/**"
+      ]
     },
     {
       "owner": "crowdsec",
@@ -68,70 +94,123 @@
     },
     {
       "owner": "dagster",
-      "paths": ["factories/dagster/**"]
+      "paths": [
+        "factories/dagster/**"
+      ]
     },
     {
       "owner": "envoy-ai-gateway",
-      "paths": ["factories/envoy-ai-gateway/**"]
+      "paths": [
+        "factories/envoy-ai-gateway/**"
+      ]
     },
     {
       "owner": "external-dns",
-      "paths": ["factories/external-dns/**"]
+      "paths": [
+        "factories/external-dns/**"
+      ]
     },
     {
       "owner": "gateway-api",
-      "paths": ["factories/gateway-api/**"]
+      "paths": [
+        "factories/gateway-api/**"
+      ]
     },
     {
       "owner": "harbor",
-      "paths": ["factories/harbor/**"]
+      "paths": [
+        "factories/harbor/**"
+      ]
+    },
+    {
+      "owner": "keda",
+      "paths": [
+        "factories/keda/**"
+      ]
     },
     {
       "owner": "hatchet",
-      "paths": ["factories/hatchet/**"]
+      "paths": [
+        "factories/hatchet/**"
+      ]
     },
     {
       "owner": "inngest",
-      "paths": ["factories/inngest/**"]
+      "paths": [
+        "factories/inngest/**"
+      ]
+    },
+    {
+      "owner": "karpenter",
+      "paths": [
+        "factories/karpenter/**"
+      ]
     },
     {
       "owner": "nats",
-      "paths": ["factories/nats/**"]
+      "paths": [
+        "factories/nats/**"
+      ]
     },
     {
       "owner": "opensearch",
-      "paths": ["factories/opensearch/**"]
+      "paths": [
+        "factories/opensearch/**"
+      ]
     },
     {
       "owner": "ory",
-      "paths": ["factories/ory/**"]
+      "paths": [
+        "factories/ory/**"
+      ]
     },
     {
       "owner": "pebble",
-      "paths": ["factories/pebble/**"]
+      "paths": [
+        "factories/pebble/**"
+      ]
     },
     {
       "owner": "rook",
-      "paths": ["factories/rook/**"]
+      "paths": [
+        "factories/rook/**"
+      ]
     },
     {
       "owner": "searxng",
-      "paths": ["factories/searxng/**"]
+      "paths": [
+        "factories/searxng/**"
+      ]
     },
     {
       "owner": "traefik",
-      "paths": ["factories/traefik/**"]
+      "paths": [
+        "factories/traefik/**"
+      ]
     },
     {
       "owner": "valkey",
-      "paths": ["factories/valkey/**"]
+      "paths": [
+        "factories/valkey/**"
+      ]
+    },
+    {
+      "owner": "vpa",
+      "paths": [
+        "factories/vpa/**"
+      ]
     },
     {
       "owner": "webapp",
-      "paths": ["factories/webapp/**"]
+      "paths": [
+        "factories/webapp/**"
+      ]
     }
   ],
-  "rootBarrels": ["index.d.ts", "factories/index.d.ts"],
+  "rootBarrels": [
+    "index.d.ts",
+    "factories/index.d.ts"
+  ],
   "rootEntry": {
     "$comment": "Core plus the integrations src/factories/index.ts re-exported when per-owner budgets were introduced (alchemy is reached through core deployment types). Do not add new integrations here: ship them as their own subpath export.",
     "export": ".",
@@ -183,7 +262,7 @@
     {
       "from": "traefik",
       "to": "cert-manager",
-      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core."
+      "reason": "Borrows generic Kubernetes helper types (Affinity, EnvVar, Toleration, ...) from cert-manager; move them into core. traefikTlsCertificate also returns a cert-manager Certificate by design."
     },
     {
       "from": "traefik",

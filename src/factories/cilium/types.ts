@@ -7,6 +7,7 @@
  */
 
 import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 // =============================================================================
 // BOOTSTRAP COMPOSITION TYPES
@@ -934,7 +935,7 @@ export interface CiliumHelmRepositoryConfig {
 /**
  * Configuration interface for Cilium HelmRelease
  */
-export interface CiliumHelmReleaseConfig {
+export interface CiliumHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   name: string;
   namespace?: string;
   version?: string;

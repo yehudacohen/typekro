@@ -16,6 +16,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -175,6 +176,7 @@ export function externalDnsHelmRelease(
           },
         },
       },
+      ...helmReleaseLifecycle(config),
       ...(values &&
         (isCelExpression(config.values) || Object.keys(values).length > 0) && {
           values,

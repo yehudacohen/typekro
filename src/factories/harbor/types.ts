@@ -1,5 +1,6 @@
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
+import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 const secretRefShape = {
   name: 'string',
@@ -251,9 +252,10 @@ export const HarborHelmReleaseConfigSchema = type({
   'values?': 'Record<string, unknown>',
   'id?': 'string',
 });
-export type HarborHelmReleaseConfig = Omit<typeof HarborHelmReleaseConfigSchema.infer, 'values'> & {
-  values?: TypeKroChartValue<Record<string, unknown>>;
-};
+export type HarborHelmReleaseConfig = Omit<typeof HarborHelmReleaseConfigSchema.infer, 'values'> &
+  HelmReleaseLifecycleOptions & {
+    values?: TypeKroChartValue<Record<string, unknown>>;
+  };
 
 export interface HarborS3StorageBinding {
   bucket: string;

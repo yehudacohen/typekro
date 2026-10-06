@@ -13,8 +13,13 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import type {
+  HelmReleaseLifecycleOptions,
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+} from '../../helm/types.js';
 import { createResource } from '../../shared.js';
 import type { APISixHelmValues } from '../types.js';
 
@@ -32,7 +37,7 @@ export interface APISixHelmRepositoryConfig {
 /**
  * Configuration for APISix HelmRelease
  */
-export interface APISixHelmReleaseConfig {
+export interface APISixHelmReleaseConfig extends HelmReleaseLifecycleOptions {
   name: string;
   namespace?: string;
   targetNamespace?: string;
@@ -113,17 +118,12 @@ export function apisixHelmRelease(
         },
       },
       targetNamespace: config.targetNamespace || config.namespace || 'apisix',
-      install: {
-        createNamespace: true,
-        remediation: {
-          retries: 3,
-        },
-      },
-      upgrade: {
-        remediation: {
-          retries: 3,
-        },
-      },
+      // `spec.timeout` above already bounds every action, so the per-action
+      // defaults carry no timeout of their own that would shadow it.
+      ...helmReleaseLifecycle(config, {
+        install: { createNamespace: true, remediation: { retries: 3 } },
+        upgrade: { remediation: { retries: 3 } },
+      }),
 
       values: helmValues,
     },

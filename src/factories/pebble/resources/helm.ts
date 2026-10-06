@@ -13,6 +13,7 @@ import {
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
 } from '../../helm/helm-repository.js';
+import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
@@ -159,6 +160,7 @@ export function pebbleHelmRelease(
         },
       },
       interval: config.interval || '5m',
+      ...helmReleaseLifecycle(config),
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(pebbleHelmReleaseReadinessEvaluator);

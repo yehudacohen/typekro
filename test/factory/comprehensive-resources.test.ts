@@ -265,6 +265,14 @@ describe('Comprehensive Resource Factory Coverage', () => {
       expect(lr.kind).toBe('LimitRange');
       expect(lr.apiVersion).toBe('v1');
       expect(lr.spec?.limits).toHaveLength(1);
+      // The wire field is `default`; client-node's `_default` stays a read-only alias.
+      const item = lr.spec?.limits?.[0] as Record<string, unknown>;
+      expect(JSON.parse(JSON.stringify(item))).toEqual({
+        type: 'Container',
+        default: { cpu: '100m', memory: '128Mi' },
+        defaultRequest: { cpu: '50m', memory: '64Mi' },
+      });
+      expect(lr.spec?.limits?.[0]?._default).toEqual({ cpu: '100m', memory: '128Mi' });
     });
   });
 
