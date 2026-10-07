@@ -17,7 +17,9 @@ import type { TraefikLocalPluginDeclaration, TraefikPluginDeclaration } from '..
 
 // Plugin names become CLI flag segments (`--experimental.plugins.<name>...`)
 // and `Middleware.spec.plugin` keys, so they stay to one flag-safe word.
-const PLUGIN_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/;
+// Exported for integrations that name a plugin (CrowdSec's bouncer); not
+// re-exported from `typekro/traefik`.
+export const TRAEFIK_PLUGIN_NAME: RegExp = /^[A-Za-z][A-Za-z0-9_-]*$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 // The chart writes `moduleName`, `version`, a local plugin's `volumeName` and
 // `subPath`, and inline source file names into its templates unescaped. A
@@ -94,7 +96,9 @@ export function traefikPluginIssues(
   const issues: string[] = [];
   const takenVolumeNames = new Set([...CHART_VOLUME_NAMES, ...rawVolumeNames]);
   for (const [name, plugin] of Object.entries(plugins)) {
-    if (!PLUGIN_NAME.test(name)) issues.push(`plugin name ${name} must match ${PLUGIN_NAME}.`);
+    if (!TRAEFIK_PLUGIN_NAME.test(name)) {
+      issues.push(`plugin name ${name} must match ${TRAEFIK_PLUGIN_NAME}.`);
+    }
     if (!MODULE_NAME.test(plugin.moduleName)) {
       issues.push(`plugin ${name} needs a Go module path as its moduleName.`);
     }

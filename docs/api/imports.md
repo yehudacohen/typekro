@@ -227,6 +227,7 @@ const AppSpec = type({
 | RBAC factories | `typekro` |
 | Cilium policies | `typekro/cilium` |
 | Cert-Manager | `typekro/cert-manager` |
+| CrowdSec | `typekro/crowdsec` |
 | Flux GitOps | `typekro/flux` |
 | SearXNG | `typekro/searxng` |
 | Types | `typekro` (with `import type`) |

@@ -10,6 +10,7 @@
   "sharedPoolBytes": 241152,
   "pooledOwners": [
     "aws-load-balancer-controller",
+    "crowdsec",
     "karpenter",
     "keda",
     "vpa"

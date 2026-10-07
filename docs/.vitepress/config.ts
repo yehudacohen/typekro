@@ -100,6 +100,7 @@ export default withMermaid(
               { text: 'KEDA', link: '/api/keda/' },
               { text: 'APISix', link: '/api/apisix/' },
               { text: 'Traefik', link: '/api/traefik/' },
+              { text: 'CrowdSec', link: '/api/crowdsec/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
               { text: 'Inngest', link: '/api/inngest/' },
               { text: 'Karpenter', link: '/api/karpenter/' },
