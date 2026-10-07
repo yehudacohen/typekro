@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-07
+
 ### Security
 
 - **Direct-mode NetworkPolicies kept their ports but lost their peers, so they allowed any
