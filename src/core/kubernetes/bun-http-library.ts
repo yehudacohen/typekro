@@ -22,6 +22,7 @@ import type {
 import { from, type Observable } from '@kubernetes/client-node/dist/gen/rxjsStub.js';
 import {
   DEFAULT_HTTP_DELETE_TIMEOUT,
+  DEFAULT_HTTP_READ_HEDGE_DELAY,
   DEFAULT_HTTP_READ_TIMEOUT,
   DEFAULT_HTTP_WATCH_TIMEOUT,
   DEFAULT_HTTP_WRITE_TIMEOUT,
@@ -77,6 +78,21 @@ export interface HttpTimeoutConfig {
    * May wait for finalizers, graceful termination
    */
   delete?: number;
+
+  /**
+   * How long a read (GET/HEAD, not a watch) may go without response headers before a second
+   * copy of it is sent on a new connection. The first copy is NOT cancelled: both run, the first
+   * complete response wins and the other is torn down, and both share the read's `default`
+   * budget, so a read still settles within that budget.
+   *
+   * This rides out a connection that stalls before the server answers — a dropped handshake or a
+   * request the network swallowed — which otherwise costs the whole read budget and fails the call.
+   * A read that is merely slow (a large LIST) costs one duplicate request and returns as fast as
+   * before. Writes and deletes are never duplicated.
+   *
+   * @default 10000 (10 seconds). `0`, or any value not below `default`, disables it.
+   */
+  readHedgeDelay?: number;
 }
 
 /**
@@ -148,7 +164,31 @@ const DEFAULT_TIMEOUTS: Required<HttpTimeoutConfig> = {
   create: DEFAULT_HTTP_WRITE_TIMEOUT, // 2 minutes - write operations with webhooks
   update: DEFAULT_HTTP_WRITE_TIMEOUT, // 2 minutes - write operations with webhooks
   delete: DEFAULT_HTTP_DELETE_TIMEOUT, // 3 minutes - may need to wait for finalizers
+  readHedgeDelay: DEFAULT_HTTP_READ_HEDGE_DELAY, // 10 seconds - second copy of a stalled read
 };
+
+/** True for a watch request, which is long-lived by design and never timed or duplicated here. */
+function isWatchUrl(url: string): boolean {
+  return url.includes('?watch=true') || url.includes('&watch=true');
+}
+
+/** Per-attempt controls for {@link BunCompatibleHttpLibrary}'s request. */
+interface RequestAttempt {
+  /** This attempt's budget. Defaults to the budget for the request's method. */
+  readonly timeoutMs?: number;
+  /** Tears this attempt down when another copy of the same read has already answered. */
+  readonly cancel?: AbortSignal;
+  /** Called once, when the response headers arrive. */
+  readonly onResponseStart?: () => void;
+}
+
+/** Rejection of a read copy that lost the race to another copy. Never reaches a caller. */
+class SupersededAttemptError extends Error {
+  constructor() {
+    super('superseded: another copy of this read answered first');
+    this.name = 'SupersededAttemptError';
+  }
+}
 
 /**
  * Check if we're running in Bun runtime
@@ -188,13 +228,121 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         create: `${this.timeouts.create}ms`,
         update: `${this.timeouts.update}ms`,
         delete: `${this.timeouts.delete}ms`,
+        readHedgeDelay: `${this.timeouts.readHedgeDelay}ms`,
       });
     }
   }
 
   public send(request: RequestContext): Observable<ResponseContext> {
-    const resultPromise = this.makeRequest(request);
-    return from(resultPromise);
+    return from(this.dispatch(request));
+  }
+
+  /** Send a read through {@link sendHedged} when it may be duplicated; everything else once. */
+  private dispatch(request: RequestContext): Promise<ResponseContext> {
+    const method = request.getHttpMethod().toUpperCase();
+    const url = request.getUrl();
+    const timeoutMs = this.getTimeoutForRequest(method, url);
+    const hedgeDelayMs = this.timeouts.readHedgeDelay;
+    const idempotentRead = (method === 'GET' || method === 'HEAD') && !isWatchUrl(url);
+    if (idempotentRead && hedgeDelayMs > 0 && hedgeDelayMs < timeoutMs) {
+      return this.sendHedged(request, method, timeoutMs, hedgeDelayMs);
+    }
+    return this.makeRequest(request, { timeoutMs });
+  }
+
+  /**
+   * Send a read, and if no response headers have arrived after `hedgeDelayMs`, send a second copy
+   * on a new connection while the first keeps waiting. The first complete response wins and the
+   * other copy is torn down.
+   *
+   * WHY: every request here opens its own connection (see `agent: false` below), and once in a
+   * while a fresh connection stalls before the server answers — the handshake or the request is
+   * lost somewhere on the path, the API server never sees it, and the read hangs for its whole
+   * budget although the same read on another connection returns in well under a second. Waiting
+   * out the budget turned one lost packet into a failed fail-closed gate. A second copy on a new
+   * connection takes a new path, and since a read changes nothing, sending it twice is safe.
+   *
+   * BOUNDS: at most one extra copy. It gets only what is left of the original budget, so the read
+   * still settles within `timeoutMs`. A failure before the second copy exists is returned at once —
+   * refused, reset, TLS, abort — because it is an answer, not a stall. Once both exist, the read
+   * fails only when both have, and with the FIRST copy's error, so callers keep seeing the same
+   * error shapes (a request timeout with the full budget) they did without the second copy.
+   */
+  private sendHedged(
+    request: RequestContext,
+    method: string,
+    timeoutMs: number,
+    hedgeDelayMs: number
+  ): Promise<ResponseContext> {
+    return new Promise((resolve, reject) => {
+      const path = new URL(request.getUrl()).pathname;
+      const issuedAt = Date.now();
+      const cancels: AbortController[] = [];
+      const errors: unknown[] = [];
+      let inFlight = 0;
+      let settled = false;
+      let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearHedgeTimer = () => {
+        if (hedgeTimer) {
+          clearTimeout(hedgeTimer);
+          hedgeTimer = undefined;
+        }
+      };
+
+      const finish = (outcome: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearHedgeTimer();
+        for (const cancel of cancels) cancel.abort();
+        outcome();
+      };
+
+      const launch = (copy: number, budgetMs: number): void => {
+        const cancel = new AbortController();
+        cancels.push(cancel);
+        inFlight++;
+        this.makeRequest(request, {
+          timeoutMs: budgetMs,
+          cancel: cancel.signal,
+          // The original answering in time is the common case: no second copy is needed.
+          ...(copy === 0 ? { onResponseStart: clearHedgeTimer } : {}),
+        }).then(
+          (response) => {
+            if (!settled && cancels.length > 1) {
+              this.logger.warn(
+                copy === 0
+                  ? `${method} ${path}: the first request answered after ${Date.now() - issuedAt}ms, ahead of its second copy`
+                  : `${method} ${path}: the second copy answered after ${Date.now() - issuedAt}ms; the first request never answered`,
+                {
+                  method,
+                  path,
+                  elapsedMs: Date.now() - issuedAt,
+                  winner: copy === 0 ? 'first' : 'second',
+                }
+              );
+            }
+            finish(() => resolve(response));
+          },
+          (error: unknown) => {
+            inFlight--;
+            errors[copy] = error;
+            if (inFlight === 0) finish(() => reject(errors[0] ?? error));
+          }
+        );
+      };
+
+      launch(0, timeoutMs);
+      hedgeTimer = setTimeout(() => {
+        hedgeTimer = undefined;
+        const remainingMs = timeoutMs - (Date.now() - issuedAt);
+        if (settled || remainingMs <= 0) return;
+        this.logger.warn(
+          `${method} ${path}: no response after ${hedgeDelayMs}ms — sending a second copy on a new connection`,
+          { method, path, hedgeDelayMs, remainingMs }
+        );
+        launch(1, remainingMs);
+      }, hedgeDelayMs);
+    });
   }
 
   /**
@@ -210,7 +358,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     // Kubernetes API server via timeoutSeconds query parameter. Do NOT set
     // HTTP-level timeouts on watch connections as this interferes with the
     // EventMonitor's reconnection logic and causes AbortError issues.
-    if (url.includes('?watch=true') || url.includes('&watch=true')) {
+    if (isWatchUrl(url)) {
       return this.timeouts.watch;
     }
 
@@ -230,7 +378,10 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     }
   }
 
-  private makeRequest(request: RequestContext): Promise<ResponseContext> {
+  private makeRequest(
+    request: RequestContext,
+    attempt: RequestAttempt = {}
+  ): Promise<ResponseContext> {
     return new Promise((resolve, reject) => {
       const url = new URL(request.getUrl());
       const method = request.getHttpMethod();
@@ -238,11 +389,10 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       const httpModule = isHttps ? https : http;
 
       // Determine appropriate timeout for this request
-      const timeoutMs = this.getTimeoutForRequest(method, url.toString());
+      const timeoutMs = attempt.timeoutMs ?? this.getTimeoutForRequest(method, url.toString());
 
       // For watch operations, skip HTTP timeout entirely - let API server handle it
-      const shouldSetTimeout =
-        !url.toString().includes('?watch=true') && !url.toString().includes('&watch=true');
+      const shouldSetTimeout = !isWatchUrl(url.toString());
 
       const agent = request.getAgent();
       const headers = request.getHeaders();
@@ -290,6 +440,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // Detaching the abort listener, if one was attached. Assigned when the signal is wired up
       // below; a no-op until then, so the latch can always call it.
       let detachAbort = (): void => undefined;
+      let detachCancel = (): void => undefined;
 
       // EVERY terminal path goes through here, and the FIRST one wins. Resolve/reject are latched so
       // a socket teardown that emits several events in a row (`aborted`, then `error`, then `close`)
@@ -303,6 +454,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         settled = true;
         clearRequestTimeout();
         detachAbort();
+        detachCancel();
         finish();
       };
 
@@ -321,6 +473,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
 
       const req = httpModule.request(options, (res) => {
         responseStarted = true;
+        attempt.onResponseStart?.();
         const chunks: Buffer[] = [];
 
         res.on('data', (chunk: Buffer) => {
@@ -468,6 +621,18 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
           signal.addEventListener('abort', onAbort, { once: true });
           detachAbort = () => signal.removeEventListener('abort', onAbort);
         }
+      }
+
+      // Another copy of this read answered first (see `sendHedged`): drop this one. Its rejection is
+      // swallowed there and never reaches a caller.
+      const { cancel } = attempt;
+      if (cancel && !settled) {
+        const onCancel = () => {
+          settle(() => reject(new SupersededAttemptError()));
+          req.destroy();
+        };
+        cancel.addEventListener('abort', onCancel, { once: true });
+        detachCancel = () => cancel.removeEventListener('abort', onCancel);
       }
 
       // The request ended without the promise having settled. On Bun this fires as soon as the

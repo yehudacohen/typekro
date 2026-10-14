@@ -29,6 +29,12 @@ export const DEFAULT_KRO_INSTANCE_TIMEOUT = 600_000;
 /** Default timeout for HTTP read operations — GET/LIST (30 seconds) */
 export const DEFAULT_HTTP_READ_TIMEOUT = 30_000;
 
+/**
+ * How long a read may wait for response headers before a second copy is sent on a new
+ * connection (10 seconds). The first copy keeps running; whichever answers first wins.
+ */
+export const DEFAULT_HTTP_READ_HEDGE_DELAY = 10_000;
+
 /** Default timeout for cluster readiness checks (30 seconds) */
 export const DEFAULT_CLUSTER_READY_TIMEOUT = 30_000;
 
