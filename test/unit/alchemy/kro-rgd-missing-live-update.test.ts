@@ -518,4 +518,86 @@ describe('Alchemy KRO handler bounds every cluster call it makes', () => {
       )
     ).rejects.toThrow(/could not list namespaces owned by RGD/i);
   });
+
+  test('the pre-hoist gate rides out ONE stalled owned-namespace page', async () => {
+    // A single request the API server never answered must not refuse the deploy: the page is an
+    // idempotent read, so it is re-issued once before the gate fails closed.
+    let calls = 0;
+    const scanned = await settlesWithin(
+      existingInstanceNamespacesAlchemyForTest(
+        {
+          ...props(undefined, fast),
+          namespaceOwnerRgd: RGD_NAME,
+          namespacePreHoistQuery: { group: CRD_GROUP, version: 'v1alpha1', kind: CRD_KIND },
+        } as unknown as Props,
+        createMockKubeConfig(),
+        getComponentLogger('test'),
+        {
+          objectApi: { list: async () => ({ items: [retainedCrd(STALE_RGD_UID)] }) },
+          customApi: {
+            listClusterCustomObject: async () => ({
+              items: [
+                {
+                  metadata: {
+                    namespace: 'demo',
+                    annotations: { 'typekro.io/hoisted-namespaces': '["demo"]' },
+                  },
+                },
+              ],
+            }),
+          },
+          ownedNamespaceListApi: {
+            list: () =>
+              ++calls === 1
+                ? wedgedCall()
+                : Promise.resolve({
+                    items: [
+                      {
+                        metadata: {
+                          name: 'leaked',
+                          annotations: { 'typekro.io/created-by-rgd': RGD_NAME },
+                        },
+                      },
+                    ],
+                    metadata: {},
+                  }),
+          },
+        } as any
+      )
+    );
+    expect(calls).toBe(2);
+    expect([...scanned].sort()).toEqual(['demo', 'leaked']);
+  });
+
+  test('the pre-hoist gate does not re-issue an owned-namespace page the server refused', async () => {
+    let calls = 0;
+    await expect(
+      settlesWithin(
+        existingInstanceNamespacesAlchemyForTest(
+          {
+            ...props(undefined, fast),
+            namespaceOwnerRgd: RGD_NAME,
+            namespacePreHoistQuery: { group: CRD_GROUP, version: 'v1alpha1', kind: CRD_KIND },
+          } as unknown as Props,
+          createMockKubeConfig(),
+          getComponentLogger('test'),
+          {
+            objectApi: { list: async () => ({ items: [retainedCrd(STALE_RGD_UID)] }) },
+            customApi: {
+              listClusterCustomObject: async () => ({
+                items: [{ metadata: { annotations: { 'typekro.io/hoisted-namespaces': '[]' } } }],
+              }),
+            },
+            ownedNamespaceListApi: {
+              list: async () => {
+                calls++;
+                throw Object.assign(new Error('namespaces is forbidden'), { statusCode: 403 });
+              },
+            },
+          } as any
+        )
+      )
+    ).rejects.toThrow(/could not list namespaces owned by RGD[\s\S]*forbidden/i);
+    expect(calls).toBe(1);
+  });
 });

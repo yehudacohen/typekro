@@ -278,6 +278,7 @@ const factory = graph.factory('kro', {
     create: 120_000, // POST — may sit behind admission webhooks
     update: 120_000, // PUT / PATCH
     delete: 180_000, // DELETE — may wait on finalizers
+    readHedgeDelay: 10_000, // GET / LIST with no response yet: send a second copy
   },
 });
 ```
@@ -286,6 +287,14 @@ A call that exceeds its budget rejects with a `PollTimeoutError` naming the reso
 so the converge fails fast and points at the stuck object instead of stalling. The same budgets
 govern teardown — instance and definition deletion, the empty-gated Namespace delete, and the
 cluster inventory behind it.
+
+Under Bun every request opens its own connection, and now and then a fresh connection stalls
+before the server answers: the handshake or the request is lost on the way and the read would sit
+out its whole budget. So a read (GET or LIST, not a watch) that has no response headers after
+`readHedgeDelay` gets a second copy on a new connection. The first copy keeps running and the first
+complete response wins; both share the read budget, so the read still settles within `default`. A
+slow read costs one duplicate request at most. Writes and deletes are never sent twice. Set
+`readHedgeDelay: 0` to turn it off.
 
 Two layers can time the same request out: the HTTP client's own socket timer (under Bun) and the
 deadline around the call. Both raise a `RequestTimeoutError` — `PollTimeoutError` extends it — so a

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A read whose connection stalled before the API server answered failed the call after its
+  full 30-second budget.** Under Bun every request opens its own connection, and a fresh
+  connection occasionally stalls (a handshake or request lost on the path) while the same read on
+  another connection returns at once. The Bun HTTP client now sends a second copy of a GET or LIST
+  on a new connection when no response headers have arrived after `httpTimeouts.readHedgeDelay`
+  (default 10 seconds). The first complete response wins, both copies share the read budget, and
+  writes, deletes and watches are never duplicated. `readHedgeDelay: 0` turns it off.
+- **The pre-hoist safety gate refused a deploy when one owned-namespace page timed out.**
+  `listNamespacesOwnedByRgd` now re-issues a page once after a request timeout before the error
+  reaches the fail-closed gate (and teardown). A response from the server, such as a 403, still
+  fails immediately.
+
 ## [0.45.0] - 2026-10-07
 
 ### Security
