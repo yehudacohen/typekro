@@ -109,8 +109,44 @@ work. For conventional TLS, explicit credentials are passed to `docker login` wi
 `--password-stdin`. For `caFile`, `caCertificate`, `insecure`, or `plainHttp`, Docker has no safe
 per-command trust override, so TypeKro writes the standard auth entry directly into the isolated
 configuration and gives the transport settings to a dedicated BuildKit configuration. It never
-depends on a developer machine's global daemon trust. The temporary config, copied custom CA, and
-temporary Buildx builder are removed after success, failure, timeout, or cancellation.
+depends on a developer machine's global daemon trust. TypeKro attempts temporary-builder removal and auth/trust cleanup after success, failure,
+timeout, or cancellation. Cleanup can be incomplete; inspect the returned cleanup record below.
+
+### Temporary builder identity and cleanup
+
+`buildContainer()` adds an optional `cleanup` record to its normal result. Existing image,
+digest and immutable-tag adoption fields keep their meaning. A successful image publication can
+coexist with `cleanup.builder.removal === 'uncertain'`; callers should retain that record at their
+normal artifact/output seam rather than inventing cleanup success.
+
+The record identifies the source-created builder, its explicitly named node and driver, creation
+outcome, and bounded observations of Docker context/daemon, container ID and mounted state volume
+(name, driver, scope and creation time). Physical identities come from exact metadata reads, not
+from a guessed volume-name suffix. `identity: 'incomplete'` preserves any observations obtained
+before a read failed. Context names are lookup hints; daemon IDs describe the observed backend.
+These observations are not an atomic ownership lease for later deletion.
+
+`removal: 'command-succeeded'` means the exact normal Buildx removal command exited successfully.
+It does not claim that every volume is absent or that host bytes were reclaimed. A failed create
+or bootstrap retains its attempted identity with `creation: 'uncertain'` and does not remove a
+builder whose creation was unconfirmed. A changed/unreadable observed daemon also leaves removal
+uncertain. No historical builder is adopted or classified by its name. When TypeKro needs a dedicated
+builder, a conflicting `--builder` in `extraDockerArgs` is rejected before creation; the lifecycle
+record must describe the builder actually selected for that operation.
+
+Builder removal failure keeps an otherwise successful image result, with explicit cleanup
+uncertainty. On build failure, `ContainerBuildError.cleanup` retains the same bounded record while
+preserving a primary `ContainerBuildError` and its code. Immutable errors and other build
+exceptions remain available as the cause of a typed build error. If only session or temporary-file cleanup fails after image
+success, the error has code `CLEANUP_FAILED` and `buildResult` preserves that completed image.
+Registry-session and temporary metadata cleanup are attempted independently, so a later cleanup
+failure does not mask the primary build failure. Status fields report cleanup-call outcomes.
+
+The cleanup record excludes Docker config paths, endpoint credentials, auth/trust contents and
+raw cleanup diagnostics. Persist the documented result/cleanup fields, not an arbitrary serialized
+error/cause or environment. Capture is prospective, from the current invocation; it provides no
+provenance or deletion authority for older caches. `container()` continues returning its existing
+memoized image shape; lifecycle-aware artifact owners should use `buildContainer()` directly.
 
 Plain HTTP and unverified TLS are explicit development-only switches:
 

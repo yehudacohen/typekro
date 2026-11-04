@@ -1,10 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { getComponentLogger } from '../logging/index.js';
+import {
+  type BuilderLifecycleState,
+  bindRegistrySession,
+  createTemporaryBuilder,
+  newBuilderLifecycle,
+  removeTemporaryBuilder,
+  snapshotBuilder,
+} from './builder-lifecycle.js';
 import { ContainerBuildError } from './errors.js';
 import { checkDockerAvailable, execDocker, validateBuildArgs } from './exec.js';
 import { resolveRegistry } from './registries/index.js';
@@ -62,50 +70,6 @@ function digestFromInspectOutput(output: string): string {
     );
   }
   return candidate;
-}
-
-async function createBuildxBuilder(
-  session: RegistrySession,
-  timeout: number,
-  signal: AbortSignal | undefined
-): Promise<string> {
-  const name = `typekro-${randomUUID().slice(0, 12)}`;
-  await execDocker(
-    [
-      'buildx',
-      'create',
-      '--name',
-      name,
-      '--driver',
-      'docker-container',
-      ...(session.buildkitConfigPath ? ['--buildkitd-config', session.buildkitConfigPath] : []),
-      '--bootstrap',
-    ],
-    {
-      quiet: true,
-      timeout,
-      ...(session.environment ? { environment: session.environment } : {}),
-      ...(signal ? { signal } : {}),
-    }
-  );
-  return name;
-}
-
-async function removeBuildxBuilder(
-  name: string,
-  session: RegistrySession,
-  timeout: number
-): Promise<void> {
-  await execDocker(['buildx', 'rm', '--force', name], {
-    quiet: true,
-    timeout: Math.min(timeout, 30_000),
-    ...(session.environment ? { environment: session.environment } : {}),
-  }).catch((error) => {
-    logger.warn('Failed to remove temporary Buildx builder', {
-      builder: name,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
 }
 
 async function verifyPublishedDigest(
@@ -272,12 +236,16 @@ export async function buildContainer(
     platforms: platforms.length ? platforms : ['native'],
   });
 
-  let session: RegistrySession | undefined;
-  let builder: string | undefined;
+  const resources: { session?: RegistrySession; builder?: BuilderLifecycleState } = {};
+  let buildResult: ContainerBuildResult | undefined;
+  let buildFailure: ContainerBuildError | undefined;
+  let cleanupFailure: ContainerBuildError | undefined;
   const metadataDirectory = await mkdtemp(join(tmpdir(), 'typekro-build-'));
   const metadataPath = join(metadataDirectory, 'metadata.json');
-  try {
-    session = await registry.prepare(imageName, timeout, signal);
+  const performBuild = async (): Promise<ContainerBuildResult> => {
+    const session = bindRegistrySession(await registry.prepare(imageName, timeout, signal));
+    resources.session = session;
+    let builder: BuilderLifecycleState | undefined;
     if (!session.remote && platforms.length > 1) {
       throw new ContainerBuildError(
         'Multi-platform images must be published to a remote registry.',
@@ -300,13 +268,21 @@ export async function buildContainer(
     ];
     if (session.remote) {
       if (session.buildkitConfigPath || platforms.length > 1) {
-        builder = await createBuildxBuilder(session, timeout, signal);
+        if (extraDockerArgs.some((arg) => arg === '--builder' || arg.startsWith('--builder='))) {
+          throw new ContainerBuildError(
+            'A dedicated temporary builder cannot be overridden by extraDockerArgs.',
+            'BUILDER_OVERRIDE_CONFLICT'
+          );
+        }
+        builder = newBuilderLifecycle(`typekro-${randomUUID().slice(0, 12)}`);
+        resources.builder = builder;
+        await createTemporaryBuilder(builder, session, timeout, signal);
       }
       if (existingTagPolicy === 'adopt') {
         const digest = await inspectPublishedDigest(
           taggedImageUri,
           session,
-          builder,
+          builder?.name,
           timeout,
           signal
         );
@@ -335,7 +311,7 @@ export async function buildContainer(
         [
           'buildx',
           'build',
-          ...(builder ? ['--builder', builder] : []),
+          ...(builder ? ['--builder', builder.name] : []),
           '--push',
           '--metadata-file',
           metadataPath,
@@ -353,7 +329,7 @@ export async function buildContainer(
         taggedImageUri,
         metadataPath,
         session,
-        builder,
+        builder?.name,
         timeout,
         signal
       );
@@ -388,11 +364,69 @@ export async function buildContainer(
       pushed: false,
       platforms,
     };
+  };
+  try {
+    buildResult = await performBuild();
+  } catch (error) {
+    if (error instanceof ContainerBuildError) {
+      buildFailure = Object.isExtensible(error)
+        ? error
+        : new ContainerBuildError(
+            error.message,
+            error.code,
+            [...error.suggestions],
+            error,
+            error.command
+          );
+    } else {
+      buildFailure = new ContainerBuildError(
+        'Container build failed.',
+        'BUILD_FAILED',
+        [],
+        error instanceof Error ? error : undefined
+      );
+    }
   } finally {
-    if (builder && session) await removeBuildxBuilder(builder, session, timeout);
-    if (session) await session.cleanup();
-    await rm(metadataDirectory, { recursive: true, force: true });
+    const { builder, session } = resources;
+    if (builder && session) await removeTemporaryBuilder(builder, session, timeout);
+    let registrySession: 'not-returned' | 'completed' | 'uncertain' = 'not-returned';
+    if (session) {
+      try {
+        await session.cleanup();
+        registrySession = 'completed';
+      } catch {
+        registrySession = 'uncertain';
+      }
+    }
+    let metadataFiles: 'completed' | 'uncertain' = 'completed';
+    try {
+      await rm(metadataDirectory, { recursive: true, force: true });
+    } catch {
+      metadataFiles = 'uncertain';
+    }
+    const cleanup = Object.freeze({
+      ...(builder ? { builder: snapshotBuilder(builder) } : {}),
+      registrySession,
+      metadataFiles,
+    });
+    if (buildResult) buildResult.cleanup = cleanup;
+    if (buildFailure) buildFailure.cleanup = cleanup;
+    else if (registrySession === 'uncertain' || metadataFiles === 'uncertain') {
+      // Keep raw cleanup diagnostics out of retained public results; preserve image success separately.
+      const error = new ContainerBuildError(
+        'Temporary build cleanup did not complete.',
+        'CLEANUP_FAILED'
+      );
+      error.cleanup = cleanup;
+      if (buildResult) error.buildResult = buildResult;
+      cleanupFailure = error;
+    }
   }
+  if (buildFailure) throw buildFailure;
+  if (cleanupFailure) throw cleanupFailure;
+  if (!buildResult)
+    throw new ContainerBuildError('Container build produced no result.', 'BUILD_FAILED');
+  return buildResult;
 }
 
 /** Compute a deterministic build-context digest using only Node-compatible APIs. */
