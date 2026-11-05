@@ -608,14 +608,18 @@ describe('explicit single-node metadata pool PG target', () => {
           true
         );
       }
-      for (const mode of ['direct', 'kro'] as const) {
-        expect(() =>
-          variant.composition.factory(mode, { namespace: 'control' }).toYaml({
-            ...base,
-            metadataPoolPgNum: 0,
-          })
-        ).toThrow();
-      }
+      expect(() =>
+        variant.composition.factory('direct', { namespace: 'control' }).toYaml({
+          ...base,
+          metadataPoolPgNum: 0,
+        })
+      ).toThrow();
+      expect(() =>
+        variant.composition.factory('kro', { namespace: 'control' }).toYaml({
+          ...base,
+          metadataPoolPgNum: 0,
+        })
+      ).toThrow();
     });
 
     it(`renders supplied and absent targets only on the owned store for ${variant.name}`, () => {
