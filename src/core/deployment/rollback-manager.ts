@@ -16,6 +16,8 @@ import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import type {
+  DeletionBlocker,
+  DeletionResourceIdentity,
   DeployedResource,
   DeploymentError,
   DeploymentEvent,
@@ -28,6 +30,11 @@ import type {
   KubernetesResource,
   KubernetesResourceHeader,
 } from '../types/kubernetes.js';
+import {
+  blockerForRemainingResource,
+  deletionTarget,
+  observedDeletionResourceIdentity,
+} from './deletion-result.js';
 import { isNotFoundError } from './k8s-helpers.js';
 import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
 
@@ -416,6 +423,8 @@ export class ResourceRollbackManager {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    remainingResources: DeletionResourceIdentity[];
+    deletionBlockers: DeletionBlocker[];
     errors: DeploymentError[];
   }> {
     return this.deleteResourceList(deployedResources, options);
@@ -433,6 +442,8 @@ export class ResourceRollbackManager {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    remainingResources: DeletionResourceIdentity[];
+    deletionBlockers: DeletionBlocker[];
     errors: DeploymentError[];
   }> {
     const filtered = [...deployedResources].reverse().filter((r) => {
@@ -464,6 +475,8 @@ export class ResourceRollbackManager {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    remainingResources: DeletionResourceIdentity[];
+    deletionBlockers: DeletionBlocker[];
     errors: DeploymentError[];
   }> {
     this.emitDeploymentEvent(options, {
@@ -474,12 +487,33 @@ export class ResourceRollbackManager {
 
     const rolledBackResources: string[] = [];
     const deletedResources: DeployedResource[] = [];
+    const remainingResources: DeletionResourceIdentity[] = [];
+    const deletionBlockers: DeletionBlocker[] = [];
     const errors: DeploymentError[] = [];
 
     for (const resource of resources) {
       if (resource.status === 'failed' && resource.applied !== true) continue;
 
+      const target = deletionTarget(
+        resource.manifest.apiVersion || '',
+        resource.kind,
+        resource.name,
+        getMetadataField(resource.manifest, 'scope') === 'cluster' ? undefined : resource.namespace
+      );
       let preconditions: ResourceDeletePreconditions | undefined;
+      const unobservedBlocker = (): DeletionBlocker => {
+        const uid =
+          preconditions?.uid ??
+          resource.liveManifest?.metadata?.uid ??
+          resource.manifest.metadata?.uid;
+        return {
+          code: 'CLEANUP_ERROR',
+          message: 'Resource cleanup failed; completion could not be observed.',
+          resource: { ...target, ...(uid ? { uid } : {}) },
+          retryable: true,
+          retryGuidance: 'Inspect the target and its controller before retrying deletion.',
+        };
+      };
       let alreadyAbsent = false;
       if (options.beforeDeleteResource) {
         try {
@@ -492,8 +526,10 @@ export class ResourceRollbackManager {
               : { namespace: resource.namespace }),
           });
           alreadyAbsent = authorization.presence === 'absent';
-          if (authorization.presence === 'present'
-            && (!authorization.uid.trim() || !authorization.resourceVersion.trim())) {
+          if (
+            authorization.presence === 'present' &&
+            (!authorization.uid.trim() || !authorization.resourceVersion.trim())
+          ) {
             throw new TypeKroError(
               `Rollback authorization returned incomplete Kubernetes preconditions for ${resource.kind}/${resource.name}`,
               'ROLLBACK_PRECONDITION_INVALID',
@@ -513,6 +549,7 @@ export class ResourceRollbackManager {
             kind: resource.kind,
             name: resource.name,
           });
+          deletionBlockers.push(unobservedBlocker());
           errors.push({
             resourceId: resource.id,
             phase: 'rollback',
@@ -529,10 +566,15 @@ export class ResourceRollbackManager {
         continue;
       }
 
+      const observation: { remaining?: DeletionResourceIdentity } = {};
       try {
-        await this.deleteDeployedResource(resource, options.timeout, options.abortSignal, {
-          ...(preconditions ? { preconditions } : {}),
-        });
+        await this.deleteDeployedResourceWithObservation(
+          resource,
+          options.timeout,
+          options.abortSignal,
+          { ...(preconditions ? { preconditions } : {}) },
+          observation
+        );
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
         deletedResources.push(resource);
@@ -544,6 +586,12 @@ export class ResourceRollbackManager {
           name: resource.name,
         });
 
+        if (observation.remaining) {
+          remainingResources.push(observation.remaining);
+          deletionBlockers.push(blockerForRemainingResource(observation.remaining));
+        } else {
+          deletionBlockers.push(unobservedBlocker());
+        }
         errors.push({
           resourceId: resource.id,
           phase: 'rollback',
@@ -553,7 +601,7 @@ export class ResourceRollbackManager {
       }
     }
 
-    return { rolledBackResources, deletedResources, errors };
+    return { rolledBackResources, deletedResources, remainingResources, deletionBlockers, errors };
   }
 
   /**
@@ -573,6 +621,19 @@ export class ResourceRollbackManager {
       waitForNamespaceDeletion?: boolean;
       preconditions?: ResourceDeletePreconditions;
     } = {}
+  ): Promise<void> {
+    return this.deleteDeployedResourceWithObservation(resource, timeout, abortSignal, behavior, {});
+  }
+
+  private async deleteDeployedResourceWithObservation(
+    resource: DeployedResource,
+    timeout: number | undefined,
+    abortSignal: AbortSignal | undefined,
+    behavior: {
+      waitForNamespaceDeletion?: boolean;
+      preconditions?: ResourceDeletePreconditions;
+    },
+    observation: { remaining?: DeletionResourceIdentity }
   ): Promise<void> {
     throwIfAborted(abortSignal);
     const deleteLogger = this.logger.child({
@@ -622,8 +683,8 @@ export class ResourceRollbackManager {
           kind: resource.kind,
           metadata,
         } as k8s.KubernetesObject;
-        const deletePreconditions = behavior.preconditions ??
-          (namespaceUid ? { uid: namespaceUid } : undefined);
+        const deletePreconditions =
+          behavior.preconditions ?? (namespaceUid ? { uid: namespaceUid } : undefined);
         if (deletePreconditions) {
           await this.k8sApi.delete(
             deletionTarget,
@@ -672,6 +733,15 @@ export class ResourceRollbackManager {
         );
       }
 
+      // A known original UID lets polling distinguish it from a same-name replacement.
+      const expectedUid =
+        namespaceUid ?? resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
+      const target = deletionTarget(
+        resource.manifest.apiVersion || '',
+        resource.kind,
+        resource.name,
+        metadata.namespace
+      );
       // Wait for resource to be deleted
       const deleteTimeout = timeout ?? DEFAULT_DELETE_TIMEOUT;
       const startTime = Date.now();
@@ -679,18 +749,22 @@ export class ResourceRollbackManager {
       while (Date.now() - startTime < deleteTimeout) {
         throwIfAborted(abortSignal);
         try {
-          const live = (await this.k8sApi.read({
+          // A later read failure must not turn a stale observation into current presence.
+          delete observation.remaining;
+          const live = await this.k8sApi.read({
             apiVersion: resource.manifest.apiVersion || '',
             kind: resource.kind,
             metadata,
-          })) as KubernetesResource;
-          if (resource.kind === 'Namespace' && live.metadata?.uid !== namespaceUid) {
-            deleteLogger.debug('Original Namespace is gone; replacement identity is preserved', {
-              expectedUid: namespaceUid,
-              actualUid: live.metadata?.uid,
+          });
+          const identity = observedDeletionResourceIdentity(target, live);
+          if (expectedUid && identity.uid && identity.uid !== expectedUid) {
+            deleteLogger.debug('Original resource is gone; replacement identity is preserved', {
+              expectedUid,
+              actualUid: identity.uid,
             });
             return;
           }
+          if (!expectedUid || identity.uid === expectedUid) observation.remaining = identity;
 
           // Resource still exists, wait and try again
           await abortableDelay(DEFAULT_FAST_POLL_INTERVAL, abortSignal);

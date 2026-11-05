@@ -412,8 +412,23 @@ In direct mode, TypeKro re-executes the composition with live cluster data after
 Clean up with `factory.deleteInstance(name)`:
 
 ```typescript
-await factory.deleteInstance('my-app');
+const deletion = await factory.deleteInstance('my-app');
+if (deletion.status !== 'complete') {
+  // remaining contains successfully observed resource identities, with bounded
+  // UID, deletion timestamp, finalizer and owner metadata when available.
+  console.log(deletion.remaining, deletion.blockers);
+}
 ```
+
+A blocked result can include resources already confirmed deleted. An empty
+`remaining` array alone does not prove absence: a `CLEANUP_ERROR` identifies a
+target whose cleanup could not be observed. `FINALIZERS_REMAIN` and
+`RESOURCE_REMAINS` describe the last successful poll, not a new cluster read.
+Raw Kubernetes errors remain in the internal rollback errors/operator logs;
+typed deletion results contain closed diagnostics. Callers that previously
+parsed blocker message text should use its code and resource identity instead.
+No deletion-order, retention, timeout, or finalizer-removal policy changes are
+implied by these diagnostics.
 
 **Direct mode:** Uses graph-based reverse-topological deletion — resources are deleted in the opposite order they were deployed (App before Database, Database before Namespace). PVCs are cleaned up to unblock namespace termination.
 

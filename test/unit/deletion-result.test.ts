@@ -5,6 +5,7 @@ import {
   createDeletionResultState,
   deletionTarget,
   finishDeletionResult,
+  observedDeletionResourceIdentity,
   readDeletionResourceIdentity,
 } from '../../src/core/deployment/deletion-result.js';
 
@@ -50,6 +51,39 @@ describe('structured deletion evidence', () => {
       retryable: true,
       resource: live,
     });
+  });
+
+  it('bounds observed metadata and ignores malformed dates, owners and private payloads', () => {
+    const target = deletionTarget('example.test/v1', 'Widget', 'demo', 'apps');
+    const identity = observedDeletionResourceIdentity(target, {
+      metadata: {
+        uid: 'uid',
+        deletionTimestamp: 'not-a-date',
+        finalizers: Array.from({ length: 100 }, (_, index) => `controller/${index}`),
+        ownerReferences: [
+          { apiVersion: 'v1', kind: 'Secret', name: 'owner', uid: 'owner-uid', extra: 'private' },
+          { apiVersion: 'v1', name: 'malformed' },
+        ],
+        annotations: { private: 'never-copy' },
+      },
+      spec: { private: 'never-copy' },
+      status: { private: 'never-copy' },
+    });
+
+    expect(identity.finalizers).toHaveLength(64);
+    expect(identity.owners).toEqual([
+      { apiVersion: 'v1', kind: 'Secret', name: 'owner', uid: 'owner-uid' },
+    ]);
+    expect(identity.deletionTimestamp).toBeUndefined();
+    expect(JSON.stringify(identity)).not.toContain('private');
+    expect(JSON.stringify(identity)).not.toContain('never-copy');
+    expect(observedDeletionResourceIdentity(target, null)).toEqual(target);
+    expect(
+      observedDeletionResourceIdentity(
+        { ...target, uid: 'expected', finalizers: ['stale'] },
+        { metadata: {} }
+      )
+    ).toEqual(target);
   });
 
   it('treats a live 404 as confirmed absence', async () => {

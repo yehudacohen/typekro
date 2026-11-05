@@ -1069,6 +1069,10 @@ export interface RollbackResult {
   deletedResources?: DeployedResource[];
   /** Resources deliberately preserved by scope/lifecycle policy. */
   retainedResources?: DeployedResource[];
+  /** Last successful deletion-poll observations; omitted when presence is unproven. */
+  remainingResources?: DeletionResourceIdentity[];
+  /** Closed cleanup diagnostics, without raw Kubernetes response/error bodies. */
+  deletionBlockers?: DeletionBlocker[];
   duration: number;
   status: 'success' | 'partial' | 'failed';
   errors: DeploymentError[];
