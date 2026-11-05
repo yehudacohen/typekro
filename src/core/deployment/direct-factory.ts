@@ -72,6 +72,7 @@ import { resolvePortableReadinessStrategy } from '../readiness/portable-strategi
 import { runStandaloneOperation } from '../runtime/standalone-operation.js';
 import { getSingletonResourceId, singletonInstanceTypeMeta } from '../singleton/singleton.js';
 import type {
+  DeletionResourceIdentity,
   DeployedResource,
   DeploymentClosure,
   DeploymentError,
@@ -92,9 +93,12 @@ import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../typ
 import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import {
+  blockerForRemainingResource,
   createDeletionResultState,
+  type DeletionResultState,
   deletionTarget,
   finishDeletionResult,
+  observedDeletionResourceIdentity,
 } from './deletion-result.js';
 import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import { DirectDeploymentEngine } from './engine.js';
@@ -140,12 +144,58 @@ function deployedResourceDeletionIdentity(
   resource: import('../types/deployment.js').DeployedResource
 ) {
   const clusterScoped = getMetadataField(resource.manifest, 'scope') === 'cluster';
-  return deletionTarget(
-    resource.manifest.apiVersion,
-    resource.kind,
-    resource.name,
-    clusterScoped ? undefined : resource.namespace
-  );
+  const uid = resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
+  return {
+    ...deletionTarget(
+      resource.manifest.apiVersion,
+      resource.kind,
+      resource.name,
+      clusterScoped ? undefined : resource.namespace
+    ),
+    ...(uid ? { uid } : {}),
+  };
+}
+
+/**
+ * Keep namespace completion evidence at the same checkpoint as its existing
+ * reads. Undefined means unobserved; null means the original UID is gone.
+ */
+function recordNamespaceDeletionObservation(
+  state: DeletionResultState | undefined,
+  target: DeletionResourceIdentity,
+  live?: KubernetesResource | null
+): void {
+  if (!state) return;
+  const matches = (resource: DeletionResourceIdentity): boolean =>
+    resource.apiVersion === target.apiVersion &&
+    resource.kind === target.kind &&
+    resource.name === target.name &&
+    resource.namespace === target.namespace;
+  // Once this UID is confirmed gone, later reads cannot undo that progress.
+  if (state.deleted.some(matches)) return;
+  for (let i = state.remaining.length - 1; i >= 0; i--) {
+    const resource = state.remaining[i];
+    if (resource && matches(resource)) state.remaining.splice(i, 1);
+  }
+  for (let i = state.blockers.length - 1; i >= 0; i--) {
+    const resource = state.blockers[i]?.resource;
+    if (resource && matches(resource)) state.blockers.splice(i, 1);
+  }
+  const identity = live ? observedDeletionResourceIdentity(target, live) : undefined;
+  if (live === null || (target.uid && identity?.uid && identity.uid !== target.uid)) {
+    state.deleted.push(target);
+  } else if (identity && target.uid && identity.uid === target.uid) {
+    state.remaining.push(identity);
+    state.blockers.push(blockerForRemainingResource(identity));
+  } else {
+    state.blockers.push({
+      code: 'CLEANUP_ERROR',
+      message: 'Namespace cleanup completion could not be observed.',
+      resource: target,
+      retryable: true,
+      retryGuidance: 'Inspect the target Namespace and its controller before retrying deletion.',
+    });
+  }
 }
 
 function directArtifactPlanValues(
@@ -452,15 +502,21 @@ export class DirectResourceFactoryImpl<
   ): Promise<ResourceDeletionResult> {
     const deletion = createDeletionResultState('direct', this.name, name);
     try {
-      const rollbackResult = await this.rollbackInstanceWithNamespaceCompletion(
-        name,
-        opts,
-        abortSignal
-      );
+      const rollbackResult = await this.rollbackInstanceResources(name, opts, abortSignal);
 
-      deletion.deleted.push(
-        ...(rollbackResult.deletedResources ?? []).map(deployedResourceDeletionIdentity)
-      );
+      if (rollbackResult.deletionProgress) {
+        for (const progress of rollbackResult.deletionProgress) {
+          if (progress.status === 'deleted') deletion.deleted.push(progress.resource);
+          else recordNamespaceDeletionObservation(deletion, progress.resource);
+        }
+      } else {
+        // Compatibility with older/custom rollback providers lacking phase evidence.
+        for (const resource of rollbackResult.deletedResources ?? []) {
+          const identity = deployedResourceDeletionIdentity(resource);
+          if (resource.kind === 'Namespace') recordNamespaceDeletionObservation(deletion, identity);
+          else deletion.deleted.push(identity);
+        }
+      }
       for (const resource of rollbackResult.retainedResources ?? []) {
         const identity = deployedResourceDeletionIdentity(resource);
         deletion.retained.push({
@@ -471,11 +527,14 @@ export class DirectResourceFactoryImpl<
         });
       }
 
+      deletion.remaining.push(...(rollbackResult.remainingResources ?? []));
+      deletion.blockers.push(...(rollbackResult.deletionBlockers ?? []));
       if (rollbackResult.status !== 'success' || rollbackResult.errors.length > 0) {
-        for (const error of rollbackResult.errors) {
+        // Older/custom engines may not supply closed deletion diagnostics.
+        if (deletion.blockers.length === 0) {
           deletion.blockers.push({
             code: 'CLEANUP_ERROR',
-            message: `${error.resourceId}: ${ensureError(error.error).message}`,
+            message: 'Resource cleanup failed; completion could not be observed.',
             retryable: true,
             retryGuidance:
               'Inspect the referenced resource and retry deletion after its controller or finalizers can make progress.',
@@ -486,6 +545,8 @@ export class DirectResourceFactoryImpl<
           guidance: 'Retry after resolving the listed resource cleanup errors.',
         });
       }
+
+      await this.completeNamespaceDeletion(rollbackResult, opts?.timeout, abortSignal, deletion);
 
       // Remove from tracking
       this.deployedInstances.delete(name);
@@ -509,25 +570,16 @@ export class DirectResourceFactoryImpl<
             'No tagged or in-memory resources remain for this instance; deletion is already complete.',
         });
       }
-      // Soft-swallow "Cannot rollback" errors from the engine —
-      // they indicate the engine's in-memory deployment state has
-      // already been cleaned up (e.g., by a previous rollback call).
-      // The instance is effectively gone, so we remove from tracking.
-      const errorMessage = ensureError(error).message;
-      if (errorMessage.includes('Cannot rollback')) {
-        this.deployedInstances.delete(name);
-        return finishDeletionResult(deletion, 'complete', {
-          safe: true,
-          guidance: 'The deployment record was already removed; no remaining instance was found.',
+      this.logger.warn('Direct instance cleanup failed', { error: ensureError(error) });
+      if (deletion.blockers.length === 0) {
+        deletion.blockers.push({
+          code: 'CLEANUP_ERROR',
+          message: 'Instance cleanup failed; completion could not be observed.',
+          retryable: true,
+          retryGuidance:
+            'Inspect the target instance and its controllers before retrying deletion.',
         });
       }
-      deletion.blockers.push({
-        code: 'CLEANUP_ERROR',
-        message: `Failed to delete instance ${name}: ${errorMessage}`,
-        retryable: true,
-        retryGuidance:
-          'Inspect the reported Kubernetes error and retry. TypeKro does not report deletion complete while cleanup is unproven.',
-      });
       return finishDeletionResult(deletion, 'blocked', {
         safe: true,
         guidance: 'Retry after resolving the reported cleanup error.',
@@ -636,12 +688,20 @@ export class DirectResourceFactoryImpl<
   private async completeNamespaceDeletion(
     rollbackResult: RollbackResult,
     timeout?: number,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    deletion?: DeletionResultState
   ): Promise<void> {
     const namespaceLeases = new Map<string, string>();
-    for (const resource of rollbackResult.deletedResources ?? []) {
-      if (resource.kind !== 'Namespace') continue;
-      const uid = resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
+    const pendingNamespaces = rollbackResult.deletionProgress
+      ? rollbackResult.deletionProgress
+          .filter((progress) => progress.status === 'pending-namespace')
+          .map((progress) => progress.resource)
+      : (rollbackResult.deletedResources ?? [])
+          .filter((resource) => resource.kind === 'Namespace')
+          .map(deployedResourceDeletionIdentity);
+    for (const resource of pendingNamespaces) {
+      const uid = resource.uid;
+      recordNamespaceDeletionObservation(deletion, resource);
       if (!uid) {
         throw new TypeKroError(
           `Refusing post-delete cleanup for Namespace ${resource.name} without its Kubernetes UID lease`,
@@ -661,15 +721,21 @@ export class DirectResourceFactoryImpl<
     const coreApi = createBunCompatibleCoreV1Api(kubeConfig, this.factoryOptions.httpTimeouts);
     const objectApi = this.getDeploymentEngine().getKubernetesApi();
     const leaseStillCurrent = async (namespace: string, uid: string): Promise<boolean> => {
+      const target = { ...deletionTarget('v1', 'Namespace', namespace), uid };
+      recordNamespaceDeletionObservation(deletion, target);
       try {
         const live = (await objectApi.read({
           apiVersion: 'v1',
           kind: 'Namespace',
           metadata: { name: namespace },
         })) as KubernetesResource;
+        recordNamespaceDeletionObservation(deletion, target, live);
         return live.metadata?.uid === uid;
       } catch (error: unknown) {
-        if (isNotFoundError(error)) return false;
+        if (isNotFoundError(error)) {
+          recordNamespaceDeletionObservation(deletion, target, null);
+          return false;
+        }
         throw error;
       }
     };
@@ -719,7 +785,8 @@ export class DirectResourceFactoryImpl<
       objectApi,
       [...namespaceLeases].map(([name, uid]) => ({ name, uid })),
       deleteTimeout,
-      abortSignal
+      abortSignal,
+      deletion
     );
   }
 
@@ -733,16 +800,19 @@ export class DirectResourceFactoryImpl<
     k8sApi: import('@kubernetes/client-node').KubernetesObjectApi,
     namespaces: Array<{ name: string; uid: string }>,
     timeout: number,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    deletion?: DeletionResultState
   ): Promise<void> {
     const pollInterval = DEFAULT_FAST_POLL_INTERVAL;
 
     for (const { name: ns, uid } of namespaces) {
+      const target = { ...deletionTarget('v1', 'Namespace', ns), uid };
       // Each namespace gets its own timeout budget
       const nsStartTime = Date.now();
       let deleted = false;
       while (Date.now() - nsStartTime < timeout) {
         abortSignal?.throwIfAborted();
+        recordNamespaceDeletionObservation(deletion, target);
         try {
           const live = (await k8sApi.read({
             apiVersion: 'v1',
@@ -751,7 +821,8 @@ export class DirectResourceFactoryImpl<
           })) as KubernetesResource;
           // The leased Namespace is gone. A replacement with the same name is
           // outside this teardown and must neither be waited on nor mutated.
-          if (live.metadata?.uid !== uid) {
+          recordNamespaceDeletionObservation(deletion, target, live);
+          if (live.metadata?.uid && live.metadata.uid !== uid) {
             deleted = true;
             break;
           }
@@ -781,6 +852,7 @@ export class DirectResourceFactoryImpl<
           // 404 means the namespace is fully gone
           if (isNotFoundError(error)) {
             this.logger.debug('Namespace fully deleted', { namespace: ns });
+            recordNamespaceDeletionObservation(deletion, target, null);
             deleted = true;
             break;
           }

@@ -1653,6 +1653,9 @@ export class DirectDeploymentEngine {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    deletionProgress: NonNullable<RollbackResult['deletionProgress']>;
+    remainingResources: NonNullable<RollbackResult['remainingResources']>;
+    deletionBlockers: NonNullable<RollbackResult['deletionBlockers']>;
     errors: DeploymentError[];
   }> {
     return this.rollbackManager.rollbackDeployedResources(deployedResources, options);
@@ -1664,6 +1667,9 @@ export class DirectDeploymentEngine {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    deletionProgress: NonNullable<RollbackResult['deletionProgress']>;
+    remainingResources: NonNullable<RollbackResult['remainingResources']>;
+    deletionBlockers: NonNullable<RollbackResult['deletionBlockers']>;
     errors: DeploymentError[];
   }> {
     return this.rollbackManager.rollbackOrderedResources(deployedResources, options);
@@ -1907,17 +1913,19 @@ export class DirectDeploymentEngine {
         orderedResources = deploymentRecord.resources.filter((r) => !skippedIds.has(r.id));
       }
 
-      const { rolledBackResources, deletedResources, errors } = await this.rollbackOrderedResources(
-        orderedResources,
-        {
-          ...deploymentRecord.options,
-          ...(opts.timeout !== undefined && { timeout: opts.timeout }),
-          ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-          ...(opts.beforeDeleteResource
-            ? { beforeDeleteResource: opts.beforeDeleteResource }
-            : {}),
-        }
-      );
+      const {
+        rolledBackResources,
+        deletedResources,
+        deletionProgress,
+        remainingResources,
+        deletionBlockers,
+        errors,
+      } = await this.rollbackOrderedResources(orderedResources, {
+        ...deploymentRecord.options,
+        ...(opts.timeout !== undefined && { timeout: opts.timeout }),
+        ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+        ...(opts.beforeDeleteResource ? { beforeDeleteResource: opts.beforeDeleteResource } : {}),
+      });
 
       const status =
         errors.length === 0 ? 'success' : rolledBackResources.length > 0 ? 'partial' : 'failed';
@@ -1933,6 +1941,9 @@ export class DirectDeploymentEngine {
         deploymentId,
         rolledBackResources,
         deletedResources,
+        deletionProgress,
+        remainingResources,
+        deletionBlockers,
         retainedResources: deploymentRecord.resources.filter((resource) =>
           skippedIds.has(resource.id)
         ),

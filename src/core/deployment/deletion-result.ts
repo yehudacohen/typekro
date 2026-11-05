@@ -95,6 +95,56 @@ export function deletionTarget(
   return { apiVersion, kind, name, ...(namespace ? { namespace } : {}) };
 }
 
+/**
+ * Project an existing read into bounded lifecycle metadata. Never copy spec,
+ * status, annotations, response bodies, or arbitrary error properties.
+ */
+export function observedDeletionResourceIdentity(
+  target: DeletionResourceIdentity,
+  live: unknown
+): DeletionResourceIdentity {
+  const record = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.length > 0 && value.length <= 512 ? value : undefined;
+  const metadata = record(record(live).metadata);
+  const uid = text(metadata.uid);
+  const timestamp = metadata.deletionTimestamp;
+  const date =
+    (typeof timestamp === 'string' && timestamp.length <= 64) || timestamp instanceof Date
+      ? new Date(timestamp)
+      : undefined;
+  const finalizers = Array.isArray(metadata.finalizers)
+    ? metadata.finalizers.slice(0, 64).filter((value): value is string => text(value) !== undefined)
+    : [];
+  const owners = Array.isArray(metadata.ownerReferences)
+    ? metadata.ownerReferences.slice(0, 32).flatMap((value) => {
+        const owner = record(value);
+        const apiVersion = text(owner.apiVersion);
+        const kind = text(owner.kind);
+        const name = text(owner.name);
+        if (!apiVersion || !kind || !name) return [];
+        const ownerUid = text(owner.uid);
+        return [
+          {
+            apiVersion,
+            kind,
+            name,
+            ...(ownerUid ? { uid: ownerUid } : {}),
+            ...(typeof owner.controller === 'boolean' ? { controller: owner.controller } : {}),
+          },
+        ];
+      })
+    : [];
+  return {
+    ...deletionTarget(target.apiVersion, target.kind, target.name, target.namespace),
+    ...(uid ? { uid } : {}),
+    ...(date && Number.isFinite(date.getTime()) ? { deletionTimestamp: date.toISOString() } : {}),
+    ...(finalizers.length > 0 ? { finalizers } : {}),
+    ...(owners.length > 0 ? { owners } : {}),
+  };
+}
+
 /** Read the live blocker shape without weakening the original deletion error. */
 export async function readDeletionResourceIdentity(
   api: DeletionReadApi,
@@ -111,30 +161,7 @@ export async function readDeletionResourceIdentity(
     })) as k8s.KubernetesObject & {
       metadata?: k8s.V1ObjectMeta;
     };
-    const metadata = live.metadata;
-    return {
-      ...target,
-      ...(metadata?.uid ? { uid: metadata.uid } : {}),
-      ...(metadata?.deletionTimestamp
-        ? {
-            deletionTimestamp: new Date(
-              metadata.deletionTimestamp as unknown as string
-            ).toISOString(),
-          }
-        : {}),
-      ...(metadata?.finalizers?.length ? { finalizers: [...metadata.finalizers] } : {}),
-      ...(metadata?.ownerReferences?.length
-        ? {
-            owners: metadata.ownerReferences.map((owner) => ({
-              apiVersion: owner.apiVersion,
-              kind: owner.kind,
-              name: owner.name,
-              ...(owner.uid ? { uid: owner.uid } : {}),
-              ...(owner.controller !== undefined ? { controller: owner.controller } : {}),
-            })),
-          }
-        : {}),
-    };
+    return observedDeletionResourceIdentity(target, live);
   } catch (error: unknown) {
     if (isNotFoundError(error)) return undefined;
     throw error;
