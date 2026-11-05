@@ -2,13 +2,19 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { loadAll } from 'js-yaml';
 
+import { evaluateSchemaCelExpression } from '../../../src/core/deployment/schema-cel-evaluator.js';
+import { Cel } from '../../../src/core/references/cel.js';
+
 import {
   DEFAULT_ROOK_CEPH_VERSION,
   mapRookCephProductionPlatformToHelmValues,
+  mapRookCephSingleNodeObjectStoreSpec,
   mapRookCephSingleNodePlatformToHelmValues,
   ROOK_CEPH_CLUSTER_CHART_NAME,
-  rookCephClusterHelmRelease,
+  RookCephExternalOperatorSingleNodePlatformConfigSchema,
   RookCephProductionPlatformConfigSchema,
+  RookCephSingleNodePlatformConfigSchema,
+  rookCephClusterHelmRelease,
   rookCephExternalOperatorSingleNodePlatform,
   rookCephProductionPlatform,
   rookCephSingleNodePlatform,
@@ -214,8 +220,7 @@ describe('official Rook Ceph cluster chart platform', () => {
     );
     const cluster = directResources.find(
       (resource) =>
-        resource.kind === 'HelmRelease' &&
-        resource.spec?.chart?.spec?.chart === 'rook-ceph-cluster'
+        resource.kind === 'HelmRelease' && resource.spec?.chart?.spec?.chart === 'rook-ceph-cluster'
     );
     expect(operator?.spec?.values?.csi?.installCsiOperator).toBe(false);
     expect(cluster?.spec?.values?.csi).toBeUndefined();
@@ -435,9 +440,7 @@ describe('official Rook Ceph cluster chart platform', () => {
         storageClassName: 'csi-hostpath-sc',
       });
 
-    expect(yaml).toContain(
-      'provisioner: platform-buckets.ceph.rook.io/bucket'
-    );
+    expect(yaml).toContain('provisioner: platform-buckets.ceph.rook.io/bucket');
     expectCleanYaml(yaml);
   });
 
@@ -504,4 +507,200 @@ describe('official Rook Ceph cluster chart platform', () => {
     });
     expect(rookCephProductionPlatform).toBeDefined();
   });
+});
+
+/** A synthetic serialization fixture, not an operational PG recommendation. */
+const metadataPgFixture = 41;
+
+function yamlField(value: unknown, ...path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (current === null || typeof current !== 'object' || !(key in current)) return undefined;
+    current = Reflect.get(current, key);
+  }
+  return current;
+}
+
+function yamlResource(yaml: string, kind: string): unknown {
+  return loadAll(yaml).find((document: unknown) => yamlField(document, 'kind') === kind);
+}
+
+const singleNodePgVariants = [
+  {
+    name: 'managed operator',
+    composition: rookCephSingleNodePlatform,
+    schema: RookCephSingleNodePlatformConfigSchema,
+  },
+  {
+    name: 'external operator',
+    composition: rookCephExternalOperatorSingleNodePlatform,
+    schema: RookCephExternalOperatorSingleNodePlatformConfigSchema,
+  },
+];
+
+describe('explicit single-node metadata pool PG target', () => {
+  const base = {
+    name: 'pool-input-test',
+    namespace: 'pool-input-ns',
+    operatorNamespace: 'separate-operator',
+    profile: 'single-node-development' as const,
+    storageClassName: 'test-block',
+    objectStoreName: 'test-object-store',
+  };
+
+  it('preserves the complete canonical metadata/data pool defaults when omitted', () => {
+    const spec = mapRookCephSingleNodeObjectStoreSpec(base);
+    expect(spec.metadataPool).toEqual({
+      failureDomain: 'osd',
+      replicated: { size: 1, requireSafeReplicaSize: false },
+    });
+    expect(spec.dataPool).toEqual({
+      failureDomain: 'osd',
+      replicated: { size: 1, requireSafeReplicaSize: false },
+    });
+    expect(spec.preservePoolsOnDelete).toBe(true);
+  });
+
+  it('maps only pg_num as a string without mutating the caller or other pool settings', () => {
+    const config = { ...base, metadataPoolPgNum: metadataPgFixture };
+    const before = structuredClone(config);
+    const spec = mapRookCephSingleNodeObjectStoreSpec(config);
+    expect(spec.metadataPool).toEqual({
+      failureDomain: 'osd',
+      replicated: { size: 1, requireSafeReplicaSize: false },
+      parameters: { pg_num: String(metadataPgFixture) },
+    });
+    expect(spec.dataPool).toEqual(mapRookCephSingleNodeObjectStoreSpec(base).dataPool);
+    expect(spec.preservePoolsOnDelete).toBe(true);
+    expect(config).toEqual(before);
+    expect(mapRookCephSingleNodePlatformToHelmValues(config)).toHaveProperty(
+      'cephObjectStores.0.spec.metadataPool.parameters',
+      { pg_num: String(metadataPgFixture) }
+    );
+  });
+
+  it('rejects invalid concrete PG targets in the public canonical mapper', () => {
+    for (const target of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() =>
+        mapRookCephSingleNodeObjectStoreSpec({ ...base, metadataPoolPgNum: target })
+      ).toThrow('metadataPoolPgNum must be a positive safe integer');
+    }
+  });
+
+  for (const variant of singleNodePgVariants) {
+    it(`validates the optional target for the ${variant.name} profile`, () => {
+      expect(variant.schema(base) instanceof type.errors).toBe(false);
+      expect(
+        variant.schema({ ...base, metadataPoolPgNum: metadataPgFixture }) instanceof type.errors
+      ).toBe(false);
+      for (const target of [
+        0,
+        -1,
+        1.5,
+        NaN,
+        Infinity,
+        Number.MAX_SAFE_INTEGER + 1,
+        '41',
+        null,
+        {},
+      ]) {
+        expect(variant.schema({ ...base, metadataPoolPgNum: target }) instanceof type.errors).toBe(
+          true
+        );
+      }
+      for (const mode of ['direct', 'kro'] as const) {
+        expect(() =>
+          variant.composition.factory(mode, { namespace: 'control' }).toYaml({
+            ...base,
+            metadataPoolPgNum: 0,
+          })
+        ).toThrow();
+      }
+    });
+
+    it(`renders supplied and absent targets only on the owned store for ${variant.name}`, () => {
+      for (const target of [undefined, metadataPgFixture]) {
+        const config = { ...base, ...(target !== undefined && { metadataPoolPgNum: target }) };
+        const yaml = variant.composition.factory('direct', { namespace: 'control' }).toYaml(config);
+        const store = yamlResource(yaml, 'CephObjectStore');
+        expect(yamlField(store, 'metadata', 'name')).toBe(base.objectStoreName);
+        expect(yamlField(store, 'spec', 'metadataPool', 'parameters')).toEqual(
+          target === undefined ? undefined : { pg_num: String(target) }
+        );
+        expect(yamlField(store, 'spec', 'dataPool', 'parameters')).toBeUndefined();
+        expect(yamlField(store, 'spec', 'metadataPool', 'replicated')).toEqual({
+          size: 1,
+          requireSafeReplicaSize: false,
+        });
+        expect(yamlField(store, 'spec', 'metadataPool', 'failureDomain')).toBe('osd');
+        expect(yamlField(store, 'spec', 'preservePoolsOnDelete')).toBe(true);
+        expect(yaml.match(/kind: CephObjectStore/g)).toHaveLength(1);
+        expect(yaml).toContain('cephObjectStores: []');
+        if (variant.name === 'external operator') {
+          expect(yaml).not.toContain('kind: Deployment');
+          expect(yaml).not.toContain('chart: rook-ceph\n');
+        }
+        expectCleanYaml(yaml);
+      }
+    });
+
+    it(`preserves target and lifecycle edges in public Alchemy declarations for ${variant.name}`, async () => {
+      for (const target of [undefined, metadataPgFixture]) {
+        const declarations = await variant.composition
+          .factory('direct', { namespace: 'control' })
+          .toAlchemyResources({
+            ...base,
+            ...(target !== undefined && { metadataPoolPgNum: target }),
+          });
+        const stores = declarations.filter(
+          (declaration) => declaration.props.resourceId === 'objectStore'
+        );
+        expect(stores).toHaveLength(1);
+        const store = stores[0];
+        const release = declarations.find(
+          (declaration) => declaration.props.resourceId === 'clusterRelease'
+        );
+        expect(yamlField(store?.props.resource, 'spec', 'metadataPool', 'parameters')).toEqual(
+          target === undefined ? undefined : { pg_num: String(target) }
+        );
+        expect(store?.dependsOn).toContain(release?.id);
+        expect(yamlField(store?.props.resource, 'spec', 'dataPool', 'parameters')).toBeUndefined();
+      }
+    });
+
+    it(`serializes and evaluates the optional target with the same CEL contract for ${variant.name}`, () => {
+      const factory = variant.composition.factory('kro', { namespace: 'control' });
+      const yaml = factory.toYaml();
+      const definition = yamlResource(yaml, 'ResourceGraphDefinition');
+      const resources = yamlField(definition, 'spec', 'resources');
+      if (!Array.isArray(resources)) throw new Error('Expected serialized resource graph');
+      const store = resources.find(
+        (resource: unknown) => yamlField(resource, 'template', 'kind') === 'CephObjectStore'
+      );
+      const parameterTemplate = yamlField(store, 'template', 'spec', 'metadataPool', 'parameters');
+      if (typeof parameterTemplate !== 'string')
+        throw new Error('Expected optional parameter-map expression');
+      const expression = parameterTemplate.match(/^\$\{([\s\S]*)\}$/)?.[1];
+      if (!expression) throw new Error('Expected CEL expression wrapper');
+      expect(evaluateSchemaCelExpression(Cel.expr(expression), {})).toBeUndefined();
+      expect(
+        evaluateSchemaCelExpression(Cel.expr(expression), { metadataPoolPgNum: metadataPgFixture })
+      ).toEqual({
+        pg_num: String(metadataPgFixture),
+      });
+      const inputDefinition = yamlField(definition, 'spec', 'schema', 'spec', 'metadataPoolPgNum');
+      if (typeof inputDefinition !== 'string') throw new Error('Expected typed integer PG input');
+      expect(inputDefinition).toContain('integer');
+      expect(inputDefinition).not.toContain('default=');
+      expect(yaml).not.toContain('metadataPoolParameters');
+      expectCleanYaml(yaml);
+      const instance = yamlResource(
+        factory.toYaml({ ...base, metadataPoolPgNum: metadataPgFixture }),
+        variant.name === 'external operator'
+          ? 'RookCephExternalOperatorSingleNodePlatform'
+          : 'RookCephSingleNodePlatform'
+      );
+      expect(yamlField(instance, 'spec', 'metadataPoolPgNum')).toBe(metadataPgFixture);
+    });
+  }
 });

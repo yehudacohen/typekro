@@ -364,6 +364,8 @@ export const RookCephSingleNodePlatformConfigSchema = type({
   'storageSize?': 'string',
   'allowLoopDevices?': 'boolean',
   'resources?': optionalCephDaemonResourcesSchemaShape,
+  /** Explicit metadata-pool PG target; omission preserves the existing profile. */
+  'metadataPoolPgNum?': '1 <= number.integer <= 9007199254740991',
 });
 
 export type RookCephSingleNodePlatformConfig = typeof RookCephSingleNodePlatformConfigSchema.infer;
@@ -389,6 +391,8 @@ export const RookCephExternalOperatorSingleNodePlatformConfigSchema = type({
   'bucketProvisionerName?': 'string',
   'storageSize?': 'string',
   'resources?': optionalCephDaemonResourcesSchemaShape,
+  /** Explicit metadata-pool PG target; omission preserves the existing profile. */
+  'metadataPoolPgNum?': '1 <= number.integer <= 9007199254740991',
 });
 
 export type RookCephExternalOperatorSingleNodePlatformConfig =

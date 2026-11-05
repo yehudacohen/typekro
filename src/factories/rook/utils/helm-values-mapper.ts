@@ -6,6 +6,7 @@ import {
   mergeValuesExpression,
   type ValuesMergeExpression,
 } from '../../../core/aspects/values-merge.js';
+import { ValidationError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
 import {
   containsKubernetesRefs,
@@ -169,10 +170,41 @@ export function mapRookCephSingleNodeObjectStoreSpec(
   config: RookCephSingleNodePlatformConfig
 ): CephObjectStoreConfig['spec'] {
   const resources = resolveSingleNodeResources(config);
+  const pgNum = config.metadataPoolPgNum;
+  if (
+    pgNum !== undefined &&
+    !isKubernetesRef(pgNum) &&
+    !isCelExpression(pgNum) &&
+    (!Number.isSafeInteger(pgNum) || pgNum < 1)
+  ) {
+    throw new ValidationError(
+      'metadataPoolPgNum must be a positive safe integer',
+      'CephObjectStore',
+      config.objectStoreName ?? 'harbor-object-store',
+      'metadataPoolPgNum'
+    );
+  }
+  const parameters =
+    pgNum === undefined
+      ? undefined
+      : isKubernetesRef(pgNum)
+        ? Cel.expr<Record<string, string>>(
+            'has(',
+            pgNum,
+            ') ? dyn({"pg_num": string(',
+            pgNum,
+            ')}) : omit()'
+          )
+        : {
+            pg_num: isCelExpression(pgNum)
+              ? Cel.expr<string>('string(', pgNum, ')')
+              : String(pgNum),
+          };
   return {
     metadataPool: {
       failureDomain: 'osd',
       replicated: { size: 1, requireSafeReplicaSize: false },
+      ...(parameters !== undefined && { parameters }),
     },
     dataPool: {
       failureDomain: 'osd',

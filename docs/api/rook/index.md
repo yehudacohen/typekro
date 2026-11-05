@@ -213,6 +213,21 @@ await rookCephExternalOperatorSingleNodePlatform
   });
 ```
 
+Both single-node profiles accept optional `metadataPoolPgNum`, a positive safe
+integer with no default. It maps only to the separately owned
+`CephObjectStore.spec.metadataPool.parameters.pg_num` as a decimal string.
+Omitting it preserves the existing profile output and emits no parameter map;
+supplying it emits only the `pg_num` entry. It does not set data-pool parameters,
+PG minimum/maximum/autoscaling values, replication, failure domain, retention,
+or external-operator configuration.
+
+The same input is preserved by direct rendering, public Alchemy declarations,
+KRO instance validation and serialized CEL. Existing callers need no migration.
+This is an explicit desired-state input, not a recommendation for a PG value or
+proof that a live PG change is safe. Existing pool state, other parameter keys,
+field ownership and any backend transition remain the platform owner's decision;
+the mapper does not read, copy, remove or claim unrelated live parameter keys.
+
 The external operator remains the authority for its CSI controllers and
 finalizers. Its platform owner must keep that operator running until the
 external-operator cluster and all of its operator-owned descendants have
