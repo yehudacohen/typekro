@@ -424,8 +424,8 @@ A blocked result can include resources already confirmed deleted. An empty
 `remaining` array alone does not prove absence: a `CLEANUP_ERROR` identifies a
 target whose cleanup could not be observed. `FINALIZERS_REMAIN` and
 `RESOURCE_REMAINS` describe the last successful poll, not a new cluster read.
-Raw Kubernetes errors remain in the internal rollback errors/operator logs;
-typed deletion results contain closed diagnostics. Callers that previously
+In direct mode, raw Kubernetes errors remain in the internal rollback errors/operator
+logs; typed deletion results contain closed diagnostics. Callers that previously
 parsed blocker message text should use its code and resource identity instead.
 No deletion-order, retention, timeout, or finalizer-removal policy changes are
 implied by these diagnostics.

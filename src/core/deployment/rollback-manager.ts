@@ -49,6 +49,12 @@ export interface RollbackConfig {
   emitEvent?: ((event: DeploymentEvent) => void) | undefined;
 }
 
+interface ResourceDeletionObservation {
+  target?: DeletionResourceIdentity;
+  remaining?: DeletionResourceIdentity;
+  progress?: NonNullable<RollbackResult['deletionProgress']>[number];
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   signal?.throwIfAborted();
 }
@@ -423,6 +429,7 @@ export class ResourceRollbackManager {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    deletionProgress: NonNullable<RollbackResult['deletionProgress']>;
     remainingResources: DeletionResourceIdentity[];
     deletionBlockers: DeletionBlocker[];
     errors: DeploymentError[];
@@ -442,6 +449,7 @@ export class ResourceRollbackManager {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    deletionProgress: NonNullable<RollbackResult['deletionProgress']>;
     remainingResources: DeletionResourceIdentity[];
     deletionBlockers: DeletionBlocker[];
     errors: DeploymentError[];
@@ -475,6 +483,7 @@ export class ResourceRollbackManager {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    deletionProgress: NonNullable<RollbackResult['deletionProgress']>;
     remainingResources: DeletionResourceIdentity[];
     deletionBlockers: DeletionBlocker[];
     errors: DeploymentError[];
@@ -487,6 +496,7 @@ export class ResourceRollbackManager {
 
     const rolledBackResources: string[] = [];
     const deletedResources: DeployedResource[] = [];
+    const deletionProgress: NonNullable<RollbackResult['deletionProgress']> = [];
     const remainingResources: DeletionResourceIdentity[] = [];
     const deletionBlockers: DeletionBlocker[] = [];
     const errors: DeploymentError[] = [];
@@ -501,7 +511,7 @@ export class ResourceRollbackManager {
         getMetadataField(resource.manifest, 'scope') === 'cluster' ? undefined : resource.namespace
       );
       let preconditions: ResourceDeletePreconditions | undefined;
-      const unobservedBlocker = (): DeletionBlocker => {
+      const unobservedBlocker = (effectiveTarget?: DeletionResourceIdentity): DeletionBlocker => {
         const uid =
           preconditions?.uid ??
           resource.liveManifest?.metadata?.uid ??
@@ -509,7 +519,7 @@ export class ResourceRollbackManager {
         return {
           code: 'CLEANUP_ERROR',
           message: 'Resource cleanup failed; completion could not be observed.',
-          resource: { ...target, ...(uid ? { uid } : {}) },
+          resource: effectiveTarget ?? { ...target, ...(uid ? { uid } : {}) },
           retryable: true,
           retryGuidance: 'Inspect the target and its controller before retrying deletion.',
         };
@@ -563,10 +573,12 @@ export class ResourceRollbackManager {
       if (alreadyAbsent) {
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
         deletedResources.push(resource);
+        const identity = unobservedBlocker().resource ?? target;
+        deletionProgress.push({ resource: identity, status: 'deleted' });
         continue;
       }
 
-      const observation: { remaining?: DeletionResourceIdentity } = {};
+      const observation: ResourceDeletionObservation = {};
       try {
         await this.deleteDeployedResourceWithObservation(
           resource,
@@ -578,6 +590,7 @@ export class ResourceRollbackManager {
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
         deletedResources.push(resource);
+        if (observation.progress) deletionProgress.push(observation.progress);
       } catch (error: unknown) {
         this.logger.warn('Failed to delete resource during rollback', {
           error: ensureError(error),
@@ -590,7 +603,7 @@ export class ResourceRollbackManager {
           remainingResources.push(observation.remaining);
           deletionBlockers.push(blockerForRemainingResource(observation.remaining));
         } else {
-          deletionBlockers.push(unobservedBlocker());
+          deletionBlockers.push(unobservedBlocker(observation.target));
         }
         errors.push({
           resourceId: resource.id,
@@ -601,7 +614,14 @@ export class ResourceRollbackManager {
       }
     }
 
-    return { rolledBackResources, deletedResources, remainingResources, deletionBlockers, errors };
+    return {
+      rolledBackResources,
+      deletedResources,
+      deletionProgress,
+      remainingResources,
+      deletionBlockers,
+      errors,
+    };
   }
 
   /**
@@ -633,7 +653,7 @@ export class ResourceRollbackManager {
       waitForNamespaceDeletion?: boolean;
       preconditions?: ResourceDeletePreconditions;
     },
-    observation: { remaining?: DeletionResourceIdentity }
+    observation: ResourceDeletionObservation
   ): Promise<void> {
     throwIfAborted(abortSignal);
     const deleteLogger = this.logger.child({
@@ -648,6 +668,13 @@ export class ResourceRollbackManager {
       ...(isClusterScoped ? {} : { namespace: resource.namespace }),
     };
 
+    const header = deletionTarget(
+      resource.manifest.apiVersion || '',
+      resource.kind,
+      resource.name,
+      metadata.namespace
+    );
+    observation.target = header;
     try {
       let namespaceUid = behavior.preconditions?.uid;
       if (resource.kind === 'Namespace') {
@@ -664,6 +691,7 @@ export class ResourceRollbackManager {
           } catch (error: unknown) {
             if (isNotFoundError(error)) {
               deleteLogger.debug('Namespace already deleted');
+              observation.progress = { resource: header, status: 'deleted' };
               return;
             }
             throw error;
@@ -677,14 +705,19 @@ export class ResourceRollbackManager {
           );
         }
       }
+      const deletePreconditions =
+        behavior.preconditions ?? (namespaceUid ? { uid: namespaceUid } : undefined);
+      const target = {
+        ...header,
+        ...(deletePreconditions?.uid ? { uid: deletePreconditions.uid } : {}),
+      };
+      observation.target = target;
       try {
         const deletionTarget = {
           apiVersion: resource.manifest.apiVersion || '',
           kind: resource.kind,
           metadata,
         } as k8s.KubernetesObject;
-        const deletePreconditions =
-          behavior.preconditions ?? (namespaceUid ? { uid: namespaceUid } : undefined);
         if (deletePreconditions) {
           await this.k8sApi.delete(
             deletionTarget,
@@ -701,6 +734,7 @@ export class ResourceRollbackManager {
       } catch (error: unknown) {
         if (isNotFoundError(error)) {
           deleteLogger.debug('Resource already deleted');
+          observation.progress = { resource: target, status: 'deleted' };
           return;
         }
         throw error;
@@ -715,6 +749,7 @@ export class ResourceRollbackManager {
       // here and must not report the declaration deleted while the Namespace
       // is still Terminating.
       if (resource.kind === 'Namespace' && behavior.waitForNamespaceDeletion !== true) {
+        observation.progress = { resource: target, status: 'pending-namespace' };
         return;
       }
       if (resource.kind === 'Namespace') {
@@ -733,15 +768,10 @@ export class ResourceRollbackManager {
         );
       }
 
-      // A known original UID lets polling distinguish it from a same-name replacement.
-      const expectedUid =
-        namespaceUid ?? resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
-      const target = deletionTarget(
-        resource.manifest.apiVersion || '',
-        resource.kind,
-        resource.name,
-        metadata.namespace
-      );
+      // Replacement completion is sound only when the actual DELETE was UID-bound.
+      // An unpreconditioned DELETE may itself target a same-name replacement.
+      const expectedUid = deletePreconditions?.uid;
+      let lastObserved: DeletionResourceIdentity | undefined;
       // Wait for resource to be deleted
       const deleteTimeout = timeout ?? DEFAULT_DELETE_TIMEOUT;
       const startTime = Date.now();
@@ -762,9 +792,13 @@ export class ResourceRollbackManager {
               expectedUid,
               actualUid: identity.uid,
             });
+            observation.progress = { resource: target, status: 'deleted' };
             return;
           }
-          if (!expectedUid || identity.uid === expectedUid) observation.remaining = identity;
+          if (identity.uid && (!expectedUid || identity.uid === expectedUid)) {
+            observation.remaining = identity;
+            lastObserved = identity;
+          }
 
           // Resource still exists, wait and try again
           await abortableDelay(DEFAULT_FAST_POLL_INTERVAL, abortSignal);
@@ -772,6 +806,10 @@ export class ResourceRollbackManager {
           // Resource not found, deletion successful
           if (isNotFoundError(error)) {
             deleteLogger.debug('Resource successfully deleted');
+            observation.progress = {
+              resource: expectedUid ? target : (lastObserved ?? target),
+              status: 'deleted',
+            };
             return;
           }
           throw error;

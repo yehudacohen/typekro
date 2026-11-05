@@ -1653,6 +1653,7 @@ export class DirectDeploymentEngine {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    deletionProgress: NonNullable<RollbackResult['deletionProgress']>;
     remainingResources: NonNullable<RollbackResult['remainingResources']>;
     deletionBlockers: NonNullable<RollbackResult['deletionBlockers']>;
     errors: DeploymentError[];
@@ -1666,6 +1667,7 @@ export class DirectDeploymentEngine {
   ): Promise<{
     rolledBackResources: string[];
     deletedResources: DeployedResource[];
+    deletionProgress: NonNullable<RollbackResult['deletionProgress']>;
     remainingResources: NonNullable<RollbackResult['remainingResources']>;
     deletionBlockers: NonNullable<RollbackResult['deletionBlockers']>;
     errors: DeploymentError[];
@@ -1914,6 +1916,7 @@ export class DirectDeploymentEngine {
       const {
         rolledBackResources,
         deletedResources,
+        deletionProgress,
         remainingResources,
         deletionBlockers,
         errors,
@@ -1938,6 +1941,7 @@ export class DirectDeploymentEngine {
         deploymentId,
         rolledBackResources,
         deletedResources,
+        deletionProgress,
         remainingResources,
         deletionBlockers,
         retainedResources: deploymentRecord.resources.filter((resource) =>

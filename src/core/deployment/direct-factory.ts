@@ -504,11 +504,19 @@ export class DirectResourceFactoryImpl<
     try {
       const rollbackResult = await this.rollbackInstanceResources(name, opts, abortSignal);
 
-      deletion.deleted.push(
-        ...(rollbackResult.deletedResources ?? [])
-          .filter((resource) => resource.kind !== 'Namespace')
-          .map(deployedResourceDeletionIdentity)
-      );
+      if (rollbackResult.deletionProgress) {
+        for (const progress of rollbackResult.deletionProgress) {
+          if (progress.status === 'deleted') deletion.deleted.push(progress.resource);
+          else recordNamespaceDeletionObservation(deletion, progress.resource);
+        }
+      } else {
+        // Compatibility with older/custom rollback providers lacking phase evidence.
+        for (const resource of rollbackResult.deletedResources ?? []) {
+          const identity = deployedResourceDeletionIdentity(resource);
+          if (resource.kind === 'Namespace') recordNamespaceDeletionObservation(deletion, identity);
+          else deletion.deleted.push(identity);
+        }
+      }
       for (const resource of rollbackResult.retainedResources ?? []) {
         const identity = deployedResourceDeletionIdentity(resource);
         deletion.retained.push({
@@ -519,14 +527,6 @@ export class DirectResourceFactoryImpl<
         });
       }
 
-      // A Namespace DELETE request is not yet confirmed absence. Completion is
-      // deferred until all graph deletes succeed; preserve that distinction even
-      // when another graph resource fails first.
-      for (const resource of rollbackResult.deletedResources ?? []) {
-        if (resource.kind === 'Namespace') {
-          recordNamespaceDeletionObservation(deletion, deployedResourceDeletionIdentity(resource));
-        }
-      }
       deletion.remaining.push(...(rollbackResult.remainingResources ?? []));
       deletion.blockers.push(...(rollbackResult.deletionBlockers ?? []));
       if (rollbackResult.status !== 'success' || rollbackResult.errors.length > 0) {
@@ -692,13 +692,16 @@ export class DirectResourceFactoryImpl<
     deletion?: DeletionResultState
   ): Promise<void> {
     const namespaceLeases = new Map<string, string>();
-    for (const resource of rollbackResult.deletedResources ?? []) {
-      if (resource.kind !== 'Namespace') continue;
-      const uid = resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
-      recordNamespaceDeletionObservation(deletion, {
-        ...deployedResourceDeletionIdentity(resource),
-        ...(uid ? { uid } : {}),
-      });
+    const pendingNamespaces = rollbackResult.deletionProgress
+      ? rollbackResult.deletionProgress
+          .filter((progress) => progress.status === 'pending-namespace')
+          .map((progress) => progress.resource)
+      : (rollbackResult.deletedResources ?? [])
+          .filter((resource) => resource.kind === 'Namespace')
+          .map(deployedResourceDeletionIdentity);
+    for (const resource of pendingNamespaces) {
+      const uid = resource.uid;
+      recordNamespaceDeletionObservation(deletion, resource);
       if (!uid) {
         throw new TypeKroError(
           `Refusing post-delete cleanup for Namespace ${resource.name} without its Kubernetes UID lease`,
