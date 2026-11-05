@@ -311,8 +311,9 @@ describe('direct deletion evidence through manager and engine', () => {
       }
     );
 
-    const result = await f.factory.deleteInstance('demo', { timeout: 10_000 });
+    const result = await f.factory.deleteInstance('demo', { timeout: 10_000, scopes: ['cluster'] });
 
+    expect(result.retained).toEqual([]);
     expect(result.status).toBe('blocked');
     expect(result.deleted.map(({ name }) => name)).toEqual(['done', 'gone']);
     expect(result.remaining).toEqual([]);
@@ -395,6 +396,7 @@ describe('direct deletion evidence through manager and engine', () => {
       try {
         const result = await f.factory.deleteInstance('demo', {
           timeout: 10_000,
+          scopes: ['cluster'],
           beforeDeleteResource: async () => ({
             presence: 'present',
             uid: 'authorized-uid',
@@ -402,6 +404,7 @@ describe('direct deletion evidence through manager and engine', () => {
           }),
         });
 
+        expect(result.retained).toEqual([]);
         expect(result.status).toBe('blocked');
         expect(result.deleted).toEqual([]);
         expect(result.remaining[0]?.uid).toBe('authorized-uid');
@@ -431,8 +434,12 @@ describe('direct deletion evidence through manager and engine', () => {
       'listNamespacedPersistentVolumeClaim'
     ).mockResolvedValue({ items: [] });
     try {
-      const result = await f.factory.deleteInstance('demo', { timeout: 10_000 });
+      const result = await f.factory.deleteInstance('demo', {
+        timeout: 10_000,
+        scopes: ['cluster'],
+      });
 
+      expect(result.retained).toEqual([]);
       expect(result.status).toBe('blocked');
       expect(result.deleted).toEqual([]);
       expect(result.remaining).toEqual([]);
@@ -448,6 +455,24 @@ describe('direct deletion evidence through manager and engine', () => {
     } finally {
       list.mockRestore();
     }
+  });
+
+  it('retains a cluster-scoped Namespace without explicit deletion scope and performs no effects', async () => {
+    const f = fixture([resource('retained', 'Namespace')], async () => {
+      throw new Error('retained Namespace must not be read');
+    });
+
+    const result = await f.factory.deleteInstance('demo');
+
+    expect(result.status).toBe('complete');
+    expect(result.deleted).toEqual([]);
+    expect(result.remaining).toEqual([]);
+    expect(result.blockers).toEqual([]);
+    expect(result.retained).toMatchObject([
+      { policy: 'scope-filter', resource: { kind: 'Namespace', name: 'retained' } },
+    ]);
+    expect(f.deleteCall).not.toHaveBeenCalled();
+    expect(f.readCall).not.toHaveBeenCalled();
   });
 
   for (const absence of ['authorization', 'initial-read', 'delete'] as const) {
@@ -469,14 +494,16 @@ describe('direct deletion evidence through manager and engine', () => {
         'demo',
         absence === 'authorization'
           ? {
+              scopes: ['cluster'],
               beforeDeleteResource: async ({ kind }) =>
                 kind === 'Namespace'
                   ? { presence: 'absent' }
                   : { presence: 'present', uid: 'refused-uid', resourceVersion: '7' },
             }
-          : undefined
+          : { scopes: ['cluster'] }
       );
 
+      expect(result.retained).toEqual([]);
       expect(result.status).toBe('blocked');
       expect(result.deleted.map(({ name }) => name)).toEqual(['absent']);
       expect(result.remaining).toEqual([]);
