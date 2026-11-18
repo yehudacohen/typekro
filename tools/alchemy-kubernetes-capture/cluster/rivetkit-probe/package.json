@@ -1,0 +1,9 @@
+{
+  "name": "typekro-rivetkit-probe",
+  "private": true,
+  "type": "module",
+  "description": "Minimal RivetKit actor that joins the kro-deployed engine and completes one action.",
+  "dependencies": {
+    "rivetkit": "3.0.0"
+  }
+}
