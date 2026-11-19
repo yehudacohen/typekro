@@ -119,6 +119,46 @@ export interface ContainerBuildOptions {
   registry: RegistryConfig;
 }
 
+/** Metadata observed for this invocation's temporary Buildx builder, never auth/config contents. */
+export interface ContainerBuilderLifecycle {
+  readonly name: string;
+  readonly nodeName: string;
+  /** Driver requested by this invocation; uncertain creation is not existing-builder ownership. */
+  readonly driver: 'docker-container';
+  /** A failed create/bootstrap may have left state; it is not proof of absence or ownership. */
+  readonly creation: 'completed' | 'uncertain';
+  readonly identity: 'observed' | 'incomplete';
+  /** Context lookup name; daemonId identifies the observed daemon, including host overrides. */
+  readonly dockerContext?: string;
+  readonly daemonId?: string;
+  readonly container?: {
+    readonly id: string;
+    readonly name: string;
+    readonly stateVolumeName: string;
+  };
+  readonly stateVolume?: {
+    readonly name: string;
+    readonly driver: string;
+    readonly scope: string;
+    readonly createdAt: string;
+  };
+  /** Command outcome only: success does not attest physical deletion, reclaimed bytes or a lease. */
+  readonly removal: 'command-succeeded' | 'uncertain' | 'not-attempted';
+  readonly removalIssue?:
+    | 'creation-unconfirmed'
+    | 'daemon-changed'
+    | 'daemon-unavailable'
+    | 'command-failed';
+}
+
+/** Bounded non-secret cleanup outcomes, distinct from image build/publication success. */
+export interface ContainerBuildCleanup {
+  readonly builder?: ContainerBuilderLifecycle;
+  /** Whether a returned session's cleanup call completed; not a physical storage attestation. */
+  readonly registrySession: 'not-returned' | 'completed' | 'uncertain';
+  readonly metadataFiles: 'completed' | 'uncertain';
+}
+
 export interface ContainerBuildResult {
   /** Immutable digest URI for remote registries, otherwise the local tagged URI. */
   imageUri: string;
@@ -131,6 +171,8 @@ export interface ContainerBuildResult {
   duration: number;
   pushed: boolean;
   platforms: readonly string[];
+  /** Added by buildContainer after cleanup; optional for compatibility with older/custom results. */
+  cleanup?: ContainerBuildCleanup;
 }
 
 export interface RegistrySession {

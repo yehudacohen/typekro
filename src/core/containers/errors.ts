@@ -3,6 +3,7 @@
  */
 
 import { TypeKroError } from '../errors.js';
+import type { ContainerBuildCleanup, ContainerBuildResult } from './registries/types.js';
 
 export interface DockerCommandFailure {
   readonly exitCode: number;
@@ -11,6 +12,10 @@ export interface DockerCommandFailure {
 }
 
 export class ContainerBuildError extends TypeKroError {
+  /** Non-secret cleanup state, including an attempted builder even when the build failed. */
+  cleanup?: ContainerBuildCleanup;
+  /** Image success retained when a later registry/session or metadata cleanup fails. */
+  buildResult?: ContainerBuildResult;
   constructor(
     message: string,
     code: string,
@@ -18,7 +23,12 @@ export class ContainerBuildError extends TypeKroError {
     cause?: Error,
     public readonly command?: DockerCommandFailure
   ) {
-    super(message, code, { suggestions, ...(command ? { command } : {}) }, cause ? { cause } : undefined);
+    super(
+      message,
+      code,
+      { suggestions, ...(command ? { command } : {}) },
+      cause ? { cause } : undefined
+    );
     this.name = 'ContainerBuildError';
   }
 
