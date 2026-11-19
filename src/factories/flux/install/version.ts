@@ -1,4 +1,6 @@
+import { type } from 'arktype';
 import { TypeKroError } from '../../../core/errors.js';
+import { type SpecConstraint, specConstraint } from '../../../core/validation/spec-constraint.js';
 
 /**
  * A pinned Flux version: `v<major>.<minor>.<patch>`, optionally with a pre-release suffix such
@@ -20,4 +22,22 @@ export function assertPinnedFluxVersion(version: unknown): asserts version is st
       { version }
     );
   }
+}
+
+/**
+ * `version` of one release's install composition: exactly `releaseVersion`. Its enum is on the
+ * instance schema, so the API server refuses a KRO instance asking for another version, and the
+ * composition refuses one in direct mode with `FLUX_INSTALL_VERSION_MISMATCH`.
+ */
+export function fluxVersionConstraint(releaseVersion: string): SpecConstraint<string> {
+  assertPinnedFluxVersion(releaseVersion);
+  return specConstraint<string>({
+    path: 'version',
+    type: type
+      .unit(releaseVersion)
+      .configure({ expected: `the release version ${releaseVersion}` }),
+    code: 'FLUX_INSTALL_VERSION_MISMATCH',
+    message: (requested) =>
+      `Flux ${String(requested)} is requested, but these manifests are ${releaseVersion}.`,
+  });
 }

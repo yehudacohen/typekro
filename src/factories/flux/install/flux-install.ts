@@ -24,18 +24,18 @@ import { role } from '../../kubernetes/rbac/role.js';
 import { roleBinding } from '../../kubernetes/rbac/role-binding.js';
 import { serviceAccount } from '../../kubernetes/rbac/service-account.js';
 import { deployment } from '../../kubernetes/workloads/deployment.js';
-import { FLUX_RELEASES } from './releases/index.js';
+import { loadFluxRelease } from './releases/index.js';
 import {
   type FluxInstallBuildOptions,
   type FluxInstallConfig,
-  FluxInstallConfigSchema,
   type FluxInstallStatus,
+  fluxInstallConfigSchemaFor,
   FluxInstallStatusSchema,
   type FluxManifestObject,
   type FluxRelease,
   type FluxToleration,
 } from './types.js';
-import { assertPinnedFluxVersion } from './version.js';
+import { assertPinnedFluxVersion, fluxVersionConstraint } from './version.js';
 
 interface Applied {
   dependsOn(other: unknown): unknown;
@@ -163,9 +163,15 @@ function withPlacement(document: FluxManifestObject, spec: FluxInstallConfig): F
 /**
  * Build the install composition for one pinned release.
  *
+ * The spec's `version` must equal the release's version. The instance schema carries it as an
+ * enum, so the API server refuses a KRO instance that asks for another version, and the
+ * composition refuses one in direct mode.
+ *
  * @example
  * ```typescript
- * const fluxInstall = makeFluxInstall({ release: FLUX_RELEASES['v2.7.5'] });
+ * import { fluxV2_7_5 } from 'typekro/flux/releases/v2.7.5';
+ *
+ * const fluxInstall = makeFluxInstall({ release: fluxV2_7_5 });
  * const factory = fluxInstall.factory('direct', { namespace: 'flux-system' });
  * await factory.deploy({
  *   version: 'v2.7.5',
@@ -179,25 +185,17 @@ export function makeFluxInstall(
 ): CallableComposition<FluxInstallConfig, FluxInstallStatus> {
   const { release } = options;
   validateFluxRelease(release);
+  const version = fluxVersionConstraint(release.version);
 
   return kubernetesComposition(
     {
       name: options.name ?? 'flux-install',
       kind: options.kind ?? 'FluxInstall',
-      spec: FluxInstallConfigSchema,
+      spec: fluxInstallConfigSchemaFor(version),
       status: FluxInstallStatusSchema,
     },
     (spec) => {
-      if (typeof spec.version === 'string') {
-        assertPinnedFluxVersion(spec.version);
-        if (spec.version !== release.version) {
-          throw new TypeKroError(
-            `Flux ${spec.version} is requested, but these manifests are ${release.version}.`,
-            'FLUX_INSTALL_VERSION_MISMATCH',
-            { requested: spec.version, release: release.version }
-          );
-        }
-      }
+      version.check(spec.version);
 
       const controllers: Array<{
         status: { readyReplicas?: number };
@@ -247,18 +245,12 @@ export function makeFluxInstall(
   );
 }
 
-/** The install composition for a release in {@link FLUX_RELEASES}. */
-export function fluxInstallForVersion(
+/**
+ * The install composition for a pinned release in {@link FLUX_RELEASE_VERSIONS}, loading its
+ * manifests on demand.
+ */
+export async function fluxInstallForVersion(
   version: string
-): CallableComposition<FluxInstallConfig, FluxInstallStatus> {
-  assertPinnedFluxVersion(version);
-  const release = FLUX_RELEASES[version];
-  if (!release) {
-    throw new TypeKroError(
-      `No pinned Flux manifests for ${version}. Add them as described in src/factories/flux/install/README.md.`,
-      'FLUX_INSTALL_RELEASE_NOT_PINNED',
-      { version, available: Object.keys(FLUX_RELEASES) }
-    );
-  }
-  return makeFluxInstall({ release });
+): Promise<CallableComposition<FluxInstallConfig, FluxInstallStatus>> {
+  return makeFluxInstall({ release: await loadFluxRelease(version) });
 }

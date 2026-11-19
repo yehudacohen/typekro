@@ -4,6 +4,7 @@
  */
 
 import { type Type, type } from 'arktype';
+import type { SpecConstraint } from '../../../core/validation/spec-constraint.js';
 
 /** One Kubernetes object from a release's install manifests. */
 export interface FluxManifestObject {
@@ -43,8 +44,7 @@ export interface FluxInstallConfig {
   nodeSelector?: Record<string, string>;
 }
 
-export const FluxInstallConfigSchema: Type<FluxInstallConfig> = type({
-  version: 'string > 0',
+const fluxInstallPlacementFields = {
   'tolerations?': type({
     'key?': 'string',
     'operator?': '"Equal" | "Exists"',
@@ -53,7 +53,23 @@ export const FluxInstallConfigSchema: Type<FluxInstallConfig> = type({
     'tolerationSeconds?': 'number.integer',
   }).array(),
   'nodeSelector?': 'Record<string, string>',
+} as const;
+
+/**
+ * The spec shape for any release. A composition from `makeFluxInstall` uses
+ * {@link fluxInstallConfigSchemaFor} instead, which accepts only its own release's version.
+ */
+export const FluxInstallConfigSchema: Type<FluxInstallConfig> = type({
+  version: 'string > 0',
+  ...fluxInstallPlacementFields,
 });
+
+/** The spec schema of one release's install composition: `version` is that release's only. */
+export function fluxInstallConfigSchemaFor(
+  version: Pick<SpecConstraint<string>, 'type'>
+): Type<FluxInstallConfig> {
+  return type({ version: version.type, ...fluxInstallPlacementFields });
+}
 
 export interface FluxInstallStatus {
   ready: boolean;

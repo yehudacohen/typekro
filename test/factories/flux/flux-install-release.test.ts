@@ -7,10 +7,13 @@ import { loadAll } from 'js-yaml';
 import { needsCRDSchemaFix } from '../../../src/core/runtime-patches/crd-schema-fix.js';
 import type { KubernetesResource } from '../../../src/core/types/kubernetes.js';
 import {
-  FLUX_RELEASES,
   fluxInstallForVersion,
+  loadFluxRelease,
   makeFluxInstall,
 } from '../../../src/factories/flux/index.js';
+// The `typekro/flux/releases/v2.7.5` subpath.
+import { fluxV2_7_5 as release } from '../../../src/factories/flux/install/releases/v2.7.5.js';
+import { admissionErrors } from '../../utils/kro-admission.js';
 
 interface Manifest {
   apiVersion: string;
@@ -19,9 +22,7 @@ interface Manifest {
   spec: Record<string, unknown>;
 }
 
-const release = FLUX_RELEASES['v2.7.5'];
-if (!release) throw new Error('Flux v2.7.5 is not registered');
-const fluxInstall = fluxInstallForVersion('v2.7.5');
+const fluxInstall = await fluxInstallForVersion('v2.7.5');
 
 const placement = {
   version: 'v2.7.5',
@@ -157,10 +158,19 @@ describe('pinned Flux v2.7.5 release', () => {
     expect((await factory.toAlchemyResources(placement)).length).toBe(release.documents.length);
   });
 
+  it('loads the same release on demand as the subpath export', async () => {
+    expect(await loadFluxRelease('v2.7.5')).toBe(release);
+  });
+
   it('refuses a different version', async () => {
     await expect(direct({ version: 'v2.7.4' })).rejects.toThrow('these manifests are v2.7.5');
     await expect(direct({ version: 'v2.8.0' })).rejects.toThrow('these manifests are v2.7.5');
-    expect(() => fluxInstallForVersion('v2.7.4')).toThrow('No pinned Flux manifests for v2.7.4');
+    await expect(fluxInstallForVersion('v2.7.4')).rejects.toThrow(
+      'No pinned Flux manifests for v2.7.4'
+    );
+    expect(admissionErrors(fluxInstall.toYaml(), 'FluxInstall', { version: 'v2.6.0' })).toEqual([
+      'spec.version: "v2.6.0" is not one of ["v2.7.5"]',
+    ]);
     expect(() => makeFluxInstall({ release: { ...release, version: '2.7.5' } })).toThrow(
       'Flux version must be pinned'
     );

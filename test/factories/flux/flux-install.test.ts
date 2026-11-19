@@ -3,15 +3,19 @@
  * manifests. flux-install-release.test.ts covers the pinned upstream release.
  */
 import { describe, expect, it } from 'bun:test';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { loadAll } from 'js-yaml';
 
 import {
-  FLUX_RELEASES,
+  FLUX_RELEASE_VERSIONS,
   fluxInstallForVersion,
   isPinnedFluxVersion,
+  loadFluxRelease,
   makeFluxInstall,
   validateFluxRelease,
 } from '../../../src/factories/flux/index.js';
+import { admissionErrors } from '../../utils/kro-admission.js';
 import { fluxStandInRelease } from '../../fixtures/flux/stand-in-release.js';
 
 interface Manifest {
@@ -135,7 +139,9 @@ describe('makeFluxInstall (direct mode)', () => {
 
   it('refuses a version other than the release, and an unpinned one', async () => {
     await expect(direct({ version: 'v2.7.4' })).rejects.toThrow('these manifests are v2.7.5');
-    await expect(direct({ version: 'latest' })).rejects.toThrow('Flux version must be pinned');
+    await expect(direct({ version: 'latest' })).rejects.toThrow(
+      'Flux latest is requested, but these manifests are v2.7.5.'
+    );
   });
 });
 
@@ -179,6 +185,21 @@ describe('makeFluxInstall (KRO mode)', () => {
     );
   });
 
+  it('accepts only the release version on the instance schema', () => {
+    const yaml = fluxInstall.toYaml();
+    expect(yaml).toContain('version: string | enum="v2.7.5"');
+    expect(admissionErrors(yaml, 'FluxInstall', placement)).toEqual([]);
+  });
+
+  it('refuses another version at admission, where the composition body never runs', () => {
+    const yaml = fluxInstall.toYaml();
+    for (const version of ['v2.6.0', 'v2.7.4', 'latest']) {
+      expect(admissionErrors(yaml, 'FluxInstall', { ...placement, version })).toEqual([
+        `spec.version: ${JSON.stringify(version)} is not one of ["v2.7.5"]`,
+      ]);
+    }
+  });
+
   it('orders CRDs before RBAC and services, and those before the controllers', () => {
     const annotations = (id: string) =>
       Object.keys(
@@ -202,10 +223,54 @@ describe('makeFluxInstall (Alchemy declarations)', () => {
   });
 });
 
-describe('fluxInstallForVersion', () => {
-  it('builds registered releases and points at the README for others', () => {
-    expect(Object.keys(FLUX_RELEASES)).toEqual(['v2.7.5']);
-    expect(() => fluxInstallForVersion('v2.6.0')).toThrow('src/factories/flux/install/README.md');
-    expect(() => fluxInstallForVersion('latest')).toThrow('Flux version must be pinned');
+describe('pinned releases', () => {
+  it('load on demand, and point at the README for other versions', async () => {
+    expect(FLUX_RELEASE_VERSIONS).toEqual(['v2.7.5']);
+    expect((await loadFluxRelease('v2.7.5')).version).toBe('v2.7.5');
+    expect(await fluxInstallForVersion('v2.7.5')).toBeDefined();
+    await expect(fluxInstallForVersion('v2.6.0')).rejects.toThrow(
+      'src/factories/flux/install/README.md'
+    );
+    await expect(loadFluxRelease('latest')).rejects.toThrow('Flux version must be pinned');
+  });
+
+  it('are not reachable from the root entry or typekro/flux through static imports', () => {
+    const release = resolve(
+      import.meta.dir,
+      '../../../src/factories/flux/install/releases/v2.7.5.ts'
+    );
+    for (const entry of ['../../../src/index.ts', '../../../src/factories/flux/index.ts']) {
+      const reachable = staticImportClosure(resolve(import.meta.dir, entry));
+      expect(reachable.size).toBeGreaterThan(10);
+      expect(reachable.has(release)).toBe(false);
+    }
   });
 });
+
+/**
+ * Source files reachable from `entry` through static `import`/`export ... from` statements with
+ * relative specifiers. Dynamic `import()` is not followed: it loads only when called.
+ */
+function staticImportClosure(entry: string): Set<string> {
+  const seen = new Set<string>();
+  const pending = [entry];
+  const specifiers =
+    /^\s*(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\sfrom\s+)?['"](\.[^'"]+)['"]/gmu;
+  for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const match of readFileSync(file, 'utf8').matchAll(specifiers)) {
+      const target = resolve(dirname(file), match[1] ?? '');
+      const candidates = [
+        target.replace(/\.js$/u, '.ts'),
+        `${target}.ts`,
+        join(target, 'index.ts'),
+      ];
+      const found = candidates.find(
+        (candidate) => existsSync(candidate) && candidate.endsWith('.ts')
+      );
+      if (found) pending.push(found);
+    }
+  }
+  return seen;
+}
