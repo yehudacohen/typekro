@@ -237,6 +237,13 @@ Three properties matter:
 
 `toAlchemyResources` persists enough kubeconfig information for a later state-driven reconcile or delete to reconnect. TypeKro rejects detected static credential bytes in that durable configuration. Ambient factories re-read the default kubeconfig in the operation host, a configured file source persists only its path, and `exec`/`authProvider` configuration can be carried through state when it contains no detected secret-bearing fields, environment values, or common credential arguments.
 
+For file/default-backed client options, TypeKro selects `context` before applying explicit
+`server` and `skipTLSVerify` overrides to that context's cluster. Both overrides apply together;
+omitting either preserves the selected cluster's loaded value, and other clusters are unchanged.
+In particular, `skipTLSVerify: false` enables certificate verification even when the selected
+cluster's file entry disables it. The file is still re-read for the provider operation; these
+options do not bind that read to an earlier in-memory observation of the file.
+
 An explicit `KubeConfig` containing static fields such as `user.token`, `user.certData`, or `user.keyData` fails before declaration creation unless each field has a named host binding:
 
 ```typescript

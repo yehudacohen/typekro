@@ -105,17 +105,19 @@ export interface KubernetesClientConfig {
    * This disables TLS certificate verification and makes connections vulnerable
    * to man-in-the-middle attacks.
    *
-   * @default false (secure by default)
+   * For a loaded kubeconfig, overrides the cluster selected by `context`.
+   * Omit to preserve that cluster's TLS setting. Explicit cluster configuration
+   * defaults to false when neither TLS setting is supplied.
    */
   skipTLSVerify?: boolean;
 
   /**
-   * Custom cluster server URL (optional)
+   * Override the selected cluster server URL when loading a kubeconfig.
    */
   server?: string;
 
   /**
-   * Custom context name (optional)
+   * Select this context before applying server and TLS overrides to a loaded kubeconfig.
    */
   context?: string;
 
@@ -845,37 +847,7 @@ export class KubernetesClientProvider {
    * Apply configuration modifications to an existing KubeConfig
    */
   private applyConfigModifications(kc: k8s.KubeConfig, config: KubernetesClientConfig): void {
-    const cluster = kc.getCurrentCluster();
-
-    // Apply skipTLSVerify modification with security validation
-    if (config.skipTLSVerify !== undefined && cluster) {
-      if (config.skipTLSVerify === true) {
-        // Keep TLS warnings at warn level - these are important security notices
-        this.logger.warn('Explicitly disabling TLS verification - this is insecure', {
-          server: cluster.server,
-          recommendation: 'Only use skipTLSVerify in development environments',
-        });
-      }
-
-      const modifiedCluster = { ...cluster, skipTLSVerify: config.skipTLSVerify };
-      kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-
-      this.logger.debug('Applied skipTLSVerify modification', {
-        skipTLSVerify: config.skipTLSVerify,
-      });
-    }
-
-    // Apply server modification
-    if (config.server && cluster) {
-      const updatedCluster = { ...cluster, server: config.server };
-      kc.clusters = kc.clusters.map((c) => (c === cluster ? updatedCluster : c));
-
-      this.logger.debug('Applied server modification', {
-        server: config.server,
-      });
-    }
-
-    // Apply context modification
+    // Resolve the requested context before choosing which cluster to override.
     if (config.context) {
       try {
         kc.setCurrentContext(config.context);
@@ -894,6 +866,31 @@ export class KubernetesClientProvider {
         );
       }
     }
+
+    const cluster = kc.getCurrentCluster();
+    if (!cluster || (config.skipTLSVerify === undefined && !config.server)) return;
+
+    // Merge both overrides before replacing the selected cluster. A second map
+    // against the original object would miss the replacement from the first.
+    const modifiedCluster = { ...cluster };
+    if (config.skipTLSVerify !== undefined) {
+      if (config.skipTLSVerify === true) {
+        this.logger.warn('Explicitly disabling TLS verification - this is insecure', {
+          server: config.server || cluster.server,
+          recommendation: 'Only use skipTLSVerify in development environments',
+        });
+      }
+      modifiedCluster.skipTLSVerify = config.skipTLSVerify;
+      this.logger.debug('Applied skipTLSVerify modification', {
+        skipTLSVerify: config.skipTLSVerify,
+      });
+    }
+
+    if (config.server) {
+      modifiedCluster.server = config.server;
+      this.logger.debug('Applied server modification', { server: config.server });
+    }
+    kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
   }
 
   /**
