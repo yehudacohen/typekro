@@ -43,7 +43,6 @@ import {
 import {
   type CallDeadlineBudget,
   callDeadlineBudget,
-  isRequestTimeoutError,
   retryOnceOnRequestTimeout,
   usesExecCredential,
   withCallDeadline,
@@ -56,6 +55,7 @@ import {
 } from '../core/deployment/singleton-owner-drift.js';
 import { ensureError, TypeKroError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
+import { isNotFoundError as isHttpNotFoundError } from '../core/kubernetes/errors.js';
 import {
   createBunCompatibleCustomObjectsApi,
   createBunCompatibleKubernetesObjectApi,
@@ -1044,12 +1044,6 @@ export const waitForPersistedIdentityDeletionForTest = waitForPersistedIdentityD
 export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.js';
 
 /**
- * Refuse to deploy a singleton owner whose identity already exists on the cluster with a DIFFERENT
- * spec — the declarative-path equivalent of the imperative `assertNoDeployedSingletonSpecDrift`. Only
- * fires for resources carrying the singleton spec-fingerprint annotation (i.e. singleton instances);
- * a missing instance / absent CRD / unreachable cluster is treated as "nothing to drift from".
- */
-/**
  * Fail-closed PRE-HOIST detection for the ALCHEMY deploy path (finding #7). Runs ONLY
  * for a typekro-hoisted workload Namespace (`namespaceEmptyGate`). If the live namespace
  * is a KRO ApplySet member (carries `applyset.kubernetes.io/part-of` or any `kro.run/*`
@@ -1465,6 +1459,7 @@ function _singletonDriftApi<T extends Enhanced<unknown, unknown>>(
   ) as { read(spec: unknown): Promise<unknown> };
 }
 
+/** Check fingerprinted singleton owners before deploy. A structured HTTP 404 permits creation. */
 async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger,
@@ -1478,9 +1473,9 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   const expected = resource.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
   if (!expected) return; // not a fingerprinted singleton instance
 
-  let live: LiveSingletonOwner | undefined;
+  const api = _singletonDriftApi(props, deps.api, abortSignal);
+  let live: LiveSingletonOwner;
   try {
-    const api = _singletonDriftApi(props, deps.api, abortSignal);
     // Same idempotent-read retry as the persisted-identity drift check: one request timeout on
     // this GET is re-issued once before the gate fails closed (#213).
     live = (await retryOnceOnRequestTimeout(() => api.read(props.resource), {
@@ -1489,14 +1484,10 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
       abortSignal,
     })) as LiveSingletonOwner;
   } catch (error: unknown) {
-    // A WEDGED call is not evidence that nothing exists to clash with, and swallowing it would
-    // silently skip this assertion after the full budget had elapsed. Fail closed on ANY request
-    // timeout — the socket's as well as this handler's deadline wrapper's, since the socket timer is
-    // armed first and therefore usually wins — and on an abort. Only the pre-existing cases (not
-    // found, CRD not yet created, cluster unreachable) still fall through to "nothing to clash with".
-    if (isRequestTimeoutError(error)) throw error;
-    if (abortSignal?.aborted) throw error;
-    return;
+    // Only a structured HTTP response establishes absence. Keep transport, timeout, and abort
+    // failures intact, including diagnostics whose message happens to mention a 404.
+    if (!abortSignal?.aborted && isHttpNotFoundError(error)) return;
+    throw error;
   }
 
   const verdict = singletonDriftVerdict(expected, resource.spec, live);

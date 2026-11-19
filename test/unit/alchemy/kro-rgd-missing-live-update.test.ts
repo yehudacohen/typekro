@@ -321,6 +321,15 @@ describe('Alchemy KRO update whose live ResourceGraphDefinition is gone', () => 
  */
 describe('Alchemy KRO handler bounds every cluster call it makes', () => {
   const fast = { httpTimeouts: { default: 40, create: 40, delete: 40 } };
+  const fingerprinted = {
+    apiVersion: 'demo.example/v1alpha1',
+    kind: CRD_KIND,
+    metadata: {
+      name: 'demo-singleton',
+      annotations: { 'typekro.io/singleton-spec-fingerprint': 'sha256:abc' },
+    },
+    spec: { replicas: 1 },
+  };
 
   test('the artifact-binding migration rejects, naming the ResourceGraphDefinition', async () => {
     const deployer = applyingDeployer({
@@ -395,22 +404,9 @@ describe('Alchemy KRO handler bounds every cluster call it makes', () => {
   });
 
   test('the singleton-drift gate fails closed on the SOCKET timeout, not just its own', async () => {
-    // Two layers time the same request out. The Bun HTTP library arms its socket timer
-    // SYNCHRONOUSLY while the request is issued; this handler's deadline wrapper arms its timer
-    // afterwards. With equal budgets the socket fires FIRST, so the error the gate actually sees is
-    // the HTTP library's — and this gate fails OPEN on ordinary errors ("nothing to clash with").
-    // Recognising only the wrapper's error would therefore let a wedged credential silently SKIP
-    // the assertion. Simulate the socket error winning the race.
+    // With equal budgets the socket timer fires first because it is armed when the request starts.
+    // Simulate that error winning the race against the handler's deadline.
     const { RequestTimeoutError } = await import('../../../src/core/deployment/poll-timeout.js');
-    const fingerprinted = {
-      apiVersion: 'demo.example/v1alpha1',
-      kind: CRD_KIND,
-      metadata: {
-        name: 'demo-singleton',
-        annotations: { 'typekro.io/singleton-spec-fingerprint': 'sha256:abc' },
-      },
-      spec: { replicas: 1 },
-    };
 
     await expect(
       settlesWithin(
@@ -418,7 +414,7 @@ describe('Alchemy KRO handler bounds every cluster call it makes', () => {
           {
             ...props(undefined, { httpTimeouts: { default: 5_000 } }),
             resource: fingerprinted as never,
-          } as unknown as Props,
+          },
           getComponentLogger('test'),
           undefined,
           {
@@ -437,20 +433,10 @@ describe('Alchemy KRO handler bounds every cluster call it makes', () => {
   });
 
   test('the singleton-drift gate still falls through when the object is simply absent', async () => {
-    // The pre-existing fail-OPEN cases must keep working: a 404, a CRD that does not exist yet, or
-    // an unreachable cluster is genuinely "no existing spec to clash with".
-    const fingerprinted = {
-      apiVersion: 'demo.example/v1alpha1',
-      kind: CRD_KIND,
-      metadata: {
-        name: 'demo-singleton',
-        annotations: { 'typekro.io/singleton-spec-fingerprint': 'sha256:abc' },
-      },
-      spec: { replicas: 1 },
-    };
+    // A structured HTTP 404 permits first creation.
     await expect(
       assertNoSingletonDriftForTest(
-        { ...props(), resource: fingerprinted as never } as unknown as Props,
+        { ...props(), resource: fingerprinted as never },
         getComponentLogger('test'),
         undefined,
         {
@@ -462,6 +448,28 @@ describe('Alchemy KRO handler bounds every cluster call it makes', () => {
         }
       )
     ).resolves.toBeUndefined();
+  });
+
+  test('the singleton-drift gate rethrows unconfirmed reads without retrying', async () => {
+    const failures = [
+      new Error('transport read failed'),
+      Object.assign(new Error('read forbidden'), { code: 403 }),
+      new Error('transport failed with a nested HTTP-Code: 404 diagnostic', { cause: notFound() }),
+    ];
+    for (const failure of failures) {
+      const read = mock(async () => {
+        throw failure;
+      });
+      await expect(
+        assertNoSingletonDriftForTest(
+          { ...props(), resource: fingerprinted as never },
+          getComponentLogger('test'),
+          undefined,
+          { api: { read } }
+        )
+      ).rejects.toBe(failure);
+      expect(read).toHaveBeenCalledTimes(1);
+    }
   });
 
   test('the owned-namespace pagination rejects at the helper itself', async () => {
