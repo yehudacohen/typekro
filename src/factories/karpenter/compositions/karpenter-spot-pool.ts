@@ -25,10 +25,15 @@ import {
   type KarpenterSpotPoolStatus,
   KarpenterSpotPoolStatusSchema,
 } from '../types.js';
-import { PINNED_AMI_ALIAS_CONSTRAINT } from '../utils/ami-alias.js';
+import { assertPinnedAmiAlias } from '../utils/ami-alias.js';
 import { karpenterControllerResources } from './karpenter-bootstrap.js';
 
-export { assertPinnedAmiAlias, isPinnedAmiAlias, PINNED_AMI_ALIAS } from '../utils/ami-alias.js';
+export {
+  assertPinnedAmiAlias,
+  isPinnedAmiAlias,
+  PINNED_AMI_ALIAS,
+  PinnedAmiAliasSchema,
+} from '../utils/ami-alias.js';
 
 /** Arm64 families across c/m/r 6g/7g/8g. */
 export const DEFAULT_SPOT_INSTANCE_FAMILIES = [
@@ -78,7 +83,10 @@ function optionalControllerInputs(
  * Deploy it in direct mode, which installs the controller and CRDs before the
  * NodeClass and NodePool. KRO mode needs the Karpenter CRDs installed first.
  * `amiAlias` must be pinned in both modes: the instance schema carries the
- * pattern, so the API server refuses `al2023@latest` on a KRO instance.
+ * pattern and `required=true`, so the API server refuses `al2023@latest` or a
+ * missing alias on a KRO instance. Composed inside another composition, it
+ * takes a concrete alias or a reference to a required spec field declared with
+ * `PinnedAmiAliasSchema`, and refuses anything else at build time.
  *
  * @example
  * ```typescript
@@ -105,7 +113,7 @@ export const karpenterSpotPool: CallableComposition<
     status: KarpenterSpotPoolStatusSchema,
   },
   (spec) => {
-    PINNED_AMI_ALIAS_CONSTRAINT.check(spec.amiAlias);
+    assertPinnedAmiAlias(spec.amiAlias);
 
     const { controller, status: controllerStatus } = karpenterControllerResources({
       name: spec.name,

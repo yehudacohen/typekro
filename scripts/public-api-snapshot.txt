@@ -3171,6 +3171,7 @@
 ./karpenter	NodePoolSpec	type	92bb80ea75d87fc9
 ./karpenter	NodePoolStatus	type	5fbea463b0859a32
 ./karpenter	PINNED_AMI_ALIAS	value	292599496772a2f8
+./karpenter	PinnedAmiAliasSchema	value	c8f45429e2c388fb
 ./karpenter	SPOT_MIN_INSTANCE_TYPES	value	6da9bca9e3db62c8
 ./karpenter	assertPinnedAmiAlias	value	dc1d613a5d67615d
 ./karpenter	ec2NodeClass	value	40ad0990d9d07dd0

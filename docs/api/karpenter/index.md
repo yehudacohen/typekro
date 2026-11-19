@@ -164,8 +164,12 @@ Its one-node budget lists no `reasons`, so from Karpenter 1.15 it also bounds no
 at a time.
 
 `amiAlias` is required and must be pinned (`<family>@v<version>`, for example
-`al2023@v20251117`). `@latest` and a second `@` are refused in both modes: in direct mode by the
-composition, and in KRO mode by the API server, because the instance schema carries the pattern.
+`al2023@v20251117`). A missing alias, `@latest` and a second `@` are refused in both modes: in
+direct mode by the composition, and in KRO mode by the API server, because the instance schema
+carries the pattern and `required=true`. When another composition composes the spot pool, it
+passes a concrete alias or a reference to one of its own spec fields declared with
+`PinnedAmiAliasSchema` as a required key. Any other reference is refused at build time, because
+nothing would check it. `assertPinnedAmiAlias()` applies the same rule.
 
 ```typescript
 import { karpenterSpotPool } from 'typekro/karpenter';

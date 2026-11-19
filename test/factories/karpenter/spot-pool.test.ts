@@ -3,14 +3,19 @@
  * EC2NodeClass and one spot NodePool, checked against the published CRDs.
  */
 import { describe, expect, it } from 'bun:test';
+import { type Type, type } from 'arktype';
 import { loadAll } from 'js-yaml';
 
+import { TypeKroError } from '../../../src/core/errors.js';
 import {
   assertPinnedAmiAlias,
   DEFAULT_SPOT_INSTANCE_FAMILIES,
   isPinnedAmiAlias,
+  type KarpenterSpotPoolConfig,
   karpenterSpotPool,
+  PinnedAmiAliasSchema,
 } from '../../../src/factories/karpenter/index.js';
+import { Cel, kubernetesComposition, simple } from '../../../src/index.js';
 import { admissionErrors } from '../../utils/kro-admission.js';
 import { crdSchema, validate } from './crd-schema.js';
 
@@ -161,8 +166,10 @@ describe('karpenterSpotPool (direct mode)', () => {
 });
 
 describe('pinned AMI aliases', () => {
-  it('lets a graph reference through to admission and refuses non-strings', () => {
-    expect(() => assertPinnedAmiAlias(undefined)).not.toThrow();
+  it('refuses a missing alias and non-strings', () => {
+    expect(() => assertPinnedAmiAlias(undefined)).toThrow(
+      'amiAlias must be pinned, like "al2023@v20251117"; got "undefined".'
+    );
     expect(isPinnedAmiAlias(20251117)).toBe(false);
   });
 
@@ -175,6 +182,101 @@ describe('pinned AMI aliases', () => {
         `amiAlias must be pinned, like "al2023@v20251117"; got "${alias}".`
       );
     }
+  });
+});
+
+/** The code of the innermost TypeKroError `run` throws, through composition wrappers. */
+function refusalCode(run: () => unknown): string | undefined {
+  try {
+    run();
+  } catch (error) {
+    let code: string | undefined;
+    for (let cause: unknown = error; cause instanceof Error; cause = cause.cause) {
+      if (cause instanceof TypeKroError) code = cause.code;
+    }
+    return code ?? `untyped: ${String(error)}`;
+  }
+  return undefined;
+}
+
+describe('a pinned AMI alias from another composition spec', () => {
+  const status = type({ ready: 'boolean' });
+
+  /** Define and serialize a composition that checks `pick(spec)` as an alias. */
+  const checked = (schema: Type<object>, pick: (spec: never) => unknown) => () =>
+    kubernetesComposition(
+      { name: 'alias-probe', kind: 'AliasProbe', spec: schema, status },
+      (spec) => {
+        assertPinnedAmiAlias(pick(spec as never));
+        simple.ConfigMap({ id: 'config', name: 'probe', data: { a: 'b' } });
+        return { ready: true };
+      }
+    ).toYaml();
+
+  /** Define and serialize a composition that composes the spot pool with `pick(spec)`. */
+  const composed = (schema: Type<object>, pick: (spec: never) => unknown) => () =>
+    kubernetesComposition(
+      { name: 'platform-capacity', kind: 'PlatformCapacity', spec: schema, status },
+      (spec) => {
+        karpenterSpotPool({
+          ...(spec as unknown as KarpenterSpotPoolConfig),
+          amiAlias: pick(spec as never) as string,
+        });
+        return { ready: true };
+      }
+    ).toYaml();
+
+  const poolFields = {
+    name: 'string',
+    clusterName: 'string',
+    interruptionQueue: 'string',
+    nodeRole: 'string',
+    stableTaintKey: 'string',
+    zones: 'string[]',
+  } as const;
+  const fromAlias = (spec: { alias: unknown }) => spec.alias;
+
+  it('accepts a reference to a required field declared with PinnedAmiAliasSchema', () => {
+    expect(refusalCode(checked(type({ alias: PinnedAmiAliasSchema }), fromAlias))).toBeUndefined();
+    expect(
+      refusalCode(composed(type({ ...poolFields, alias: PinnedAmiAliasSchema }), fromAlias))
+    ).toBeUndefined();
+  });
+
+  it('refuses at build time an alias from a field that does not carry the constraint', () => {
+    const unguarded: [Type<object>, (spec: never) => unknown][] = [
+      // An unconstrained string: an instance could send al2023@latest.
+      [type({ alias: 'string' }), fromAlias],
+      // The constrained type on an optional field: an instance could omit it.
+      [type({ 'alias?': PinnedAmiAliasSchema }), fromAlias],
+      // A CEL expression over the guarded field.
+      [
+        type({ alias: PinnedAmiAliasSchema }),
+        (spec: { alias: unknown }) => Cel.expr('has(', spec.alias, ') ? ', spec.alias, " : ''"),
+      ],
+    ];
+    for (const [schema, pick] of unguarded) {
+      expect(refusalCode(checked(schema, pick))).toBe('KARPENTER_AMI_ALIAS_NOT_PINNED');
+    }
+    expect(refusalCode(composed(type({ ...poolFields, alias: 'string' }), fromAlias))).toBe(
+      'KARPENTER_AMI_ALIAS_NOT_PINNED'
+    );
+  });
+
+  it('refuses an optional field declared with PinnedAmiAliasSchema', () => {
+    const optional = kubernetesComposition(
+      {
+        name: 'optional-alias',
+        kind: 'OptionalAlias',
+        spec: type({ 'alias?': PinnedAmiAliasSchema }),
+        status,
+      },
+      () => {
+        simple.ConfigMap({ id: 'config', name: 'probe', data: { a: 'b' } });
+        return { ready: true };
+      }
+    );
+    expect(() => optional.toYaml()).toThrow(/requires the field, but the field is optional/);
   });
 });
 
@@ -192,7 +294,7 @@ describe('karpenterSpotPool (KRO mode)', () => {
     expect(ids).toContain('spotPool');
     expect(rgd.spec.schema.spec.stableTaintKey).toContain('string');
     expect(rgd.spec.schema.spec.amiAlias).toBe(
-      'string | pattern="^[a-z0-9]+@v[0-9][0-9A-Za-z._-]*$"'
+      'string | pattern="^[a-z0-9]+@v[0-9][0-9A-Za-z._-]*$" required=true'
     );
   });
 
@@ -206,6 +308,13 @@ describe('karpenterSpotPool (KRO mode)', () => {
 
   it('admits an instance with a pinned alias', () => {
     expect(admissionErrors(karpenterSpotPool.toYaml(), 'KarpenterSpotPool', spec)).toEqual([]);
+  });
+
+  it('refuses a missing alias at admission', () => {
+    const { amiAlias: _omitted, ...withoutAlias } = spec;
+    expect(admissionErrors(karpenterSpotPool.toYaml(), 'KarpenterSpotPool', withoutAlias)).toEqual([
+      'spec.amiAlias: Required value',
+    ]);
   });
 
   it('refuses an unpinned alias at admission, where the composition body never runs', () => {

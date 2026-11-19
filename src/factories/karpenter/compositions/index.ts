@@ -11,5 +11,6 @@ export {
   isPinnedAmiAlias,
   karpenterSpotPool,
   PINNED_AMI_ALIAS,
+  PinnedAmiAliasSchema,
   SPOT_MIN_INSTANCE_TYPES,
 } from './karpenter-spot-pool.js';
