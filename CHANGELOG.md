@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-11-19
+
+### Added
+
+- **Karpenter spot pool composition.** `karpenterSpotPool` in `typekro/karpenter` installs the
+  Karpenter controller, one `EC2NodeClass` and one spot `NodePool`, for clusters whose stable
+  capacity is a managed node group outside Karpenter. The pool prefers spot and falls back to
+  on-demand, uses arm64 c/m/r 6g/7g/8g instances in `large` and `xlarge` with `minValues` of at
+  least 8 instance types, consolidates `WhenEmptyOrUnderutilized` after `5m` and disrupts one
+  node at a time. Families, sizes, the CPU limit (default `'16'`), `consolidateAfter` and
+  `expireAfter` can be overridden. The controller tolerates the caller's `stableTaintKey`.
+  `amiAlias` is required and must be pinned (for example `al2023@v20251117`): a missing alias,
+  `@latest` and a second `@` are refused in direct mode and, in KRO mode, by the generated
+  instance schema. Status reports `ready`, `controllerReady` and `capacityReady`.
+  `karpenterControllerResources` is now shared by the bootstrap and the spot pool, and the
+  bootstrap renders as before. See "Spot pool composition" in the Karpenter docs. (#299)
+- **Flux install from pinned release manifests.** `makeFluxInstall` in `typekro/flux` turns a
+  pinned Flux release's install manifests into ordinary TypeKro declarations, applied in phases
+  through the typed Kubernetes factories, so direct, KRO and Alchemy mode can all apply Flux.
+  Flux **v2.10.0** is vendored as the `typekro/flux/releases/v2.10.0` subpath and is loaded only
+  when used: `FLUX_RELEASE_VERSIONS` lists the vendored versions, `loadFluxRelease(version)`
+  imports one on demand and `fluxInstallForVersion(version)` builds its composition. Versions must
+  be pinned (`v<major>.<minor>.<patch>`, optionally with a pre-release suffix), and each
+  composition's `version` is constrained to its release, so a KRO instance cannot ask for another
+  version. Each controller Deployment is ready when `readyReplicas == replicas`, and `ready` is
+  the conjunction of all of them. `tolerations` and `nodeSelector`, when given, replace every
+  controller's own values. `scripts/vendor-flux-release.ts` regenerates a release module from a
+  downloaded `install.yaml`, parsing it as plain data. The runtime bootstrap's Flux install is
+  unchanged. (#301)
+- **New integration: `typekro/external-secrets`.** Factories for the External Secrets Operator on
+  AWS, authenticating through EKS Pod Identity only. `externalSecretsHelmRepository` and
+  `externalSecretsHelmRelease` install the official chart, pinned to 2.15.0. `secretStore` and
+  `clusterSecretStore` (`external-secrets.io/v1`) cover AWS Secrets Manager and Parameter Store,
+  `externalSecret` creates a typed `ExternalSecret`, and every resource has a readiness evaluator
+  based on its `Ready` condition. `externalSecretsAws` (the default) installs the controller and
+  one namespaced `SecretStore`. `externalSecretsAwsClusterStore` is the explicit opt-in to a
+  `ClusterSecretStore` whose `conditions` allow only the namespaces in `allowedNamespaces`. A
+  cluster store without guarded conditions, and a provider or `auth` section taken from the
+  instance spec, are refused when the composition is built. The integration is a subpath export
+  only. (#300)
+- **Experimental: Alchemy Kubernetes capture tool.** `tools/alchemy-kubernetes-capture` is a
+  repository tool, not part of the published package. It captures one Alchemy v2 Kubernetes
+  layer (the Rivet engine control plane, single-engine ClusterIP variant) offline and emits it as
+  a TypeKro composition that kro can deploy as a ResourceGraphDefinition. The generated
+  composition imports no Alchemy code. A CI job checks that a fresh capture is byte-identical to
+  the checked-in output. (#298)
+
+### Changed
+
+- **Karpenter chart default moves from 1.14.1 to 1.15.2.** Nothing the factory maps was renamed
+  or removed in 1.15. The docs link the 1.15 controller IAM policy, which adds
+  `ec2:RebootInstances` for the alpha `rebootForRepair` gate. (#299)
+- **`buildContainer()` reports cleanup outcomes.** The result carries optional cleanup outcomes
+  and bounded temporary-builder identity metadata (`ContainerBuildCleanup`,
+  `ContainerBuilderLifecycle`). A typed failure keeps the primary build error and any completed
+  image output when a later cleanup step fails. Conflicting overrides of a dedicated temporary
+  builder are refused. Existing image fields are unchanged. (#294)
+- **Direct-mode rollback keeps deletion evidence.** `RollbackResult` has an optional
+  `deletionProgress` with the admitted DELETE UID and confirmed or deferred completion, and a
+  confirmed Namespace absence survives a failure on a sibling resource. `remaining`,
+  `FINALIZERS_REMAIN` and `RESOURCE_REMAINS` are filled from the existing polling reads.
+  Replacement completion is recognized only when the DELETE was UID-bound. Callers that parsed
+  raw direct-mode blocker messages should use the blocker codes and resource identities instead:
+  the untyped `Cannot rollback` message shortcut is gone. (#295)
+
+### Fixed
+
+- **Kubeconfig overrides apply to the selected context's cluster.** When the loaded kubeconfig
+  selected one context and the caller asked for another, `skipTLSVerify` and `server` overrides
+  modified the wrong cluster, and setting both lost the `server` override. The context is now
+  selected first and both overrides are applied to its cluster once. An explicit
+  `skipTLSVerify: false` re-enables verification. (#293)
+- **Alchemy singleton drift reads no longer proceed on uncertain errors.** The singleton
+  preflight went on to deploy after a transport or permission error. It now creates only after
+  a structured HTTP 404 and rethrows any other read failure unchanged. The single retry for a
+  request timeout remains. (#297)
+
 ## [0.45.0] - 2026-10-07
 
 ### Security
