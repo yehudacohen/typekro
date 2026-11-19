@@ -130,6 +130,10 @@
       "import": "./dist/factories/webapp/index.js",
       "types": "./dist/factories/webapp/index.d.ts"
     },
+    "./external-secrets": {
+      "import": "./dist/factories/external-secrets/index.js",
+      "types": "./dist/factories/external-secrets/index.d.ts"
+    },
     "./valkey": {
       "import": "./dist/factories/valkey/index.js",
       "types": "./dist/factories/valkey/index.d.ts"
