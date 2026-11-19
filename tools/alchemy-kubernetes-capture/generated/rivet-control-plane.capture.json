@@ -14,12 +14,20 @@
     "kind": "RivetControlPlane",
     "apiVersion": "v1alpha1",
     "spec": [
-      { "name": "name", "kind": "string", "origin": "StatefulSetControlPlaneProps.name" },
+      {
+        "name": "name",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.name",
+        "pattern": "^[a-z](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 32
+      },
       {
         "name": "namespace",
         "kind": "string",
         "origin": "StatefulSetControlPlaneProps.namespace",
-        "default": "default"
+        "default": "default",
+        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 63
       },
       {
         "name": "image",
@@ -33,7 +41,14 @@
         "origin": "StatefulSetControlPlaneProps.diskSize",
         "default": "10Gi"
       },
-      { "name": "pool", "kind": "string", "origin": "lowering of Rivet.Pool", "default": "default" }
+      {
+        "name": "pool",
+        "kind": "string",
+        "origin": "lowering of Rivet.Pool",
+        "default": "default",
+        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 16
+      }
     ],
     "resources": [
       {
@@ -259,12 +274,20 @@
     "kind": "RivetControlPlaneAdminToken",
     "apiVersion": "v1alpha1",
     "spec": [
-      { "name": "name", "kind": "string", "origin": "StatefulSetControlPlaneProps.name" },
+      {
+        "name": "name",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.name",
+        "pattern": "^[a-z](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 32
+      },
       {
         "name": "namespace",
         "kind": "string",
         "origin": "StatefulSetControlPlaneProps.namespace",
-        "default": "default"
+        "default": "default",
+        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 63
       },
       { "name": "token", "kind": "string", "origin": "lowering of Alchemy.Random RivetAdminToken" }
     ],

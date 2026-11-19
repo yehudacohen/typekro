@@ -11,6 +11,7 @@ import {
   rivetControlPlane,
   rivetControlPlaneAdminToken,
 } from '../../../tools/alchemy-kubernetes-capture/generated/rivet-control-plane.js';
+import { admissionErrors } from '../../utils/kro-admission.js';
 
 interface ParsedRgdResource {
   id: string;
@@ -139,5 +140,53 @@ describe('generated Rivet control plane RGD', () => {
     expect(manifests.map((manifest) => manifest.kind)).toEqual(['Secret']);
     expect(manifests[0]?.metadata.name).toBe('engine-token');
     expect(manifests[0]?.stringData.token).toBe('not-a-real-token');
+  });
+
+  describe('names built from the spec', () => {
+    const instance = {
+      name: 'engine',
+      namespace: 'rivet',
+      image: 'rivetdev/engine:3.0.0',
+      diskSize: '10Gi',
+      pool: 'default',
+    };
+
+    it('admits a valid instance', () => {
+      expect(admissionErrors(rivetControlPlane.toYaml(), 'RivetControlPlane', instance)).toEqual(
+        []
+      );
+    });
+
+    it('refuses names Kubernetes would refuse, at admission', () => {
+      const yamlText = rivetControlPlane.toYaml();
+      for (const [field, value] of [
+        // 33 characters: the pool Job name would be 64.
+        ['name', 'e'.repeat(33)],
+        // A Service name must start with a letter.
+        ['name', '1engine'],
+        ['name', 'Engine'],
+        ['namespace', 'rivet_system'],
+        ['pool', 'p'.repeat(17)],
+        ['pool', 'Default'],
+      ] as const) {
+        const errors = admissionErrors(yamlText, 'RivetControlPlane', {
+          ...instance,
+          [field]: value,
+        });
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toStartWith(`spec.${field}: `);
+      }
+    });
+
+    it('refuses them in direct mode too', async () => {
+      const factory = await rivetControlPlane.factory('direct', { namespace: 'rivet' });
+      expect(() => factory.toYaml({ ...instance, name: 'e'.repeat(33) })).toThrow(
+        'name must be at most length 32 (was 33)'
+      );
+      expect(() => factory.toYaml({ ...instance, pool: 'Default' })).toThrow(
+        'pool must be matched by'
+      );
+      expect(() => factory.toYaml(instance)).not.toThrow();
+    });
   });
 });

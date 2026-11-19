@@ -10,11 +10,11 @@ import { type } from 'arktype';
 import { Cel, job, secret, service, statefulSet, toResourceGraph } from '../../../src/index.js';
 
 export const RivetControlPlaneSpec = type({
-  name: 'string',
-  namespace: 'string',
+  name: type(/^[a-z](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 32'),
+  namespace: type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63'),
   image: 'string',
   diskSize: 'string',
-  pool: 'string',
+  pool: type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 16'),
 });
 export const RivetControlPlaneStatus = type({ ready: 'boolean', nodeEndpoint: 'string' });
 
@@ -287,8 +287,8 @@ export const rivetControlPlane = toResourceGraph(
 );
 
 export const RivetControlPlaneAdminTokenSpec = type({
-  name: 'string',
-  namespace: 'string',
+  name: type(/^[a-z](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 32'),
+  namespace: type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63'),
   token: 'string',
 });
 export const RivetControlPlaneAdminTokenStatus = type({ secretName: 'string' });

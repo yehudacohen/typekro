@@ -9,6 +9,7 @@
 // - The node pool that `Rivet.Pool` would configure becomes a Kubernetes Job inside the RGD.
 // - Order-only dependencies that Alchemy expressed through `uid` outputs become `dependsOn`.
 import { createHash } from 'node:crypto';
+import { checkGeneratedNames, DNS1035_LABEL, DNS1123_LABEL, type NameParam } from './names.ts';
 import type { Finding, ParamRef, Symbolic, Template } from './symbolize.ts';
 
 export interface SpecField {
@@ -17,6 +18,10 @@ export interface SpecField {
   /** Where the field came from: an Alchemy prop, or a lowering rule. */
   readonly origin: string;
   readonly default?: string | number | boolean;
+  /** For a field interpolated into Kubernetes names: the pattern its value must match. */
+  readonly pattern?: string;
+  /** For a field interpolated into Kubernetes names: its maximum length. */
+  readonly maxLength?: number;
 }
 
 export type Readiness = 'statefulset-replicas' | 'job-succeeded';
@@ -114,6 +119,29 @@ const POOL_SCRIPT = [
   'echo "rivet pool $RIVET_POOL configured after $((try + 1)) tries"',
 ].join('\n');
 
+/**
+ * Spec fields that reach Kubernetes names, with the pattern and length each may take. `name` is
+ * a Service name, so it starts with a letter. The lengths keep the longest generated name, the
+ * pool Job's `<name>-pool-<pool>-<hash>`, within 63 characters; `checkGeneratedNames` proves
+ * every generated name fits.
+ */
+export const NAME_PARAMS: Readonly<Record<string, NameParam>> = {
+  name: { pattern: DNS1035_LABEL, maxLength: 32 },
+  namespace: { pattern: DNS1123_LABEL, maxLength: 63 },
+  pool: { pattern: DNS1123_LABEL, maxLength: 16 },
+};
+
+/** `field` with the name constraint of {@link NAME_PARAMS}, when it has one. */
+function withNameConstraint(
+  field: SpecField,
+  params: Readonly<Record<string, NameParam>>
+): SpecField {
+  const param = params[field.name];
+  return param === undefined
+    ? field
+    : { ...field, pattern: param.pattern.source, maxLength: param.maxLength };
+}
+
 export class LoweringError extends Error {
   constructor(message: string) {
     super(message);
@@ -144,7 +172,10 @@ export function lowerControlPlane(options: {
   readonly findings: readonly Finding[];
   readonly packages: Readonly<Record<string, string>>;
   readonly specFields: readonly SpecField[];
+  /** Name constraints of the spec fields. @default NAME_PARAMS */
+  readonly nameParams?: Readonly<Record<string, NameParam>>;
 }): GeneratedComposition {
+  const nameParams = options.nameParams ?? NAME_PARAMS;
   const capture = options.symbolized as CapturedShape;
   const lowerings: Lowering[] = [];
 
@@ -295,7 +326,25 @@ export function lowerControlPlane(options: {
   const specFields = [
     ...options.specFields,
     { name: 'pool', kind: 'string' as const, origin: 'lowering of Rivet.Pool', default: 'default' },
+  ].map((field) => withNameConstraint(field, nameParams));
+  const tokenSpecFields: SpecField[] = [
+    ...options.specFields.filter((field) => field.name === 'name' || field.name === 'namespace'),
+    {
+      name: 'token',
+      kind: 'string' as const,
+      origin: `lowering of Alchemy.Random ${random.logicalId}`,
+    },
+  ].map((field) => withNameConstraint(field, nameParams));
+  const tokenResources: GraphResource[] = [
+    {
+      id: RESOURCE_IDS[tokenSecret.logicalId] as string,
+      origin: `Kubernetes.Manifest ${tokenSecret.logicalId}`,
+      object: tokenSecretObject,
+      dependsOn: [],
+    },
   ];
+  // Fails generation if a value the spec admits could produce an invalid or overlong name.
+  checkGeneratedNames([...resources, ...tokenResources], nameParams);
 
   return {
     source: {
@@ -315,20 +364,8 @@ export function lowerControlPlane(options: {
       name: 'rivet-control-plane-admin-token',
       kind: 'RivetControlPlaneAdminToken',
       apiVersion: 'v1alpha1',
-      spec: [
-        ...options.specFields.filter(
-          (field) => field.name === 'name' || field.name === 'namespace'
-        ),
-        { name: 'token', kind: 'string', origin: `lowering of Alchemy.Random ${random.logicalId}` },
-      ],
-      resources: [
-        {
-          id: RESOURCE_IDS[tokenSecret.logicalId] as string,
-          origin: `Kubernetes.Manifest ${tokenSecret.logicalId}`,
-          object: tokenSecretObject,
-          dependsOn: [],
-        },
-      ],
+      spec: tokenSpecFields,
+      resources: tokenResources,
     },
     lowerings,
     findings: options.findings,

@@ -67,8 +67,20 @@ function expression(value: unknown, param: ParamSpelling, depth: number): string
   throw new EmitError(`Cannot emit a value of type ${typeof value}.`);
 }
 
+/** A field's ArkType: its kind, or for a field that reaches Kubernetes names, its constraint. */
+function fieldType(field: SpecField): string {
+  if (field.pattern === undefined && field.maxLength === undefined) return quote(field.kind);
+  if (field.kind !== 'string' || field.pattern === undefined || field.maxLength === undefined) {
+    throw new EmitError(`Spec field ${field.name} has an incomplete name constraint.`);
+  }
+  if (field.pattern.includes('/')) {
+    throw new EmitError(`Spec field ${field.name} has a pattern with a slash: ${field.pattern}`);
+  }
+  return `type(/${field.pattern}/).and(${quote(`string <= ${field.maxLength}`)})`;
+}
+
 function arktype(fields: readonly SpecField[]): string {
-  return `type({ ${fields.map((field) => `${key(field.name)}: ${quote(field.kind)}`).join(', ')} })`;
+  return `type({ ${fields.map((field) => `${key(field.name)}: ${fieldType(field)}`).join(', ')} })`;
 }
 
 const READINESS: Readonly<Record<string, (id: string) => string>> = {
