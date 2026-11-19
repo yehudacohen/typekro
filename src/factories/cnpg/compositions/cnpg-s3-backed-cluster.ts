@@ -58,8 +58,8 @@ export const cnpgS3BackedCluster: CallableComposition<
     status: CnpgS3BackedClusterStatusSchema,
   },
   (spec: CnpgS3BackedClusterConfig) => {
-    BARMAN_CLOUD_BUCKET_CONSTRAINT.check(spec.bucket);
-    BARMAN_CLOUD_PREFIX_CONSTRAINT.check(spec.prefix);
+    BARMAN_CLOUD_BUCKET_CONSTRAINT.enforce(spec.bucket);
+    BARMAN_CLOUD_PREFIX_CONSTRAINT.enforce(spec.prefix);
 
     const objectStoreName = Cel.template('%s-backups', spec.name);
     const store = objectStore({

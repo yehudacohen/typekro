@@ -263,7 +263,7 @@ import {
 
 // Install the plugin next to the operator.
 const plugin = barmanCloudPluginBootstrap.factory('direct', { namespace: 'cnpg-system' });
-await plugin.deploy({ name: 'barman-cloud', namespace: 'cnpg-system' });
+await plugin.deploy({ name: 'barman-cloud', namespace: 'cnpg-system', version: '0.9.0' });
 
 // An S3 object store. Credentials come only from the pod's workload identity.
 const store = objectStore({
@@ -326,11 +326,15 @@ whose recovery windows the plugin has recorded.
 
 | Composition | Creates | Enforced in both modes |
 |-------------|---------|------------------------|
-| `barmanCloudPluginBootstrap` | HelmRepository, plugin HelmRelease | `version` is the pinned chart version |
-| `cnpgS3BackedCluster` | ObjectStore, Cluster, ScheduledBackup | `bucket` is an S3 bucket name; `prefix` is non-empty; no credential inputs |
+| `barmanCloudPluginBootstrap` | HelmRepository, plugin HelmRelease | `version` is required and is the pinned chart version |
+| `cnpgS3BackedCluster` | ObjectStore, Cluster, ScheduledBackup | `bucket` is a required S3 bucket name; `prefix` is required and non-empty; no credential inputs |
 
-In KRO mode the instance schema carries each constraint as an `enum` or `pattern`, so the API
-server refuses a bad instance before KRO creates anything.
+In KRO mode the instance schema carries each constraint as an `enum` or `pattern` with
+`required=true`, so the API server refuses a bad or missing value before KRO creates anything.
+A composition that composes one of these and passes its own spec field as `version`, `bucket` or
+`prefix` declares that field, as a required key, with `BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type`,
+`BARMAN_CLOUD_BUCKET_CONSTRAINT.type` or `BARMAN_CLOUD_PREFIX_CONSTRAINT.type`. Any other
+reference is refused when the composition is built, because nothing would check it.
 
 ```typescript
 const factory = cnpgS3BackedCluster.factory('kro', { namespace: 'databases' });

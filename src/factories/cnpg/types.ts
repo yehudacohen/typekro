@@ -772,15 +772,16 @@ const dnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
 
 /**
  * Inputs of `barmanCloudPluginBootstrap`, which installs the plugin from its official chart.
- * `namespace` must be the CloudNativePG operator's namespace. `version` may only be the pinned
- * chart version.
+ * `namespace` must be the CloudNativePG operator's namespace. `version` is required and may only
+ * be the pinned chart version, `BARMAN_CLOUD_PLUGIN_CHART_VERSION`.
  */
 export const BarmanCloudPluginBootstrapConfigSchema = type({
   /** Release name. */
   name: dnsLabel,
   /** The CloudNativePG operator's namespace. @default 'cnpg-system' */
   'namespace?': dnsLabel,
-  'version?': BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type,
+  /** The pinned chart version, `BARMAN_CLOUD_PLUGIN_CHART_VERSION`. */
+  version: BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type,
   /** Extra chart values, layered over the chart defaults. */
   'values?': 'Record<string, unknown>',
 });

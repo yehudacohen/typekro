@@ -4,11 +4,7 @@ import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
-import {
-  BARMAN_CLOUD_PLUGIN_CHART_VERSION,
-  DEFAULT_CNPG_NAMESPACE,
-  DEFAULT_CNPG_REPOSITORY_NAME,
-} from '../constants.js';
+import { DEFAULT_CNPG_NAMESPACE, DEFAULT_CNPG_REPOSITORY_NAME } from '../constants.js';
 import { barmanCloudPluginHelmRelease } from '../resources/barman-cloud-plugin-helm.js';
 import { cnpgHelmRepository } from '../resources/helm.js';
 import {
@@ -21,8 +17,9 @@ import { BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT } from '../utils/barman-cloud-co
 
 // The plugin needs CloudNativePG 1.30 or later, must run in the operator's namespace (the
 // operator only discovers plugins there), and its chart issues TLS certificates with
-// cert-manager. `version` may only be the pinned chart version: the instance schema's enum
-// refuses another one at KRO admission, and the body refuses it in direct mode.
+// cert-manager. `version` is required and may only be the pinned chart version: the instance
+// schema's enum and `required=true` refuse another one or none at KRO admission, and the body
+// refuses it in direct mode, or a reference to a field that doesn't carry the constraint.
 
 /**
  * Installs the CloudNativePG Barman Cloud plugin from the official chart, pinned at 0.9.0
@@ -41,7 +38,7 @@ export const barmanCloudPluginBootstrap: CallableComposition<
     status: BarmanCloudPluginBootstrapStatusSchema,
   },
   (spec: BarmanCloudPluginBootstrapConfig) => {
-    BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.check(spec.version);
+    BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.enforce(spec.version);
 
     const repository = cnpgHelmRepository({
       name: DEFAULT_CNPG_REPOSITORY_NAME,
@@ -52,7 +49,7 @@ export const barmanCloudPluginBootstrap: CallableComposition<
     const release = barmanCloudPluginHelmRelease({
       name: spec.name,
       namespace: Cel.default(spec.namespace, DEFAULT_CNPG_NAMESPACE),
-      version: Cel.default(spec.version, BARMAN_CLOUD_PLUGIN_CHART_VERSION),
+      version: spec.version,
       repositoryName: DEFAULT_CNPG_REPOSITORY_NAME,
       ...(spec.values !== undefined && { values: spec.values }),
       id: 'barmanCloudPluginHelmRelease',

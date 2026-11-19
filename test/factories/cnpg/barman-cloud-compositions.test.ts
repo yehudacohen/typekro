@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'bun:test';
 import { join } from 'node:path';
+import { type Type, type } from 'arktype';
 import yaml from 'js-yaml';
+import { TypeKroError } from '../../../src/core/errors.js';
 import {
+  BARMAN_CLOUD_BUCKET_CONSTRAINT,
   BARMAN_CLOUD_PLUGIN_NAME,
+  BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT,
+  BARMAN_CLOUD_PREFIX_CONSTRAINT,
   barmanCloudPluginBootstrap,
   cnpgS3BackedCluster,
 } from '../../../src/factories/cnpg/index.js';
+import { Cel, kubernetesComposition } from '../../../src/index.js';
 import { crdSchemaFromJson, crdSchemaFromYaml, crdSpecErrors } from '../../utils/crd-schema.js';
 import { admissionErrors } from '../../utils/kro-admission.js';
 
@@ -34,7 +40,7 @@ const clusterSpec = {
   schedule: '0 0 2 * * *',
 };
 
-const pluginSpec = { name: 'barman-cloud', namespace: 'cnpg-system' };
+const pluginSpec = { name: 'barman-cloud', namespace: 'cnpg-system', version: '0.9.0' as const };
 
 async function clusterManifests(input: Record<string, unknown> = clusterSpec) {
   const factory = await cnpgS3BackedCluster.factory('direct', { namespace: 'databases' });
@@ -66,10 +72,12 @@ describe('barmanCloudPluginBootstrap (direct mode)', () => {
     expect(release.spec.values).toEqual({ crds: { create: true } });
   });
 
-  it('refuses any chart version but the pinned one', async () => {
+  it('refuses any chart version but the pinned one, or none', async () => {
     await expect(pluginManifests({ ...pluginSpec, version: '0.8.1' })).rejects.toThrow(
       'pinned at 0.9.0'
     );
+    const { version: _omitted, ...withoutVersion } = pluginSpec;
+    await expect(pluginManifests(withoutVersion)).rejects.toThrow();
   });
 });
 
@@ -166,11 +174,12 @@ const rgdOf = (composition: { toYaml(): string }): Rgd => {
 describe('barmanCloudPluginBootstrap (KRO admission)', () => {
   const yamlText = barmanCloudPluginBootstrap.toYaml();
 
-  it('admits the pinned version, or none', () => {
+  it('admits the pinned version and refuses an instance with none', () => {
     expect(admissionErrors(yamlText, 'BarmanCloudPluginBootstrap', pluginSpec)).toEqual([]);
-    expect(
-      admissionErrors(yamlText, 'BarmanCloudPluginBootstrap', { ...pluginSpec, version: '0.9.0' })
-    ).toEqual([]);
+    const { version: _omitted, ...withoutVersion } = pluginSpec;
+    expect(admissionErrors(yamlText, 'BarmanCloudPluginBootstrap', withoutVersion)).toEqual([
+      'spec.version: Required value',
+    ]);
   });
 
   it('refuses another chart version at admission, where the body check never runs', () => {
@@ -186,6 +195,13 @@ describe('cnpgS3BackedCluster (KRO admission)', () => {
 
   it('admits a complete instance', () => {
     expect(admissionErrors(yamlText, kind, clusterSpec)).toEqual([]);
+  });
+
+  it('refuses an instance without a bucket or prefix', () => {
+    const { bucket: _bucket, ...withoutBucket } = clusterSpec;
+    const { prefix: _prefix, ...withoutPrefix } = clusterSpec;
+    expect(admissionErrors(yamlText, kind, withoutBucket)).toEqual(['spec.bucket: Required value']);
+    expect(admissionErrors(yamlText, kind, withoutPrefix)).toEqual(['spec.prefix: Required value']);
   });
 
   it('refuses an empty bucket or prefix', () => {
@@ -215,5 +231,105 @@ describe('cnpgS3BackedCluster (KRO admission)', () => {
     expect(store?.template.spec?.configuration.destinationPath).toBe(
       's3://${schema.spec.bucket}/${schema.spec.prefix}'
     );
+  });
+});
+
+describe('the Barman Cloud compositions composed inside another composition', () => {
+  const status = type({ ready: 'boolean' });
+
+  /** The code of the innermost TypeKroError `run` throws, through composition wrappers. */
+  function refusalCode(run: () => unknown): string | undefined {
+    try {
+      run();
+    } catch (error) {
+      let code: string | undefined;
+      for (let cause: unknown = error; cause instanceof Error; cause = cause.cause) {
+        if (cause instanceof TypeKroError) code = cause.code;
+      }
+      return code ?? `untyped: ${String(error)}`;
+    }
+    return undefined;
+  }
+
+  /** Define and serialize a composition that composes the plugin install with `pick(spec)`. */
+  const plugin = (schema: Type<object>, pick: (spec: never) => unknown) => () =>
+    kubernetesComposition(
+      { name: 'platform-backups', kind: 'PlatformBackups', spec: schema, status },
+      (spec) => {
+        barmanCloudPluginBootstrap({
+          name: 'barman-cloud',
+          version: pick(spec as never) as '0.9.0',
+        });
+        return { ready: true };
+      }
+    ).toYaml();
+
+  /** Define and serialize a composition that composes the cluster with `bucket` and `prefix`. */
+  const cluster =
+    (schema: Type<object>, pick: (spec: never) => { bucket: unknown; prefix: unknown }) => () =>
+      kubernetesComposition(
+        { name: 'platform-db', kind: 'PlatformDb', spec: schema, status },
+        (spec) => {
+          const { bucket, prefix } = pick(spec as never);
+          cnpgS3BackedCluster({
+            ...clusterSpec,
+            bucket: bucket as string,
+            prefix: prefix as string,
+          });
+          return { ready: true };
+        }
+      ).toYaml();
+
+  const fromField = (spec: { value: unknown }) => spec.value;
+
+  it('accepts concrete values, or required fields declared with the constraint types', () => {
+    expect(refusalCode(plugin(type({ name: 'string' }), () => '0.9.0'))).toBeUndefined();
+    expect(
+      refusalCode(plugin(type({ value: BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type }), fromField))
+    ).toBeUndefined();
+    expect(
+      refusalCode(
+        cluster(
+          type({
+            bucket: BARMAN_CLOUD_BUCKET_CONSTRAINT.type,
+            prefix: BARMAN_CLOUD_PREFIX_CONSTRAINT.type,
+          }),
+          (spec: { bucket: unknown; prefix: unknown }) => spec
+        )
+      )
+    ).toBeUndefined();
+  });
+
+  it('refuses at build time a version from a field that does not carry the constraint', () => {
+    const unguarded: [Type<object>, (spec: never) => unknown][] = [
+      [type({ value: 'string' }), fromField],
+      [type({ 'value?': BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type }), fromField],
+      [
+        type({ value: BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type }),
+        (spec: { value: unknown }) => Cel.expr('has(', spec.value, ') ? ', spec.value, " : ''"),
+      ],
+      [type({ name: 'string' }), () => '0.8.1'],
+    ];
+    for (const [schema, pick] of unguarded) {
+      expect(refusalCode(plugin(schema, pick))).toBe('CNPG_BARMAN_CLOUD_CHART_VERSION_MISMATCH');
+    }
+  });
+
+  it('refuses at build time a bucket or prefix from a field that does not carry the constraint', () => {
+    const guardedPrefix = BARMAN_CLOUD_PREFIX_CONSTRAINT.type;
+    const guardedBucket = BARMAN_CLOUD_BUCKET_CONSTRAINT.type;
+    const both = (spec: { bucket: unknown; prefix: unknown }) => spec;
+    for (const schema of [
+      type({ bucket: 'string', prefix: guardedPrefix }),
+      type({ 'bucket?': guardedBucket, prefix: guardedPrefix }),
+    ]) {
+      expect(refusalCode(cluster(schema, both))).toBe('CNPG_BARMAN_CLOUD_BUCKET_INVALID');
+    }
+    for (const schema of [
+      type({ bucket: guardedBucket, prefix: 'string' }),
+      type({ bucket: guardedBucket, 'prefix?': guardedPrefix }),
+    ]) {
+      expect(refusalCode(cluster(schema, both))).toBe('CNPG_BARMAN_CLOUD_PREFIX_INVALID');
+    }
   });
 });
