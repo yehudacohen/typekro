@@ -11,6 +11,7 @@ import {
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ScheduledBackupConfig, ScheduledBackupStatus } from '../types.js';
+import { assertPluginBackupConfigured } from '../utils/barman-cloud.js';
 
 /** Base condition-based evaluator. */
 const baseEvaluator = createConditionBasedReadinessEvaluator({ kind: 'ScheduledBackup' });
@@ -72,6 +73,7 @@ registerPortableReadinessEvaluator(
 function createScheduledBackupResource(
   config: Composable<ScheduledBackupConfig>
 ): Enhanced<ScheduledBackupConfig['spec'], ScheduledBackupStatus> {
+  assertPluginBackupConfigured(config.spec, 'ScheduledBackup');
   return createResource(
     {
       apiVersion: 'postgresql.cnpg.io/v1',

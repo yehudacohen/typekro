@@ -8,6 +8,7 @@ import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/i
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 import type { BackupConfig, BackupStatus } from '../types.js';
+import { assertPluginBackupConfigured } from '../utils/barman-cloud.js';
 
 /**
  * Backup Readiness Evaluator
@@ -69,8 +70,10 @@ registerPortableReadinessEvaluator(
 /**
  * CloudNativePG Backup Factory
  *
- * Creates an on-demand backup of a PostgreSQL cluster. Supports both
- * barman object store and volume snapshot methods.
+ * Creates an on-demand backup of a PostgreSQL cluster, taken by a plugin such as
+ * Barman Cloud (`...barmanCloudBackupMethod()`), as a volume snapshot, or with the
+ * deprecated in-tree Barman object store. `method: 'plugin'` requires
+ * `pluginConfiguration`.
  *
  * @param config - Backup configuration following postgresql.cnpg.io/v1 API
  * @returns Enhanced Backup resource with readiness evaluation
@@ -82,7 +85,7 @@ registerPortableReadinessEvaluator(
  *   namespace: 'databases',
  *   spec: {
  *     cluster: { name: 'my-database' },
- *     method: 'barmanObjectStore',
+ *     ...barmanCloudBackupMethod(),
  *     target: 'prefer-standby',
  *   },
  *   id: 'manualBackup',
@@ -92,6 +95,7 @@ registerPortableReadinessEvaluator(
 function createBackupResource(
   config: Composable<BackupConfig>
 ): Enhanced<BackupConfig['spec'], BackupStatus> {
+  assertPluginBackupConfigured(config.spec, 'Backup');
   return createResource(
     {
       apiVersion: 'postgresql.cnpg.io/v1',

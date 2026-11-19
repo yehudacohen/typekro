@@ -11,9 +11,18 @@
  * - `pooler()` — PgBouncer connection pooling
  * - `cnpgHelmRepository()` — Helm chart repository
  * - `cnpgHelmRelease()` — Operator installation via Helm
+ * - `objectStore()` — Barman Cloud plugin `ObjectStore` for S3, workload identity only
+ * - `barmanCloudPluginHelmRelease()` — Barman Cloud plugin installation via Helm
+ *
+ * ## Barman Cloud plugin wiring
+ * - `barmanCloudPlugin()` — a `Cluster`'s `spec.plugins` entry for WAL archiving and backups
+ * - `barmanCloudBackupMethod()` — `method: plugin` for a `Backup` or `ScheduledBackup`
+ * - `barmanCloudRecovery()` — `bootstrap.recovery` and `externalClusters` to restore a cluster
  *
  * ## Compositions
  * - `cnpgBootstrap` — Complete operator deployment (namespace + Helm repo + release)
+ * - `barmanCloudPluginBootstrap` — Barman Cloud plugin, pinned chart, in the operator namespace
+ * - `cnpgS3BackedCluster` — `ObjectStore` + `Cluster` archiving to it + `ScheduledBackup`
  *
  * @example
  * ```typescript
@@ -36,6 +45,7 @@
  * @module
  */
 export * from './compositions/index.js';
+export * from './constants.js';
 export * from './resources/index.js';
 export * from './types.js';
 export * from './utils/index.js';
