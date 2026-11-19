@@ -4,12 +4,11 @@
  * This module provides a workaround for Bun's fetch TLS issues:
  * https://github.com/oven-sh/bun/issues/10642
  *
- * The issue: Bun intercepts node-fetch and uses its native fetch implementation,
- * which doesn't properly support https.Agent for TLS configuration (client certificates,
- * skipTLSVerify, etc.).
+ * The issue: Bun's fetch doesn't reliably honor the TLS configuration (client certificates,
+ * skipTLSVerify, etc.) the client passes through its HTTP agent or undici dispatcher.
  *
- * The solution: Extract TLS options from the https.Agent and pass them directly
- * to https.request instead of using the agent.
+ * The solution: Read the TLS options from the KubeConfig (`applyToHTTPSOptions`) and pass them
+ * directly to https.request.
  */
 
 import * as http from 'node:http';
@@ -79,20 +78,11 @@ export interface HttpTimeoutConfig {
   delete?: number;
 }
 
-/**
- * TLS-related options extracted from an https.Agent at runtime.
- * Node.js stores these on agent.options but it's not part of the public type.
- */
-export interface AgentTlsOptions {
-  rejectUnauthorized?: boolean;
-  cert?: string | Buffer;
-  key?: string | Buffer;
-  ca?: string | Buffer | Array<string | Buffer>;
-  pfx?: string | Buffer;
-  passphrase?: string;
-  servername?: string;
-  ciphers?: string;
-}
+/** TLS options KubeConfig puts on `https.RequestOptions` in `applyToHTTPSOptions`. */
+export type AgentTlsOptions = Pick<
+  https.RequestOptions,
+  'rejectUnauthorized' | 'cert' | 'key' | 'ca' | 'pfx' | 'passphrase' | 'servername' | 'ciphers'
+>;
 
 /**
  * The transport dropped before the response was complete.
@@ -131,11 +121,15 @@ export class PrematureCloseError extends RequestTimeoutError {
   }
 }
 
-/** Extract the TLS material KubeConfig placed on an https.Agent. */
-export function extractAgentTlsOptions(agent: unknown): AgentTlsOptions {
-  return agent && typeof agent === 'object' && 'options' in agent
-    ? (Reflect.get(agent, 'options') as AgentTlsOptions)
-    : {};
+/** The TLS material in request options that `KubeConfig.applyToHTTPSOptions` filled in. */
+export function requestTlsOptions(options: https.RequestOptions): AgentTlsOptions {
+  const { rejectUnauthorized, cert, key, ca, pfx, passphrase, servername, ciphers } = options;
+  return { rejectUnauthorized, cert, key, ca, pfx, passphrase, servername, ciphers };
+}
+
+/** The part of a KubeConfig the library reads TLS options from. */
+export interface TlsOptionsSource {
+  applyToHTTPSOptions(options: https.RequestOptions): Promise<void>;
 }
 
 /**
@@ -170,11 +164,15 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
   private timeouts: Required<HttpTimeoutConfig>;
   private logger = getComponentLogger('bun-http-library');
 
+  private tlsSource: TlsOptionsSource | undefined;
+
   /**
    * Create a new BunCompatibleHttpLibrary with optional custom timeout configuration
    * @param timeoutConfig - Optional custom timeout values for different operation types
+   * @param tlsSource - The KubeConfig whose cluster and user TLS settings each request uses
    */
-  constructor(timeoutConfig?: HttpTimeoutConfig) {
+  constructor(timeoutConfig?: HttpTimeoutConfig, tlsSource?: TlsOptionsSource) {
+    this.tlsSource = tlsSource;
     this.timeouts = {
       ...DEFAULT_TIMEOUTS,
       ...timeoutConfig,
@@ -193,8 +191,18 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
   }
 
   public send(request: RequestContext): Observable<ResponseContext> {
-    const resultPromise = this.makeRequest(request);
-    return from(resultPromise);
+    return from(this.resolveTls().then((tls) => this.makeRequest(request, tls)));
+  }
+
+  /**
+   * TLS options from the KubeConfig. The client no longer exposes them on the request (since
+   * @kubernetes/client-node 2.0 they live in an undici dispatcher), so they are read here.
+   */
+  private async resolveTls(): Promise<AgentTlsOptions> {
+    if (!this.tlsSource) return {};
+    const options: https.RequestOptions = {};
+    await this.tlsSource.applyToHTTPSOptions(options);
+    return requestTlsOptions(options);
   }
 
   /**
@@ -230,7 +238,10 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     }
   }
 
-  private makeRequest(request: RequestContext): Promise<ResponseContext> {
+  private makeRequest(
+    request: RequestContext,
+    agentOptions: AgentTlsOptions
+  ): Promise<ResponseContext> {
     return new Promise((resolve, reject) => {
       const url = new URL(request.getUrl());
       const method = request.getHttpMethod();
@@ -244,14 +255,8 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       const shouldSetTimeout =
         !url.toString().includes('?watch=true') && !url.toString().includes('&watch=true');
 
-      const agent = request.getAgent();
       const headers = request.getHeaders();
       const body = request.getBody();
-
-      // Extract TLS options from the agent if present
-      // This is the key workaround for Bun's https.Agent issues
-      // Node.js stores constructor options on agent.options (not in public types)
-      const agentOptions = extractAgentTlsOptions(agent);
 
       const options: https.RequestOptions = {
         hostname: url.hostname,

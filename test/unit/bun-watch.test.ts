@@ -97,4 +97,38 @@ describe('BunCompatibleWatch', () => {
     expect(watchErrorMessage(error)).toContain('Forbidden');
     expect(watchErrorMessage(error)).toContain('denied');
   });
+
+  it('sends the TLS material KubeConfig puts on the request options', async () => {
+    const kubeConfig = {
+      getCurrentCluster: () => ({ name: 'test', server: 'https://kubernetes.test' }),
+      applyToHTTPSOptions: async (options: Record<string, unknown>) => {
+        Object.assign(options, {
+          ca: 'cluster-ca',
+          cert: 'client-cert',
+          key: 'client-key',
+          rejectUnauthorized: false,
+          headers: { authorization: 'Bearer test-token' },
+        });
+      },
+    } as unknown as k8s.KubeConfig;
+    let sent: Record<string, unknown> | undefined;
+    const watch = new BunCompatibleWatch(
+      kubeConfig,
+      requestFactory(200, '', (options) => {
+        sent = options;
+      })
+    );
+
+    await new Promise<unknown>((resolve) => {
+      void watch.watch('/api/v1/namespaces/default/events', {}, () => {}, resolve);
+    });
+
+    expect(sent).toMatchObject({
+      ca: 'cluster-ca',
+      cert: 'client-cert',
+      key: 'client-key',
+      rejectUnauthorized: false,
+      agent: false,
+    });
+  });
 });

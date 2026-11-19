@@ -104,7 +104,7 @@ export function createBunCompatibleApiClient<T extends k8s.ApiType>(
   const config = clientNode.createConfiguration({
     baseServer: baseServerConfig,
     authMethods: authConfig,
-    httpApi: new BunCompatibleHttpLibrary(timeoutConfig),
+    httpApi: new BunCompatibleHttpLibrary(timeoutConfig, kubeConfig),
   });
 
   logger.debug('Created Bun-compatible API client', {
@@ -506,7 +506,7 @@ export function createBunCompatibleKubernetesObjectApi(
   const config = clientNode.createConfiguration({
     baseServer: baseServerConfig,
     authMethods: authConfig,
-    httpApi: new BunCompatibleHttpLibrary(timeoutConfig),
+    httpApi: new BunCompatibleHttpLibrary(timeoutConfig, kubeConfig),
   });
 
   const client = new SchemaPreservingKubernetesObjectApi(config);

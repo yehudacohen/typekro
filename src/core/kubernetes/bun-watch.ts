@@ -2,7 +2,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import type * as k8s from '@kubernetes/client-node';
 import { ensureError } from '../errors.js';
-import { extractAgentTlsOptions, isBunRuntime } from './bun-http-library.js';
+import { isBunRuntime, requestTlsOptions } from './bun-http-library.js';
 import { getKubernetesClientNode } from './client-node-runtime.js';
 
 export interface KubernetesWatch {
@@ -37,12 +37,11 @@ function watchCompletionError(message: string, name: 'AbortError' | 'TimeoutErro
 /**
  * Streaming Kubernetes watch transport for Bun.
  *
- * The upstream Watch uses node-fetch and passes client certificates through an
- * https.Agent. Bun's fetch compatibility layer does not reliably honor that
- * agent, which turns an authenticated kubeconfig into `system:anonymous`.
- * This implementation applies KubeConfig authentication, extracts the TLS
- * material, and sends it directly through node:https like the ordinary Bun API
- * transport.
+ * The upstream Watch passes client certificates through its fetch transport.
+ * Bun's fetch compatibility layer does not reliably honor them, which turns an
+ * authenticated kubeconfig into `system:anonymous`. This implementation applies
+ * KubeConfig authentication, takes the TLS material from the request options,
+ * and sends it directly through node:https like the ordinary Bun API transport.
  */
 export class BunCompatibleWatch implements KubernetesWatch {
   constructor(
@@ -67,7 +66,7 @@ export class BunCompatibleWatch implements KubernetesWatch {
 
     const authenticatedOptions: https.RequestOptions = { headers: {} };
     await this.kubeConfig.applyToHTTPSOptions(authenticatedOptions);
-    const tls = extractAgentTlsOptions(authenticatedOptions.agent);
+    const tls = requestTlsOptions(authenticatedOptions);
     let completed = false;
     let aborted = false;
     const doneOnce = (error: unknown) => {

@@ -5,6 +5,7 @@ import {
   getHttpLibraryForRuntime,
   isBunRuntime,
   PrematureCloseError,
+  requestTlsOptions,
 } from '../../../src/core/kubernetes/bun-http-library.js';
 import { isRequestTimeoutError } from '../../../src/core/deployment/poll-timeout.js';
 import { classifyApiReadError } from '../../../src/core/deployment/k8s-helpers.js';
@@ -535,3 +536,67 @@ describe('BunCompatibleHttpLibrary premature close', () => {
     }
   });
 });
+
+describe('BunCompatibleHttpLibrary TLS source', () => {
+  it('keeps only the TLS fields of request options', () => {
+    expect(
+      requestTlsOptions({
+        ca: 'cluster-ca',
+        cert: 'client-cert',
+        key: 'client-key',
+        rejectUnauthorized: false,
+        servername: 'kubernetes.test',
+        headers: { authorization: 'Bearer token' },
+        hostname: 'kubernetes.test',
+      })
+    ).toEqual({
+      ca: 'cluster-ca',
+      cert: 'client-cert',
+      key: 'client-key',
+      rejectUnauthorized: false,
+      servername: 'kubernetes.test',
+      pfx: undefined,
+      passphrase: undefined,
+      ciphers: undefined,
+    });
+  });
+
+  // Since @kubernetes/client-node 2.0 the request carries an undici dispatcher rather than an
+  // https.Agent, so the TLS options come from the KubeConfig on every request.
+  it('reads TLS options from the KubeConfig for each request', async () => {
+    const http = await import('node:http');
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    let reads = 0;
+    const tlsSource = {
+      applyToHTTPSOptions: async (options: { rejectUnauthorized?: boolean }) => {
+        reads += 1;
+        options.rejectUnauthorized = false;
+      },
+    };
+
+    try {
+      const library = new BunCompatibleHttpLibrary({ default: 5000 }, tlsSource);
+      const request = {
+        getUrl: () => `http://127.0.0.1:${port}/api/v1/namespaces/demo`,
+        getHttpMethod: () => 'GET',
+        getHeaders: () => ({}),
+        getBody: () => undefined,
+        getSignal: () => undefined,
+      };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await library.send(request as never).toPromise();
+        expect(response?.httpStatusCode).toBe(200);
+      }
+      expect(reads).toBe(2);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
