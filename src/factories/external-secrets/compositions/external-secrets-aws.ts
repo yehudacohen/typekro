@@ -1,6 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import {
   DEFAULT_EXTERNAL_SECRETS_CHART_VERSION,
@@ -12,6 +13,7 @@ import { clusterSecretStore } from '../resources/secret-store.js';
 import {
   type ExternalSecretsAwsConfig,
   ExternalSecretsAwsConfigSchema,
+  type ExternalSecretsAwsStatus,
   ExternalSecretsAwsStatusSchema,
 } from '../types.js';
 import { mapExternalSecretsConfigToHelmValues } from '../utils/helm-values-mapper.js';
@@ -37,7 +39,10 @@ import { mapExternalSecretsConfigToHelmValues } from '../utils/helm-values-mappe
  * });
  * ```
  */
-export const externalSecretsAws = kubernetesComposition(
+export const externalSecretsAws: CallableComposition<
+  ExternalSecretsAwsConfig,
+  ExternalSecretsAwsStatus
+> = kubernetesComposition(
   {
     name: 'external-secrets-aws',
     kind: 'ExternalSecretsAws',

@@ -113,6 +113,12 @@
       ]
     },
     {
+      "owner": "external-secrets",
+      "paths": [
+        "factories/external-secrets/**"
+      ]
+    },
+    {
       "owner": "gateway-api",
       "paths": [
         "factories/gateway-api/**"

@@ -11,6 +11,7 @@
   "pooledOwners": [
     "aws-load-balancer-controller",
     "crowdsec",
+    "external-secrets",
     "karpenter",
     "keda",
     "vpa"
