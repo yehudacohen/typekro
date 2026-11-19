@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'bun:test';
-
-import * as root from '../../../src/index.js';
 import * as karpenter from '../../../src/factories/karpenter/index.js';
+import * as root from '../../../src/index.js';
 
 describe('typekro/karpenter exports', () => {
   it('exports the compositions, factories, helpers and constants', () => {
     expect(karpenter.karpenterBootstrap).toBeDefined();
     expect(karpenter.makeKarpenterBootstrap).toBeTypeOf('function');
+    expect(karpenter.karpenterSpotPool).toBeDefined();
+    expect(karpenter.karpenterControllerResources).toBeTypeOf('function');
+    expect(karpenter.assertPinnedAmiAlias).toBeTypeOf('function');
     expect(karpenter.karpenterHelmRepositoryBootstrap).toBeDefined();
     expect(karpenter.nodePool).toBeTypeOf('function');
     expect(karpenter.ec2NodeClass).toBeTypeOf('function');
@@ -18,7 +20,7 @@ describe('typekro/karpenter exports', () => {
     expect(karpenter.validateNodePoolSpec).toBeTypeOf('function');
     expect(karpenter.validateEC2NodeClassSpec).toBeTypeOf('function');
     expect(karpenter.validateKarpenterBootstrapConfig).toBeTypeOf('function');
-    expect(karpenter.DEFAULT_KARPENTER_CHART_VERSION).toBe('1.14.1');
+    expect(karpenter.DEFAULT_KARPENTER_CHART_VERSION).toBe('1.15.2');
     expect(karpenter.DEFAULT_KARPENTER_REPOSITORY_URL).toBe('oci://public.ecr.aws/karpenter');
     expect(karpenter.KARPENTER_LABELS.capacityType).toBe('karpenter.sh/capacity-type');
   });

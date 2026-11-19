@@ -1,4 +1,4 @@
-// Karpenter Helm values mapping for the `karpenter` chart 1.14.1.
+// Karpenter Helm values mapping for the `karpenter` chart 1.15.2.
 //
 // Every spec field may be a schema reference in KRO mode, so the mapper only
 // places values into the tree and never branches on them. Defaults go through

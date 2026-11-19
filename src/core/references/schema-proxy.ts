@@ -473,6 +473,15 @@ export function declaredSchemaFields(ref: KubernetesRef<unknown>): ReadonlySet<s
 }
 
 /**
+ * The ArkType JSON node a schema reference's field is declared with, or `undefined` when that
+ * is unknown: a reference that is not into the schema, a list item, or a field reached without
+ * the schema threaded through.
+ */
+export function declaredSchemaNode(ref: KubernetesRef<unknown>): unknown {
+  return isSchemaReference(ref) ? Reflect.get(ref, SCHEMA_NODE) : undefined;
+}
+
+/**
  * Whether a schema reference is declared as an integer or a float, as KRO's
  * SimpleSchema will type it (`'number.integer'` is `integer`, a plain
  * `'number'` is `float`), or `undefined` when that is unknown: a reference that

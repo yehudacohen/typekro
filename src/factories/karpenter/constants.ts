@@ -1,7 +1,7 @@
 // Karpenter factory constants.
 //
-// Verified against the official charts `karpenter` and `karpenter-crd` 1.14.1
-// (appVersion `1.14.1`) published at `oci://public.ecr.aws/karpenter`.
+// Verified against the official charts `karpenter` and `karpenter-crd` 1.15.2
+// (appVersion `1.15.2`) published at `oci://public.ecr.aws/karpenter`.
 //
 // @see https://karpenter.sh/docs/upgrading/upgrade-guide/#crd-upgrades
 
@@ -13,7 +13,7 @@ export const KARPENTER_AWS_API_VERSION = 'karpenter.k8s.aws/v1';
 export const KARPENTER_AWS_GROUP = 'karpenter.k8s.aws';
 
 /** Pinned chart version, used for both `karpenter-crd` and `karpenter`. */
-export const DEFAULT_KARPENTER_CHART_VERSION = '1.14.1';
+export const DEFAULT_KARPENTER_CHART_VERSION = '1.15.2';
 /** Controller chart name inside the OCI registry. */
 export const KARPENTER_CHART_NAME = 'karpenter';
 /** CRD chart name inside the OCI registry. */
