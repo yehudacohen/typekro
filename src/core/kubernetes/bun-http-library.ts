@@ -132,6 +132,115 @@ export interface TlsOptionsSource {
   applyToHTTPSOptions(options: https.RequestOptions): Promise<void>;
 }
 
+/** What bounds a TLS-source read: the time it may take, the caller's signal, and what it was for. */
+export interface TlsSourceDeadline {
+  /** How long the read may take, in milliseconds. */
+  timeoutMs: number;
+  /** The caller's signal. An aborted signal settles the read at once. */
+  signal?: AbortSignal | undefined;
+  /** What the read was for (e.g. `GET /api/v1/namespaces`), for the timeout message. */
+  operation: string;
+}
+
+/** The error an aborted signal settles with: its own reason, or a standard AbortError. */
+export function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
+}
+
+/**
+ * Fill `options` from the TLS source, within a deadline.
+ *
+ * `KubeConfig.applyToHTTPSOptions()` can run an exec credential plugin or an auth provider, and
+ * either can stall: a plugin waiting on an interactive login, a hung cloud CLI, an unreachable
+ * token endpoint. It takes no signal, so it cannot be cancelled. Instead, the caller stops waiting
+ * on it: the returned promise rejects with a {@link RequestTimeoutError} once `timeoutMs` passes,
+ * or with the abort reason as soon as `signal` aborts. An already-aborted signal rejects without
+ * calling the source at all.
+ */
+export function applyTlsSourceWithin(
+  source: TlsOptionsSource,
+  options: https.RequestOptions,
+  deadline: TlsSourceDeadline
+): Promise<void> {
+  const { timeoutMs, signal, operation } = deadline;
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
+    let settled = false;
+    const onAbort = () => finish(() => reject(signal ? abortReason(signal) : undefined));
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      settle();
+    };
+    const timer = setTimeout(
+      () =>
+        finish(() =>
+          reject(
+            new RequestTimeoutError(
+              `HTTP request timeout: ${operation} timed out after ${timeoutMs}ms while reading ` +
+                `the kubeconfig credentials, before the request was sent.\n` +
+                `\n` +
+                `💡 Possible causes:\n` +
+                `  • An exec credential plugin (e.g. a cloud CLI) is hanging or waiting for input\n` +
+                `  • An auth provider cannot reach its token endpoint\n` +
+                `\n` +
+                `✅ Solutions:\n` +
+                `  • Run the kubeconfig's credential command by hand and check that it returns\n` +
+                `  • Refresh the login it depends on, then retry`,
+              timeoutMs
+            )
+          )
+        ),
+      timeoutMs
+    );
+    signal?.addEventListener('abort', onAbort, { once: true });
+    let pending: Promise<void>;
+    try {
+      pending = source.applyToHTTPSOptions(options);
+    } catch (error) {
+      finish(() => reject(error));
+      return;
+    }
+    pending.then(
+      () => finish(resolve),
+      (error: unknown) => finish(() => reject(error))
+    );
+  });
+}
+
+/**
+ * The caller's AbortSignal, if the request carries one.
+ *
+ * Called ON the request: in @kubernetes/client-node >= 1.4 `RequestContext.getSignal()` is a
+ * prototype method that reads `this.signal`, so a detached call throws "undefined is not an
+ * object (evaluating 'this.signal')". (Before 1.4 the method did not exist, which is why a detached
+ * `getSignal?.()` used to be a harmless no-op.)
+ */
+function requestSignal(request: RequestContext): AbortSignal | undefined {
+  const getSignal = Reflect.get(request, 'getSignal') as
+    | ((this: unknown) => AbortSignal | undefined)
+    | undefined;
+  return typeof getSignal === 'function' ? getSignal.call(request) : undefined;
+}
+
+/** Watch requests are long-lived streams the API server ends (`timeoutSeconds`), not a timer. */
+function isWatchUrl(url: string): boolean {
+  return url.includes('?watch=true') || url.includes('&watch=true');
+}
+
+/** How long one request may take, and how much of that is left when the HTTP call starts. */
+interface RequestDeadline {
+  /** The whole budget for the request, reported in the timeout error. */
+  budgetMs: number;
+  /** What is left of the budget after the TLS options were read. Arms the HTTP timer. */
+  remainingMs: number;
+}
+
 /**
  * Default timeout values for Kubernetes API operations
  * Based on kubectl defaults and operation characteristics
@@ -191,18 +300,76 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
   }
 
   public send(request: RequestContext): Observable<ResponseContext> {
-    return from(this.resolveTls().then((tls) => this.makeRequest(request, tls)));
+    return from(this.sendWithinDeadline(request));
+  }
+
+  /**
+   * One deadline covers the whole request: reading the TLS options AND the HTTP call. Reading the
+   * options can run an exec credential plugin, so it is bounded too, and the HTTP call gets only
+   * what is left of the budget. The caller's signal is honoured in both phases, and an
+   * already-aborted signal fails before anything starts.
+   *
+   * Watch requests have no HTTP timer (the API server ends them), so only their TLS read is
+   * bounded, by the read timeout.
+   */
+  private async sendWithinDeadline(request: RequestContext): Promise<ResponseContext> {
+    const url = new URL(request.getUrl());
+    const method = request.getHttpMethod();
+    const signal = requestSignal(request);
+    if (signal?.aborted) throw abortReason(signal);
+
+    const watch = isWatchUrl(url.toString());
+    const budgetMs = watch
+      ? this.timeouts.default
+      : this.getTimeoutForRequest(method, url.toString());
+    const startedAt = Date.now();
+    const tls = await this.resolveTls(signal, budgetMs, `${method} ${url.pathname}`);
+    if (watch) return this.makeRequest(request, tls, signal, undefined);
+
+    const remainingMs = budgetMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) throw this.requestTimeoutError(method, url, budgetMs);
+    return this.makeRequest(request, tls, signal, { budgetMs, remainingMs });
   }
 
   /**
    * TLS options from the KubeConfig. The client no longer exposes them on the request (since
    * @kubernetes/client-node 2.0 they live in an undici dispatcher), so they are read here.
    */
-  private async resolveTls(): Promise<AgentTlsOptions> {
+  private async resolveTls(
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+    operation: string
+  ): Promise<AgentTlsOptions> {
     if (!this.tlsSource) return {};
     const options: https.RequestOptions = {};
-    await this.tlsSource.applyToHTTPSOptions(options);
+    await applyTlsSourceWithin(this.tlsSource, options, { timeoutMs, signal, operation });
     return requestTlsOptions(options);
+  }
+
+  /**
+   * A TYPED timeout (not a bare Error). The HTTP timer is armed synchronously as the request is
+   * issued, so with equal budgets it fires BEFORE any deadline wrapper around the call and is the
+   * error a caller actually sees. A gate that fails open on ordinary failures must be able to tell
+   * this apart from "the object does not exist". See `isRequestTimeoutError`.
+   */
+  private requestTimeoutError(method: string, url: URL, budgetMs: number): RequestTimeoutError {
+    return new RequestTimeoutError(
+      `HTTP request timeout: ${method} ${url.pathname} timed out after ${budgetMs}ms\n` +
+        `URL: ${url.toString()}\n` +
+        `\n` +
+        `💡 Possible causes:\n` +
+        `  • Kubernetes API server is not responding\n` +
+        `  • Admission webhooks are slow or unavailable\n` +
+        `  • Network connectivity issues\n` +
+        `  • Request is legitimately slow and timeout is too short\n` +
+        `\n` +
+        `✅ Solutions:\n` +
+        `  • Verify Kubernetes API server is running: kubectl cluster-info\n` +
+        `  • Check webhook status: kubectl get validatingwebhookconfigurations\n` +
+        `  • Increase timeout via httpTimeouts option if needed\n` +
+        `  • For watch operations: timeouts are disabled (API server controls via timeoutSeconds)`,
+      budgetMs
+    );
   }
 
   /**
@@ -218,7 +385,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     // Kubernetes API server via timeoutSeconds query parameter. Do NOT set
     // HTTP-level timeouts on watch connections as this interferes with the
     // EventMonitor's reconnection logic and causes AbortError issues.
-    if (url.includes('?watch=true') || url.includes('&watch=true')) {
+    if (isWatchUrl(url)) {
       return this.timeouts.watch;
     }
 
@@ -238,22 +405,21 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     }
   }
 
+  /**
+   * Issue the HTTP call. `deadline` is undefined for a watch, which gets no HTTP timer; otherwise
+   * the timer is armed with what is left of the request's budget.
+   */
   private makeRequest(
     request: RequestContext,
-    agentOptions: AgentTlsOptions
+    agentOptions: AgentTlsOptions,
+    signal: AbortSignal | undefined,
+    deadline: RequestDeadline | undefined
   ): Promise<ResponseContext> {
     return new Promise((resolve, reject) => {
       const url = new URL(request.getUrl());
       const method = request.getHttpMethod();
       const isHttps = url.protocol === 'https:';
       const httpModule = isHttps ? https : http;
-
-      // Determine appropriate timeout for this request
-      const timeoutMs = this.getTimeoutForRequest(method, url.toString());
-
-      // For watch operations, skip HTTP timeout entirely - let API server handle it
-      const shouldSetTimeout =
-        !url.toString().includes('?watch=true') && !url.toString().includes('&watch=true');
 
       const headers = request.getHeaders();
       const body = request.getBody();
@@ -393,37 +559,18 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
 
       // ⭐ SET HTTP REQUEST TIMEOUT (skip for watch operations)
       // This is critical for preventing requests from hanging indefinitely
-      // when the Kubernetes API server doesn't respond (webhooks, network issues)
+      // when the Kubernetes API server doesn't respond (webhooks, network issues).
+      // It gets what is left of the request's budget after the TLS options were read, so the two
+      // phases together never exceed the budget.
       // Watch operations are handled by the API server via timeoutSeconds parameter
-      if (shouldSetTimeout) {
+      if (deadline) {
         timeoutId = setTimeout(() => {
-          // A TYPED timeout (not a bare Error): this timer is armed synchronously as the request is
-          // issued, so with equal budgets it fires BEFORE any deadline wrapper around the call and
-          // is the error a caller actually sees. A gate that fails open on ordinary failures must be
-          // able to tell this apart from "the object does not exist". See `isRequestTimeoutError`.
-          const timeoutError = new RequestTimeoutError(
-            `HTTP request timeout: ${method} ${url.pathname} timed out after ${timeoutMs}ms\n` +
-              `URL: ${url.toString()}\n` +
-              `\n` +
-              `💡 Possible causes:\n` +
-              `  • Kubernetes API server is not responding\n` +
-              `  • Admission webhooks are slow or unavailable\n` +
-              `  • Network connectivity issues\n` +
-              `  • Request is legitimately slow and timeout is too short\n` +
-              `\n` +
-              `✅ Solutions:\n` +
-              `  • Verify Kubernetes API server is running: kubectl cluster-info\n` +
-              `  • Check webhook status: kubectl get validatingwebhookconfigurations\n` +
-              `  • Increase timeout via httpTimeouts option if needed\n` +
-              `  • For watch operations: timeouts are disabled (API server controls via timeoutSeconds)`,
-            timeoutMs
-          );
           // Settle BEFORE tearing the socket down: `req.destroy()` emits 'error'/'close', and the
           // caller must see the timeout — not the ECONNRESET our own abort produced. The latch makes
           // that teardown a no-op.
-          settle(() => reject(timeoutError));
+          settle(() => reject(this.requestTimeoutError(method, url, deadline.budgetMs)));
           req.destroy();
-        }, timeoutMs);
+        }, deadline.remainingMs);
 
         // Belt and braces for the pre-connect phase. The wall-clock timer above is armed
         // synchronously, so it already covers a DNS or TCP/TLS connect that never completes — but it
@@ -431,7 +578,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         // socket still stuck in connect. `setTimeout` on the request tears that socket down from the
         // inside. It is an IDLE timer, so on a live connection it can never fire before the wall
         // clock, which means it never shortens a legitimately slow request.
-        req.setTimeout(timeoutMs, () => {
+        req.setTimeout(deadline.remainingMs, () => {
           req.destroy();
         });
       }
@@ -445,14 +592,6 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // attached, growing the signal's listener list for the life of the operation. Detaching is
       // therefore done by the latch, which every terminal path goes through, with `{ once: true }`
       // kept as belt and braces for the firing case.
-      // Call it ON the request: in @kubernetes/client-node >= 1.4 `RequestContext.getSignal()` is a
-      // prototype method that reads `this.signal`, so a detached call throws "undefined is not an
-      // object (evaluating 'this.signal')" on every request. (Before 1.4 the method did not exist,
-      // which is why a detached `getSignal?.()` used to be a harmless no-op.)
-      const getSignal = Reflect.get(request, 'getSignal') as
-        | ((this: unknown) => AbortSignal | undefined)
-        | undefined;
-      const signal = typeof getSignal === 'function' ? getSignal.call(request) : undefined;
       if (signal) {
         const onAbort = () => {
           settle(() => reject(signal.reason ?? new Error('Request aborted')));
@@ -460,14 +599,11 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         };
         // An ALREADY-aborted signal never fires 'abort' again, so a listener alone silently misses
         // it and the request goes out anyway — the exact opposite of what the caller asked for.
-        // A signal is routinely already aborted by the time a request is issued: a converge-wide
-        // signal trips while an earlier call is in flight, and the next call in the queue is built
-        // against it. Reject up front and tear the half-built request down BEFORE `req.end()` puts
-        // any bytes on the wire.
+        // `send()` rejects a signal that was aborted before it started, but the signal can also
+        // trip while the TLS options are read. Reject up front and tear the half-built request down
+        // BEFORE `req.end()` puts any bytes on the wire.
         if (signal.aborted) {
-          settle(() =>
-            reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
-          );
+          settle(() => reject(abortReason(signal)));
           req.destroy();
         } else {
           signal.addEventListener('abort', onAbort, { once: true });
@@ -516,13 +652,16 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
  * returns undefined to use the default IsomorphicFetchHttpLibrary.
  *
  * @param timeoutConfig - Optional custom timeout configuration for Bun runtime
+ * @param tlsSource - The KubeConfig whose cluster and user TLS settings each request uses. Without
+ *   it, requests carry no client certificate and use the default CA bundle.
  * @returns BunCompatibleHttpLibrary for Bun, undefined for other runtimes
  */
 export function getHttpLibraryForRuntime(
-  timeoutConfig?: HttpTimeoutConfig
+  timeoutConfig?: HttpTimeoutConfig,
+  tlsSource?: TlsOptionsSource
 ): HttpLibrary | undefined {
   if (isBunRuntime()) {
-    return new BunCompatibleHttpLibrary(timeoutConfig);
+    return new BunCompatibleHttpLibrary(timeoutConfig, tlsSource);
   }
   return undefined;
 }

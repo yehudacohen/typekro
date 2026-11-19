@@ -1,8 +1,9 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import type * as k8s from '@kubernetes/client-node';
+import { DEFAULT_HTTP_READ_TIMEOUT } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
-import { isBunRuntime, requestTlsOptions } from './bun-http-library.js';
+import { applyTlsSourceWithin, isBunRuntime, requestTlsOptions } from './bun-http-library.js';
 import { getKubernetesClientNode } from './client-node-runtime.js';
 
 export interface KubernetesWatch {
@@ -44,9 +45,16 @@ function watchCompletionError(message: string, name: 'AbortError' | 'TimeoutErro
  * and sends it directly through node:https like the ordinary Bun API transport.
  */
 export class BunCompatibleWatch implements KubernetesWatch {
+  /**
+   * @param setupTimeoutMs - How long reading the kubeconfig credentials may take before the watch
+   *   request is sent. That read can run an exec credential plugin; a stalled one makes `watch()`
+   *   reject with a `RequestTimeoutError` instead of hanging. The stream itself has no timer: the
+   *   API server ends it (`timeoutSeconds`).
+   */
   constructor(
     private readonly kubeConfig: k8s.KubeConfig,
-    private readonly requestFactory: BunWatchRequestFactory = defaultRequestFactory
+    private readonly requestFactory: BunWatchRequestFactory = defaultRequestFactory,
+    private readonly setupTimeoutMs: number = DEFAULT_HTTP_READ_TIMEOUT
   ) {}
 
   async watch(
@@ -65,7 +73,10 @@ export class BunCompatibleWatch implements KubernetesWatch {
     }
 
     const authenticatedOptions: https.RequestOptions = { headers: {} };
-    await this.kubeConfig.applyToHTTPSOptions(authenticatedOptions);
+    await applyTlsSourceWithin(this.kubeConfig, authenticatedOptions, {
+      timeoutMs: this.setupTimeoutMs,
+      operation: `WATCH ${url.pathname}`,
+    });
     const tls = requestTlsOptions(authenticatedOptions);
     let completed = false;
     let aborted = false;

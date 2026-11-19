@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: Node.js 22.19.0 or later is now required.** `@kubernetes/client-node` moves from
+  1.4.0 to 2.0.2. Version 2 replaces node-fetch with undici 8, whose minimum is Node.js 22.19.0,
+  and drops Node.js 18, 20 and 23. `package.json` now declares `engines.node: ">=22.19.0"`, and
+  the Node type definitions move from 20 to 22. Bun is unaffected. CI checks Node.js 22.19.0 and
+  the current LTS.
+- **The Bun transport reads TLS settings from the KubeConfig.** In client-node 2 the cluster CA,
+  client certificate and key live in an undici dispatcher rather than an `https.Agent`, so the Bun
+  API client and watch now read them with `KubeConfig.applyToHTTPSOptions()` on each request.
+  `getHttpLibraryForRuntime()` takes the KubeConfig as an optional second argument; without it,
+  requests carry no client certificate.
+
+### Fixed
+
+- **A stalled credential plugin can no longer hang a Bun request.** Reading the kubeconfig
+  credentials can run an exec plugin. Under Bun that read is now inside the request's timeout: one
+  deadline covers the read and the HTTP call, and the HTTP call gets what is left of it. An
+  aborted signal stops the wait at once, and an already-aborted signal fails before the plugin
+  runs. A Bun watch bounds the same read by the read timeout (30 seconds by default) and rejects
+  with a `RequestTimeoutError`.
+
 ## [0.46.0] - 2026-11-19
 
 ### Added

@@ -4,7 +4,7 @@ Deploy type-safe Kubernetes infrastructure in 5 minutes.
 
 ## Prerequisites
 
-- **Node.js 18+** or **Bun** installed
+- **Node.js 22.19.0 or later** or **Bun** installed
 - **kubectl** configured to access a Kubernetes cluster
 
 ::: tip Don't Have a Cluster?

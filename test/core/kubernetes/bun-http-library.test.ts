@@ -600,3 +600,140 @@ describe('BunCompatibleHttpLibrary TLS source', () => {
   });
 });
 
+describe('BunCompatibleHttpLibrary request deadline', () => {
+  /** A server that counts requests and answers each one, so a test can tell none was sent. */
+  async function countingServer(answer = true) {
+    const http = await import('node:http');
+    let requests = 0;
+    const server = http.createServer((_req, res) => {
+      requests += 1;
+      if (!answer) return;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    return {
+      requests: () => requests,
+      request: (signal?: AbortSignal) => ({
+        getUrl: () => `http://127.0.0.1:${port}/api/v1/namespaces/demo`,
+        getHttpMethod: () => 'GET',
+        getHeaders: () => ({}),
+        getBody: () => undefined,
+        getSignal: () => signal,
+      }),
+      close: () =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
+    };
+  }
+
+  /** A TLS source that never returns, like an exec credential plugin waiting for a login. */
+  function stalledSource() {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      applyToHTTPSOptions: () => {
+        calls += 1;
+        return new Promise<void>(() => undefined);
+      },
+    };
+  }
+
+  const failureOf = (promise: Promise<unknown> | undefined) =>
+    (promise ?? Promise.resolve()).then(
+      () => new Error('request unexpectedly succeeded'),
+      (error: unknown) => error
+    );
+
+  it('times out a stalled TLS source within the request budget', async () => {
+    const server = await countingServer();
+    const source = stalledSource();
+    try {
+      const library = new BunCompatibleHttpLibrary({ default: 100 }, source);
+      const startedAt = Date.now();
+      const failure = await failureOf(library.send(server.request() as never).toPromise());
+      const elapsed = Date.now() - startedAt;
+
+      expect(isRequestTimeoutError(failure)).toBe(true);
+      expect((failure as Error).message).toContain('kubeconfig credentials');
+      expect((failure as { timeoutMs?: number }).timeoutMs).toBe(100);
+      expect(elapsed).toBeLessThan(1000);
+      expect(source.calls()).toBe(1);
+      expect(server.requests()).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('fails an already-aborted signal without calling the TLS source', async () => {
+    const server = await countingServer();
+    const source = stalledSource();
+    const controller = new AbortController();
+    const reason = new Error('caller cancelled');
+    controller.abort(reason);
+    try {
+      const library = new BunCompatibleHttpLibrary({ default: 30_000 }, source);
+      const startedAt = Date.now();
+      const failure = await failureOf(
+        library.send(server.request(controller.signal) as never).toPromise()
+      );
+
+      expect(failure).toBe(reason);
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+      expect(source.calls()).toBe(0);
+      expect(server.requests()).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('stops waiting on a stalled TLS source when the signal aborts', async () => {
+    const server = await countingServer();
+    const source = stalledSource();
+    const controller = new AbortController();
+    try {
+      const library = new BunCompatibleHttpLibrary({ default: 30_000 }, source);
+      const pending = failureOf(
+        library.send(server.request(controller.signal) as never).toPromise()
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const startedAt = Date.now();
+      controller.abort(new Error('caller cancelled'));
+      const failure = await pending;
+
+      expect((failure as Error).message).toBe('caller cancelled');
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+      expect(server.requests()).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // One budget for the whole request: the HTTP call gets what the TLS read left, not a fresh budget.
+  it('gives the HTTP call only what is left of the budget after the TLS read', async () => {
+    const server = await countingServer(false);
+    const slowSource = {
+      applyToHTTPSOptions: () => new Promise<void>((resolve) => setTimeout(resolve, 300)),
+    };
+    try {
+      const library = new BunCompatibleHttpLibrary({ default: 500 }, slowSource);
+      const startedAt = Date.now();
+      const failure = await failureOf(library.send(server.request() as never).toPromise());
+      const elapsed = Date.now() - startedAt;
+
+      expect(isRequestTimeoutError(failure)).toBe(true);
+      expect((failure as Error).message).toContain('HTTP request timeout');
+      expect((failure as { timeoutMs?: number }).timeoutMs).toBe(500);
+      expect(server.requests()).toBe(1);
+      // A fresh budget for the HTTP call would take about 800ms.
+      expect(elapsed).toBeGreaterThanOrEqual(450);
+      expect(elapsed).toBeLessThan(750);
+    } finally {
+      await server.close();
+    }
+  });
+});

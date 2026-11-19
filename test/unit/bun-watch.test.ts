@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { PassThrough } from 'node:stream';
 import type * as k8s from '@kubernetes/client-node';
+import { isRequestTimeoutError } from '../../src/core/deployment/poll-timeout.js';
 import {
   BunCompatibleWatch,
   type BunWatchRequestFactory,
@@ -130,5 +131,40 @@ describe('BunCompatibleWatch', () => {
       rejectUnauthorized: false,
       agent: false,
     });
+  });
+
+  // Reading the credentials can run an exec plugin that never returns. The watch has no stream
+  // timer (the API server ends it), so without a setup bound `watch()` would never settle.
+  it('times out a stalled credential read before sending the watch', async () => {
+    const kubeConfig = {
+      getCurrentCluster: () => ({ name: 'test', server: 'https://kubernetes.test' }),
+      applyToHTTPSOptions: () => new Promise<void>(() => undefined),
+    } as unknown as k8s.KubeConfig;
+    let sent = false;
+    const watch = new BunCompatibleWatch(
+      kubeConfig,
+      requestFactory(200, '', () => {
+        sent = true;
+      }),
+      50
+    );
+
+    const startedAt = Date.now();
+    const failure = await watch
+      .watch(
+        '/api/v1/namespaces/default/events',
+        {},
+        () => {},
+        () => {}
+      )
+      .then(
+        () => new Error('watch unexpectedly started'),
+        (error: unknown) => error
+      );
+
+    expect(isRequestTimeoutError(failure)).toBe(true);
+    expect((failure as Error).message).toContain('kubeconfig credentials');
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(sent).toBe(false);
   });
 });
