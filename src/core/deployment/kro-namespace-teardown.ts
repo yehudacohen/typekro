@@ -10,7 +10,12 @@ import {
 import { getComponentLogger } from '../logging/index.js';
 import type { TypeKroLogger } from '../logging/types.js';
 import { isConflictError, isNotFoundError } from './k8s-helpers.js';
-import { type CallDeadlineBudget, callDeadlineBudget, withCallDeadline } from './poll-timeout.js';
+import {
+  type CallDeadlineBudget,
+  callDeadlineBudget,
+  retryOnceOnRequestTimeout,
+  withCallDeadline,
+} from './poll-timeout.js';
 import { createRollbackManager } from './rollback-manager.js';
 
 /**
@@ -133,6 +138,12 @@ function listContinuationToken(metadata: unknown): string | undefined {
  * annotation, FOLLOWING the list continuation token so an owned namespace beyond the first
  * page is never hidden by a silent cap. A list error PROPAGATES (callers fail closed /
  * preserve): an unreadable list is not proof that no owned namespace exists.
+ *
+ * A page that times out is re-issued ONCE before the error propagates
+ * ({@link retryOnceOnRequestTimeout}). The page fetch is an idempotent read and the gates that call
+ * this fail closed, so a single stalled request — one the API server never answered — would
+ * otherwise abort a whole deploy that a second request answers in a second. Only a timeout is
+ * retried; any answer from the server (403, 5xx) still propagates immediately.
  */
 export async function listNamespacesOwnedByRgd(
   kubeConfig: k8s.KubeConfig,
@@ -150,29 +161,36 @@ export async function listNamespacesOwnedByRgd(
     requestBudget?: CallDeadlineBudget;
   } = {}
 ): Promise<string[]> {
+  const label = `Namespaces owned by ResourceGraphDefinition ${rgdName}`;
   const k8sApi = withCallDeadline(
     options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig),
     {
       budget: options.requestBudget ?? callDeadlineBudget(undefined),
-      label: `Namespaces owned by ResourceGraphDefinition ${rgdName}`,
+      label,
       ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
     }
   );
+  const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
   const owned: string[] = [];
   let continueToken: string | undefined;
   do {
     options.abortSignal?.throwIfAborted();
-    const result = (await k8sApi.list(
-      'v1',
-      'Namespace',
-      undefined, // namespace (cluster-scoped)
-      undefined, // pretty
-      undefined, // exact
-      undefined, // export
-      undefined, // fieldSelector
-      undefined, // labelSelector
-      100, // limit
-      continueToken // continue
+    const pageToken = continueToken;
+    const result = (await retryOnceOnRequestTimeout(
+      () =>
+        k8sApi.list(
+          'v1',
+          'Namespace',
+          undefined, // namespace (cluster-scoped)
+          undefined, // pretty
+          undefined, // exact
+          undefined, // export
+          undefined, // fieldSelector
+          undefined, // labelSelector
+          100, // limit
+          pageToken // continue
+        ),
+      { label, logger, abortSignal: options.abortSignal }
     )) as unknown as {
       items?: Array<{ metadata?: { name?: unknown; annotations?: Record<string, string> } }>;
       metadata?: { _continue?: unknown; continue?: unknown };
