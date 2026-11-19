@@ -2,41 +2,165 @@
 // fragments that wire a `Cluster`, a `Backup` or `ScheduledBackup`, and a recovery to the plugin.
 
 import { TypeKroError } from '../../../core/errors.js';
-import { isCelExpression, isKubernetesRef, isMixedTemplate } from '../../../utils/type-guards.js';
+import {
+  containsCelExpressions,
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+  isMixedTemplate,
+  isResourceReference,
+} from '../../../utils/type-guards.js';
 import { BARMAN_CLOUD_PLUGIN_NAME } from '../constants.js';
 import type { ClusterExternalCluster, ClusterPlugin, PluginConfiguration } from '../types.js';
-import { S3_DESTINATION_PATH } from './barman-cloud-constraints.js';
+import { isS3DestinationPath } from './barman-cloud-constraints.js';
 
 // =============================================================================
 // WORKLOAD IDENTITY
 // =============================================================================
 
+// The guard fails closed. The spec, `configuration`, `s3Credentials` and, when given, `wal`,
+// `data`, `instanceSidecarConfiguration` and its `env` entries must be objects written in the
+// composition: a schema reference in their place would let an instance add static keys. Only the
+// leaves below may come from the composition spec, and `inheritFromIAMRole` must be the literal
+// `true`. Static key fields are refused whether concrete or symbolic.
+
 /** `s3Credentials` fields that hold static keys. */
 const STATIC_S3_CREDENTIAL_FIELDS = ['accessKeyId', 'secretAccessKey', 'sessionToken'] as const;
 
+/** `s3Credentials` fields besides `inheritFromIAMRole` that may be set: secret references. */
+const S3_CREDENTIAL_SECRET_REFERENCES: ReadonlySet<string> = new Set(['region', 'sseCustomerKey']);
+
 /** Environment variables that would hand the sidecar static AWS keys. */
 const STATIC_AWS_KEY_ENV = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'];
+
+/** Fields of each object that may come from the composition spec. */
+const SPEC_LEAVES = {
+  spec: new Set(['retentionPolicy']),
+  configuration: new Set([
+    'destinationPath',
+    'endpointURL',
+    'endpointCA',
+    's3AddressingStyle',
+    'tags',
+    'historyTags',
+  ]),
+  wal: new Set(['compression', 'encryption', 'maxParallel']),
+  data: new Set(['compression', 'encryption', 'jobs', 'immediateCheckpoint']),
+  instanceSidecarConfiguration: new Set([
+    'logLevel',
+    'resources',
+    'retentionPolicyIntervalSeconds',
+  ]),
+  env: new Set(['value', 'valueFrom']),
+} satisfies Record<string, ReadonlySet<string>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** True for a value only known per instance, which admission checks instead. */
+/** True when a value is, or contains, something only known per instance. */
 function isSymbolic(value: unknown): boolean {
-  return isKubernetesRef(value) || isCelExpression(value) || isMixedTemplate(value);
+  return (
+    isResourceReference(value) ||
+    isMixedTemplate(value) ||
+    containsKubernetesRefs(value) ||
+    containsCelExpressions(value)
+  );
 }
 
-// Refuses access keys and session tokens in `s3Credentials`, static AWS keys in the sidecar's
-// `env`, Azure and Google credentials, and a destination that isn't `s3://<bucket>/<prefix>`.
-// Values only known per instance pass; the composition's instance schema checks those.
+/**
+ * A plain object written in the composition. A schema reference is a function-backed proxy, so
+ * it is not one, and neither is a CEL expression.
+ */
+function isConcreteObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !isKubernetesRef(value) &&
+    !isResourceReference(value) &&
+    !isCelExpression(value)
+  );
+}
+
+function refuseNotConcrete(where: string): never {
+  throw new TypeKroError(
+    `${where} of an ObjectStore must be written out in the composition, not taken from the ` +
+      'spec: an instance could set static S3 keys through it. Only leaf values such as ' +
+      'destinationPath, endpointURL, retentionPolicy or compression may come from the spec.',
+    'CNPG_BARMAN_CLOUD_NOT_CONCRETE',
+    { where }
+  );
+}
+
+/** Requires `value` to be a concrete object, refusing it as `where` otherwise. */
+function concreteObject(value: unknown, where: string): Record<string, unknown> {
+  if (!isConcreteObject(value)) refuseNotConcrete(where);
+  return value;
+}
+
+/** Fields of each object the guard checks on their own, as concrete objects. */
+const NESTED = {
+  spec: new Set(['configuration', 'instanceSidecarConfiguration']),
+  configuration: new Set(['s3Credentials', 'wal', 'data']),
+  instanceSidecarConfiguration: new Set(['env']),
+} satisfies Partial<Record<keyof typeof SPEC_LEAVES, ReadonlySet<string>>>;
+
+const NONE: ReadonlySet<string> = new Set();
+
+/**
+ * Refuses a field of `object` that is, or contains, a value only known per instance, unless it
+ * is one of the allowed spec `leaves` or a `nested` object the guard checks on its own.
+ */
+function refuseSymbolicFields(
+  object: Record<string, unknown>,
+  leaves: ReadonlySet<string>,
+  where: string,
+  nested: ReadonlySet<string> = NONE
+): void {
+  for (const [key, value] of Object.entries(object)) {
+    if (!leaves.has(key) && !nested.has(key) && isSymbolic(value)) {
+      refuseNotConcrete(`${where}.${key}`);
+    }
+  }
+}
+
+function refuseStaticCredentials(fields: string[]): never {
+  throw new TypeKroError(
+    `ObjectStore authenticates to S3 through the pod's workload identity (IRSA or EKS Pod ` +
+      `Identity); remove ${fields.join(', ')} and set s3Credentials.inheritFromIAMRole: true.`,
+    'CNPG_BARMAN_CLOUD_STATIC_CREDENTIALS',
+    { fields }
+  );
+}
+
+function refuseWithoutWorkloadIdentity(got: string): never {
+  throw new TypeKroError(
+    'ObjectStore must set s3Credentials.inheritFromIAMRole: true, written in the composition, ' +
+      `so barman-cloud uses the pod's workload identity (IRSA or EKS Pod Identity); got ${got}.`,
+    'CNPG_BARMAN_CLOUD_STATIC_CREDENTIALS',
+    { fields: ['s3Credentials.inheritFromIAMRole'] }
+  );
+}
 
 /**
  * Throws unless an `ObjectStore` spec reaches S3 only through the pod's workload identity
  * (`s3Credentials.inheritFromIAMRole: true`, with IRSA or EKS Pod Identity).
+ *
+ * It fails closed: the spec, `configuration` and `s3Credentials` must be objects written in the
+ * composition, and so must `wal`, `data`, `instanceSidecarConfiguration` and each of its `env`
+ * entries when given (`CNPG_BARMAN_CLOUD_NOT_CONCRETE`). Only leaf values such as
+ * `destinationPath`, `endpointURL`, `retentionPolicy`, compression and an env entry's `value`
+ * may come from the composition spec. `inheritFromIAMRole` must be the literal `true`, and
+ * access keys, session tokens and static AWS key env variables are refused whether concrete or
+ * symbolic (`CNPG_BARMAN_CLOUD_STATIC_CREDENTIALS`), as are Azure and Google credentials
+ * (`CNPG_BARMAN_CLOUD_NOT_S3`). A concrete `destinationPath` must be `s3://<bucket>/<prefix>`
+ * with a valid bucket name (`CNPG_BARMAN_CLOUD_DESTINATION_INVALID`).
  */
 export function assertWorkloadIdentityObjectStore(spec: unknown): void {
-  const configuration = isRecord(spec) ? spec.configuration : undefined;
-  if (!isRecord(configuration)) return;
+  const root = concreteObject(spec, 'The spec');
+  refuseSymbolicFields(root, SPEC_LEAVES.spec, 'spec', NESTED.spec);
+  const configuration = concreteObject(root.configuration, 'spec.configuration');
 
   for (const provider of ['azureCredentials', 'googleCredentials'] as const) {
     if (configuration[provider] !== undefined) {
@@ -49,58 +173,81 @@ export function assertWorkloadIdentityObjectStore(spec: unknown): void {
   }
 
   const credentials = configuration.s3Credentials;
-  if (!isSymbolic(credentials)) {
-    const staticFields = isRecord(credentials)
-      ? STATIC_S3_CREDENTIAL_FIELDS.filter((field) => credentials[field] !== undefined)
-      : [];
-    if (staticFields.length > 0) {
-      throw new TypeKroError(
-        `ObjectStore authenticates to S3 through the pod's workload identity (IRSA or EKS Pod ` +
-          `Identity); remove s3Credentials.${staticFields.join(', s3Credentials.')} and set ` +
-          's3Credentials.inheritFromIAMRole: true.',
-        'CNPG_BARMAN_CLOUD_STATIC_CREDENTIALS',
-        { fields: staticFields }
-      );
-    }
-    const inherit = isRecord(credentials) ? credentials.inheritFromIAMRole : undefined;
-    if (inherit !== true && !isSymbolic(inherit)) {
-      throw new TypeKroError(
-        'ObjectStore must set s3Credentials.inheritFromIAMRole: true, so barman-cloud uses the ' +
-          "pod's workload identity (IRSA or EKS Pod Identity).",
-        'CNPG_BARMAN_CLOUD_STATIC_CREDENTIALS',
-        { fields: ['s3Credentials.inheritFromIAMRole'] }
-      );
-    }
+  if (credentials === undefined) refuseWithoutWorkloadIdentity('no s3Credentials');
+  const s3Credentials = concreteObject(credentials, 'spec.configuration.s3Credentials');
+  const staticFields = STATIC_S3_CREDENTIAL_FIELDS.filter(
+    (field) => s3Credentials[field] !== undefined
+  ).map((field) => `s3Credentials.${field}`);
+  if (staticFields.length > 0) refuseStaticCredentials(staticFields);
+  const unknownFields = Object.keys(s3Credentials).filter(
+    (key) => key !== 'inheritFromIAMRole' && !S3_CREDENTIAL_SECRET_REFERENCES.has(key)
+  );
+  if (unknownFields.length > 0) {
+    refuseStaticCredentials(unknownFields.map((field) => `s3Credentials.${field}`));
+  }
+  const inherit = s3Credentials.inheritFromIAMRole;
+  if (inherit !== true) {
+    refuseWithoutWorkloadIdentity(
+      isSymbolic(inherit) ? 'a value only known per instance' : String(JSON.stringify(inherit))
+    );
   }
 
-  const env =
-    isRecord(spec) && isRecord(spec.instanceSidecarConfiguration)
-      ? spec.instanceSidecarConfiguration.env
-      : undefined;
-  if (Array.isArray(env)) {
-    const keys = env
-      .map((entry) => (isRecord(entry) ? entry.name : undefined))
-      .filter(
-        (name): name is string => typeof name === 'string' && STATIC_AWS_KEY_ENV.includes(name)
-      );
-    if (keys.length > 0) {
-      throw new TypeKroError(
-        `ObjectStore sidecar env must not carry static AWS keys; remove ${keys.join(', ')}.`,
-        'CNPG_BARMAN_CLOUD_STATIC_CREDENTIALS',
-        { fields: keys.map((name) => `instanceSidecarConfiguration.env.${name}`) }
-      );
+  refuseSymbolicFields(
+    configuration,
+    SPEC_LEAVES.configuration,
+    'spec.configuration',
+    NESTED.configuration
+  );
+  for (const section of ['wal', 'data'] as const) {
+    if (configuration[section] === undefined) continue;
+    const where = `spec.configuration.${section}`;
+    refuseSymbolicFields(
+      concreteObject(configuration[section], where),
+      SPEC_LEAVES[section],
+      where
+    );
+  }
+
+  if (root.instanceSidecarConfiguration !== undefined) {
+    const sidecar = concreteObject(
+      root.instanceSidecarConfiguration,
+      'spec.instanceSidecarConfiguration'
+    );
+    refuseSymbolicFields(
+      sidecar,
+      SPEC_LEAVES.instanceSidecarConfiguration,
+      'spec.instanceSidecarConfiguration',
+      NESTED.instanceSidecarConfiguration
+    );
+    if (sidecar.env !== undefined) {
+      if (!Array.isArray(sidecar.env)) refuseNotConcrete('spec.instanceSidecarConfiguration.env');
+      const keys: string[] = [];
+      sidecar.env.forEach((entry: unknown, index: number) => {
+        const where = `spec.instanceSidecarConfiguration.env[${index}]`;
+        const variable = concreteObject(entry, where);
+        refuseSymbolicFields(variable, SPEC_LEAVES.env, where);
+        if (typeof variable.name === 'string' && STATIC_AWS_KEY_ENV.includes(variable.name)) {
+          keys.push(variable.name);
+        }
+      });
+      if (keys.length > 0) {
+        throw new TypeKroError(
+          `ObjectStore sidecar env must not carry static AWS keys; remove ${keys.join(', ')}.`,
+          'CNPG_BARMAN_CLOUD_STATIC_CREDENTIALS',
+          { fields: keys.map((name) => `instanceSidecarConfiguration.env.${name}`) }
+        );
+      }
     }
   }
 
   const destination = configuration.destinationPath;
   if (
-    typeof destination === 'string' &&
     !isSymbolic(destination) &&
-    !S3_DESTINATION_PATH.test(destination)
+    !(typeof destination === 'string' && isS3DestinationPath(destination))
   ) {
     throw new TypeKroError(
-      `ObjectStore destinationPath must be s3://<bucket>/<prefix> with a non-empty bucket and ` +
-        `prefix; got ${JSON.stringify(destination)}.`,
+      `ObjectStore destinationPath must be s3://<bucket>/<prefix> with a valid S3 bucket name ` +
+        `and a non-empty prefix; got ${JSON.stringify(destination)}.`,
       'CNPG_BARMAN_CLOUD_DESTINATION_INVALID',
       { destinationPath: destination }
     );

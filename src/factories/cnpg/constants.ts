@@ -12,6 +12,14 @@ export const DEFAULT_CNPG_REPOSITORY_NAME = 'cnpg-repo';
 /** Namespace the operator chart installs into by default. */
 export const DEFAULT_CNPG_NAMESPACE = 'cnpg-system';
 
+/**
+ * Default `cloudnative-pg` chart version: 0.29.2, released 2026-11-17, which installs operator
+ * {@link CNPG_OPERATOR_VERSION}. Checked against the chart repository index.
+ */
+export const CNPG_CHART_VERSION = '0.29.2';
+/** Operator version {@link CNPG_CHART_VERSION} installs. */
+export const CNPG_OPERATOR_VERSION = '1.30.2';
+
 /** Name a `Cluster` uses to refer to the plugin, in `spec.plugins` and elsewhere. */
 export const BARMAN_CLOUD_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';
 /** API version of the plugin's `ObjectStore`. */
@@ -26,6 +34,14 @@ export const BARMAN_CLOUD_PLUGIN_VERSION = 'v0.16.0';
 /**
  * Oldest CloudNativePG operator the plugin v0.16.0 documents as supported. The plugin must run
  * in the operator's namespace, and its chart needs cert-manager to issue the plugin's TLS
- * certificates.
+ * certificates. The plugin factories require the caller to name the operator version
+ * (`operatorVersion`), and refuse one older than this; see
+ * `BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT`.
  */
 export const BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION = '1.30.0';
+
+/**
+ * `service.name` of the plugin chart. The chart says it must not change: the plugin's TLS
+ * certificates are issued for it.
+ */
+export const BARMAN_CLOUD_PLUGIN_SERVICE_NAME = 'barman-cloud';

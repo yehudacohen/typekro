@@ -5,7 +5,8 @@
  * instance CRD's `openAPIV3Schema`, and the API server refuses an instance that breaks it.
  * This module converts the SimpleSchema the same way for the types and markers TypeKro emits,
  * then validates an instance spec against the result: types, `required`, `enum`, `pattern`
- * (RE2), lengths, item counts, bounds and `validation` rules, which it evaluates with cel-js.
+ * (RE2), lengths, item counts, bounds and `validation` rules, which it evaluates with cel-js
+ * (with the global `matches(string, regex)` the CEL standard library has and cel-js lacks).
  *
  * An unknown type or marker throws, so a test can't pass on a schema it didn't read. Unknown
  * fields are refused, as `kubectl apply` does with strict field validation. Defaults are not
@@ -14,6 +15,19 @@
 import { evaluate } from 'cel-js';
 import { loadAll } from 'js-yaml';
 import { RE2JS } from 're2js';
+
+/**
+ * Kubernetes CEL functions cel-js lacks, in their global form: `matches(string, regex)` is true
+ * when the RE2 pattern matches part of the string, as in the CEL standard library.
+ */
+const CEL_FUNCTIONS = {
+  matches: (text: unknown, pattern: unknown): boolean => {
+    if (typeof text !== 'string' || typeof pattern !== 'string') {
+      throw new Error('matches() takes a string and an RE2 pattern.');
+    }
+    return RE2JS.compile(pattern).matcher(text).find();
+  },
+};
 
 export interface OpenApiSchema {
   type?: 'string' | 'integer' | 'number' | 'boolean' | 'object' | 'array';
@@ -263,7 +277,7 @@ export function validateAgainst(schema: OpenApiSchema, value: unknown, path: str
   // The API server evaluates a field's rules only when its schema checks pass.
   if (errors.length === 0) {
     for (const { rule } of schema['x-kubernetes-validations'] ?? []) {
-      if (evaluate(rule, { self: value }) !== true) {
+      if (evaluate(rule, { self: value }, CEL_FUNCTIONS) !== true) {
         errors.push(`${path}: failed rule: ${rule}`);
       }
     }

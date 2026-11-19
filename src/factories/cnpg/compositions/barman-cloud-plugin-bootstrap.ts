@@ -17,13 +17,16 @@ import { BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT } from '../utils/barman-cloud-co
 
 // The plugin needs CloudNativePG 1.30 or later, must run in the operator's namespace (the
 // operator only discovers plugins there), and its chart issues TLS certificates with
-// cert-manager. `version` is required and may only be the pinned chart version: the instance
-// schema's enum and `required=true` refuse another one or none at KRO admission, and the body
-// refuses it in direct mode, or a reference to a field that doesn't carry the constraint.
+// cert-manager. `version` is required and may only be the pinned chart version, and
+// `operatorVersion` is required and must be 1.30.0 or later: the instance schema's enum, pattern
+// and `required=true` refuse a bad value or none at KRO admission, and the body refuses it in
+// direct mode, or a reference to a field that doesn't carry the constraint.
 
 /**
  * Installs the CloudNativePG Barman Cloud plugin from the official chart, pinned at 0.9.0
- * (plugin v0.16.0), in the operator's namespace.
+ * (plugin v0.16.0), in the operator's namespace. `operatorVersion` names the CloudNativePG
+ * version running there, which must be 1.30.0 or later (`cnpgBootstrap` installs 1.30.2 by
+ * default).
  *
  * @see docs/api/cnpg/index.md#barman-cloud-plugin
  */
@@ -50,6 +53,7 @@ export const barmanCloudPluginBootstrap: CallableComposition<
       name: spec.name,
       namespace: Cel.default(spec.namespace, DEFAULT_CNPG_NAMESPACE),
       version: spec.version,
+      operatorVersion: spec.operatorVersion,
       repositoryName: DEFAULT_CNPG_REPOSITORY_NAME,
       ...(spec.values !== undefined && { values: spec.values }),
       id: 'barmanCloudPluginHelmRelease',

@@ -13,6 +13,7 @@ import type { TypeKroChartValue } from '../../core/types/common.js';
 import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 import {
   BARMAN_CLOUD_BUCKET_CONSTRAINT,
+  BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT,
   BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT,
   BARMAN_CLOUD_PREFIX_CONSTRAINT,
   BARMAN_RETENTION_POLICY,
@@ -135,7 +136,7 @@ export const CnpgBootstrapConfigSchema = type({
   name: 'string',
   /** Namespace for the operator (default: 'cnpg-system'). */
   'namespace?': 'string',
-  /** Chart version (default: '0.23.0'). */
+  /** Chart version (default: `CNPG_CHART_VERSION`, '0.29.2', operator 1.30.2). */
   'version?': 'string',
   /** Whether to install CRDs with the chart (default: true). */
   'installCRDs?': 'boolean',
@@ -648,7 +649,7 @@ export const CnpgHelmReleaseConfigSchema = type({
   name: 'string',
   /** Target namespace. */
   'namespace?': 'string',
-  /** Chart version (default: '0.23.0'). */
+  /** Chart version (default: `CNPG_CHART_VERSION`, '0.29.2', operator 1.30.2). */
   'version?': 'string',
   /** Helm values. */
   'values?': 'Record<string, unknown>',
@@ -726,6 +727,11 @@ export interface ObjectStoreSpec {
     /** Seconds between retention policy runs. @default 1800 */
     retentionPolicyIntervalSeconds?: number;
     logLevel?: 'error' | 'warning' | 'info' | 'debug' | 'trace';
+    /**
+     * Environment of the sidecar. Static AWS keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+     * `AWS_SESSION_TOKEN`) are refused.
+     */
+    env?: Array<{ name: string; value?: string; valueFrom?: Record<string, unknown> }>;
   };
 }
 
@@ -759,10 +765,20 @@ export interface BarmanCloudPluginHelmReleaseConfig extends HelmReleaseLifecycle
   name: string;
   /** Namespace of the release and the plugin: the CloudNativePG operator's namespace. */
   namespace?: string;
+  /**
+   * Version of the CloudNativePG operator running in that namespace, such as `1.30.2`. Required:
+   * the plugin needs `BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION` or later, and an older one is
+   * refused (`CNPG_BARMAN_CLOUD_OPERATOR_INCOMPATIBLE`).
+   */
+  operatorVersion: string;
   /** Chart version. @default BARMAN_CLOUD_PLUGIN_CHART_VERSION */
   version?: string;
   /** HelmRepository name. @default 'cnpg-repo' */
   repositoryName?: string;
+  /**
+   * Extra chart values. `crds.create` and `service.name` belong to the factory: a concrete value
+   * that changes them is refused, and they are applied last over values only known per instance.
+   */
   values?: TypeKroChartValue<Record<string, unknown>>;
   id?: string;
 }
@@ -773,7 +789,8 @@ const dnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
 /**
  * Inputs of `barmanCloudPluginBootstrap`, which installs the plugin from its official chart.
  * `namespace` must be the CloudNativePG operator's namespace. `version` is required and may only
- * be the pinned chart version, `BARMAN_CLOUD_PLUGIN_CHART_VERSION`.
+ * be the pinned chart version, `BARMAN_CLOUD_PLUGIN_CHART_VERSION`. `operatorVersion` is required
+ * and must be a CloudNativePG version the plugin supports (1.30.0 or later).
  */
 export const BarmanCloudPluginBootstrapConfigSchema = type({
   /** Release name. */
@@ -782,7 +799,12 @@ export const BarmanCloudPluginBootstrapConfigSchema = type({
   'namespace?': dnsLabel,
   /** The pinned chart version, `BARMAN_CLOUD_PLUGIN_CHART_VERSION`. */
   version: BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type,
-  /** Extra chart values, layered over the chart defaults. */
+  /**
+   * Version of the CloudNativePG operator in `namespace`, such as `1.30.2`; 1.30.0 or later.
+   * `cnpgBootstrap` installs `CNPG_OPERATOR_VERSION` by default.
+   */
+  operatorVersion: BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT.type,
+  /** Extra chart values over the chart defaults; `crds.create` and `service.name` are fixed. */
   'values?': 'Record<string, unknown>',
 });
 

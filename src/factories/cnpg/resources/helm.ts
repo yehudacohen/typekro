@@ -18,11 +18,12 @@ import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { helmRelease } from '../../helm/helm-release.js';
-import { CNPG_CHART_REPOSITORY_URL, DEFAULT_CNPG_REPOSITORY_NAME } from '../constants.js';
+import {
+  CNPG_CHART_REPOSITORY_URL,
+  CNPG_CHART_VERSION,
+  DEFAULT_CNPG_REPOSITORY_NAME,
+} from '../constants.js';
 import type { CnpgHelmReleaseConfig, CnpgHelmRepositoryConfig } from '../types.js';
-
-/** Default chart version. */
-const DEFAULT_CNPG_VERSION = '0.23.0';
 
 /**
  * Create a HelmRepository for the CloudNativePG chart repository.
@@ -64,7 +65,7 @@ export function cnpgHelmRepository(
  * const release = cnpgHelmRelease({
  *   name: 'cnpg',
  *   namespace: 'cnpg-system',
- *   version: '0.23.0',
+ *   version: '0.29.2',
  *   values: { crds: { create: true } },
  *   id: 'cnpgHelmRelease',
  * });
@@ -80,7 +81,7 @@ export function cnpgHelmRelease(
     chart: {
       repository: CNPG_CHART_REPOSITORY_URL,
       name: 'cloudnative-pg',
-      version: config.version || DEFAULT_CNPG_VERSION,
+      version: config.version || CNPG_CHART_VERSION,
     },
     sourceRef: {
       name: config.repositoryName || DEFAULT_CNPG_REPOSITORY_NAME,

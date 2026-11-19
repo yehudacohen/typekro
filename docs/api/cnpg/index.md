@@ -246,9 +246,19 @@ the official `plugin-barman-cloud` chart, pinned at 0.9.0 (plugin v0.16.0).
 
 Requirements, from the plugin's documentation:
 
-- CloudNativePG 1.30 or later.
+- CloudNativePG 1.30 or later. `cnpgBootstrap` and `cnpgHelmRelease` install chart 0.29.2
+  (operator 1.30.2) by default. The plugin factories require `operatorVersion`, the operator
+  version running in the plugin's namespace, and refuse one older than 1.30.0
+  (`CNPG_BARMAN_CLOUD_OPERATOR_INCOMPATIBLE`), at admission in KRO mode too. TypeKro does not read
+  the live operator's version: `operatorVersion` is what you state it is.
 - The plugin runs in the operator's namespace (`cnpg-system` by default).
 - cert-manager is running: the chart issues the plugin's TLS certificates with it.
+
+The plugin factories own two chart values: `crds.create: true` (the chart installs the
+`ObjectStore` CRD) and `service.name: barman-cloud` (the chart says it must not change: the
+plugin's TLS certificates are issued for it). Raw `values` that change either are refused
+(`CNPG_BARMAN_CLOUD_RESERVED_CHART_VALUE`), and both are applied after your values, so values only
+known per KRO instance can't change them either. Other keys, such as `service.port`, may be set.
 
 ```typescript
 import {
@@ -263,7 +273,12 @@ import {
 
 // Install the plugin next to the operator.
 const plugin = barmanCloudPluginBootstrap.factory('direct', { namespace: 'cnpg-system' });
-await plugin.deploy({ name: 'barman-cloud', namespace: 'cnpg-system', version: '0.9.0' });
+await plugin.deploy({
+  name: 'barman-cloud',
+  namespace: 'cnpg-system',
+  version: '0.9.0',
+  operatorVersion: '1.30.2',
+});
 
 // An S3 object store. Credentials come only from the pod's workload identity.
 const store = objectStore({
@@ -313,8 +328,18 @@ barman-cloud runs in a sidecar of each instance pod, as the cluster's service ac
 it after the cluster). Bind an IAM role to it with an EKS Pod Identity association, or with IRSA by
 annotating it through `spec.serviceAccountTemplate.metadata.annotations`
 (`eks.amazonaws.com/role-arn`). `objectStore()` refuses access keys or session tokens in
-`s3Credentials`, static AWS keys in the sidecar's `env`, a missing `inheritFromIAMRole: true`, and a
-destination that isn't `s3://<bucket>/<prefix>`.
+`s3Credentials`, static AWS keys in the sidecar's `env`, a missing or false
+`inheritFromIAMRole: true`, and a destination that isn't `s3://<bucket>/<prefix>` with a valid
+bucket name.
+
+The check fails closed. The spec, `configuration` and `s3Credentials`, and `wal`, `data`,
+`instanceSidecarConfiguration` and its `env` entries when given, must be written out in the
+composition (`CNPG_BARMAN_CLOUD_NOT_CONCRETE`): taking one of them whole from the composition spec
+would let an instance add static keys. Only leaf values may come from the spec:
+`destinationPath`, `endpointURL`, `endpointCA`, `s3AddressingStyle`, `tags`, `historyTags`,
+`retentionPolicy`, the compression, encryption and parallelism settings, the sidecar's
+`logLevel`, `resources` and `retentionPolicyIntervalSeconds`, and an env entry's `value` or
+`valueFrom`. `inheritFromIAMRole` must be the literal `true`.
 
 ### ObjectStore Readiness
 
@@ -326,15 +351,25 @@ whose recovery windows the plugin has recorded.
 
 | Composition | Creates | Enforced in both modes |
 |-------------|---------|------------------------|
-| `barmanCloudPluginBootstrap` | HelmRepository, plugin HelmRelease | `version` is required and is the pinned chart version |
-| `cnpgS3BackedCluster` | ObjectStore, Cluster, ScheduledBackup | `bucket` is a required S3 bucket name; `prefix` is required and non-empty; no credential inputs |
+| `barmanCloudPluginBootstrap` | HelmRepository, plugin HelmRelease | `version` is required and is the pinned chart version; `operatorVersion` is required and is CloudNativePG 1.30.0 or later |
+| `cnpgS3BackedCluster` | ObjectStore, Cluster, ScheduledBackup | `bucket` is a required S3 general-purpose bucket name; `prefix` is required and non-empty; no credential inputs |
 
-In KRO mode the instance schema carries each constraint as an `enum` or `pattern` with
-`required=true`, so the API server refuses a bad or missing value before KRO creates anything.
-A composition that composes one of these and passes its own spec field as `version`, `bucket` or
-`prefix` declares that field, as a required key, with `BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type`,
-`BARMAN_CLOUD_BUCKET_CONSTRAINT.type` or `BARMAN_CLOUD_PREFIX_CONSTRAINT.type`. Any other
-reference is refused when the composition is built, because nothing would check it.
+`bucket` follows the
+[S3 general-purpose bucket naming rules](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html):
+3 to 63 lowercase letters, digits, dots and hyphens, starting and ending with a letter or digit,
+no two adjacent dots, not in the form of an IP address, and none of the reserved prefixes
+(`xn--`, `sthree-`, `amzn-s3-demo-`) or suffixes (`-s3alias`, `--ol-s3`, `.mrap`, `--x-s3`,
+`--table-s3`).
+
+In KRO mode the instance schema carries each constraint as an `enum`, a `pattern` and length
+markers, or a CEL `validation` rule for what a pattern can't express (the bucket's IP-address and
+reserved prefix and suffix rules), with `required=true`, so the API server refuses a bad or
+missing value before KRO creates anything. A composition that composes one of these and passes
+its own spec field as `version`, `operatorVersion`, `bucket` or `prefix` declares that field, as
+a required key, with `BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type`,
+`BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT.type`, `BARMAN_CLOUD_BUCKET_CONSTRAINT.type` or
+`BARMAN_CLOUD_PREFIX_CONSTRAINT.type`. Any other reference is refused when the composition is
+built, because nothing would check it.
 
 ```typescript
 const factory = cnpgS3BackedCluster.factory('kro', { namespace: 'databases' });
@@ -352,6 +387,15 @@ await factory.deploy({
 `cnpgS3BackedCluster` reports `ready` once the cluster is `Ready` and its `ContinuousArchiving`
 condition is `True`.
 
+### Live backup and restore test
+
+`test/integration/cnpg/barman-cloud-backup-restore.test.ts` installs the default operator, the
+plugin and cert-manager, backs a cluster up to MinIO through an `ObjectStore` with
+`inheritFromIAMRole: true` (a test instance-metadata endpoint stands in for the IAM role),
+restores it into a new cluster and reads the rows back. It installs cluster-scoped operators, so
+it runs only on request, on a disposable cluster:
+`TYPEKRO_TEST_STORAGE_CLASS=standard bun run test:integration:cnpg-barman-cloud`.
+
 ## Bootstrap Composition
 
 Install the CNPG operator via Helm:
@@ -368,7 +412,7 @@ const factory = cnpgBootstrap.factory('kro', {
 await factory.deploy({
   name: 'cnpg',
   namespace: 'cnpg-system',
-  version: '0.23.0',
+  version: '0.29.2',
   installCRDs: true,
 });
 ```

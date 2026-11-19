@@ -8,6 +8,7 @@ import {
   BARMAN_CLOUD_PLUGIN_NAME,
   BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT,
   BARMAN_CLOUD_PREFIX_CONSTRAINT,
+  S3_BUCKET_NAME_RULE,
   barmanCloudPluginBootstrap,
   cnpgS3BackedCluster,
 } from '../../../src/factories/cnpg/index.js';
@@ -40,7 +41,44 @@ const clusterSpec = {
   schedule: '0 0 2 * * *',
 };
 
-const pluginSpec = { name: 'barman-cloud', namespace: 'cnpg-system', version: '0.9.0' as const };
+const pluginSpec = {
+  name: 'barman-cloud',
+  namespace: 'cnpg-system',
+  version: '0.9.0' as const,
+  operatorVersion: '1.30.2',
+};
+
+/** Bucket names AWS refuses, each for a different rule. */
+const INVALID_BUCKETS = [
+  '',
+  'ab',
+  'a'.repeat(64),
+  'Example_Backups',
+  'example..backup',
+  '.example-backups',
+  'example-backups-',
+  '192.168.5.4',
+  'xn--example-backups',
+  'sthree-example-backups',
+  'amzn-s3-demo-backups',
+  'example-backups-s3alias',
+  'example-backups--ol-s3',
+  'example-backups.mrap',
+  'example-backups--x-s3',
+  'example-backups--table-s3',
+];
+
+/** Bucket names AWS admits, near the edges of the rules. */
+const VALID_BUCKETS = [
+  'abc',
+  'a'.repeat(63),
+  'example.backups',
+  'example-.backups',
+  '1.2.3',
+  '1.2.3.4.5',
+  '192.168.5.4a',
+  'example-backups-111122223333-us-east-1-an',
+];
 
 async function clusterManifests(input: Record<string, unknown> = clusterSpec) {
   const factory = await cnpgS3BackedCluster.factory('direct', { namespace: 'databases' });
@@ -69,7 +107,44 @@ describe('barmanCloudPluginBootstrap (direct mode)', () => {
     expect(release.metadata.namespace).toBe('cnpg-system');
     expect(release.spec.chart.spec.chart).toBe('plugin-barman-cloud');
     expect(release.spec.chart.spec.version).toBe('0.9.0');
-    expect(release.spec.values).toEqual({ crds: { create: true } });
+    expect(release.spec.values).toEqual({
+      crds: { create: true },
+      service: { name: 'barman-cloud' },
+    });
+  });
+
+  it('refuses an operator older than CloudNativePG 1.30, or none', async () => {
+    for (const operatorVersion of ['1.25.0', '1.29.9', 'v1.30.2', '1.30', '2.0.0']) {
+      await expect(pluginManifests({ ...pluginSpec, operatorVersion })).rejects.toThrow(
+        'needs CloudNativePG 1.30.0 or later'
+      );
+    }
+    const { operatorVersion: _omitted, ...withoutOperator } = pluginSpec;
+    await expect(pluginManifests(withoutOperator)).rejects.toThrow();
+    for (const operatorVersion of ['1.30.0', '1.30.2', '1.31.0', '1.42.10']) {
+      await expect(pluginManifests({ ...pluginSpec, operatorVersion })).resolves.toBeArray();
+    }
+  });
+
+  it('keeps crds.create and the service name over per-call values', async () => {
+    const release = byKind(
+      await pluginManifests({
+        ...pluginSpec,
+        values: { service: { port: 9091 }, replicaCount: 2 },
+      }),
+      'HelmRelease'
+    );
+    expect(release.spec.values).toEqual({
+      crds: { create: true },
+      service: { name: 'barman-cloud', port: 9091 },
+      replicaCount: 2,
+    });
+    await expect(
+      pluginManifests({ ...pluginSpec, values: { service: { name: 'backups' } } })
+    ).rejects.toThrow("can't override service.name");
+    await expect(
+      pluginManifests({ ...pluginSpec, values: { crds: { create: false } } })
+    ).rejects.toThrow("can't override crds.create");
   });
 
   it('refuses any chart version but the pinned one, or none', async () => {
@@ -140,11 +215,14 @@ describe('cnpgS3BackedCluster (direct mode)', () => {
     });
   });
 
-  it('refuses an empty or malformed bucket or prefix', async () => {
-    for (const bucket of ['', 'Example_Backups']) {
+  it('refuses a bucket name AWS refuses, and an empty or malformed prefix', async () => {
+    for (const bucket of INVALID_BUCKETS) {
       await expect(clusterManifests({ ...clusterSpec, bucket })).rejects.toThrow(
-        'bucket must be an S3 bucket name'
+        'bucket must be an S3 general-purpose bucket name'
       );
+    }
+    for (const bucket of VALID_BUCKETS) {
+      await expect(clusterManifests({ ...clusterSpec, bucket })).resolves.toBeArray();
     }
     for (const prefix of ['', '/cnpg', 'cnpg/', 'cnpg//production']) {
       await expect(clusterManifests({ ...clusterSpec, prefix })).rejects.toThrow(
@@ -182,6 +260,36 @@ describe('barmanCloudPluginBootstrap (KRO admission)', () => {
     ]);
   });
 
+  it('refuses an instance naming an operator older than 1.30, or none', () => {
+    const { operatorVersion: _omitted, ...withoutOperator } = pluginSpec;
+    expect(admissionErrors(yamlText, 'BarmanCloudPluginBootstrap', withoutOperator)).toEqual([
+      'spec.operatorVersion: Required value',
+    ]);
+    for (const operatorVersion of ['1.25.0', '1.29.9', 'v1.30.2', '1.30']) {
+      expect(
+        admissionErrors(yamlText, 'BarmanCloudPluginBootstrap', { ...pluginSpec, operatorVersion })
+      ).toHaveLength(1);
+    }
+    expect(
+      admissionErrors(yamlText, 'BarmanCloudPluginBootstrap', {
+        ...pluginSpec,
+        operatorVersion: '1.31.0',
+      })
+    ).toEqual([]);
+  });
+
+  it('applies crds.create and the service name over instance values', () => {
+    const release = rgdOf(barmanCloudPluginBootstrap).spec.resources.find(
+      (resource) => resource.id === 'barmanCloudPluginHelmRelease'
+    );
+    const values = JSON.stringify(release?.template.spec?.values);
+    // The instance's values come first and the reserved values last, so they win.
+    expect(values.indexOf('schema.spec.values')).toBeGreaterThan(-1);
+    expect(values.lastIndexOf('barman-cloud')).toBeGreaterThan(
+      values.indexOf('schema.spec.values')
+    );
+  });
+
   it('refuses another chart version at admission, where the body check never runs', () => {
     expect(
       admissionErrors(yamlText, 'BarmanCloudPluginBootstrap', { ...pluginSpec, version: '0.8.1' })
@@ -204,13 +312,31 @@ describe('cnpgS3BackedCluster (KRO admission)', () => {
     expect(admissionErrors(yamlText, kind, withoutPrefix)).toEqual(['spec.prefix: Required value']);
   });
 
+  it('refuses at admission every bucket name AWS refuses', () => {
+    for (const bucket of INVALID_BUCKETS) {
+      expect(admissionErrors(yamlText, kind, { ...clusterSpec, bucket })).not.toEqual([]);
+    }
+    for (const bucket of VALID_BUCKETS) {
+      expect(admissionErrors(yamlText, kind, { ...clusterSpec, bucket })).toEqual([]);
+    }
+    // A pattern can't refuse these; the instance schema's CEL rule does.
+    for (const bucket of ['192.168.5.4', 'xn--example', 'example.mrap']) {
+      expect(admissionErrors(yamlText, kind, { ...clusterSpec, bucket })).toEqual([
+        `spec.bucket: failed rule: ${S3_BUCKET_NAME_RULE}`,
+      ]);
+    }
+  });
+
   it('refuses an empty bucket or prefix', () => {
-    expect(admissionErrors(yamlText, kind, { ...clusterSpec, bucket: '' })).toHaveLength(1);
+    expect(admissionErrors(yamlText, kind, { ...clusterSpec, bucket: '' })).not.toEqual([]);
     expect(admissionErrors(yamlText, kind, { ...clusterSpec, prefix: '' })).toHaveLength(1);
     expect(admissionErrors(yamlText, kind, { ...clusterSpec, prefix: '/cnpg' })).toHaveLength(1);
   });
 
   it('refuses credential fields: the instance schema has none', () => {
+    expect(admissionErrors(yamlText, kind, { ...clusterSpec, inheritFromIAMRole: false })).toEqual([
+      'spec.inheritFromIAMRole: unknown field',
+    ]);
     for (const field of ['s3Credentials', 'accessKeyId', 'secretAccessKey']) {
       expect(
         admissionErrors(yamlText, kind, {
@@ -259,6 +385,7 @@ describe('the Barman Cloud compositions composed inside another composition', ()
         barmanCloudPluginBootstrap({
           name: 'barman-cloud',
           version: pick(spec as never) as '0.9.0',
+          operatorVersion: '1.30.2',
         });
         return { ready: true };
       }
