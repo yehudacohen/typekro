@@ -179,7 +179,10 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
       code: 'CLEANUP_ERROR',
       retryable: true,
     });
-    expect(result.blockers[0]?.message).toContain('app: delete failed');
+    expect(result.blockers[0]?.message).toBe(
+      'Resource cleanup failed; completion could not be observed.'
+    );
+    expect(JSON.stringify(result)).not.toContain('delete failed');
     expect(result.retry).toMatchObject({ safe: true });
     expect(deployedInstances.has('my-app')).toBe(true);
   });

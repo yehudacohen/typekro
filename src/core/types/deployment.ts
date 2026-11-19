@@ -1065,10 +1065,19 @@ export interface ReadinessConfig {
 export interface RollbackResult {
   deploymentId: string;
   rolledBackResources: string[];
-  /** Exact identities of resources confirmed gone when available. */
+  /** Legacy successful operations; Namespace requests may still await factory completion. */
   deletedResources?: DeployedResource[];
+  /** Effective DELETE identities and their confirmed or deferred completion state. */
+  deletionProgress?: Array<{
+    resource: DeletionResourceIdentity;
+    status: 'deleted' | 'pending-namespace';
+  }>;
   /** Resources deliberately preserved by scope/lifecycle policy. */
   retainedResources?: DeployedResource[];
+  /** Last successful deletion-poll observations; omitted when presence is unproven. */
+  remainingResources?: DeletionResourceIdentity[];
+  /** Closed cleanup diagnostics, without raw Kubernetes response/error bodies. */
+  deletionBlockers?: DeletionBlocker[];
   duration: number;
   status: 'success' | 'partial' | 'failed';
   errors: DeploymentError[];
