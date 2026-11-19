@@ -74,7 +74,7 @@ describe('karpenterSpotPool (direct mode)', () => {
     );
   });
 
-  it('matches the published v1.14.1 NodePool and EC2NodeClass schemas', async () => {
+  it('matches the published v1.15.2 NodePool and EC2NodeClass schemas', async () => {
     const manifests = await render();
     expect(crdErrors(byKind(manifests, 'NodePool'), 'karpenter.sh_nodepools.yaml')).toEqual([]);
     expect(
@@ -135,6 +135,22 @@ describe('karpenterSpotPool (direct mode)', () => {
       consolidateAfter: '5m',
       budgets: [{ nodes: '1' }],
     });
+  });
+
+  it('bounds every disruption reason, node repair included, to one node at a time', async () => {
+    // A budget without `reasons` applies to every reason the CRD lists. From 1.15 that
+    // includes `Unhealthy` (node repair), so the pool never repairs more than one node at once.
+    const budget = crdSchema('karpenter.sh_nodepools.yaml').properties?.spec?.properties?.disruption
+      ?.properties?.budgets?.items;
+    expect(budget?.properties?.reasons?.items?.enum).toEqual([
+      'Underutilized',
+      'Empty',
+      'Drifted',
+      'Unhealthy',
+    ]);
+    const pool = byKind(await render(), 'NodePool');
+    const budgets = (pool.spec.disruption as { budgets: Record<string, unknown>[] }).budgets;
+    expect(budgets.map((entry) => entry.reasons)).toEqual([undefined]);
   });
 
   it('refuses an unpinned AMI alias', async () => {

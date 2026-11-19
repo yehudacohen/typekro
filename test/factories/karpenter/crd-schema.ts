@@ -1,6 +1,6 @@
 /**
  * A small structural validator for CRD `openAPIV3Schema`s, enough to check emitted objects
- * against Karpenter's published v1.14.1 CRDs offline (the chart version this factory pins): types, required and unknown properties, enums,
+ * against Karpenter's published v1.15.2 CRDs offline (the chart version this factory pins): types, required and unknown properties, enums,
  * patterns, lengths, bounds, item counts and int-or-string. `x-kubernetes-validations` (CEL)
  * rules are not evaluated.
  */

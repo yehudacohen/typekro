@@ -327,7 +327,7 @@ export interface KarpenterBootstrapConfig {
   name: string;
   /** Install namespace. @default 'kube-system' */
   namespace?: string;
-  /** Chart version for both `karpenter-crd` and `karpenter`. @default '1.14.1' */
+  /** Chart version for both `karpenter-crd` and `karpenter`. @default '1.15.2' */
   version?: string;
   /** EKS cluster name (`settings.clusterName`). */
   clusterName: string;

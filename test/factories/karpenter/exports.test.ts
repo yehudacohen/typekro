@@ -20,7 +20,7 @@ describe('typekro/karpenter exports', () => {
     expect(karpenter.validateNodePoolSpec).toBeTypeOf('function');
     expect(karpenter.validateEC2NodeClassSpec).toBeTypeOf('function');
     expect(karpenter.validateKarpenterBootstrapConfig).toBeTypeOf('function');
-    expect(karpenter.DEFAULT_KARPENTER_CHART_VERSION).toBe('1.14.1');
+    expect(karpenter.DEFAULT_KARPENTER_CHART_VERSION).toBe('1.15.2');
     expect(karpenter.DEFAULT_KARPENTER_REPOSITORY_URL).toBe('oci://public.ecr.aws/karpenter');
     expect(karpenter.KARPENTER_LABELS.capacityType).toBe('karpenter.sh/capacity-type');
   });

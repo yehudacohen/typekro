@@ -11,7 +11,7 @@ through Flux and gives you typed factories for its two APIs:
 - `nodePool` — `karpenter.sh/v1` `NodePool`, what Karpenter may launch and when it may remove it
 - `ec2NodeClass` — `karpenter.k8s.aws/v1` `EC2NodeClass`, how the EC2 instances are built
 
-Verified against the official `karpenter` and `karpenter-crd` charts **1.14.1**
+Verified against the official `karpenter` and `karpenter-crd` charts **1.15.2**
 (`oci://public.ecr.aws/karpenter`). TypeKro creates no AWS resources: see
 [AWS prerequisites](#aws-prerequisites).
 
@@ -90,7 +90,7 @@ manages the CRDs.
 |---|---|---|
 | `name` | release name, `fullnameOverride` | required |
 | `namespace` | install namespace | `kube-system` |
-| `version` | both chart versions | `1.14.1` |
+| `version` | both chart versions | `1.15.2` |
 | `clusterName` | `settings.clusterName` | required |
 | `clusterEndpoint` | `settings.clusterEndpoint` | discovered from EKS |
 | `interruptionQueue` | `settings.interruptionQueue` | disabled |
@@ -159,6 +159,9 @@ The pool's capacity types are `[spot, on-demand]`, so Karpenter prefers spot and
 on-demand. It uses at least 8 arm64 instance types across c/m/r 6g/7g/8g in sizes large and
 xlarge, spreads over `zones`, consolidates empty or underutilized nodes after 5 minutes,
 disrupts one node at a time, and has a CPU limit of `16` by default.
+Its one-node budget lists no `reasons`, so from Karpenter 1.15 it also bounds node repair
+(the `Unhealthy` reason) when the alpha `nodeRepair` gate is on: one unhealthy node is replaced
+at a time.
 
 `amiAlias` is required and must be pinned (`<family>@v<version>`, for example
 `al2023@v20251117`). `@latest` and a second `@` are refused in both modes: in direct mode by the
@@ -304,7 +307,7 @@ reconcile time are skipped.
 ## AWS prerequisites
 
 Create these outside TypeKro, for example with the upstream
-[CloudFormation template for 1.14.1](https://raw.githubusercontent.com/aws/karpenter-provider-aws/v1.14.1/website/content/en/docs/getting-started/getting-started-with-karpenter/cloudformation.yaml)
+[CloudFormation template for 1.15](https://raw.githubusercontent.com/aws/karpenter-provider-aws/6d1426c4c5155fbcba2a36175f26557e6ffc9363/website/content/en/v1.15/getting-started/getting-started-with-karpenter/cloudformation.yaml)
 ([explained](https://karpenter.sh/docs/reference/cloudformation/)), Terraform or eksctl:
 
 1. **Controller IAM role and policy.** Bound to the `karpenter` ServiceAccount in the install
@@ -312,6 +315,8 @@ Create these outside TypeKro, for example with the upstream
    (set `serviceAccount.annotations['eks.amazonaws.com/role-arn']`) or an
    [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html)
    association (no annotation). The policy must allow `iam:PassRole` on the node role.
+   The 1.15 policy also allows `ec2:RebootInstances`, which only the alpha `rebootForRepair`
+   AWS feature gate uses.
 2. **Node IAM role and instance profile.** Pass the role name as `role` and Karpenter
    manages the instance profile, or create the profile yourself and pass `instanceProfile`.
 3. **SQS interruption queue and EventBridge rules.** A queue (pass its name as
