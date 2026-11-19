@@ -12,6 +12,7 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
+import { specConstraint } from '../../core/validation/spec-constraint.js';
 import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 
 /** A status condition as ESO reports it. */
@@ -41,7 +42,10 @@ export interface SecretStoreSpec {
   provider: { aws: AwsPodIdentityProvider };
   /** How often the store re-validates, in seconds. */
   refreshInterval?: number;
-  /** ClusterSecretStore only: which namespaces may use the store. */
+  /**
+   * ClusterSecretStore only: which namespaces may use the store. `clusterSecretStore` requires at
+   * least one condition, each naming namespaces, a non-empty selector or name patterns.
+   */
   conditions?: Array<{
     namespaces?: string[];
     namespaceSelector?: {
@@ -133,23 +137,63 @@ export interface ExternalSecretsHelmReleaseConfig extends HelmReleaseLifecycleOp
 // COMPOSITIONS
 // =============================================================================
 
-/**
- * Inputs of `externalSecretsAws`: the controller plus one `ClusterSecretStore` for AWS Secrets
- * Manager. `serviceAccountName` is the controller's service account, which an EKS Pod Identity
- * association (created outside TypeKro) binds to an IAM role.
- */
-export const ExternalSecretsAwsConfigSchema = type({
+/** A DNS-1123 label: a namespace name. */
+const namespaceName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
+
+/** Inputs both AWS compositions share: the controller release and the store's provider. */
+const externalSecretsAwsControllerFields = {
   name: 'string',
   'namespace?': 'string',
   'version?': 'string',
   region: 'string',
   serviceAccountName: 'string',
-  /** Name of the ClusterSecretStore. Defaults to `name`. */
+  /** Name of the store. Defaults to `name`. */
   'storeName?': 'string',
+  /**
+   * Extra chart values. They can't override `installCRDs`, `serviceAccount.create` or
+   * `serviceAccount.name`: a conflicting value is refused, and the composition's own values are
+   * applied last.
+   */
   'values?': 'Record<string, unknown>',
+} as const;
+
+/**
+ * Inputs of `externalSecretsAws`: the controller plus one namespaced `SecretStore` for AWS
+ * Secrets Manager in `storeNamespace`. Only ExternalSecrets in that namespace can use the store.
+ * `serviceAccountName` is the controller's service account, which an EKS Pod Identity
+ * association (created outside TypeKro) binds to an IAM role.
+ */
+export const ExternalSecretsAwsConfigSchema = type({
+  ...externalSecretsAwsControllerFields,
+  storeNamespace: namespaceName,
 });
 
 export type ExternalSecretsAwsConfig = typeof ExternalSecretsAwsConfigSchema.infer;
+
+/**
+ * Namespaces allowed to use a cluster store, by name. At least one is required, so a cluster
+ * store is never open to every namespace. The pattern and item count are on the instance
+ * schema, so admission refuses an empty list in KRO mode.
+ */
+export const CLUSTER_STORE_ALLOWED_NAMESPACES = specConstraint({
+  path: 'allowedNamespaces',
+  type: namespaceName.array().atLeastLength(1),
+  code: 'EXTERNAL_SECRETS_CLUSTER_STORE_UNCONDITIONED',
+  message: (value) =>
+    `allowedNamespaces must list at least one namespace name; got ${JSON.stringify(value)}.`,
+});
+
+/**
+ * Inputs of `externalSecretsAwsClusterStore`, the explicit opt-in to cluster-wide access: the
+ * controller plus one `ClusterSecretStore` that only the namespaces in `allowedNamespaces` can use.
+ */
+export const ExternalSecretsAwsClusterStoreConfigSchema = type({
+  ...externalSecretsAwsControllerFields,
+  allowedNamespaces: CLUSTER_STORE_ALLOWED_NAMESPACES.type,
+});
+
+export type ExternalSecretsAwsClusterStoreConfig =
+  typeof ExternalSecretsAwsClusterStoreConfigSchema.infer;
 
 export const ExternalSecretsAwsStatusSchema = type({
   ready: 'boolean',

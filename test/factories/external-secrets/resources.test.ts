@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'bun:test';
+import {
+  isValuesMergeExpression,
+  type ValuesMergeExpression,
+} from '../../../src/core/aspects/values-merge.js';
+import { TypeKroError } from '../../../src/core/errors.js';
 import { getMetadataField } from '../../../src/core/metadata/index.js';
+import { Cel } from '../../../src/core/references/cel.js';
 import {
   assertPodIdentityProvider,
   clusterSecretStore,
@@ -14,6 +20,7 @@ import {
 import { crd, specErrors } from './crd-schema.js';
 
 const awsSpec = { provider: { aws: { service: 'SecretsManager' as const, region: 'us-east-1' } } };
+const clusterSpec = { ...awsSpec, conditions: [{ namespaces: ['app'] }] };
 
 function ready(
   resource: { readinessEvaluator?: (live: unknown) => { ready: boolean } },
@@ -25,7 +32,7 @@ function ready(
 
 describe('ClusterSecretStore and SecretStore', () => {
   it('create v1 stores whose specs match the published CRDs', () => {
-    const cluster = clusterSecretStore({ name: 'aws', spec: awsSpec });
+    const cluster = clusterSecretStore({ name: 'aws', spec: clusterSpec });
     expect(cluster.apiVersion).toBe('external-secrets.io/v1');
     expect(cluster.kind).toBe('ClusterSecretStore');
     expect(getMetadataField(cluster, 'scope')).toBe('cluster');
@@ -48,14 +55,14 @@ describe('ClusterSecretStore and SecretStore', () => {
       },
     };
     expect(() => assertPodIdentityProvider(withKeys)).toThrow('EKS Pod Identity');
-    expect(() => clusterSecretStore({ name: 'aws', spec: withKeys as typeof awsSpec })).toThrow(
-      'EKS Pod Identity'
-    );
+    expect(() =>
+      clusterSecretStore({ name: 'aws', spec: { ...withKeys, conditions: clusterSpec.conditions } })
+    ).toThrow('EKS Pod Identity');
     expect(() => assertPodIdentityProvider(awsSpec)).not.toThrow();
   });
 
   it('are ready only when the Ready condition is True', () => {
-    const store = clusterSecretStore({ name: 'aws', spec: awsSpec });
+    const store = clusterSecretStore({ name: 'aws', spec: clusterSpec });
     expect(ready(store, { conditions: [{ type: 'Ready', status: 'True', reason: 'Valid' }] })).toBe(
       true
     );
@@ -65,6 +72,41 @@ describe('ClusterSecretStore and SecretStore', () => {
       })
     ).toBe(false);
     expect(ready(store, undefined)).toBe(false);
+  });
+
+  it('refuses a ClusterSecretStore that any namespace could use', () => {
+    const unconditioned = [
+      undefined,
+      [],
+      [{}],
+      [{ namespaces: [] }],
+      // An empty selector selects every namespace, even beside a name list.
+      [{ namespaceSelector: {} }],
+      [{ namespaces: ['app'], namespaceSelector: { matchLabels: {} } }],
+    ];
+    for (const conditions of unconditioned) {
+      const spec = conditions === undefined ? awsSpec : { ...awsSpec, conditions };
+      let refusal: unknown;
+      try {
+        clusterSecretStore({ name: 'aws', spec });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(TypeKroError);
+      expect((refusal as TypeKroError).code).toBe('EXTERNAL_SECRETS_CLUSTER_STORE_UNCONDITIONED');
+    }
+  });
+
+  it('accepts conditions that name namespaces, select them by label or match their names', () => {
+    for (const conditions of [
+      [{ namespaces: ['app'] }],
+      [{ namespaceSelector: { matchLabels: { 'secrets.example.com/aws': 'allowed' } } }],
+      [{ namespaceSelector: { matchExpressions: [{ key: 'team', operator: 'Exists' }] } }],
+      [{ namespaceRegexes: ['^team-a-'] }],
+    ]) {
+      const store = clusterSecretStore({ name: 'aws', spec: { ...awsSpec, conditions } });
+      expect(specErrors('clustersecretstores.external-secrets.io', store.spec)).toEqual([]);
+    }
   });
 
   it('the schema check catches a field the CRD does not have', () => {
@@ -119,5 +161,59 @@ describe('Helm', () => {
       crds: { annotations: { 'helm.sh/resource-policy': 'keep' } },
       serviceAccount: { create: true, name: 'eso' },
     });
+  });
+
+  it('layers caller values without losing the required ones', () => {
+    expect(
+      mapExternalSecretsConfigToHelmValues({
+        serviceAccountName: 'eso',
+        values: {
+          replicaCount: 2,
+          installCRDs: true,
+          serviceAccount: { name: 'eso', annotations: { team: 'platform' } },
+        },
+      })
+    ).toEqual({
+      crds: { annotations: { 'helm.sh/resource-policy': 'keep' } },
+      replicaCount: 2,
+      installCRDs: true,
+      serviceAccount: { create: true, name: 'eso', annotations: { team: 'platform' } },
+    });
+  });
+
+  it('refuses raw values that override the CRDs or the Pod Identity service account', () => {
+    for (const [values, conflicts] of [
+      [{ installCRDs: false }, ['installCRDs']],
+      [{ serviceAccount: { create: false } }, ['serviceAccount.create']],
+      [{ serviceAccount: { name: 'other' } }, ['serviceAccount.name']],
+      [{ serviceAccount: 'other' }, ['serviceAccount']],
+      [
+        { installCRDs: false, serviceAccount: { create: false, name: 'other' } },
+        ['installCRDs', 'serviceAccount.create', 'serviceAccount.name'],
+      ],
+    ] as const) {
+      let refusal: unknown;
+      try {
+        mapExternalSecretsConfigToHelmValues({ serviceAccountName: 'eso', values });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(TypeKroError);
+      expect((refusal as TypeKroError).code).toBe('EXTERNAL_SECRETS_RESERVED_CHART_VALUE');
+      expect((refusal as TypeKroError).context).toEqual({ conflicts });
+    }
+  });
+
+  it('applies the required values last over values only known per instance', () => {
+    const perInstance = Cel.expr<Record<string, unknown>>('schema.spec.values');
+    const merged = mapExternalSecretsConfigToHelmValues({
+      serviceAccountName: 'eso',
+      values: perInstance,
+    }) as unknown as ValuesMergeExpression;
+    expect(isValuesMergeExpression(merged)).toBe(true);
+    expect(merged.overlays).toEqual([
+      perInstance,
+      { installCRDs: true, serviceAccount: { create: true, name: 'eso' } },
+    ]);
   });
 });

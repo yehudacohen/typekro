@@ -158,7 +158,7 @@ import { inngestBootstrap } from 'typekro/inngest';
 import { ec2NodeClass, karpenterBootstrap, nodePool } from 'typekro/karpenter';
 
 // External Secrets Operator (AWS Secrets Manager with EKS Pod Identity)
-import { clusterSecretStore, externalSecret, externalSecretsAws } from 'typekro/external-secrets';
+import { externalSecret, externalSecretsAws, secretStore } from 'typekro/external-secrets';
 
 // Full-stack web app compositions
 import { webAppWithProcessing } from 'typekro/webapp';
