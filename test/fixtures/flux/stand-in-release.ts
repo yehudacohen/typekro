@@ -1,7 +1,7 @@
 /**
  * A neutral stand-in with the shape of a Flux release's install manifests: a namespace, a
  * quota, CRDs, service accounts, cluster RBAC, a service, a network policy and two controllers.
- * It is NOT Flux; the pinned upstream manifests replace it once their download is approved.
+ * It is NOT Flux; it keeps the unit tests small. The pinned upstream releases have their own test.
  *
  * One CRD has a field with `x-kubernetes-preserve-unknown-fields` and no `type`, as Flux's
  * HelmRelease `values` does, so the Kubernetes 1.33 schema fix has something to fix.

@@ -1,17 +1,10 @@
 /**
- * PINNED FLUX RELEASES
- *
- * This registry is intentionally empty. Downloading Flux's release `install.yaml` has not been
- * approved yet, so no upstream manifests are vendored. Tests use a neutral stand-in release
- * (`test/fixtures/flux/stand-in-release.ts`) that has the shape of Flux's manifests but is not
- * Flux.
- *
- * To add a release once the download is approved, follow `../README.md`: add
- * `releases/<version>.ts` exporting a `FluxRelease` parsed from that version's `install.yaml`,
- * and register it below.
+ * Pinned Flux releases, by exact version. Each is generated from that release's `install.yaml`
+ * by `scripts/vendor-flux-release.ts`; see `../README.md` to add another.
  */
 import type { FluxRelease } from '../types.js';
+import { fluxV2_7_5 } from './v2.7.5.js';
 
 export const FLUX_RELEASES: Readonly<Record<string, FluxRelease>> = {
-  // 'v2.7.5': fluxV2_7_5,  <- pinned release manifests go here once the download is approved.
+  'v2.7.5': fluxV2_7_5,
 };

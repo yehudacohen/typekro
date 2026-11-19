@@ -1,6 +1,6 @@
 /**
- * Flux install factory, against a neutral stand-in release shaped like Flux's
- * install manifests (no upstream manifests are vendored).
+ * Flux install factory, against a small neutral stand-in release shaped like Flux's install
+ * manifests. flux-install-release.test.ts covers the pinned upstream release.
  */
 import { describe, expect, it } from 'bun:test';
 import { loadAll } from 'js-yaml';
@@ -203,9 +203,9 @@ describe('makeFluxInstall (Alchemy declarations)', () => {
 });
 
 describe('fluxInstallForVersion', () => {
-  it('has no vendored release yet and points at the README', () => {
-    expect(Object.keys(FLUX_RELEASES)).toEqual([]);
-    expect(() => fluxInstallForVersion('v2.7.5')).toThrow('src/factories/flux/install/README.md');
+  it('builds registered releases and points at the README for others', () => {
+    expect(Object.keys(FLUX_RELEASES)).toEqual(['v2.7.5']);
+    expect(() => fluxInstallForVersion('v2.6.0')).toThrow('src/factories/flux/install/README.md');
     expect(() => fluxInstallForVersion('latest')).toThrow('Flux version must be pinned');
   });
 });

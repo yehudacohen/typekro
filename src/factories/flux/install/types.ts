@@ -20,6 +20,8 @@ export interface FluxManifestObject {
 export interface FluxRelease {
   /** For example `v2.7.5`. */
   readonly version: string;
+  /** sha256 of the release's `install.yaml` these documents were parsed from. */
+  readonly sourceSha256?: string;
   readonly documents: readonly FluxManifestObject[];
 }
 
@@ -37,10 +39,7 @@ export interface FluxInstallConfig {
   version: string;
   /** Replace every controller's pod tolerations. @default the manifest's own */
   tolerations?: FluxToleration[];
-  /**
-   * Replace every controller's pod node selector. @default the manifest's own
-   * (`kubernetes.io/os: linux` in Flux's releases). Include that key when you set it.
-   */
+  /** Replace every controller's pod node selector. @default the manifest's own (none in v2.7.5) */
   nodeSelector?: Record<string, string>;
 }
 

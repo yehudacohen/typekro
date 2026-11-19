@@ -7,12 +7,21 @@ so direct, KRO and Alchemy mode can all apply them. It refuses an unpinned versi
 schema fix, replaces every controller's tolerations and node selector when those inputs are given,
 and reports `ready` once every controller Deployment has all its replicas ready.
 
-**No Flux release is vendored yet.** Downloading Flux's `install.yaml` has not been approved, so
-`releases/index.ts` is an empty, clearly marked registry and the tests use a neutral stand-in
-release (`test/fixtures/flux/stand-in-release.ts`) shaped like Flux's manifests.
+`fluxInstallForVersion('v2.7.5')` builds it for a release in `FLUX_RELEASES`.
 
-**Adding a pinned release, once the download is approved:** download
-`https://github.com/fluxcd/flux2/releases/download/<version>/install.yaml` for an exact version
-(for example `v2.7.5`). Parse it into `releases/<version>.ts` exporting a `FluxRelease`
-(`{ version, documents }`). Register it in `FLUX_RELEASES`, record the file's sha256 next to it,
-and add a test that renders it in direct and KRO mode.
+## Pinned releases
+
+| Version | `install.yaml` sha256 |
+| --- | --- |
+| `v2.7.5` | `c346a4714b8e3a3bd73bad36d48f3d690df8c7707646633a70851332253d4dbf` |
+
+Each sha256 matches the digest GitHub publishes for the release asset.
+
+## Adding a pinned release
+
+1. Download `https://github.com/fluxcd/flux2/releases/download/<version>/install.yaml` for an
+   exact version, and check its sha256 against the asset digest on the release.
+2. Run `bun run scripts/vendor-flux-release.ts <version> <path/to/install.yaml>`. It parses the
+   file as plain YAML data and writes `releases/<version>.ts` with the documents and the sha256.
+3. Format it with `biome format --write`, register it in `releases/index.ts`, add a row above,
+   and add a test like `test/factories/flux/flux-install-release.test.ts`.
