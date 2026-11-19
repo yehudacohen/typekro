@@ -1,0 +1,345 @@
+{
+  "source": {
+    "layer": "RivetKubernetes.StatefulSetControlPlane",
+    "packages": {
+      "alchemy": "2.0.0-beta.87",
+      "@alchemy.run/kubernetes": "2.0.0-beta.87",
+      "@alchemy.run/rivet": "2.0.0-beta.87",
+      "effect": "4.1.4"
+    },
+    "variant": "expose ClusterIP, one engine, file-system object storage, default StorageClass"
+  },
+  "graph": {
+    "name": "rivet-control-plane",
+    "kind": "RivetControlPlane",
+    "apiVersion": "v1alpha1",
+    "spec": [
+      {
+        "name": "name",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.name",
+        "pattern": "^[a-z](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 32
+      },
+      {
+        "name": "namespace",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.namespace",
+        "default": "default",
+        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 63
+      },
+      {
+        "name": "image",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.image",
+        "default": "rivetdev/engine:3.0.0@sha256:5ae3c24275eeff87ad1962f4d66fcdb85786fc1397feeeb55afc2ca1f7ccf6f2"
+      },
+      {
+        "name": "diskSize",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.diskSize",
+        "default": "10Gi"
+      },
+      {
+        "name": "pool",
+        "kind": "string",
+        "origin": "lowering of Rivet.Pool",
+        "default": "default",
+        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 16
+      }
+    ],
+    "resources": [
+      {
+        "id": "api",
+        "origin": "Kubernetes.Manifest RivetApiService",
+        "object": {
+          "apiVersion": "v1",
+          "kind": "Service",
+          "metadata": {
+            "name": { "$param": "name" },
+            "namespace": { "$param": "namespace" },
+            "labels": {
+              "app.kubernetes.io/name": { "$param": "name" },
+              "app.kubernetes.io/part-of": "rivet"
+            }
+          },
+          "spec": {
+            "type": "ClusterIP",
+            "selector": {
+              "app.kubernetes.io/name": { "$param": "name" },
+              "app.kubernetes.io/part-of": "rivet"
+            },
+            "ports": [{ "name": "api", "port": 6420, "targetPort": 6420 }]
+          }
+        },
+        "dependsOn": []
+      },
+      {
+        "id": "engines",
+        "origin": "Kubernetes.Manifest RivetEngines",
+        "object": {
+          "apiVersion": "apps/v1",
+          "kind": "StatefulSet",
+          "metadata": {
+            "name": { "$param": "name" },
+            "namespace": { "$param": "namespace" },
+            "labels": {
+              "app.kubernetes.io/name": { "$param": "name" },
+              "app.kubernetes.io/part-of": "rivet"
+            }
+          },
+          "spec": {
+            "serviceName": { "$template": [{ "$param": "name" }, "-peers"] },
+            "replicas": 1,
+            "podManagementPolicy": "Parallel",
+            "selector": {
+              "matchLabels": {
+                "app.kubernetes.io/name": { "$param": "name" },
+                "app.kubernetes.io/part-of": "rivet"
+              }
+            },
+            "template": {
+              "metadata": {
+                "labels": {
+                  "app.kubernetes.io/name": { "$param": "name" },
+                  "app.kubernetes.io/part-of": "rivet"
+                }
+              },
+              "spec": {
+                "terminationGracePeriodSeconds": 120,
+                "containers": [
+                  {
+                    "name": "engine",
+                    "image": { "$param": "image" },
+                    "ports": [
+                      { "name": "api", "containerPort": 6420 },
+                      { "name": "peer", "containerPort": 6421 }
+                    ],
+                    "env": [
+                      {
+                        "name": "POD_IP",
+                        "valueFrom": { "fieldRef": { "fieldPath": "status.podIP" } }
+                      },
+                      {
+                        "name": "RIVET__AUTH__ADMIN_TOKEN",
+                        "valueFrom": {
+                          "secretKeyRef": {
+                            "name": { "$template": [{ "$param": "name" }, "-token"] },
+                            "key": "token"
+                          }
+                        }
+                      },
+                      { "name": "RIVET__STORAGE__LOG_DIRECTORY", "value": "/var/lib/rivet" },
+                      { "name": "RIVET__API_PEER__ADVERTISE_ADDRESS", "value": "$(POD_IP):6421" },
+                      { "name": "RIVET__TELEMETRY__ENABLED", "value": "false" },
+                      {
+                        "name": "RIVET__OBJECT_STORAGE__PRIMARY__FILE_SYSTEM__PATH",
+                        "value": "/var/lib/rivet/objects"
+                      }
+                    ],
+                    "volumeMounts": [{ "name": "data", "mountPath": "/var/lib/rivet" }],
+                    "readinessProbe": {
+                      "httpGet": { "path": "/health", "port": 6420 },
+                      "periodSeconds": 5
+                    }
+                  }
+                ]
+              }
+            },
+            "volumeClaimTemplates": [
+              {
+                "metadata": { "name": "data" },
+                "spec": {
+                  "accessModes": ["ReadWriteOnce"],
+                  "resources": { "requests": { "storage": { "$param": "diskSize" } } }
+                }
+              }
+            ]
+          }
+        },
+        "readiness": "statefulset-replicas",
+        "dependsOn": []
+      },
+      {
+        "id": "peers",
+        "origin": "Kubernetes.Manifest RivetPeerService",
+        "object": {
+          "apiVersion": "v1",
+          "kind": "Service",
+          "metadata": {
+            "name": { "$template": [{ "$param": "name" }, "-peers"] },
+            "namespace": { "$param": "namespace" },
+            "labels": {
+              "app.kubernetes.io/name": { "$param": "name" },
+              "app.kubernetes.io/part-of": "rivet"
+            }
+          },
+          "spec": {
+            "clusterIP": "None",
+            "selector": {
+              "app.kubernetes.io/name": { "$param": "name" },
+              "app.kubernetes.io/part-of": "rivet"
+            },
+            "ports": [{ "name": "peer", "port": 6421, "targetPort": 6421 }]
+          }
+        },
+        "dependsOn": []
+      },
+      {
+        "id": "pool",
+        "origin": "lowering of Rivet.Pool",
+        "object": {
+          "apiVersion": "batch/v1",
+          "kind": "Job",
+          "metadata": {
+            "name": {
+              "$template": [{ "$param": "name" }, "-pool-", { "$param": "pool" }, "-0b24c1ba"]
+            },
+            "namespace": { "$param": "namespace" },
+            "labels": {
+              "app.kubernetes.io/name": { "$param": "name" },
+              "app.kubernetes.io/part-of": "rivet"
+            }
+          },
+          "spec": {
+            "backoffLimit": 0,
+            "template": {
+              "metadata": {
+                "labels": {
+                  "app.kubernetes.io/name": { "$param": "name" },
+                  "app.kubernetes.io/part-of": "rivet"
+                }
+              },
+              "spec": {
+                "restartPolicy": "Never",
+                "containers": [
+                  {
+                    "name": "configure-pool",
+                    "image": "curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69",
+                    "env": [
+                      {
+                        "name": "RIVET_ENDPOINT",
+                        "value": {
+                          "$template": [
+                            "http://",
+                            { "$param": "name" },
+                            ".",
+                            { "$param": "namespace" },
+                            ".svc.cluster.local:6420"
+                          ]
+                        }
+                      },
+                      { "name": "RIVET_POOL", "value": { "$param": "pool" } },
+                      {
+                        "name": "RIVET_TOKEN",
+                        "valueFrom": {
+                          "secretKeyRef": {
+                            "name": { "$template": [{ "$param": "name" }, "-token"] },
+                            "key": "token"
+                          }
+                        }
+                      }
+                    ],
+                    "command": [
+                      "sh",
+                      "-c",
+                      "try=0\nuntil curl -fsS -o /dev/null -X PUT -H \"authorization: Bearer $RIVET_TOKEN\" -H \"content-type: application/json\" --data '{\"drain_on_version_upgrade\":true}' \"$RIVET_ENDPOINT/pools/$RIVET_POOL?namespace=default\"; do\n  try=$((try + 1))\n  if [ \"$try\" -ge 30 ]; then echo \"rivet pool $RIVET_POOL was not configured after $try tries\" >&2; exit 1; fi\n  sleep $((try < 10 ? try : 10))\ndone\necho \"rivet pool $RIVET_POOL configured after $((try + 1)) tries\""
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "readiness": "job-succeeded",
+        "dependsOn": ["engines", "api"]
+      }
+    ],
+    "status": {
+      "nodeEndpoint": {
+        "$template": [
+          "http://",
+          { "$param": "name" },
+          ".",
+          { "$param": "namespace" },
+          ".svc.cluster.local:6420"
+        ]
+      }
+    }
+  },
+  "outsideGraph": {
+    "name": "rivet-control-plane-admin-token",
+    "kind": "RivetControlPlaneAdminToken",
+    "apiVersion": "v1alpha1",
+    "spec": [
+      {
+        "name": "name",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.name",
+        "pattern": "^[a-z](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 32
+      },
+      {
+        "name": "namespace",
+        "kind": "string",
+        "origin": "StatefulSetControlPlaneProps.namespace",
+        "default": "default",
+        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 63
+      },
+      { "name": "token", "kind": "string", "origin": "lowering of Alchemy.Random RivetAdminToken" }
+    ],
+    "resources": [
+      {
+        "id": "adminToken",
+        "origin": "Kubernetes.Manifest RivetTokenSecret",
+        "object": {
+          "apiVersion": "v1",
+          "kind": "Secret",
+          "metadata": {
+            "name": { "$template": [{ "$param": "name" }, "-token"] },
+            "namespace": { "$param": "namespace" },
+            "labels": {
+              "app.kubernetes.io/name": { "$param": "name" },
+              "app.kubernetes.io/part-of": "rivet"
+            }
+          },
+          "type": "Opaque",
+          "stringData": { "token": { "$param": "token" } }
+        },
+        "dependsOn": []
+      }
+    ]
+  },
+  "lowerings": [
+    {
+      "alchemy": "Alchemy.Random RivetAdminToken (32 bytes) and Kubernetes.Manifest RivetTokenSecret",
+      "to": "the Secret in the separate RivetControlPlaneAdminToken composition, outside the RGD",
+      "reason": "kro cannot generate values, and TypeKro keeps credential bytes out of KRO specs; the RGD only names the Secret"
+    },
+    {
+      "alchemy": "Rivet.Namespace RivetNamespace (a call to the engine API)",
+      "to": "the engine's built-in default namespace",
+      "reason": "Alchemy creates a stage namespace through the API; the RGD uses 'default', which the engine provides without an API call"
+    },
+    {
+      "alchemy": "Rivet.Pool (declared by RivetKubernetes pools, not by the control plane)",
+      "to": "Job \"pool\" running curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69: PUT /pools/<pool>?namespace=default, retried up to 30 times",
+      "reason": "RivetKit nodes join a pool the engine already knows; kro has no API-call node, so a Job makes the call"
+    },
+    {
+      "alchemy": "Output.all(engines.uid, api.uid) ordering the engine API call",
+      "to": "pool.dependsOn(engines, api)",
+      "reason": "the capturing provider sees resolved values only, so order-only edges are invisible to it and are declared by this rule"
+    }
+  ],
+  "findings": [
+    {
+      "kind": "capture-failed",
+      "param": "instances",
+      "detail": "RivetKubernetes.StatefulSetControlPlane(\"Rivet\") runs 2 engines, which share actor data through objectStorage."
+    }
+  ]
+}
