@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { type } from 'arktype';
+import { type, type Type } from 'arktype';
 
 import { TypeKroError } from '../../../src/core/errors.js';
-import {
-  specConstraint,
-  specConstraintValidations,
-} from '../../../src/core/validation/spec-constraint.js';
-import { kubernetesComposition, simple } from '../../../src/index.js';
+import { specConstraint } from '../../../src/core/validation/spec-constraint.js';
+import { Cel, kubernetesComposition, simple } from '../../../src/index.js';
 import { admissionErrors } from '../../utils/kro-admission.js';
 
 const PINNED_TAG = specConstraint({
@@ -22,7 +19,9 @@ const SCOPED_ACCESS = specConstraint({
   rule: '(has(self.namespaces) && size(self.namespaces) > 0) || (has(self.labels) && size(self.labels) > 0)',
   holds: (access) =>
     (access.namespaces?.length ?? 0) > 0 || Object.keys(access.labels ?? {}).length > 0,
+  required: true,
   code: 'TEST_ACCESS_UNSCOPED',
+  declaredWith: 'SCOPED_ACCESS.type',
   message: () => 'access must name namespaces or labels',
 });
 
@@ -38,8 +37,7 @@ const constrained = kubernetesComposition(
     SCOPED_ACCESS.check(spec.access);
     simple.ConfigMap({ id: 'config', name: spec.name, data: { tag: spec.tag } });
     return { ready: true };
-  },
-  { schemaFieldValidations: specConstraintValidations(PINNED_TAG, SCOPED_ACCESS) }
+  }
 );
 
 const good = { name: 'demo', tag: 'v1.2.3', access: { namespaces: ['apps'] } };
@@ -74,7 +72,6 @@ describe('specConstraint', () => {
         message: () => 'x',
       })
     ).toThrow(/together/);
-    expect(() => specConstraintValidations(SCOPED_ACCESS, SCOPED_ACCESS)).toThrow(/combine/);
   });
 
   it('runs in direct mode, when the composition body sees concrete values', () => {
@@ -86,9 +83,17 @@ describe('specConstraint', () => {
   describe('KRO mode', () => {
     const yaml = constrained.factory('kro').toYaml();
 
-    it('puts both halves on the generated instance schema', () => {
+    it('puts both halves on the generated instance schema with no per-composition wiring', () => {
       expect(yaml).toContain('tag: string | pattern="^v[0-9]+\\\\.[0-9]+\\\\.[0-9]+$"');
       expect(yaml).toContain('validation="(has(self.namespaces)');
+      expect(yaml).toContain('required=true');
+    });
+
+    it('refuses an instance that omits a required constrained field', () => {
+      const { access: _omitted, ...withoutAccess } = good;
+      expect(admissionErrors(yaml, 'SpecConstraintTest', withoutAccess)).toEqual([
+        'spec.access: Required value',
+      ]);
     });
 
     it('admits a good instance', () => {
@@ -102,6 +107,71 @@ describe('specConstraint', () => {
       expect(admissionErrors(yaml, 'SpecConstraintTest', { ...good, access: {} })).toEqual([
         `spec.access: failed rule: ${SCOPED_ACCESS.rule}`,
       ]);
+    });
+  });
+
+  describe('enforce, for a factory that takes the value from any caller', () => {
+    // The thunk defines the composition, which runs its body against the schema proxy, and
+    // serializes it, so a refusal at either step counts.
+    const probe = (schema: Type<object>, pick: (spec: never) => unknown) => () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'enforce-probe',
+          kind: 'EnforceProbe',
+          spec: schema,
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          SCOPED_ACCESS.enforce(pick(spec as never));
+          simple.ConfigMap({ id: 'config', name: 'probe', data: { a: 'b' } });
+          return { ready: true };
+        }
+      );
+      return composition.toYaml();
+    };
+
+    it('accepts a concrete admitted value and refuses a refused or missing one', () => {
+      expect(() => SCOPED_ACCESS.enforce({ namespaces: ['apps'] })).not.toThrow();
+      expect(() => SCOPED_ACCESS.enforce({})).toThrow(/access must name/);
+      expect(() => SCOPED_ACCESS.enforce(undefined)).toThrow(/access must name/);
+    });
+
+    it('accepts a reference to a required field declared with the constrained type', () => {
+      expect(
+        probe(type({ access: SCOPED_ACCESS.type }), (spec: { access: unknown }) => spec.access)
+      ).not.toThrow();
+    });
+
+    it('refuses a reference to an unconstrained, optional or derived field', () => {
+      const unconstrained = probe(
+        type({ access: { 'namespaces?': 'string[]', 'labels?': 'Record<string, string>' } }),
+        (spec: { access: unknown }) => spec.access
+      );
+      expect(unconstrained).toThrow(/declared with SCOPED_ACCESS\.type/);
+      expect(
+        probe(type({ 'access?': SCOPED_ACCESS.type }), (spec: { access: unknown }) => spec.access)
+      ).toThrow(/declared with SCOPED_ACCESS\.type/);
+      expect(
+        probe(type({ access: SCOPED_ACCESS.type }), (spec: { access: unknown }) =>
+          Cel.expr('has(', spec.access, ') ? ', spec.access, ' : {}')
+        )
+      ).toThrow(/declared with SCOPED_ACCESS\.type/);
+    });
+
+    it('refuses an optional field declared with a constraint that requires it', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'optional-required',
+          kind: 'OptionalRequired',
+          spec: type({ 'access?': SCOPED_ACCESS.type }),
+          status: type({ ready: 'boolean' }),
+        },
+        () => {
+          simple.ConfigMap({ id: 'config', name: 'probe', data: { a: 'b' } });
+          return { ready: true };
+        }
+      );
+      expect(() => composition.toYaml()).toThrow(/requires the field, but the field is optional/);
     });
   });
 });

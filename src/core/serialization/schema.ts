@@ -41,6 +41,10 @@ import {
   findLiteralStatusLeaves,
   formatLiteralStatusLeaves,
 } from '../validation/literal-status.js';
+import {
+  type SpecConstraintAdmission,
+  specConstraintAdmission,
+} from '../validation/spec-constraint.js';
 import { arkConstraintRule } from './arktype-ast.js';
 import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
 
@@ -158,13 +162,7 @@ function getKroTypeFromJson(node: unknown, context?: KroFieldContext): string {
         )}`;
         registerKroCustomType(context.customTypes, itemType, elementType, path);
       }
-      const arrayType = `[]${itemType}`;
-      const markers: string[] = [];
-      const minItems = arkConstraintRule(nodeObj.minLength);
-      const maxItems = arkConstraintRule(nodeObj.maxLength);
-      if (typeof minItems === 'number') markers.push(`minItems=${minItems}`);
-      if (typeof maxItems === 'number') markers.push(`maxItems=${maxItems}`);
-      return markers.length > 0 ? `${arrayType} | ${markers.join(' ')}` : arrayType;
+      return withArrayItemMarkers(`[]${itemType}`, nodeObj);
     }
     const domain = arkConstraintRule(nodeObj.domain);
     if (domain === 'number') {
@@ -282,6 +280,16 @@ function getKroTypeFromJson(node: unknown, context?: KroFieldContext): string {
   return 'string';
 }
 
+/** An array type with the `minItems` / `maxItems` markers of its ArkType node. */
+function withArrayItemMarkers(arrayType: string, nodeObj: Record<string, unknown>): string {
+  const markers: string[] = [];
+  const minItems = arkConstraintRule(nodeObj.minLength);
+  const maxItems = arkConstraintRule(nodeObj.maxLength);
+  if (typeof minItems === 'number') markers.push(`minItems=${minItems}`);
+  if (typeof maxItems === 'number') markers.push(`maxItems=${maxItems}`);
+  return markers.length > 0 ? `${arrayType} | ${markers.join(' ')}` : arrayType;
+}
+
 /**
  * Kubernetes validates OpenAPI patterns with RE2. ArkType accepts JavaScript
  * regular expressions, whose grammar additionally includes constructs that
@@ -335,9 +343,21 @@ function arktypeJsonToKroFields(node: unknown, context?: KroFieldContext): Recor
   const required = Array.isArray(nodeObj.required) ? nodeObj.required : [];
   const optional = Array.isArray(nodeObj.optional) ? nodeObj.optional : [];
   const props = [...required, ...optional];
+  const requiredKeys = new Set(required.map((prop) => prop.key));
 
   for (const prop of props) {
     const childNode = prop.value;
+
+    const admission = specConstraintAdmission(childNode);
+    if (admission) {
+      fields[prop.key] = constrainedKroField(
+        childNode,
+        admission,
+        requiredKeys.has(prop.key),
+        fieldContext(context, prop.key)
+      );
+      continue;
+    }
 
     if (
       typeof childNode === 'object' &&
@@ -350,6 +370,73 @@ function arktypeJsonToKroFields(node: unknown, context?: KroFieldContext): Recor
     }
   }
   return fields;
+}
+
+function isStructuredObjectNode(node: unknown): node is Record<string, unknown> {
+  return (
+    typeof node === 'object' &&
+    node !== null &&
+    !Array.isArray(node) &&
+    (Array.isArray((node as Record<string, unknown>).required) ||
+      Array.isArray((node as Record<string, unknown>).optional))
+  );
+}
+
+/** A `validation="..."` marker for a CEL rule. */
+function kroValidationMarker(rule: string): string {
+  return `validation="${rule.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+/**
+ * A field declared with a spec constraint's type: its KRO type plus the constraint's CEL rule and
+ * `required=true`. A rule can only read fields the schema declares, so a structured object, or a
+ * list of them, becomes a named custom type instead of a schemaless `object`.
+ */
+function constrainedKroField(
+  node: unknown,
+  admission: SpecConstraintAdmission,
+  requiredKey: boolean,
+  context: KroFieldContext | undefined
+): string {
+  const path = context?.path.join('.') ?? '';
+  if (admission.required && !requiredKey) {
+    throw new TypeKroError(
+      `schema.spec.${path} is declared with a spec constraint that requires the field, but the ` +
+        'field is optional. Declare it required.',
+      'KRO_SPEC_CONSTRAINT_FIELD_OPTIONAL',
+      { path }
+    );
+  }
+  let fieldType: string;
+  const nodeObj = node as Record<string, unknown>;
+  if (context && isStructuredObjectNode(node)) {
+    fieldType = kroTypeNameStem(context.kind, context.path);
+    registerKroCustomType(context.customTypes, fieldType, arktypeJsonToKroFields(node, context), path);
+  } else if (
+    context &&
+    typeof nodeObj === 'object' &&
+    nodeObj !== null &&
+    nodeObj.proto === 'Array' &&
+    isStructuredObjectNode(nodeObj.sequence)
+  ) {
+    const itemType = `${kroTypeNameStem(context.kind, context.path)}Item${shortStableHash(
+      JSON.stringify(context.path)
+    )}`;
+    registerKroCustomType(
+      context.customTypes,
+      itemType,
+      arktypeJsonToKroFields(nodeObj.sequence, context),
+      path
+    );
+    fieldType = withArrayItemMarkers(`[]${itemType}`, nodeObj);
+  } else {
+    fieldType = getKroTypeFromJson(node, context);
+  }
+  if (admission.rule !== undefined) {
+    fieldType = appendKroMarker(fieldType, kroValidationMarker(admission.rule));
+  }
+  if (admission.required) fieldType = appendKroMarker(fieldType, 'required=true');
+  return fieldType;
 }
 
 // ---------------------------------------------------------------------------
@@ -2269,8 +2356,10 @@ function applySchemaFieldValidations(
     const current = parent[field];
     if (current === undefined)
       throw new Error(`Schema field validation path ${path} does not exist.`);
-    const marker = `validation="${rule.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+    const marker = kroValidationMarker(rule);
     if (typeof current === 'string') {
+      // A field declared with a spec constraint's type already carries its rule.
+      if (current.includes(marker)) continue;
       parent[field] = current.includes('|') ? `${current} ${marker}` : `${current} | ${marker}`;
       continue;
     }
