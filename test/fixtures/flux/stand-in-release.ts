@@ -53,7 +53,7 @@ const controller = (name: string): FluxManifestObject => ({
 });
 
 export const fluxStandInRelease: FluxRelease = {
-  version: 'v2.7.5',
+  version: 'v2.10.0',
   documents: [
     { apiVersion: 'v1', kind: 'Namespace', metadata: { name: NAMESPACE } },
     {

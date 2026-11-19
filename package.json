@@ -86,9 +86,9 @@
       "import": "./dist/factories/flux/index.js",
       "types": "./dist/factories/flux/index.d.ts"
     },
-    "./flux/releases/v2.7.5": {
-      "import": "./dist/factories/flux/install/releases/v2.7.5.js",
-      "types": "./dist/factories/flux/install/releases/v2.7.5.d.ts"
+    "./flux/releases/v2.10.0": {
+      "import": "./dist/factories/flux/install/releases/v2.10.0.js",
+      "types": "./dist/factories/flux/install/releases/v2.10.0.d.ts"
     },
     "./apisix": {
       "import": "./dist/factories/apisix/index.js",

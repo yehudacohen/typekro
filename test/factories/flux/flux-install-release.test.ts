@@ -1,5 +1,5 @@
 /**
- * Flux install factory against the pinned upstream v2.7.5 release manifests.
+ * Flux install factory against the pinned upstream v2.10.0 release manifests.
  */
 import { describe, expect, it } from 'bun:test';
 import { loadAll } from 'js-yaml';
@@ -11,8 +11,8 @@ import {
   loadFluxRelease,
   makeFluxInstall,
 } from '../../../src/factories/flux/index.js';
-// The `typekro/flux/releases/v2.7.5` subpath.
-import { fluxV2_7_5 as release } from '../../../src/factories/flux/install/releases/v2.7.5.js';
+// The `typekro/flux/releases/v2.10.0` subpath.
+import { fluxV2_10_0 as release } from '../../../src/factories/flux/install/releases/v2.10.0.js';
 import { admissionErrors } from '../../utils/kro-admission.js';
 
 interface Manifest {
@@ -22,10 +22,10 @@ interface Manifest {
   spec: Record<string, unknown>;
 }
 
-const fluxInstall = await fluxInstallForVersion('v2.7.5');
+const fluxInstall = await fluxInstallForVersion('v2.10.0');
 
 const placement = {
-  version: 'v2.7.5',
+  version: 'v2.10.0',
   tolerations: [
     {
       key: 'example.com/capacity-class',
@@ -39,13 +39,13 @@ const placement = {
 const EXPECTED_KINDS = {
   ClusterRole: 3,
   ClusterRoleBinding: 2,
-  CustomResourceDefinition: 14,
-  Deployment: 6,
+  CustomResourceDefinition: 15,
+  Deployment: 7,
   Namespace: 1,
   NetworkPolicy: 3,
   ResourceQuota: 1,
-  Service: 3,
-  ServiceAccount: 6,
+  Service: 4,
+  ServiceAccount: 7,
 };
 
 const CONTROLLERS = [
@@ -55,6 +55,7 @@ const CONTROLLERS = [
   'kustomize-controller',
   'notification-controller',
   'source-controller',
+  'source-watcher',
 ];
 
 function countByKind(items: readonly { kind: string }[]): Record<string, number> {
@@ -73,11 +74,11 @@ function podSpec(manifest: Manifest) {
     .spec;
 }
 
-describe('pinned Flux v2.7.5 release', () => {
+describe('pinned Flux v2.10.0 release', () => {
   it('records the sha256 of the install.yaml it was parsed from', () => {
-    expect(release.version).toBe('v2.7.5');
+    expect(release.version).toBe('v2.10.0');
     expect(release.sourceSha256).toBe(
-      'c346a4714b8e3a3bd73bad36d48f3d690df8c7707646633a70851332253d4dbf'
+      'a8c838ccd9be5d30eba9df87cd229b7c4eb80c0049fba1bc3b9840829f267f28'
     );
     expect(countByKind(release.documents)).toEqual(EXPECTED_KINDS);
   });
@@ -102,7 +103,7 @@ describe('pinned Flux v2.7.5 release', () => {
     expect(needsCRDSchemaFix(upstream as unknown as KubernetesResource).needsFix).toBe(true);
 
     const crds = (await direct()).filter((item) => item.kind === 'CustomResourceDefinition');
-    expect(crds.length).toBe(14);
+    expect(crds.length).toBe(15);
     for (const crd of crds) {
       expect(needsCRDSchemaFix(crd as unknown as KubernetesResource).issues).toEqual([]);
     }
@@ -146,7 +147,7 @@ describe('pinned Flux v2.7.5 release', () => {
     ).toStrictEqual(graphKinds);
     const controllers =
       graph?.spec.resources.filter((resource) => resource.template.kind === 'Deployment') ?? [];
-    expect(controllers.length).toBe(6);
+    expect(controllers.length).toBe(7);
     for (const controller of controllers) {
       expect(controller.readyWhen?.[0]).toContain(`${controller.id}.status.readyReplicas`);
       expect(graph?.spec.schema.status.ready).toContain(`${controller.id}.status.readyReplicas`);
@@ -159,19 +160,19 @@ describe('pinned Flux v2.7.5 release', () => {
   });
 
   it('loads the same release on demand as the subpath export', async () => {
-    expect(await loadFluxRelease('v2.7.5')).toBe(release);
+    expect(await loadFluxRelease('v2.10.0')).toBe(release);
   });
 
   it('refuses a different version', async () => {
-    await expect(direct({ version: 'v2.7.4' })).rejects.toThrow('these manifests are v2.7.5');
-    await expect(direct({ version: 'v2.8.0' })).rejects.toThrow('these manifests are v2.7.5');
+    await expect(direct({ version: 'v2.7.4' })).rejects.toThrow('these manifests are v2.10.0');
+    await expect(direct({ version: 'v2.8.0' })).rejects.toThrow('these manifests are v2.10.0');
     await expect(fluxInstallForVersion('v2.7.4')).rejects.toThrow(
       'No pinned Flux manifests for v2.7.4'
     );
     expect(admissionErrors(fluxInstall.toYaml(), 'FluxInstall', { version: 'v2.6.0' })).toEqual([
-      'spec.version: "v2.6.0" is not one of ["v2.7.5"]',
+      'spec.version: "v2.6.0" is not one of ["v2.10.0"]',
     ]);
-    expect(() => makeFluxInstall({ release: { ...release, version: '2.7.5' } })).toThrow(
+    expect(() => makeFluxInstall({ release: { ...release, version: '2.10.0' } })).toThrow(
       'Flux version must be pinned'
     );
   });

@@ -27,7 +27,7 @@ interface Manifest {
 
 const fluxInstall = makeFluxInstall({ release: fluxStandInRelease });
 const placement = {
-  version: 'v2.7.5',
+  version: 'v2.10.0',
   tolerations: [
     {
       key: 'example.com/capacity-class',
@@ -50,10 +50,10 @@ function podSpec(manifest: Manifest) {
 
 describe('pinned Flux versions', () => {
   it('accepts exact versions and refuses latest, unprefixed and partial versions', () => {
-    for (const version of ['v2.7.5', 'v2.8.0-rc.1', 'v10.0.0']) {
+    for (const version of ['v2.10.0', 'v2.8.0-rc.1', 'v10.0.0']) {
       expect(isPinnedFluxVersion(version)).toBe(true);
     }
-    for (const version of ['latest', '2.7.5', 'v2.7', 'v2', 'v2.7.5.1', '']) {
+    for (const version of ['latest', '2.10.0', 'v2.7', 'v2', 'v2.10.0.1', '']) {
       expect(isPinnedFluxVersion(version)).toBe(false);
     }
   });
@@ -128,7 +128,7 @@ describe('makeFluxInstall (direct mode)', () => {
   });
 
   it("keeps the manifests' own placement when none is given", async () => {
-    const controllers = (await direct({ version: 'v2.7.5' })).filter(
+    const controllers = (await direct({ version: 'v2.10.0' })).filter(
       (item) => item.kind === 'Deployment'
     );
     for (const controller of controllers) {
@@ -138,9 +138,9 @@ describe('makeFluxInstall (direct mode)', () => {
   });
 
   it('refuses a version other than the release, and an unpinned one', async () => {
-    await expect(direct({ version: 'v2.7.4' })).rejects.toThrow('these manifests are v2.7.5');
+    await expect(direct({ version: 'v2.7.4' })).rejects.toThrow('these manifests are v2.10.0');
     await expect(direct({ version: 'latest' })).rejects.toThrow(
-      'Flux latest is requested, but these manifests are v2.7.5.'
+      'Flux latest is requested, but these manifests are v2.10.0.'
     );
   });
 });
@@ -187,7 +187,7 @@ describe('makeFluxInstall (KRO mode)', () => {
 
   it('accepts only the release version on the instance schema', () => {
     const yaml = fluxInstall.toYaml();
-    expect(yaml).toContain('version: string | enum="v2.7.5"');
+    expect(yaml).toContain('version: string | enum="v2.10.0"');
     expect(admissionErrors(yaml, 'FluxInstall', placement)).toEqual([]);
   });
 
@@ -195,7 +195,7 @@ describe('makeFluxInstall (KRO mode)', () => {
     const yaml = fluxInstall.toYaml();
     for (const version of ['v2.6.0', 'v2.7.4', 'latest']) {
       expect(admissionErrors(yaml, 'FluxInstall', { ...placement, version })).toEqual([
-        `spec.version: ${JSON.stringify(version)} is not one of ["v2.7.5"]`,
+        `spec.version: ${JSON.stringify(version)} is not one of ["v2.10.0"]`,
       ]);
     }
   });
@@ -225,9 +225,9 @@ describe('makeFluxInstall (Alchemy declarations)', () => {
 
 describe('pinned releases', () => {
   it('load on demand, and point at the README for other versions', async () => {
-    expect(FLUX_RELEASE_VERSIONS).toEqual(['v2.7.5']);
-    expect((await loadFluxRelease('v2.7.5')).version).toBe('v2.7.5');
-    expect(await fluxInstallForVersion('v2.7.5')).toBeDefined();
+    expect(FLUX_RELEASE_VERSIONS).toEqual(['v2.10.0']);
+    expect((await loadFluxRelease('v2.10.0')).version).toBe('v2.10.0');
+    expect(await fluxInstallForVersion('v2.10.0')).toBeDefined();
     await expect(fluxInstallForVersion('v2.6.0')).rejects.toThrow(
       'src/factories/flux/install/README.md'
     );
@@ -237,7 +237,7 @@ describe('pinned releases', () => {
   it('are not reachable from the root entry or typekro/flux through static imports', () => {
     const release = resolve(
       import.meta.dir,
-      '../../../src/factories/flux/install/releases/v2.7.5.ts'
+      '../../../src/factories/flux/install/releases/v2.10.0.ts'
     );
     for (const entry of ['../../../src/index.ts', '../../../src/factories/flux/index.ts']) {
       const reachable = staticImportClosure(resolve(import.meta.dir, entry));

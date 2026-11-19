@@ -169,12 +169,12 @@ function withPlacement(document: FluxManifestObject, spec: FluxInstallConfig): F
  *
  * @example
  * ```typescript
- * import { fluxV2_7_5 } from 'typekro/flux/releases/v2.7.5';
+ * import { fluxV2_10_0 } from 'typekro/flux/releases/v2.10.0';
  *
- * const fluxInstall = makeFluxInstall({ release: fluxV2_7_5 });
+ * const fluxInstall = makeFluxInstall({ release: fluxV2_10_0 });
  * const factory = fluxInstall.factory('direct', { namespace: 'flux-system' });
  * await factory.deploy({
- *   version: 'v2.7.5',
+ *   version: 'v2.10.0',
  *   tolerations: [{ key: 'example.com/capacity-class', operator: 'Exists', effect: 'NoSchedule' }],
  *   nodeSelector: { 'kubernetes.io/os': 'linux', 'example.com/capacity-class': 'stable' },
  * });

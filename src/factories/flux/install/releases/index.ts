@@ -2,17 +2,17 @@
  * Pinned Flux releases, by exact version. Each is generated from that release's `install.yaml`
  * by `scripts/vendor-flux-release.ts`; see `../README.md` to add another.
  *
- * A release module holds the whole install (about 680 KB of source for v2.7.5), so nothing here
+ * A release module holds the whole install (about 465 KB of source for v2.10.0), so nothing here
  * imports one statically: importing `typekro` or `typekro/flux` loads no release.
  * {@link loadFluxRelease} loads one on demand, and each release is also its own subpath export,
- * such as `typekro/flux/releases/v2.7.5`, for a synchronous import.
+ * such as `typekro/flux/releases/v2.10.0`, for a synchronous import.
  */
 import { TypeKroError } from '../../../../core/errors.js';
 import type { FluxRelease } from '../types.js';
 import { assertPinnedFluxVersion } from '../version.js';
 
 const FLUX_RELEASE_LOADERS: Readonly<Record<string, () => Promise<FluxRelease>>> = {
-  'v2.7.5': async () => (await import('./v2.7.5.js')).fluxV2_7_5,
+  'v2.10.0': async () => (await import('./v2.10.0.js')).fluxV2_10_0,
 };
 
 /** Versions with pinned, vendored install manifests. */
