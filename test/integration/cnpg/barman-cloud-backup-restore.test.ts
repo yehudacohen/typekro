@@ -2,12 +2,13 @@
  * Live Barman Cloud plugin backup and restore.
  *
  * Installs the CloudNativePG operator `cnpgBootstrap` defaults to (chart 0.29.2, operator
- * 1.30.2) and the Barman Cloud plugin (chart 0.9.0) with cert-manager, backs a cluster up to a
- * MinIO bucket through an `ObjectStore` that uses `inheritFromIAMRole: true`, restores the backup
+ * 1.30.2) and the Barman Cloud plugin (chart 0.9.0) with cert-manager, backs a cluster up to an
+ * S3-compatible bucket (VersityGW on a local directory; the MinIO images the shared fixture pins
+ * are no longer pullable from Docker Hub or Quay) through an `ObjectStore` that uses `inheritFromIAMRole: true`, restores the backup
  * into a new cluster, and reads the rows back.
  *
  * Workload identity is simulated: a small instance-metadata endpoint in the test namespace hands
- * out the MinIO keys as an IAM role's credentials, and the sidecar's
+ * out the gateway's keys as an IAM role's credentials, and the sidecar's
  * `AWS_EC2_METADATA_SERVICE_ENDPOINT` points boto at it. The ObjectStore carries no keys, so the
  * path is the one IRSA or EKS Pod Identity takes on AWS.
  *
@@ -15,6 +16,18 @@
  * only when asked: `TYPEKRO_BARMAN_CLOUD_LIVE=true` and `TYPEKRO_TEST_STORAGE_CLASS`, on a
  * disposable cluster such as kind. `bun run test:integration:cnpg-barman-cloud` runs it. CI does
  * not run it: the CI workflow has no Kubernetes cluster.
+ *
+ * Known kind issue, test clusters only: on kind v0.32.0 (Kubernetes 1.36, kindnet network
+ * policies), pods in `flux-system` could not reach cluster DNS or other pod IPs while Flux's
+ * `allow-egress`, `allow-scraping` and `allow-webhooks` NetworkPolicies were in place, although
+ * `allow-egress` allows all egress. source-controller then failed to pull the KRO chart
+ * (`lookup registry.k8s.io: i/o timeout`) and the runtime install timed out. The recorded run
+ * deleted those three policies by hand on the throwaway kind cluster after the first attempt
+ * timed out, then reran the suite on the same cluster until it passed:
+ *
+ *   kubectl -n flux-system delete networkpolicy allow-egress allow-scraping allow-webhooks
+ *
+ * TypeKro's Flux install keeps its policies; never remove them on a shared or real cluster.
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
@@ -37,7 +50,6 @@ import {
   cnpgS3BackedCluster,
   objectStore,
 } from '../../../src/factories/cnpg/index.js';
-import { deployMinio } from '../minio-fixture.js';
 import {
   createAppsV1ApiClient,
   createCoreV1ApiClient,
@@ -45,9 +57,11 @@ import {
   createKubernetesObjectApiClient,
   createTestNamespace,
   deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   ensureCertManagerInstalled,
   ensureFluxInstalled,
   isClusterAvailable,
+  isNotFoundError,
   requireTestStorageClass,
   runTestPodAndReadLogs,
   type TestNamespaceLease,
@@ -58,13 +72,18 @@ const describeOrSkip = enabled ? describe : describe.skip;
 
 /** PostgreSQL image of both clusters and of the psql probes, pulled once. */
 const POSTGRES_IMAGE = 'ghcr.io/cloudnative-pg/postgresql:17.5';
+/** S3-compatible gateway serving a local directory. */
+const S3_GATEWAY_IMAGE = 'versity/versitygw:v1.0.17';
+/** The gateway's root keys, which the instance-metadata endpoint hands out as a role's. */
+const S3_ACCESS_KEY = 'typekro-test-access-key';
+const S3_SECRET_KEY = 'typekro-test-secret-key';
 /** Image of the instance-metadata endpoint. */
 const PYTHON_IMAGE = 'python:3.12.8-alpine3.21';
 const OPERATOR_NAMESPACE = 'cnpg-system';
 const BUCKET = 'typekro-barman-cloud';
 const ROWS = ['alpha', 'bravo', 'charlie'];
 
-/** A minimal IMDSv2: a token, one role, and that role's credentials (the MinIO keys). */
+/** A minimal IMDSv2: a token, one role, and that role's credentials (the gateway's keys). */
 const IMDS_SCRIPT = `
 import datetime, json, os
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -186,14 +205,22 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
       (entry: { type?: string; status?: string }) => entry.type === type && entry.status === 'True'
     );
 
-  /** Run psql against `<cluster>-rw` with the app user of `secret`, and return its output. */
+  /**
+   * Run psql against `<cluster>-rw` with the app user of `secret`, and return its output. It
+   * retries for up to five minutes: the service can lag the cluster's Ready condition.
+   */
   const psql = (name: string, clusterName: string, secret: string, sql: string) =>
     runTestPodAndReadLogs(
       {
         namespace,
         name,
         image: POSTGRES_IMAGE,
-        command: ['sh', '-c', `psql -v ON_ERROR_STOP=1 -tA -c "${sql}"`],
+        command: [
+          'sh',
+          '-c',
+          `for attempt in $(seq 60); do out=$(psql -v ON_ERROR_STOP=1 -tA -c "${sql}" 2>&1) && ` +
+            '{ echo "$out"; exit 0; }; sleep 5; done; echo "$out"; exit 1',
+        ],
         env: [
           { name: 'PGHOST', value: `${clusterName}-rw` },
           { name: 'PGSSLMODE', value: 'require' },
@@ -202,10 +229,91 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
             valueFrom: { secretKeyRef: { name: secret, key: key } },
           })),
         ],
-        timeoutMs: 300_000,
+        timeoutMs: 420_000,
       },
       kubeConfig
     );
+
+  /** Ready, with every instance ready and the cluster reporting a healthy state. */
+  const healthy = (live: any) =>
+    condition(live, 'Ready') &&
+    live.status?.phase === 'Cluster in healthy state' &&
+    (live.status?.readyInstances ?? 0) >= (live.spec?.instances ?? 1);
+
+  /** The live Flux HelmRelease `name` in the operator namespace. */
+  const releaseOf = async (name: string): Promise<any> => {
+    const live: any = await createCustomObjectsApiClient(kubeConfig).getNamespacedCustomObject({
+      group: 'helm.toolkit.fluxcd.io',
+      version: 'v2',
+      namespace: OPERATOR_NAMESPACE,
+      plural: 'helmreleases',
+      name,
+    });
+    return live?.body ?? live;
+  };
+
+  /** VersityGW serving `/data` over S3, with the bucket as a directory, and its endpoint. */
+  const deployS3Gateway = async (): Promise<string> => {
+    const core = createCoreV1ApiClient(kubeConfig);
+    await core.createNamespacedSecret({
+      namespace,
+      body: {
+        metadata: { name: 's3-keys' },
+        stringData: { AWS_ACCESS_KEY_ID: S3_ACCESS_KEY, AWS_SECRET_ACCESS_KEY: S3_SECRET_KEY },
+      },
+    });
+    await createAppsV1ApiClient(kubeConfig).createNamespacedDeployment({
+      namespace,
+      body: {
+        metadata: { name: 's3', labels: { app: 's3' } },
+        spec: {
+          replicas: 1,
+          selector: { matchLabels: { app: 's3' } },
+          template: {
+            metadata: { labels: { app: 's3' } },
+            spec: {
+              containers: [
+                {
+                  name: 's3',
+                  image: S3_GATEWAY_IMAGE,
+                  command: [
+                    'sh',
+                    '-c',
+                    `mkdir -p /data/${BUCKET} && exec /app/versitygw --access "$AWS_ACCESS_KEY_ID" ` +
+                      '--secret "$AWS_SECRET_ACCESS_KEY" --port :9000 posix /data',
+                  ],
+                  envFrom: [{ secretRef: { name: 's3-keys' } }],
+                  ports: [{ containerPort: 9000 }],
+                  readinessProbe: { tcpSocket: { port: 9000 }, periodSeconds: 2 },
+                  volumeMounts: [{ name: 'data', mountPath: '/data' }],
+                },
+              ],
+              volumes: [{ name: 'data', emptyDir: {} }],
+            },
+          },
+        },
+      },
+    });
+    await core.createNamespacedService({
+      namespace,
+      body: {
+        metadata: { name: 's3' },
+        spec: { selector: { app: 's3' }, ports: [{ port: 9000, targetPort: 9000 }] },
+      },
+    });
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 600_000) {
+      const live = await createAppsV1ApiClient(kubeConfig).readNamespacedDeployment({
+        namespace,
+        name: 's3',
+      });
+      if ((live.status?.availableReplicas ?? 0) >= 1) {
+        return `http://s3.${namespace}.svc.cluster.local:9000`;
+      }
+      await Bun.sleep(2_000);
+    }
+    throw new Error('Timed out waiting for the S3 gateway');
+  };
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
@@ -217,17 +325,47 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
 
   afterAll(async () => {
     // The operator and the plugin are left installed: the suite runs on a disposable cluster.
-    if (lease) await deleteTestNamespaceAndWait(lease, kubeConfig);
+    if (!lease) return;
+    // Remove the clusters first, then the monitoring ConfigMap the operator writes into every
+    // namespace with a cluster, so the namespace holds only what the suite created.
+    for (const [kind, name] of [
+      ['Cluster', restored],
+      ['Cluster', source],
+      ['Backup', `${source}-manual`],
+      ['ObjectStore', storeName],
+    ] as const) {
+      const [group, version] = PLURALS[kind] ?? [];
+      await deleteTestResourceAndWait(
+        { apiVersion: `${group}/${version}`, kind, metadata: { name, namespace } },
+        kubeConfig,
+        300_000
+      ).catch((error) => {
+        if (!isNotFoundError(error)) throw error;
+      });
+    }
+    await deleteTestResourceAndWait(
+      {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'cnpg-default-monitoring', namespace },
+      },
+      kubeConfig,
+      60_000
+    ).catch((error) => {
+      if (!isNotFoundError(error)) throw error;
+    });
+    await deleteTestNamespaceAndWait(lease, kubeConfig);
   });
 
   it('installs the default CloudNativePG operator and the plugin that needs it', async () => {
-    const operator = await cnpgBootstrap
+    await cnpgBootstrap
       .factory('direct', { namespace: OPERATOR_NAMESPACE, waitForReady: true, timeout: 900_000 })
       .deploy({ name: 'cnpg-operator', namespace: OPERATOR_NAMESPACE });
-    expect(operator.status.ready).toBe(true);
-    expect(operator.status.version).toBe('0.29.2');
+    const operator = await releaseOf('cnpg-operator');
+    expect(operator.spec?.chart?.spec?.version).toBe('0.29.2');
+    expect(condition(operator, 'Ready')).toBe(true);
 
-    const plugin = await barmanCloudPluginBootstrap
+    await barmanCloudPluginBootstrap
       .factory('direct', { namespace: OPERATOR_NAMESPACE, waitForReady: true, timeout: 900_000 })
       .deploy({
         name: 'barman-cloud',
@@ -235,7 +373,17 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
         version: BARMAN_CLOUD_PLUGIN_CHART_VERSION,
         operatorVersion: CNPG_OPERATOR_VERSION,
       });
-    expect(plugin.status.ready).toBe(true);
+    const plugin = await releaseOf('barman-cloud');
+    expect(plugin.spec?.chart?.spec?.version).toBe(BARMAN_CLOUD_PLUGIN_CHART_VERSION);
+    expect(condition(plugin, 'Ready')).toBe(true);
+    // The operator runs the version the plugin was told it runs.
+    const deployment = await createAppsV1ApiClient(kubeConfig).readNamespacedDeployment({
+      name: 'cnpg-operator-cloudnative-pg',
+      namespace: OPERATOR_NAMESPACE,
+    });
+    expect(deployment.spec?.template.spec?.containers[0]?.image).toEndWith(
+      `:${CNPG_OPERATOR_VERSION}`
+    );
 
     // The operator discovers the plugin by the chart's service, under the name it must keep.
     const service = await createCoreV1ApiClient(kubeConfig).readNamespacedService({
@@ -246,9 +394,9 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
   });
 
   it('backs a cluster up through the plugin and restores it into a new cluster', async () => {
-    const minio = await deployMinio({ namespace, bucket: BUCKET, kubeConfig });
+    const endpoint = await deployS3Gateway();
 
-    // The instance-metadata endpoint, serving the MinIO keys as a role's credentials.
+    // The instance-metadata endpoint, serving the gateway's keys as a role's credentials.
     const core = createCoreV1ApiClient(kubeConfig);
     await core.createNamespacedConfigMap({
       namespace,
@@ -269,7 +417,7 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
                   name: 'imds',
                   image: PYTHON_IMAGE,
                   command: ['python3', '-u', '/app/imds.py'],
-                  envFrom: [{ secretRef: { name: minio.secretName } }],
+                  envFrom: [{ secretRef: { name: 's3-keys' } }],
                   ports: [{ containerPort: 8080 }],
                   readinessProbe: { tcpSocket: { port: 8080 }, periodSeconds: 2 },
                   volumeMounts: [{ name: 'script', mountPath: '/app' }],
@@ -295,7 +443,7 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
       spec: {
         configuration: {
           destinationPath: `s3://${BUCKET}/cnpg/${runId}`,
-          endpointURL: minio.endpoint,
+          endpointURL: endpoint,
           s3AddressingStyle: 'path',
           s3Credentials: { inheritFromIAMRole: true },
           wal: { compression: 'gzip' },
@@ -334,7 +482,7 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
     await waitFor(
       'Cluster',
       source,
-      (live) => condition(live, 'Ready') && condition(live, 'ContinuousArchiving'),
+      (live) => healthy(live) && condition(live, 'ContinuousArchiving'),
       900_000
     );
 
@@ -370,13 +518,13 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
       },
     });
     await apply(manifest(copy));
-    await waitFor('Cluster', restored, (live) => condition(live, 'Ready'), 900_000);
+    await waitFor('Cluster', restored, healthy, 900_000);
 
-    // The restored database keeps the source's roles; read with the source's app credentials.
+    // The operator resets the app role's password to the restored cluster's own app secret.
     const rows = await psql(
       'read-rows',
       restored,
-      `${source}-app`,
+      `${restored}-app`,
       "SELECT string_agg(note, ',' ORDER BY id) FROM restore_probe"
     );
     expect(rows.trim()).toBe(ROWS.join(','));

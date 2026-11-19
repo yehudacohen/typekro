@@ -390,11 +390,14 @@ condition is `True`.
 ### Live backup and restore test
 
 `test/integration/cnpg/barman-cloud-backup-restore.test.ts` installs the default operator, the
-plugin and cert-manager, backs a cluster up to MinIO through an `ObjectStore` with
+plugin and cert-manager, backs a cluster up to an S3-compatible gateway through an `ObjectStore` with
 `inheritFromIAMRole: true` (a test instance-metadata endpoint stands in for the IAM role),
 restores it into a new cluster and reads the rows back. It installs cluster-scoped operators, so
 it runs only on request, on a disposable cluster:
-`TYPEKRO_TEST_STORAGE_CLASS=standard bun run test:integration:cnpg-barman-cloud`.
+`TYPEKRO_TEST_STORAGE_CLASS=standard bun run test:integration:cnpg-barman-cloud`. On kind with
+kindnet network policies, Flux's controllers could not reach cluster DNS while Flux's
+NetworkPolicies were in place; the recorded run removed them on the throwaway cluster (see the
+test file's header). Don't do that on a shared or real cluster.
 
 ## Bootstrap Composition
 
