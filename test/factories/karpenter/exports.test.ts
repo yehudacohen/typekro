@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'bun:test';
-
-import * as root from '../../../src/index.js';
 import * as karpenter from '../../../src/factories/karpenter/index.js';
+import * as root from '../../../src/index.js';
 
 describe('typekro/karpenter exports', () => {
   it('exports the compositions, factories, helpers and constants', () => {
     expect(karpenter.karpenterBootstrap).toBeDefined();
     expect(karpenter.makeKarpenterBootstrap).toBeTypeOf('function');
+    expect(karpenter.karpenterSpotPool).toBeDefined();
+    expect(karpenter.karpenterControllerResources).toBeTypeOf('function');
+    expect(karpenter.assertPinnedAmiAlias).toBeTypeOf('function');
     expect(karpenter.karpenterHelmRepositoryBootstrap).toBeDefined();
     expect(karpenter.nodePool).toBeTypeOf('function');
     expect(karpenter.ec2NodeClass).toBeTypeOf('function');

@@ -12,7 +12,9 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
+import type { Enhanced } from '../../../core/types/index.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
+import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_KARPENTER_CHART_VERSION,
@@ -42,6 +44,114 @@ function chartVersionExpression(resourceId: string): string {
 }
 
 /**
+ * The controller resources `karpenterBootstrap` creates: the optional owned
+ * namespace, the shared `HelmRepository` singleton, the `karpenter-crd`
+ * release (unless `crds: 'external'`) and the controller release. Compositions
+ * that add capacity on top call it directly, so their NodeClasses and NodePools
+ * can depend on the controller release itself.
+ */
+export function karpenterControllerResources(
+  spec: KarpenterBootstrapConfig,
+  options: KarpenterBootstrapBuildOptions = {}
+): { controller: Enhanced<HelmReleaseSpec, HelmReleaseStatus>; status: KarpenterBootstrapStatus } {
+  const manageCrds = (options.crds ?? 'karpenter-crd') === 'karpenter-crd';
+  const ownsNamespace = options.namespaceOwnership === 'owned';
+  const keepCrds = options.keepCrdsOnUninstall ?? true;
+  warnKarpenterIssues('karpenterBootstrap', validateKarpenterBootstrapConfig(spec));
+  const installNamespace = Cel.default(spec.namespace, DEFAULT_KARPENTER_NAMESPACE);
+  const version = Cel.default(spec.version, DEFAULT_KARPENTER_CHART_VERSION);
+
+  if (ownsNamespace) {
+    namespace({
+      metadata: {
+        name: installNamespace,
+        labels: {
+          'app.kubernetes.io/name': 'karpenter',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      id: 'karpenterNamespace',
+    });
+  }
+
+  singleton(karpenterHelmRepositoryBootstrap, {
+    id: 'karpenterHelmRepository',
+    spec: {
+      name: DEFAULT_KARPENTER_REPOSITORY_NAME,
+      namespace: DEFAULT_FLUX_NAMESPACE,
+      url: DEFAULT_KARPENTER_REPOSITORY_URL,
+    },
+  });
+
+  const releaseCommon = {
+    namespace: DEFAULT_FLUX_NAMESPACE,
+    targetNamespace: installNamespace,
+    version,
+    repositoryName: DEFAULT_KARPENTER_REPOSITORY_NAME,
+    repositoryNamespace: DEFAULT_FLUX_NAMESPACE,
+    createNamespace: !ownsNamespace,
+  };
+
+  const values = mapKarpenterConfigToHelmValues(spec, options.values);
+  // Caller lifecycle overrides for the controller release.
+  const lifecycle = {
+    ...(options.install ? { install: options.install } : {}),
+    ...(options.upgrade ? { upgrade: options.upgrade } : {}),
+    ...(options.driftDetection ? { driftDetection: options.driftDetection } : {}),
+  };
+
+  if (!manageCrds) {
+    const controller = karpenterHelmRelease({
+      ...releaseCommon,
+      ...lifecycle,
+      name: spec.name,
+      values,
+      id: 'karpenterHelmRelease',
+    });
+    return {
+      controller,
+      status: {
+        ...helmReleaseConditionSummary(controller),
+        version: Cel.expr<string>(chartVersionExpression('karpenterHelmRelease')),
+      },
+    };
+  }
+
+  const crdReleaseName = Cel.template('%s-crd', spec.name);
+  const crds = karpenterCrdHelmRelease({
+    ...releaseCommon,
+    name: crdReleaseName,
+    // `helm.sh/resource-policy: keep` stops an uninstall from deleting the
+    // CRDs and, with them, every NodePool and NodeClaim in the cluster.
+    values: keepCrds ? { additionalAnnotations: { 'helm.sh/resource-policy': 'keep' } } : {},
+    id: 'karpenterCrdHelmRelease',
+  });
+  const controller = karpenterHelmRelease({
+    ...releaseCommon,
+    ...lifecycle,
+    name: spec.name,
+    values,
+    // Flux holds every install AND upgrade of the controller until the CRD
+    // release is Ready, so a chart bump never runs a controller against
+    // the previous CRDs. KRO creates both objects at once; this is what
+    // orders them.
+    dependsOn: [{ name: crdReleaseName, namespace: DEFAULT_FLUX_NAMESPACE }],
+    id: 'karpenterHelmRelease',
+  });
+  // Ordering for TypeKro's direct-mode apply as well.
+  controller.dependsOn(crds);
+
+  return {
+    controller,
+    status: {
+      ...helmReleaseConditionSummary(crds, controller),
+      version: Cel.expr<string>(chartVersionExpression('karpenterHelmRelease')),
+    },
+  };
+}
+
+/**
  * Build a Karpenter bootstrap composition.
  *
  * @param options - Build-time options. Must be concrete values.
@@ -58,10 +168,6 @@ function chartVersionExpression(resourceId: string): string {
 export function makeKarpenterBootstrap(
   options: KarpenterBootstrapBuildOptions = {}
 ): CallableComposition<KarpenterBootstrapConfig, KarpenterBootstrapStatus> {
-  const manageCrds = (options.crds ?? 'karpenter-crd') === 'karpenter-crd';
-  const ownsNamespace = options.namespaceOwnership === 'owned';
-  const keepCrds = options.keepCrdsOnUninstall ?? true;
-
   return kubernetesComposition(
     {
       name: options.name ?? 'karpenter-bootstrap',
@@ -69,94 +175,7 @@ export function makeKarpenterBootstrap(
       spec: KarpenterBootstrapConfigSchema,
       status: KarpenterBootstrapStatusSchema,
     },
-    (spec) => {
-      warnKarpenterIssues('karpenterBootstrap', validateKarpenterBootstrapConfig(spec));
-      const installNamespace = Cel.default(spec.namespace, DEFAULT_KARPENTER_NAMESPACE);
-      const version = Cel.default(spec.version, DEFAULT_KARPENTER_CHART_VERSION);
-
-      if (ownsNamespace) {
-        namespace({
-          metadata: {
-            name: installNamespace,
-            labels: {
-              'app.kubernetes.io/name': 'karpenter',
-              'app.kubernetes.io/instance': spec.name,
-              'app.kubernetes.io/managed-by': 'typekro',
-            },
-          },
-          id: 'karpenterNamespace',
-        });
-      }
-
-      singleton(karpenterHelmRepositoryBootstrap, {
-        id: 'karpenterHelmRepository',
-        spec: {
-          name: DEFAULT_KARPENTER_REPOSITORY_NAME,
-          namespace: DEFAULT_FLUX_NAMESPACE,
-          url: DEFAULT_KARPENTER_REPOSITORY_URL,
-        },
-      });
-
-      const releaseCommon = {
-        namespace: DEFAULT_FLUX_NAMESPACE,
-        targetNamespace: installNamespace,
-        version,
-        repositoryName: DEFAULT_KARPENTER_REPOSITORY_NAME,
-        repositoryNamespace: DEFAULT_FLUX_NAMESPACE,
-        createNamespace: !ownsNamespace,
-      };
-
-      const values = mapKarpenterConfigToHelmValues(spec, options.values);
-      // Caller lifecycle overrides for the controller release.
-      const lifecycle = {
-        ...(options.install ? { install: options.install } : {}),
-        ...(options.upgrade ? { upgrade: options.upgrade } : {}),
-        ...(options.driftDetection ? { driftDetection: options.driftDetection } : {}),
-      };
-
-      if (!manageCrds) {
-        const controller = karpenterHelmRelease({
-          ...releaseCommon,
-          ...lifecycle,
-          name: spec.name,
-          values,
-          id: 'karpenterHelmRelease',
-        });
-        return {
-          ...helmReleaseConditionSummary(controller),
-          version: Cel.expr<string>(chartVersionExpression('karpenterHelmRelease')),
-        };
-      }
-
-      const crdReleaseName = Cel.template('%s-crd', spec.name);
-      const crds = karpenterCrdHelmRelease({
-        ...releaseCommon,
-        name: crdReleaseName,
-        // `helm.sh/resource-policy: keep` stops an uninstall from deleting the
-        // CRDs and, with them, every NodePool and NodeClaim in the cluster.
-        values: keepCrds ? { additionalAnnotations: { 'helm.sh/resource-policy': 'keep' } } : {},
-        id: 'karpenterCrdHelmRelease',
-      });
-      const controller = karpenterHelmRelease({
-        ...releaseCommon,
-        ...lifecycle,
-        name: spec.name,
-        values,
-        // Flux holds every install AND upgrade of the controller until the CRD
-        // release is Ready, so a chart bump never runs a controller against
-        // the previous CRDs. KRO creates both objects at once; this is what
-        // orders them.
-        dependsOn: [{ name: crdReleaseName, namespace: DEFAULT_FLUX_NAMESPACE }],
-        id: 'karpenterHelmRelease',
-      });
-      // Ordering for TypeKro's direct-mode apply as well.
-      controller.dependsOn(crds);
-
-      return {
-        ...helmReleaseConditionSummary(crds, controller),
-        version: Cel.expr<string>(chartVersionExpression('karpenterHelmRelease')),
-      };
-    }
+    (spec) => karpenterControllerResources(spec, options).status
   );
 }
 

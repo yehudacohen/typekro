@@ -511,3 +511,73 @@ export interface KarpenterHelmReleaseConfig extends HelmReleaseLifecycleOptions 
   values?: Record<string, unknown>;
   id?: string;
 }
+
+// =============================================================================
+// SPOT POOL COMPOSITION
+// =============================================================================
+
+/**
+ * Spec of {@link karpenterSpotPool}: the controller, one `EC2NodeClass` and one spot
+ * `NodePool`. Stable capacity is an EKS managed node group outside Karpenter, tainted with
+ * `stableTaintKey`; the controller tolerates that taint and keeps the chart's default affinity,
+ * which avoids Karpenter-managed nodes. AWS resources are created outside TypeKro and passed by
+ * name.
+ */
+export interface KarpenterSpotPoolConfig {
+  name: string;
+  /** Install namespace of the controller. @default 'kube-system' */
+  namespace?: string;
+  version?: string;
+  clusterName: string;
+  /** Name of the SQS interruption queue. */
+  interruptionQueue: string;
+  /** IAM role name for nodes; Karpenter creates the instance profile from it. */
+  nodeRole: string;
+  /** Taint key of the stable node group the controller runs on. The caller chooses it. */
+  stableTaintKey: string;
+  /** Availability zones the spot pool may use. */
+  zones: string[];
+  /** A pinned AMI alias such as `al2023@v20251117`; `@latest` is refused. */
+  amiAlias: string;
+  /** Tag value matched on `karpenter.sh/discovery`. @default clusterName */
+  discoveryTag?: string;
+  spotInstanceFamilies?: string[];
+  spotInstanceSizes?: string[];
+  /** CPU limit of the pool, as a quantity. @default '16' */
+  spotCpuLimit?: string;
+  consolidateAfter?: string;
+  expireAfter?: string;
+}
+
+/** ArkType schema for {@link KarpenterSpotPoolConfig}. */
+export const KarpenterSpotPoolConfigSchema: Type<KarpenterSpotPoolConfig> = type({
+  name: releaseName,
+  'namespace?': kubernetesDnsLabel,
+  'version?': 'string > 0',
+  clusterName: 'string > 0',
+  interruptionQueue: 'string > 0',
+  nodeRole: 'string > 0',
+  stableTaintKey: 'string > 0',
+  zones: 'string[] > 0',
+  amiAlias: 'string > 0',
+  'discoveryTag?': 'string > 0',
+  'spotInstanceFamilies?': 'string[] > 0',
+  'spotInstanceSizes?': 'string[] > 0',
+  'spotCpuLimit?': 'string > 0',
+  'consolidateAfter?': 'string > 0',
+  'expireAfter?': 'string > 0',
+});
+
+/** Status of {@link karpenterSpotPool}. */
+export interface KarpenterSpotPoolStatus {
+  ready: boolean;
+  controllerReady: boolean;
+  capacityReady: boolean;
+}
+
+/** ArkType schema for {@link KarpenterSpotPoolStatus}. */
+export const KarpenterSpotPoolStatusSchema: Type<KarpenterSpotPoolStatus> = type({
+  ready: 'boolean',
+  controllerReady: 'boolean',
+  capacityReady: 'boolean',
+});

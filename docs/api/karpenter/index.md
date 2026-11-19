@@ -148,6 +148,39 @@ const karpenter = makeKarpenterBootstrap({
 | `phase` | `Ready`, `Installing` or `Failed` |
 | `version` | Controller chart version Flux installed (`status.history`), `''` until then |
 
+## Spot pool composition
+
+`karpenterSpotPool` installs the controller (the same resources as `karpenterBootstrap`) and adds
+one `EC2NodeClass` and one spot `NodePool`. Use it when stable capacity is an EKS managed node
+group outside Karpenter: the controller tolerates that group's taint (`stableTaintKey`), and the
+chart's default affinity keeps it off Karpenter-managed nodes.
+
+The pool's capacity types are `[spot, on-demand]`, so Karpenter prefers spot and falls back to
+on-demand. It uses at least 8 arm64 instance types across c/m/r 6g/7g/8g in sizes large and
+xlarge, spreads over `zones`, consolidates empty or underutilized nodes after 5 minutes,
+disrupts one node at a time, and has a CPU limit of `16` by default.
+
+`amiAlias` is required and must be pinned (`<family>@v<version>`, for example
+`al2023@v20251117`). `@latest` and a second `@` are refused.
+
+```typescript
+import { karpenterSpotPool } from 'typekro/karpenter';
+
+const factory = karpenterSpotPool.factory('direct', { namespace: 'kube-system' });
+await factory.deploy({
+  name: 'karpenter',
+  clusterName: 'my-cluster',
+  interruptionQueue: 'my-cluster',
+  nodeRole: 'KarpenterNodeRole-my-cluster',
+  stableTaintKey: 'example.com/capacity-class',
+  zones: ['us-east-1a', 'us-east-1b', 'us-east-1c'],
+  amiAlias: 'al2023@v20251117',
+});
+```
+
+Deploy it in direct mode, which installs the CRDs before the NodeClass and NodePool. KRO mode needs
+the Karpenter CRDs installed first, and it cannot check a referenced `amiAlias`.
+
 ## NodePool
 
 ```typescript
