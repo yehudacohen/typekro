@@ -5,16 +5,20 @@
 import { describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { type Type, type } from 'arktype';
 import { loadAll } from 'js-yaml';
 
+import { TypeKroError } from '../../../src/core/errors.js';
 import {
   FLUX_RELEASE_VERSIONS,
   fluxInstallForVersion,
+  fluxVersionConstraint,
   isPinnedFluxVersion,
   loadFluxRelease,
   makeFluxInstall,
   validateFluxRelease,
 } from '../../../src/factories/flux/index.js';
+import { Cel, kubernetesComposition } from '../../../src/index.js';
 import { admissionErrors } from '../../utils/kro-admission.js';
 import { fluxStandInRelease } from '../../fixtures/flux/stand-in-release.js';
 
@@ -187,8 +191,15 @@ describe('makeFluxInstall (KRO mode)', () => {
 
   it('accepts only the release version on the instance schema', () => {
     const yaml = fluxInstall.toYaml();
-    expect(yaml).toContain('version: string | enum="v2.10.0"');
+    expect(yaml).toContain('version: string | enum="v2.10.0" required=true');
     expect(admissionErrors(yaml, 'FluxInstall', placement)).toEqual([]);
+  });
+
+  it('refuses an instance with no version at admission', () => {
+    const { version: _omitted, ...withoutVersion } = placement;
+    expect(admissionErrors(fluxInstall.toYaml(), 'FluxInstall', withoutVersion)).toEqual([
+      'spec.version: Required value',
+    ]);
   });
 
   it('refuses another version at admission, where the composition body never runs', () => {
@@ -212,6 +223,65 @@ describe('makeFluxInstall (KRO mode)', () => {
     expect(annotations('deploymentHelmController')).toContain(
       'typekro.dev/depends-on-serviceSourceController'
     );
+  });
+});
+
+describe('makeFluxInstall composed inside another composition', () => {
+  const status = type({ ready: 'boolean' });
+
+  /** Define and serialize a composition that composes the install with `pick(spec)`. */
+  const composed = (schema: Type<object>, pick: (spec: never) => unknown) => () =>
+    kubernetesComposition(
+      { name: 'platform-flux', kind: 'PlatformFlux', spec: schema, status },
+      (spec) => {
+        fluxInstall({ version: pick(spec as never) as string });
+        return { ready: true };
+      }
+    ).toYaml();
+
+  /** The code of the innermost TypeKroError `run` throws, through composition wrappers. */
+  function refusalCode(run: () => unknown): string | undefined {
+    try {
+      run();
+    } catch (error) {
+      let code: string | undefined;
+      for (let cause: unknown = error; cause instanceof Error; cause = cause.cause) {
+        if (cause instanceof TypeKroError) code = cause.code;
+      }
+      return code ?? `untyped: ${String(error)}`;
+    }
+    return undefined;
+  }
+
+  const pinned = fluxVersionConstraint('v2.10.0').type;
+  const fromFlux = (spec: { flux: unknown }) => spec.flux;
+
+  it('shares one version type per release', () => {
+    expect(fluxVersionConstraint('v2.10.0')).toBe(fluxVersionConstraint('v2.10.0'));
+  });
+
+  it('accepts the release version, or a required field declared with its type', () => {
+    expect(refusalCode(composed(type({ name: 'string' }), () => 'v2.10.0'))).toBeUndefined();
+    expect(refusalCode(composed(type({ flux: pinned }), fromFlux))).toBeUndefined();
+  });
+
+  it('refuses at build time a version from a field that does not carry the constraint', () => {
+    const unguarded: [Type<object>, (spec: never) => unknown][] = [
+      // An unconstrained string: an instance could ask for v2.6.0 and get these manifests.
+      [type({ flux: 'string' }), fromFlux],
+      // The constrained type on an optional field: an instance could omit it.
+      [type({ 'flux?': pinned }), fromFlux],
+      // A CEL expression over the guarded field.
+      [
+        type({ flux: pinned }),
+        (spec: { flux: unknown }) => Cel.expr('has(', spec.flux, ') ? ', spec.flux, " : ''"),
+      ],
+      // Another release's version.
+      [type({ name: 'string' }), () => 'v2.7.4'],
+    ];
+    for (const [schema, pick] of unguarded) {
+      expect(refusalCode(composed(schema, pick))).toBe('FLUX_INSTALL_VERSION_MISMATCH');
+    }
   });
 });
 

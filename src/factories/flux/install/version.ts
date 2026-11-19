@@ -24,20 +24,34 @@ export function assertPinnedFluxVersion(version: unknown): asserts version is st
   }
 }
 
+/** One constraint per release version, so every schema that declares it shares one type. */
+const VERSION_CONSTRAINTS = new Map<string, SpecConstraint<string>>();
+
 /**
- * `version` of one release's install composition: exactly `releaseVersion`. Its enum is on the
- * instance schema, so the API server refuses a KRO instance asking for another version, and the
- * composition refuses one in direct mode with `FLUX_INSTALL_VERSION_MISMATCH`.
+ * `version` of one release's install composition: exactly `releaseVersion`. Its enum and
+ * `required=true` are on the instance schema, so the API server refuses a KRO instance asking
+ * for another version or none, and the composition refuses one in direct mode with
+ * `FLUX_INSTALL_VERSION_MISMATCH`.
+ *
+ * A composition that passes one of its own spec fields as `version`, for example to a Flux
+ * install composed inside it, declares that field with this constraint's `type` as a required
+ * key. Any other reference is refused when the composition is built.
  */
 export function fluxVersionConstraint(releaseVersion: string): SpecConstraint<string> {
   assertPinnedFluxVersion(releaseVersion);
-  return specConstraint<string>({
+  const existing = VERSION_CONSTRAINTS.get(releaseVersion);
+  if (existing) return existing;
+  const constraint = specConstraint<string>({
     path: 'version',
     type: type
       .unit(releaseVersion)
       .configure({ expected: `the release version ${releaseVersion}` }),
+    required: true,
     code: 'FLUX_INSTALL_VERSION_MISMATCH',
+    declaredWith: `fluxVersionConstraint(${JSON.stringify(releaseVersion)}).type`,
     message: (requested) =>
       `Flux ${String(requested)} is requested, but these manifests are ${releaseVersion}.`,
   });
+  VERSION_CONSTRAINTS.set(releaseVersion, constraint);
+  return constraint;
 }

@@ -164,8 +164,10 @@ function withPlacement(document: FluxManifestObject, spec: FluxInstallConfig): F
  * Build the install composition for one pinned release.
  *
  * The spec's `version` must equal the release's version. The instance schema carries it as an
- * enum, so the API server refuses a KRO instance that asks for another version, and the
- * composition refuses one in direct mode.
+ * enum and `required=true`, so the API server refuses a KRO instance that asks for another
+ * version or none, and the composition refuses one in direct mode. Composed inside another
+ * composition, it takes the version itself or a reference to a required spec field declared
+ * with `fluxVersionConstraint(release.version).type`, and refuses anything else at build time.
  *
  * @example
  * ```typescript
@@ -195,7 +197,7 @@ export function makeFluxInstall(
       status: FluxInstallStatusSchema,
     },
     (spec) => {
-      version.check(spec.version);
+      version.enforce(spec.version);
 
       const controllers: Array<{
         status: { readyReplicas?: number };

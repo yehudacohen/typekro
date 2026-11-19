@@ -4,9 +4,11 @@
 CRDs, RBAC, services, quotas, network policies and controllers) as ordinary TypeKro declarations,
 so direct, KRO and Alchemy mode can all apply them. It refuses an unpinned version (`latest`,
 `2.10.0` or `v2.10`) and any manifest kind it has no factory for. The composition's `version` must
-be the release's own: the instance schema carries it as an enum, so the API server refuses a KRO
-instance asking for another version, and the composition refuses one in direct mode. It applies the Kubernetes 1.33 CRD
-schema fix, replaces every controller's tolerations and node selector when those inputs are given,
+be the release's own: the instance schema carries it as an enum and `required=true`, so the API
+server refuses a KRO instance asking for another version or none, and the composition refuses one
+in direct mode. A composition that composes the install and passes one of its own spec fields as
+`version` declares that field with `fluxVersionConstraint(version).type` as a required key; any
+other reference is refused when it is built. It applies the Kubernetes 1.33 CRD schema fix, replaces every controller's tolerations and node selector when those inputs are given,
 and reports `ready` once every controller Deployment has all its replicas ready.
 
 Release modules are large (about 465 KB of source for v2.10.0), so `typekro` and `typekro/flux`
