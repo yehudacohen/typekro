@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { type, type Type } from 'arktype';
+import yaml from 'js-yaml';
 import {
   isValuesMergeExpression,
   type ValuesMergeExpression,
@@ -9,6 +11,8 @@ import { Cel } from '../../../src/core/references/cel.js';
 import {
   assertPodIdentityProvider,
   clusterSecretStore,
+  clusterSecretStoreConditions,
+  clusterSecretStoreNamespaces,
   DEFAULT_EXTERNAL_SECRETS_CHART_VERSION,
   DEFAULT_EXTERNAL_SECRETS_REPOSITORY_URL,
   externalSecret,
@@ -17,6 +21,9 @@ import {
   mapExternalSecretsConfigToHelmValues,
   secretStore,
 } from '../../../src/factories/external-secrets/index.js';
+import { CLUSTER_SECRET_STORE_CONDITIONS } from '../../../src/factories/external-secrets/resources/store-conditions.js';
+import { kubernetesComposition } from '../../../src/index.js';
+import { admissionErrors, instanceSpecSchema } from '../../utils/kro-admission.js';
 import { crd, specErrors } from './crd-schema.js';
 
 const awsSpec = { provider: { aws: { service: 'SecretsManager' as const, region: 'us-east-1' } } };
@@ -115,6 +122,169 @@ describe('ClusterSecretStore and SecretStore', () => {
         provider: { aws: { ...awsSpec.provider.aws, regionName: 'x' } },
       })
     ).toContain('$.spec.provider.aws: unknown property regionName (the API server would prune it)');
+  });
+});
+
+describe('clusterSecretStore with conditions from the composition spec', () => {
+  const status = type({ ready: 'boolean' });
+
+  /** A composition passing `pick(spec)` as the store's conditions. */
+  function storeComposition(schema: Type<object>, pick: (spec: never) => unknown) {
+    return kubernetesComposition(
+      { name: 'conditioned-store', kind: 'ConditionedStore', spec: schema, status },
+      (spec) => {
+        clusterSecretStore({
+          name: 'aws',
+          spec: { ...awsSpec, conditions: pick(spec as never) as typeof clusterSpec.conditions },
+          id: 'store',
+        });
+        return { ready: true };
+      }
+    );
+  }
+
+  /** Defining the composition runs its body against the schema proxy; then serialize it. */
+  function build(schema: Type<object>, pick: (spec: never) => unknown): string {
+    return storeComposition(schema, pick).toYaml();
+  }
+
+  /** The code of the innermost TypeKroError `run` throws, through composition wrappers. */
+  function refusalCode(run: () => unknown): string | undefined {
+    try {
+      run();
+    } catch (error) {
+      let code: string | undefined;
+      for (let cause: unknown = error; cause instanceof Error; cause = cause.cause) {
+        if (cause instanceof TypeKroError) code = cause.code;
+      }
+      return code ?? `untyped: ${String(error)}`;
+    }
+    return undefined;
+  }
+
+  const constrained = type({ conditions: clusterSecretStoreConditions() });
+  const fromConditions = (spec: { conditions: unknown }) => spec.conditions;
+
+  describe('a field declared with clusterSecretStoreConditions()', () => {
+    const yamlText = build(constrained, fromConditions);
+
+    it('passes the conditions through to the store', () => {
+      const rgd = (
+        yaml.loadAll(yamlText) as Array<{
+          kind: string;
+          spec: { resources: Array<{ id: string; template: { spec: { conditions: unknown } } }> };
+        }>
+      ).find((document) => document?.kind === 'ResourceGraphDefinition');
+      const store = rgd?.spec.resources.find((resource) => resource.id === 'store');
+      expect(store?.template.spec.conditions).toBe('${schema.spec.conditions}');
+    });
+
+    it('admits instances whose conditions each limit the store', () => {
+      for (const conditions of [
+        [{ namespaces: ['app'] }],
+        [{ namespaceSelector: { matchLabels: { 'secrets.example.com/aws': 'allowed' } } }],
+        [{ namespaceSelector: { matchExpressions: [{ key: 'team', operator: 'Exists' }] } }],
+        [{ namespaceRegexes: ['^team-a-'] }],
+        [{ namespaces: ['app'] }, { namespaceRegexes: ['^team-a-'] }],
+      ]) {
+        expect(admissionErrors(yamlText, 'ConditionedStore', { conditions })).toEqual([]);
+      }
+    });
+
+    it('refuses at admission the instances the factory refuses in direct mode', () => {
+      const rule = `failed rule: ${CLUSTER_SECRET_STORE_CONDITIONS.rule}`;
+      expect(admissionErrors(yamlText, 'ConditionedStore', {})).toEqual([
+        'spec.conditions: Required value',
+      ]);
+      for (const conditions of [
+        [],
+        [{}],
+        [{ namespaces: [] }],
+        [{ namespaceSelector: {} }],
+        [{ namespaces: ['app'], namespaceSelector: { matchLabels: {} } }],
+        [{ namespaces: ['app'] }, {}],
+      ]) {
+        expect(admissionErrors(yamlText, 'ConditionedStore', { conditions })).toEqual([
+          `spec.conditions: ${rule}`,
+        ]);
+      }
+    });
+
+    it('declares each condition as a structured type, so the rule can read its fields', () => {
+      const schema = instanceSpecSchema(yamlText, 'ConditionedStore');
+      expect(schema.required).toContain('conditions');
+      expect(Object.keys(schema.properties?.conditions?.items?.properties ?? {}).sort()).toEqual([
+        'namespaceRegexes',
+        'namespaceSelector',
+        'namespaces',
+      ]);
+    });
+
+    it('refuses the same conditions in direct mode', async () => {
+      const factory = storeComposition(constrained, fromConditions).factory('direct');
+      expect(
+        (
+          yaml.loadAll(factory.toYaml({ conditions: [{ namespaces: ['app'] }] })) as Array<{
+            kind?: string;
+          }>
+        )
+          .filter(Boolean)
+          .map((document) => document.kind)
+      ).toContain('ClusterSecretStore');
+      for (const conditions of [[], [{}], [{ namespaceSelector: {} }]]) {
+        expect(() => factory.toYaml({ conditions })).toThrow(/limit it to some namespaces/);
+      }
+    });
+  });
+
+  it('accepts a condition whose namespaces come from a field declared with clusterSecretStoreNamespaces()', () => {
+    expect(
+      refusalCode(() =>
+        build(type({ allowed: clusterSecretStoreNamespaces() }), (spec: { allowed: unknown }) => [
+          { namespaces: spec.allowed },
+        ])
+      )
+    ).toBeUndefined();
+  });
+
+  it('refuses at build time conditions from a field that does not carry the constraint', () => {
+    const unguarded: [Type<object>, (spec: never) => unknown][] = [
+      // An unconstrained list of conditions: an instance could send [] or [{}].
+      [
+        type({
+          conditions: type({ 'namespaces?': 'string[]', 'namespaceRegexes?': 'string[]' }).array(),
+        }),
+        fromConditions,
+      ],
+      // The constrained type on an optional field: an instance could omit it.
+      [type({ 'conditions?': clusterSecretStoreConditions() }), fromConditions],
+      // An unconstrained namespace list: an instance could send [].
+      [
+        type({ allowed: 'string[]' }),
+        (spec: { allowed: unknown }) => [{ namespaces: spec.allowed }],
+      ],
+      // A guarded list beside an empty selector, which selects every namespace.
+      [
+        type({ allowed: clusterSecretStoreNamespaces() }),
+        (spec: { allowed: unknown }) => [{ namespaces: spec.allowed, namespaceSelector: {} }],
+      ],
+      // A selector only known per instance.
+      [
+        type({ labels: 'Record<string, string>' }),
+        (spec: { labels: unknown }) => [{ namespaceSelector: { matchLabels: spec.labels } }],
+      ],
+      // A CEL expression over the guarded field.
+      [
+        constrained,
+        (spec: { conditions: unknown }) =>
+          Cel.expr('has(', spec.conditions, ') ? ', spec.conditions, ' : []'),
+      ],
+    ];
+    for (const [schema, pick] of unguarded) {
+      expect(refusalCode(() => build(schema, pick))).toBe(
+        'EXTERNAL_SECRETS_CLUSTER_STORE_UNCONDITIONED'
+      );
+    }
   });
 });
 

@@ -12,8 +12,8 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
-import { specConstraint } from '../../core/validation/spec-constraint.js';
 import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
+import { clusterSecretStoreNamespaces, namespaceName } from './resources/store-conditions.js';
 
 /** A status condition as ESO reports it. */
 export interface ExternalSecretsCondition {
@@ -44,7 +44,8 @@ export interface SecretStoreSpec {
   refreshInterval?: number;
   /**
    * ClusterSecretStore only: which namespaces may use the store. `clusterSecretStore` requires at
-   * least one condition, each naming namespaces, a non-empty selector or name patterns.
+   * least one condition, each naming namespaces, a non-empty selector or name patterns. Declare a
+   * composition spec field passed here with `clusterSecretStoreConditions()`.
    */
   conditions?: Array<{
     namespaces?: string[];
@@ -137,9 +138,6 @@ export interface ExternalSecretsHelmReleaseConfig extends HelmReleaseLifecycleOp
 // COMPOSITIONS
 // =============================================================================
 
-/** A DNS-1123 label: a namespace name. */
-const namespaceName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
-
 /** Inputs both AWS compositions share: the controller release and the store's provider. */
 const externalSecretsAwsControllerFields = {
   name: 'string',
@@ -171,25 +169,16 @@ export const ExternalSecretsAwsConfigSchema = type({
 export type ExternalSecretsAwsConfig = typeof ExternalSecretsAwsConfigSchema.infer;
 
 /**
- * Namespaces allowed to use a cluster store, by name. At least one is required, so a cluster
- * store is never open to every namespace. The pattern and item count are on the instance
- * schema, so admission refuses an empty list in KRO mode.
- */
-export const CLUSTER_STORE_ALLOWED_NAMESPACES = specConstraint({
-  path: 'allowedNamespaces',
-  type: namespaceName.array().atLeastLength(1),
-  code: 'EXTERNAL_SECRETS_CLUSTER_STORE_UNCONDITIONED',
-  message: (value) =>
-    `allowedNamespaces must list at least one namespace name; got ${JSON.stringify(value)}.`,
-});
-
-/**
  * Inputs of `externalSecretsAwsClusterStore`, the explicit opt-in to cluster-wide access: the
  * controller plus one `ClusterSecretStore` that only the namespaces in `allowedNamespaces` can use.
  */
 export const ExternalSecretsAwsClusterStoreConfigSchema = type({
   ...externalSecretsAwsControllerFields,
-  allowedNamespaces: CLUSTER_STORE_ALLOWED_NAMESPACES.type,
+  /**
+   * Namespaces allowed to use the store, by name. At least one is required, so the store is never
+   * open to every namespace; the instance schema requires the field and refuses an empty list.
+   */
+  allowedNamespaces: clusterSecretStoreNamespaces(),
 });
 
 export type ExternalSecretsAwsClusterStoreConfig =

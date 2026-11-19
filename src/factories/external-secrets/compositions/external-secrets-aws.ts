@@ -11,8 +11,8 @@ import {
 } from '../constants.js';
 import { externalSecretsHelmRelease, externalSecretsHelmRepository } from '../resources/helm.js';
 import { clusterSecretStore, secretStore } from '../resources/secret-store.js';
+import { CLUSTER_SECRET_STORE_NAMESPACES } from '../resources/store-conditions.js';
 import {
-  CLUSTER_STORE_ALLOWED_NAMESPACES,
   type ExternalSecretsAwsClusterStoreConfig,
   ExternalSecretsAwsClusterStoreConfigSchema,
   type ExternalSecretsAwsConfig,
@@ -126,7 +126,8 @@ export const externalSecretsAws: CallableComposition<
  * The explicit opt-in to a `ClusterSecretStore`. It installs the same controller as
  * `externalSecretsAws` and creates one `ClusterSecretStore` whose `conditions` allow only the
  * namespaces in `allowedNamespaces`. The list must name at least one namespace: the instance
- * schema refuses an empty list in KRO mode, and the composition refuses it in direct mode.
+ * schema requires the field and refuses an empty list in KRO mode, and the composition refuses
+ * it in direct mode.
  *
  * @example
  * ```typescript
@@ -152,7 +153,7 @@ export const externalSecretsAwsClusterStore: CallableComposition<
     status: ExternalSecretsAwsStatusSchema,
   },
   (spec: ExternalSecretsAwsClusterStoreConfig) => {
-    CLUSTER_STORE_ALLOWED_NAMESPACES.check(spec.allowedNamespaces);
+    CLUSTER_SECRET_STORE_NAMESPACES.check(spec.allowedNamespaces);
     const release = externalSecretsController(spec);
     const store = clusterSecretStore({
       name: Cel.default(spec.storeName, spec.name),

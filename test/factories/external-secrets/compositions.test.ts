@@ -103,7 +103,7 @@ describe('externalSecretsAwsClusterStore (direct mode)', () => {
 
   it('refuses a cluster store with no allowed namespaces', async () => {
     await expect(clusterManifests({ ...clusterSpec, allowedNamespaces: [] })).rejects.toThrow(
-      'allowedNamespaces must list at least one namespace name'
+      'A ClusterSecretStore namespace list must name at least one namespace; got [].'
     );
   });
 });
@@ -170,8 +170,8 @@ describe('externalSecretsAwsClusterStore (KRO mode)', () => {
     const store = rgdOf(externalSecretsAwsClusterStore).spec.resources.find(
       (resource) => resource.id === 'clusterSecretStore'
     );
-    // A reference to a required field, not an `omit()` guard: an instance without the field
-    // fails to resolve rather than producing an unconditioned store.
+    // A reference to a required field, not an `omit()` guard: admission refuses an instance
+    // without the field rather than producing an unconditioned store.
     expect(store?.template.spec?.conditions).toEqual([
       { namespaces: '${schema.spec.allowedNamespaces}' },
     ]);
@@ -190,6 +190,10 @@ describe('externalSecretsAwsClusterStore (KRO mode)', () => {
         allowedNamespaces: [],
       })
     ).toEqual(['spec.allowedNamespaces: fewer than 1 items']);
+    const { allowedNamespaces: _omitted, ...withoutNamespaces } = clusterSpec;
+    expect(admissionErrors(yamlText, 'ExternalSecretsAwsClusterStore', withoutNamespaces)).toEqual([
+      'spec.allowedNamespaces: Required value',
+    ]);
     expect(
       admissionErrors(yamlText, 'ExternalSecretsAwsClusterStore', {
         ...clusterSpec,

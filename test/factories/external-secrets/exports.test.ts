@@ -6,9 +6,8 @@ describe('typekro/external-secrets exports', () => {
   it('exports the composition, factories, helpers and constants', () => {
     expect(eso.externalSecretsAws).toBeDefined();
     expect(eso.externalSecretsAwsClusterStore).toBeDefined();
-    expect(eso.CLUSTER_SECRET_STORE_CONDITIONS.code).toBe(
-      'EXTERNAL_SECRETS_CLUSTER_STORE_UNCONDITIONED'
-    );
+    expect(eso.clusterSecretStoreConditions()).toBe(eso.clusterSecretStoreConditions());
+    expect(eso.clusterSecretStoreNamespaces()).toBe(eso.clusterSecretStoreNamespaces());
     expect(eso.clusterSecretStore).toBeTypeOf('function');
     expect(eso.secretStore).toBeTypeOf('function');
     expect(eso.externalSecret).toBeTypeOf('function');
