@@ -7,6 +7,7 @@
     "generate": "bun run src/main.ts",
     "test": "bun test test",
     "test:offline": "sandbox-exec -p '(version 1)(allow default)(deny network-outbound)(deny network-bind)' bun test test",
+    "test:guarded": "bun test --preload ./src/offline-guard-install.ts test",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

@@ -1,8 +1,9 @@
 # typekro-alchemy-kubernetes
 
-This package turns an Alchemy Kubernetes layer into a TypeKro composition that kro deploys as one
-ResourceGraphDefinition. The first layer it supports is Alchemy's
-`RivetKubernetes.StatefulSetControlPlane`, the Rivet engine. Kubernetes objects stay owned by
+**Experimental.** This package turns one Alchemy Kubernetes layer into a TypeKro composition that
+kro deploys as one ResourceGraphDefinition. It is not a general Alchemy-to-TypeKro compiler: it
+supports one layer, Alchemy's Rivet engine control plane (`RivetKubernetes.StatefulSetControlPlane`),
+in one variant, a single engine exposed through a ClusterIP Service. Kubernetes objects stay owned by
 TypeKro and kro, and the definitions come from Alchemy's own code instead of a hand port.
 
 It is a separate package, with its own `package.json` and `bun.lock`, because it needs
@@ -40,6 +41,12 @@ generated composition imports only TypeKro, so none of these versions reach Type
      see, become `dependsOn`.
    - Readiness comes per kind (`readyWhen` for StatefulSet and Job). Status projects from
      resources, as kro requires.
+   - Spec fields that reach Kubernetes names (`name`, `namespace`, `pool`) get a pattern and a
+     maximum length, which the emitter puts on the RGD's instance schema, so the API server
+     refuses a bad value in KRO mode and TypeKro's spec validation refuses it in direct mode.
+     `src/names.ts` then renders every generated name, namespace and label value with the
+     longest value each field admits, and generation fails unless each is valid for its kind:
+     for example the pool Job's `<name>-pool-<pool>-<hash>` is at most 63 characters.
    - LoadBalancer exposure is not captured. Alchemy polls the cluster directly for the address,
      outside any provider, so that variant keeps the address outside the RGD.
 4. **Emit.** `src/emit.ts` writes TypeScript that uses TypeKro's typed factories (`service`,
@@ -60,12 +67,15 @@ generated composition imports only TypeKro, so none of these versions reach Type
 bun install                  # in this directory only
 bun run generate             # capture, then rewrite generated/
 bun run test                 # offline, symbolizer, pool Job script and drift tests
-bun run test:offline         # the same, with the network denied by the OS sandbox
+bun run test:offline         # the same, with the network denied by the OS sandbox (macOS)
+bun run test:guarded         # the same, with the in-process network guard preloaded (CI, Linux)
 bun run typecheck
 ```
 
 **Drift test.** `test/drift.test.ts` captures Alchemy again and fails if the checked-in files
 differ by a byte. After an Alchemy upgrade, run `bun run generate`, review the diff, and commit.
+CI installs this package on its own and runs its typecheck and `test:guarded`, drift included.
+The drift test formats with TypeKro's Biome, so CI installs TypeKro's dependencies too.
 
 ## Adding an Alchemy layer
 

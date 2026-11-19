@@ -104,3 +104,37 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  alchemy-kubernetes-capture:
+    # The capture tool has its own package.json and bun.lock (it pins Alchemy and Effect versions
+    # TypeKro does not use), so it is installed and checked on its own.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/alchemy-kubernetes-capture
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5 # TODO: pin to SHA for supply chain security
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # The tool's lockfile is written by Bun 1.3.
+          bun-version: '1.3.10'
+
+      - name: Install TypeKro's dependencies (Biome, which formats the generated output)
+        working-directory: .
+        run: bun install --frozen-lockfile
+
+      - name: Install the tool's dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # The OS sandbox `test:offline` uses is macOS-only. On Linux the tests run with the tool's
+      # application-level guard preloaded, which refuses sockets, DNS, fetch and HTTP in-process.
+      # That includes test/drift.test.ts, which recaptures from Alchemy and fails unless the
+      # regenerated output is byte-identical to the checked-in files.
+      - name: Offline tests and drift check
+        run: bun run test:guarded
