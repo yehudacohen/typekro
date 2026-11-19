@@ -11,6 +11,7 @@ import {
   isPinnedAmiAlias,
   karpenterSpotPool,
 } from '../../../src/factories/karpenter/index.js';
+import { admissionErrors } from '../../utils/kro-admission.js';
 import { crdSchema, validate } from './crd-schema.js';
 
 interface Manifest {
@@ -138,18 +139,25 @@ describe('karpenterSpotPool (direct mode)', () => {
 
   it('refuses an unpinned AMI alias', async () => {
     await expect(render({ ...spec, amiAlias: 'al2023@latest' })).rejects.toThrow(
-      'amiAlias must be pinned'
+      'amiAlias must be pinned, like "al2023@v20251117"; got "al2023@latest".'
     );
   });
 });
 
 describe('pinned AMI aliases', () => {
+  it('lets a graph reference through to admission and refuses non-strings', () => {
+    expect(() => assertPinnedAmiAlias(undefined)).not.toThrow();
+    expect(isPinnedAmiAlias(20251117)).toBe(false);
+  });
+
   it('accepts versions and refuses latest, a missing version and a second @', () => {
     expect(isPinnedAmiAlias('al2023@v20251117')).toBe(true);
     expect(isPinnedAmiAlias('bottlerocket@v1.20.0')).toBe(true);
     for (const alias of ['al2023@latest', 'al2023', 'al2023@v20251117@foo']) {
       expect(isPinnedAmiAlias(alias)).toBe(false);
-      expect(() => assertPinnedAmiAlias(alias)).toThrow('amiAlias must be pinned');
+      expect(() => assertPinnedAmiAlias(alias)).toThrow(
+        `amiAlias must be pinned, like "al2023@v20251117"; got "${alias}".`
+      );
     }
   });
 });
@@ -167,6 +175,29 @@ describe('karpenterSpotPool (KRO mode)', () => {
     expect(ids).toContain('nodeClass');
     expect(ids).toContain('spotPool');
     expect(rgd.spec.schema.spec.stableTaintKey).toContain('string');
-    expect(rgd.spec.schema.spec.amiAlias).toContain('string');
+    expect(rgd.spec.schema.spec.amiAlias).toBe(
+      'string | pattern="^[a-z0-9]+@v[0-9][0-9A-Za-z._-]*$"'
+    );
+  });
+
+  it('renders each template and default once, as valid CEL', () => {
+    const yaml = karpenterSpotPool.toYaml();
+    expect(yaml).not.toContain('${${');
+    expect(yaml).not.toContain('has(has(');
+    expect(yaml).toContain('name: ${schema.spec.name}-spot');
+    expect(yaml).toContain('releaseName: ${schema.spec.name}-crd');
+  });
+
+  it('admits an instance with a pinned alias', () => {
+    expect(admissionErrors(karpenterSpotPool.toYaml(), 'KarpenterSpotPool', spec)).toEqual([]);
+  });
+
+  it('refuses an unpinned alias at admission, where the composition body never runs', () => {
+    const yaml = karpenterSpotPool.toYaml();
+    for (const amiAlias of ['al2023@latest', 'al2023', 'al2023@v20251117@foo']) {
+      expect(admissionErrors(yaml, 'KarpenterSpotPool', { ...spec, amiAlias })).toEqual([
+        `spec.amiAlias: ${JSON.stringify(amiAlias)} does not match ^[a-z0-9]+@v[0-9][0-9A-Za-z._-]*$`,
+      ]);
+    }
   });
 });

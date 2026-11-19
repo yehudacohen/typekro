@@ -11,6 +11,7 @@
 import { type Type, type } from 'arktype';
 import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
 import type { KARPENTER_LABELS } from './constants.js';
+import { PINNED_AMI_ALIAS_CONSTRAINT } from './utils/ami-alias.js';
 
 // ============================================================================
 // Shared Kubernetes shapes
@@ -537,7 +538,10 @@ export interface KarpenterSpotPoolConfig {
   stableTaintKey: string;
   /** Availability zones the spot pool may use. */
   zones: string[];
-  /** A pinned AMI alias such as `al2023@v20251117`; `@latest` is refused. */
+  /**
+   * A pinned AMI alias such as `al2023@v20251117`. `@latest` is refused in direct mode and, through
+   * the instance schema's pattern, at admission in KRO mode.
+   */
   amiAlias: string;
   /** Tag value matched on `karpenter.sh/discovery`. @default clusterName */
   discoveryTag?: string;
@@ -559,7 +563,7 @@ export const KarpenterSpotPoolConfigSchema: Type<KarpenterSpotPoolConfig> = type
   nodeRole: 'string > 0',
   stableTaintKey: 'string > 0',
   zones: 'string[] > 0',
-  amiAlias: 'string > 0',
+  amiAlias: PINNED_AMI_ALIAS_CONSTRAINT.type,
   'discoveryTag?': 'string > 0',
   'spotInstanceFamilies?': 'string[] > 0',
   'spotInstanceSizes?': 'string[] > 0',

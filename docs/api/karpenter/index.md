@@ -161,7 +161,8 @@ xlarge, spreads over `zones`, consolidates empty or underutilized nodes after 5 
 disrupts one node at a time, and has a CPU limit of `16` by default.
 
 `amiAlias` is required and must be pinned (`<family>@v<version>`, for example
-`al2023@v20251117`). `@latest` and a second `@` are refused.
+`al2023@v20251117`). `@latest` and a second `@` are refused in both modes: in direct mode by the
+composition, and in KRO mode by the API server, because the instance schema carries the pattern.
 
 ```typescript
 import { karpenterSpotPool } from 'typekro/karpenter';
@@ -179,7 +180,7 @@ await factory.deploy({
 ```
 
 Deploy it in direct mode, which installs the CRDs before the NodeClass and NodePool. KRO mode needs
-the Karpenter CRDs installed first, and it cannot check a referenced `amiAlias`.
+the Karpenter CRDs installed first.
 
 ## NodePool
 

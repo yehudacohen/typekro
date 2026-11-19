@@ -7,11 +7,9 @@
 // the discovery-tagged subnets and security groups are passed by name.
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { TypeKroError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
 import {
-  DEFAULT_KARPENTER_NAMESPACE,
   KARPENTER_AWS_GROUP,
   KARPENTER_DEFAULT_TOLERATIONS,
   KARPENTER_DISCOVERY_TAG,
@@ -21,12 +19,16 @@ import { ec2NodeClass } from '../resources/ec2-node-class.js';
 import { nodePool } from '../resources/node-pool.js';
 import { karpenterReady } from '../resources/readiness.js';
 import {
+  type KarpenterBootstrapConfig,
   type KarpenterSpotPoolConfig,
   KarpenterSpotPoolConfigSchema,
   type KarpenterSpotPoolStatus,
   KarpenterSpotPoolStatusSchema,
 } from '../types.js';
+import { PINNED_AMI_ALIAS_CONSTRAINT } from '../utils/ami-alias.js';
 import { karpenterControllerResources } from './karpenter-bootstrap.js';
+
+export { assertPinnedAmiAlias, isPinnedAmiAlias, PINNED_AMI_ALIAS } from '../utils/ami-alias.js';
 
 /** Arm64 families across c/m/r 6g/7g/8g. */
 export const DEFAULT_SPOT_INSTANCE_FAMILIES = [
@@ -50,26 +52,18 @@ export const DEFAULT_SPOT_INSTANCE_SIZES = ['large', 'xlarge'];
 export const SPOT_MIN_INSTANCE_TYPES = 8;
 
 /**
- * A pinned AMI alias, `<family>@v<version>` such as `al2023@v20251117`. It
- * refuses `@latest` and a second `@`, which Karpenter v1.15.2 accepts and then
- * crash-loops on (aws/karpenter-provider-aws#9800).
+ * `namespace` and `version` when the caller set them; the controller applies their defaults. This
+ * stays out of the composition body: a JS conditional on a schema proxy in the body makes KRO
+ * serialization wrap every template there twice (`${${schema.spec.name}-spot}`), and defaulting
+ * here as well nests `has()` around an expression, which CEL refuses.
  */
-export const PINNED_AMI_ALIAS = /^[a-z0-9]+@v[0-9][0-9A-Za-z._-]*$/;
-
-/** True when `alias` is a concrete, pinned AMI alias. */
-export function isPinnedAmiAlias(alias: unknown): boolean {
-  return typeof alias === 'string' && PINNED_AMI_ALIAS.test(alias);
-}
-
-/** Throws unless `alias` is pinned. Graph references (KRO mode) pass. */
-export function assertPinnedAmiAlias(alias: unknown): void {
-  if (typeof alias === 'string' && !PINNED_AMI_ALIAS.test(alias)) {
-    throw new TypeKroError(
-      `amiAlias must be pinned, like "al2023@v20251117"; got "${alias}".`,
-      'KARPENTER_AMI_ALIAS_NOT_PINNED',
-      { alias }
-    );
-  }
+function optionalControllerInputs(
+  spec: KarpenterSpotPoolConfig
+): Pick<KarpenterBootstrapConfig, 'namespace' | 'version'> {
+  return {
+    ...(spec.namespace !== undefined && { namespace: spec.namespace }),
+    ...(spec.version !== undefined && { version: spec.version }),
+  };
 }
 
 /**
@@ -82,8 +76,9 @@ export function assertPinnedAmiAlias(alias: unknown): void {
  * and has a CPU limit of 16 by default.
  *
  * Deploy it in direct mode, which installs the controller and CRDs before the
- * NodeClass and NodePool. KRO mode needs the Karpenter CRDs installed first,
- * and it cannot check that a referenced `amiAlias` is pinned.
+ * NodeClass and NodePool. KRO mode needs the Karpenter CRDs installed first.
+ * `amiAlias` must be pinned in both modes: the instance schema carries the
+ * pattern, so the API server refuses `al2023@latest` on a KRO instance.
  *
  * @example
  * ```typescript
@@ -110,12 +105,11 @@ export const karpenterSpotPool: CallableComposition<
     status: KarpenterSpotPoolStatusSchema,
   },
   (spec) => {
-    assertPinnedAmiAlias(spec.amiAlias);
+    PINNED_AMI_ALIAS_CONSTRAINT.check(spec.amiAlias);
 
     const { controller, status: controllerStatus } = karpenterControllerResources({
       name: spec.name,
-      namespace: Cel.default(spec.namespace, DEFAULT_KARPENTER_NAMESPACE),
-      ...(spec.version !== undefined ? { version: spec.version } : {}),
+      ...optionalControllerInputs(spec),
       clusterName: spec.clusterName,
       interruptionQueue: spec.interruptionQueue,
       tolerations: [
