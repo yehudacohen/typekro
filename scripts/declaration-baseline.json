@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.45.0",
+  "packageVersion": "0.46.0",
   "owners": {
     "advanced": {
       "files": 1,
@@ -11,10 +11,10 @@
     },
     "alchemy": {
       "files": 16,
-      "rawBytes": 93690,
-      "surfaceBytes": 36838,
-      "docBytes": 56227,
-      "commentBytes": 56852
+      "rawBytes": 93789,
+      "surfaceBytes": 36839,
+      "docBytes": 56325,
+      "commentBytes": 56950
     },
     "apisix": {
       "files": 10,
@@ -73,11 +73,11 @@
       "commentBytes": 12873
     },
     "core": {
-      "files": 269,
-      "rawBytes": 889165,
-      "surfaceBytes": 409755,
-      "docBytes": 468297,
-      "commentBytes": 479410
+      "files": 276,
+      "rawBytes": 905501,
+      "surfaceBytes": 416075,
+      "docBytes": 478047,
+      "commentBytes": 489426
     },
     "crowdsec": {
       "files": 11,
@@ -114,6 +114,13 @@
       "docBytes": 3461,
       "commentBytes": 3729
     },
+    "external-secrets": {
+      "files": 13,
+      "rawBytes": 22186,
+      "surfaceBytes": 9615,
+      "docBytes": 12053,
+      "commentBytes": 12571
+    },
     "gateway-api": {
       "files": 6,
       "rawBytes": 51773,
@@ -143,11 +150,11 @@
       "commentBytes": 5660
     },
     "karpenter": {
-      "files": 14,
-      "rawBytes": 31087,
-      "surfaceBytes": 15804,
-      "docBytes": 14721,
-      "commentBytes": 15283
+      "files": 16,
+      "rawBytes": 37619,
+      "surfaceBytes": 18197,
+      "docBytes": 18772,
+      "commentBytes": 19422
     },
     "keda": {
       "files": 16,
@@ -228,8 +235,8 @@
     }
   },
   "reachable": {
-    "files": 597,
-    "rawBytes": 2273895
+    "files": 619,
+    "rawBytes": 2319048
   },
   "unreachable": {
     "files": 0,
