@@ -326,7 +326,9 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     const tls = await this.resolveTls(signal, budgetMs, `${method} ${url.pathname}`);
     if (watch) return this.makeRequest(request, tls, signal, undefined);
 
-    const remainingMs = budgetMs - (Date.now() - startedAt);
+    // Without a TLS source nothing was read, so the HTTP call gets the whole budget (not the budget
+    // minus a millisecond of scheduling).
+    const remainingMs = this.tlsSource ? budgetMs - (Date.now() - startedAt) : budgetMs;
     if (remainingMs <= 0) throw this.requestTimeoutError(method, url, budgetMs);
     return this.makeRequest(request, tls, signal, { budgetMs, remainingMs });
   }
