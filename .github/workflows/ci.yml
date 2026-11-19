@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5 # TODO: pin to SHA for supply chain security
+        uses: actions/checkout@v7 # TODO: pin to SHA for supply chain security
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
