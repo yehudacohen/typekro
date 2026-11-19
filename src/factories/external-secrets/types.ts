@@ -44,8 +44,10 @@ export interface SecretStoreSpec {
   refreshInterval?: number;
   /**
    * ClusterSecretStore only: which namespaces may use the store. `clusterSecretStore` requires at
-   * least one condition, each naming namespaces, a non-empty selector or name patterns. Declare a
-   * composition spec field passed here with `clusterSecretStoreConditions()`.
+   * least one condition, each naming namespaces or carrying a non-empty selector. Name patterns
+   * (`namespaceRegexes`) need an opt-in, because ESO grants access whenever one matches and
+   * `.*` matches every namespace. Declare a composition spec field passed here with
+   * `clusterSecretStoreConditions()`.
    */
   conditions?: Array<{
     namespaces?: string[];
@@ -68,6 +70,15 @@ export interface SecretStoreConfig {
   namespace?: string;
   spec: SecretStoreSpec;
   id?: string;
+}
+
+export interface ClusterSecretStoreConfig extends Omit<SecretStoreConfig, 'namespace'> {
+  /**
+   * Accept concrete conditions that give `namespaceRegexes`. ESO grants a namespace access when
+   * any regex of a condition matches it, whatever the condition's other selectors say, so a
+   * pattern such as `.*` opens the store to every namespace. @default false
+   */
+  allowNamespaceRegexes?: boolean;
 }
 
 // =============================================================================
