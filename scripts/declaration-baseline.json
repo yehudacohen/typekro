@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.47.0",
+  "packageVersion": "0.48.0",
   "owners": {
     "advanced": {
       "files": 1,
@@ -151,10 +151,10 @@
     },
     "karpenter": {
       "files": 16,
-      "rawBytes": 37619,
-      "surfaceBytes": 18197,
-      "docBytes": 18772,
-      "commentBytes": 19422
+      "rawBytes": 38427,
+      "surfaceBytes": 18277,
+      "docBytes": 19500,
+      "commentBytes": 20150
     },
     "keda": {
       "files": 16,
@@ -236,7 +236,7 @@
   },
   "reachable": {
     "files": 626,
-    "rawBytes": 2350134
+    "rawBytes": 2350942
   },
   "unreachable": {
     "files": 0,

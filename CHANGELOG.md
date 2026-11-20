@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-11-20
+
 ### Added
 
 - **Karpenter spot pool controller sizing.** `karpenterSpotPool` takes `replicas` and
