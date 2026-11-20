@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.46.0",
+  "packageVersion": "0.47.0",
   "owners": {
     "advanced": {
       "files": 1,
@@ -66,18 +66,18 @@
       "commentBytes": 117628
     },
     "cnpg": {
-      "files": 12,
-      "rawBytes": 29290,
-      "surfaceBytes": 16417,
-      "docBytes": 12417,
-      "commentBytes": 12873
+      "files": 19,
+      "rawBytes": 55896,
+      "surfaceBytes": 27066,
+      "docBytes": 28032,
+      "commentBytes": 28830
     },
     "core": {
       "files": 276,
-      "rawBytes": 905501,
-      "surfaceBytes": 416075,
-      "docBytes": 478047,
-      "commentBytes": 489426
+      "rawBytes": 909981,
+      "surfaceBytes": 416841,
+      "docBytes": 481761,
+      "commentBytes": 493140
     },
     "crowdsec": {
       "files": 11,
@@ -235,8 +235,8 @@
     }
   },
   "reachable": {
-    "files": 619,
-    "rawBytes": 2319048
+    "files": 626,
+    "rawBytes": 2350134
   },
   "unreachable": {
     "files": 0,
