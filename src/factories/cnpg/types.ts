@@ -11,6 +11,13 @@ import { type } from 'arktype';
 
 import type { TypeKroChartValue } from '../../core/types/common.js';
 import type { HelmReleaseLifecycleOptions } from '../helm/types.js';
+import {
+  BARMAN_CLOUD_BUCKET_CONSTRAINT,
+  BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT,
+  BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT,
+  BARMAN_CLOUD_PREFIX_CONSTRAINT,
+  BARMAN_RETENTION_POLICY,
+} from './utils/barman-cloud-constraints.js';
 
 // ============================================================================
 // Common Kubernetes Types
@@ -86,6 +93,32 @@ const tolerationSchemaShape = {
   'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
   'tolerationSeconds?': 'number.integer',
 } as const;
+
+/**
+ * A CNPG-I plugin a cluster uses (`spec.plugins[]` and `externalClusters[].plugin`). For the
+ * Barman Cloud plugin, `parameters.barmanObjectName` names the `ObjectStore`.
+ */
+const pluginSchemaShape = {
+  name: 'string',
+  'enabled?': 'boolean',
+  'isWALArchiver?': 'boolean',
+  'parameters?': 'Record<string, string>',
+} as const;
+
+/** The plugin a `Backup` or `ScheduledBackup` with `method: 'plugin'` uses. */
+const pluginConfigurationSchemaShape = {
+  name: 'string',
+  'parameters?': 'Record<string, string>',
+} as const;
+
+const ClusterPluginSchema = type(pluginSchemaShape);
+const PluginConfigurationSchema = type(pluginConfigurationSchemaShape);
+
+/** A `spec.plugins[]` entry of a `Cluster`. */
+export type ClusterPlugin = typeof ClusterPluginSchema.infer;
+
+/** `pluginConfiguration` of a `Backup` or `ScheduledBackup`. */
+export type PluginConfiguration = typeof PluginConfigurationSchema.infer;
 
 // ============================================================================
 // Bootstrap Config (Helm Operator Install)
@@ -244,7 +277,10 @@ export const ClusterConfigSchema = type({
     },
     /** Backup configuration. */
     'backup?': {
-      /** Barman object store configuration. */
+      /**
+       * In-tree Barman object store configuration. Deprecated by CloudNativePG since 1.26 and
+       * removed in 1.32.0: use the Barman Cloud plugin (`plugins` with an `ObjectStore`).
+       */
       'barmanObjectStore?': barmanObjectStoreSchemaShape,
       /** Backup retention policy (e.g. '30d', '4w', '2m'). */
       'retentionPolicy?': 'string',
@@ -258,6 +294,21 @@ export const ClusterConfigSchema = type({
           'immediateCheckpoint?': 'boolean',
           'waitForArchive?': 'boolean',
         },
+      },
+    },
+    /**
+     * CNPG-I plugins, such as the Barman Cloud plugin for WAL archiving and base backups. See
+     * `barmanCloudPlugin()`.
+     */
+    'plugins?': ClusterPluginSchema.array(),
+    /**
+     * Metadata for the service account CNPG creates for the cluster (named after it). For IRSA,
+     * annotate it with `eks.amazonaws.com/role-arn`; EKS Pod Identity needs no annotation.
+     */
+    'serviceAccountTemplate?': {
+      metadata: {
+        'annotations?': 'Record<string, string>',
+        'labels?': 'Record<string, string>',
       },
     },
     /** Pod resource requirements. */
@@ -304,8 +355,10 @@ export const ClusterConfigSchema = type({
       name: 'string',
       /** Connection parameters (host, port, dbname, etc.). */
       'connectionParameters?': 'Record<string, string>',
-      /** Barman object store for backup-based recovery. */
+      /** In-tree Barman object store for backup-based recovery. Deprecated; see `plugin`. */
       'barmanObjectStore?': barmanObjectStoreSchemaShape,
+      /** A plugin that serves this source, such as the Barman Cloud plugin for recovery. */
+      'plugin?': pluginSchemaShape,
       /** Password secret reference. */
       'password?': { name: 'string', key: 'string' },
     }).array(),
@@ -318,6 +371,9 @@ export const ClusterConfigSchema = type({
  * @see https://cloudnative-pg.io/documentation/1.25/cloudnative-pg.v1/#ClusterSpec
  */
 export type ClusterConfig = typeof ClusterConfigSchema.infer;
+
+/** An `externalClusters[]` entry of a `Cluster`. */
+export type ClusterExternalCluster = NonNullable<ClusterConfig['spec']['externalClusters']>[number];
 
 /** Status condition for a CNPG cluster. */
 export interface ClusterCondition {
@@ -381,6 +437,8 @@ export const BackupConfigSchema = type({
     cluster: { name: 'string' },
     /** Backup method. */
     'method?': '"barmanObjectStore" | "volumeSnapshot" | "plugin"',
+    /** The plugin that takes the backup; required with `method: 'plugin'`. */
+    'pluginConfiguration?': pluginConfigurationSchemaShape,
     /** Backup target. */
     'target?': '"primary" | "prefer-standby"',
     /** Hot/cold backup for volume snapshots (default: true). */
@@ -451,6 +509,8 @@ export const ScheduledBackupConfigSchema = type({
     schedule: 'string',
     /** Backup method. */
     'method?': '"barmanObjectStore" | "volumeSnapshot" | "plugin"',
+    /** The plugin that takes the backups; required with `method: 'plugin'`. */
+    'pluginConfiguration?': pluginConfigurationSchemaShape,
     /** Trigger first backup immediately on creation. */
     'immediate?': 'boolean',
     /** Pause scheduled backups. */
@@ -485,6 +545,8 @@ export interface ScheduledBackupStatus {
   lastSuccessfulBackup?: string;
   /** Last failed backup time. */
   lastFailedBackup?: string;
+  /** The latest admission validation error the operator recorded. */
+  error?: string;
 }
 
 // ============================================================================
@@ -610,3 +672,193 @@ export type CnpgHelmReleaseConfig = Omit<typeof CnpgHelmReleaseConfigSchema.infe
      */
     values?: TypeKroChartValue<Record<string, unknown>>;
   };
+
+// ============================================================================
+// Barman Cloud Plugin: ObjectStore
+// ============================================================================
+
+/**
+ * S3 credentials of an `ObjectStore`, workload identity only: barman-cloud uses the IAM role
+ * of the cluster's service account (IRSA or EKS Pod Identity). There are no fields for access
+ * keys, and `objectStore()` refuses them at runtime too.
+ */
+export interface BarmanCloudS3WorkloadIdentity {
+  inheritFromIAMRole: true;
+}
+
+/**
+ * `spec.configuration` of an `ObjectStore` for S3. The schema is the in-tree
+ * `BarmanObjectStoreConfiguration`, narrowed to S3 with workload identity.
+ *
+ * @see https://cloudnative-pg.io/plugin-barman-cloud/docs/plugin-barman-cloud.v1/
+ */
+export interface BarmanCloudS3Configuration {
+  /** `s3://<bucket>/<prefix>`; both parts non-empty. The plugin adds `/<serverName>/`. */
+  destinationPath: string;
+  s3Credentials: BarmanCloudS3WorkloadIdentity;
+  /** An S3-compatible endpoint; omit for AWS S3. */
+  endpointURL?: string;
+  /** Secret key holding the CA bundle for `endpointURL`. */
+  endpointCA?: SecretKeyRef;
+  s3AddressingStyle?: 'auto' | 'virtual' | 'path';
+  wal?: {
+    compression?: 'bzip2' | 'gzip' | 'lz4' | 'snappy' | 'xz' | 'zstd';
+    encryption?: 'AES256' | 'aws:kms';
+    maxParallel?: number;
+  };
+  data?: {
+    compression?: 'bzip2' | 'gzip' | 'lz4' | 'snappy' | 'zstd';
+    encryption?: 'AES256' | 'aws:kms';
+    jobs?: number;
+    immediateCheckpoint?: boolean;
+  };
+  /** Tags on the backup files. */
+  tags?: Record<string, string>;
+  /** Tags on the history files. */
+  historyTags?: Record<string, string>;
+}
+
+/** `spec` of a Barman Cloud `ObjectStore`. */
+export interface ObjectStoreSpec {
+  configuration: BarmanCloudS3Configuration;
+  /** How long base backups and WAL are kept, such as `30d`, `4w` or `6m`. */
+  retentionPolicy?: string;
+  /** Settings of the plugin sidecar in every instance pod that uses this store. */
+  instanceSidecarConfiguration?: {
+    resources?: ResourceRequirements;
+    /** Seconds between retention policy runs. @default 1800 */
+    retentionPolicyIntervalSeconds?: number;
+    logLevel?: 'error' | 'warning' | 'info' | 'debug' | 'trace';
+    /**
+     * Environment of the sidecar. Static AWS keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+     * `AWS_SESSION_TOKEN`) are refused.
+     */
+    env?: Array<{ name: string; value?: string; valueFrom?: Record<string, unknown> }>;
+  };
+}
+
+/** The recovery window the plugin records per server name. */
+export interface ObjectStoreRecoveryWindow {
+  firstRecoverabilityPoint?: string;
+  lastSuccessfulBackupTime?: string;
+  lastFailedBackupTime?: string;
+}
+
+/**
+ * Observed status of an `ObjectStore`. The plugin reports no conditions, only each server's
+ * recovery window once it has taken backups.
+ */
+export interface ObjectStoreStatus {
+  serverRecoveryWindow?: Record<string, ObjectStoreRecoveryWindow>;
+}
+
+export interface ObjectStoreConfig {
+  name: string;
+  namespace?: string;
+  spec: ObjectStoreSpec;
+  id?: string;
+}
+
+// ============================================================================
+// Barman Cloud Plugin: Helm and compositions
+// ============================================================================
+
+export interface BarmanCloudPluginHelmReleaseConfig extends HelmReleaseLifecycleOptions {
+  name: string;
+  /** Namespace of the release and the plugin: the CloudNativePG operator's namespace. */
+  namespace?: string;
+  /**
+   * Version of the CloudNativePG operator running in that namespace, such as `1.30.2`. Required:
+   * the plugin needs `BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION` or later, and an older one is
+   * refused (`CNPG_BARMAN_CLOUD_OPERATOR_INCOMPATIBLE`).
+   */
+  operatorVersion: string;
+  /** Chart version. @default BARMAN_CLOUD_PLUGIN_CHART_VERSION */
+  version?: string;
+  /** HelmRepository name. @default 'cnpg-repo' */
+  repositoryName?: string;
+  /**
+   * Extra chart values. `crds.create` and `service.name` belong to the factory: a concrete value
+   * that changes them is refused, and they are applied last over values only known per instance.
+   */
+  values?: TypeKroChartValue<Record<string, unknown>>;
+  id?: string;
+}
+
+/** A DNS-1123 label, such as a namespace or a cluster name. */
+const dnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
+
+/**
+ * Inputs of `barmanCloudPluginBootstrap`, which installs the plugin from its official chart.
+ * `namespace` must be the CloudNativePG operator's namespace. `version` is required and may only
+ * be the pinned chart version, `BARMAN_CLOUD_PLUGIN_CHART_VERSION`. `operatorVersion` is required
+ * and must be a CloudNativePG version the plugin supports (1.30.0 or later).
+ */
+export const BarmanCloudPluginBootstrapConfigSchema = type({
+  /** Release name. */
+  name: dnsLabel,
+  /** The CloudNativePG operator's namespace. @default 'cnpg-system' */
+  'namespace?': dnsLabel,
+  /** The pinned chart version, `BARMAN_CLOUD_PLUGIN_CHART_VERSION`. */
+  version: BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type,
+  /**
+   * Version of the CloudNativePG operator in `namespace`, such as `1.30.2`; 1.30.0 or later.
+   * `cnpgBootstrap` installs 1.30.2 with `version: BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION`.
+   */
+  operatorVersion: BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT.type,
+  /** Extra chart values over the chart defaults; `crds.create` and `service.name` are fixed. */
+  'values?': 'Record<string, unknown>',
+});
+
+export type BarmanCloudPluginBootstrapConfig = typeof BarmanCloudPluginBootstrapConfigSchema.infer;
+
+export const BarmanCloudPluginBootstrapStatusSchema = type({
+  phase: '"Ready" | "Installing" | "Failed"',
+  ready: 'boolean',
+  failed: 'boolean',
+  version: 'string',
+});
+
+export type BarmanCloudPluginBootstrapStatus = typeof BarmanCloudPluginBootstrapStatusSchema.infer;
+
+/**
+ * Inputs of `cnpgS3BackedCluster`: a `Cluster` archiving WAL and base backups through the
+ * Barman Cloud plugin to `s3://<bucket>/<prefix>/<name>/`, and a `ScheduledBackup`.
+ *
+ * There are no credential inputs. barman-cloud runs in the instance pods as the cluster's
+ * service account, which CNPG names after the cluster: bind an IAM role to it with an EKS Pod
+ * Identity association, or with IRSA through `serviceAccountAnnotations`.
+ */
+export const CnpgS3BackedClusterConfigSchema = type({
+  /** Cluster name; also the server name in the bucket. */
+  name: dnsLabel,
+  /** Namespace of the cluster, its ObjectStore and its ScheduledBackup. */
+  namespace: dnsLabel,
+  /** Number of PostgreSQL instances. */
+  instances: 'number.integer >= 1',
+  /** Volume size of each instance, such as `20Gi`. */
+  storageSize: 'string > 0',
+  bucket: BARMAN_CLOUD_BUCKET_CONSTRAINT.type,
+  prefix: BARMAN_CLOUD_PREFIX_CONSTRAINT.type,
+  /** Six-field cron schedule of base backups, such as `0 0 2 * * *`. */
+  schedule: 'string > 0',
+  /** @default '30d' */
+  'retentionPolicy?': type(BARMAN_RETENTION_POLICY),
+  /** Annotations on the cluster's service account, such as `eks.amazonaws.com/role-arn`. */
+  'serviceAccountAnnotations?': 'Record<string, string>',
+});
+
+export type CnpgS3BackedClusterConfig = typeof CnpgS3BackedClusterConfigSchema.infer;
+
+export const CnpgS3BackedClusterStatusSchema = type({
+  /** `clusterReady`, `walArchiving` and `scheduledBackupReady` together. */
+  ready: 'boolean',
+  /** The cluster's `Ready` condition is `True`. */
+  clusterReady: 'boolean',
+  /** The cluster's `ContinuousArchiving` condition is `True`. */
+  walArchiving: 'boolean',
+  /** The operator has registered the base backup schedule (`status.lastCheckTime`), without an error. */
+  scheduledBackupReady: 'boolean',
+});
+
+export type CnpgS3BackedClusterStatus = typeof CnpgS3BackedClusterStatusSchema.infer;

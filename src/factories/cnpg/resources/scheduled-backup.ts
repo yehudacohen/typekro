@@ -11,32 +11,58 @@ import {
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ScheduledBackupConfig, ScheduledBackupStatus } from '../types.js';
+import { assertPluginBackupConfigured } from '../utils/barman-cloud.js';
 
 /** Base condition-based evaluator. */
 const baseEvaluator = createConditionBasedReadinessEvaluator({ kind: 'ScheduledBackup' });
 
 /**
- * ScheduledBackup Readiness Evaluator
+ * ScheduledBackup readiness: ready once the operator has registered the schedule, not once it
+ * has run.
  *
- * Checks standard Ready condition. If no conditions exist, checks whether
- * the schedule has been evaluated (lastScheduleTime) as a proxy for readiness.
+ * The CloudNativePG operator writes no conditions on a ScheduledBackup. On its first reconcile
+ * of a schedule it sets `status.lastCheckTime` and waits for the first slot (with `immediate`
+ * it also takes a backup and sets `lastScheduleTime` and `nextScheduleTime`), so
+ * `lastCheckTime` is the signal that the schedule is registered. A nightly schedule is ready
+ * minutes after it is created, not the next night. `status.error` (an admission validation
+ * error) is not ready. A suspended schedule is never reconciled; it is reported ready with
+ * reason `Suspended`, because the operator skips it on purpose. A `Ready` condition, if some
+ * operator writes one, is honoured.
+ *
+ * @see https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.2/internal/controller/scheduledbackup_controller.go
  */
 function scheduledBackupReadinessEvaluator(liveResource: unknown): ResourceStatus {
-  const result = baseEvaluator(liveResource);
-
-  // If conditions are missing but the schedule is running, consider it ready
-  if (!result.ready && result.reason === 'ConditionsMissing') {
-    const resource = liveResource as { status?: ScheduledBackupStatus } | null | undefined;
-    if (resource?.status?.lastScheduleTime) {
-      return {
-        ready: true,
-        message: `Schedule is active, last run: ${resource.status.lastScheduleTime}`,
-        reason: 'ScheduleActive',
-      };
-    }
+  const resource = liveResource as
+    | { spec?: { suspend?: boolean }; status?: ScheduledBackupStatus }
+    | null
+    | undefined;
+  const status = resource?.status;
+  if (status?.error) {
+    return { ready: false, reason: 'ScheduleError', message: status.error };
   }
-
-  return result;
+  if (resource?.spec?.suspend === true) {
+    return {
+      ready: true,
+      reason: 'Suspended',
+      message: 'Schedule is suspended; the operator takes no backups for it',
+    };
+  }
+  const result = baseEvaluator(liveResource);
+  if (result.ready || result.reason !== 'ConditionsMissing') return result;
+  if (status?.lastCheckTime) {
+    return {
+      ready: true,
+      reason: 'ScheduleRegistered',
+      message: status.lastScheduleTime
+        ? `Schedule is registered; last backup ${status.lastScheduleTime}`
+        : `Schedule is registered (checked ${status.lastCheckTime}); no backup has run yet`,
+    };
+  }
+  return {
+    ready: false,
+    reason: 'AwaitingOperator',
+    message: 'The operator has not registered the schedule yet',
+  };
 }
 
 registerPortableReadinessEvaluator(
@@ -72,6 +98,7 @@ registerPortableReadinessEvaluator(
 function createScheduledBackupResource(
   config: Composable<ScheduledBackupConfig>
 ): Enhanced<ScheduledBackupConfig['spec'], ScheduledBackupStatus> {
+  assertPluginBackupConfigured(config.spec, 'ScheduledBackup');
   return createResource(
     {
       apiVersion: 'postgresql.cnpg.io/v1',
