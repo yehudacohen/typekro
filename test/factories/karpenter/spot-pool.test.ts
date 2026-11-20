@@ -117,6 +117,28 @@ describe('karpenterSpotPool (direct mode)', () => {
     expect(values.affinity).toEqual({});
   });
 
+  it('sizes the controller from replicas and resources, keeping the bootstrap defaults otherwise', async () => {
+    const controllerValues = async (input: Record<string, unknown>) =>
+      byKind(await render(input), 'HelmRelease', 'karpenter').spec.values as {
+        replicas?: number;
+        controller?: { resources?: unknown };
+      };
+
+    const defaults = await controllerValues(spec);
+    expect(defaults.replicas).toBe(2);
+    expect(defaults.controller?.resources).toEqual({
+      requests: { cpu: '1', memory: '1Gi' },
+      limits: { memory: '1Gi' },
+    });
+
+    const resources = { requests: { cpu: '250m', memory: '512Mi' }, limits: { memory: '768Mi' } };
+    const sized = await controllerValues({ ...spec, replicas: 1, resources });
+    expect(sized.replicas).toBe(1);
+    expect(sized.controller?.resources).toEqual(resources);
+
+    expect((await controllerValues({ ...spec, resources: {} })).controller?.resources).toEqual({});
+  });
+
   it('prefers spot with on-demand fallback over at least 8 arm64 types', async () => {
     const pool = byKind(await render(), 'NodePool');
     expect(requirement(pool, 'karpenter.sh/capacity-type')?.values).toEqual(['spot', 'on-demand']);
@@ -308,6 +330,17 @@ describe('karpenterSpotPool (KRO mode)', () => {
 
   it('admits an instance with a pinned alias', () => {
     expect(admissionErrors(karpenterSpotPool.toYaml(), 'KarpenterSpotPool', spec)).toEqual([]);
+  });
+
+  it('passes controller replicas and resources through to the controller release', () => {
+    const yaml = karpenterSpotPool.toYaml();
+    const resources = { requests: { cpu: '250m', memory: '512Mi' }, limits: { memory: '768Mi' } };
+    expect(admissionErrors(yaml, 'KarpenterSpotPool', { ...spec, replicas: 1, resources })).toEqual(
+      []
+    );
+    expect(yaml).toContain('schema.spec.replicas');
+    expect(yaml).toContain('schema.spec.resources');
+    expect(yaml).not.toContain('has(has(');
   });
 
   it('refuses a missing alias at admission', () => {
