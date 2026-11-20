@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `barmanCloudPluginBootstrap` composition install the official `plugin-barman-cloud` chart,
   pinned at 0.9.0 (plugin v0.16.0), in the operator's namespace. `version` must be the pinned
   chart, and `operatorVersion` is required and must be CloudNativePG 1.30.0 or later, in direct
-  mode and at KRO admission. `crds.create` and the plugin's `service.name` are owned by the
+  mode and at KRO admission. The default operator (chart 0.23.0, 1.25.0) is too old: install
+  `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION` (0.29.2, operator 1.30.2) explicitly. `crds.create` and the plugin's `service.name` are owned by the
   factory: values that change them are refused, and they are applied last. `objectStore()`
   renders an S3 `ObjectStore` that authenticates only through workload identity
   (`inheritFromIAMRole: true`); it fails closed, so the credential structure must be written in
@@ -22,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ScheduledBackup`, and a restore to the plugin. The `cnpgS3BackedCluster` composition creates an
   `ObjectStore`, a `Cluster` archiving to it and a `ScheduledBackup`; `bucket` must follow the S3
   general-purpose bucket naming rules, checked by a pattern, length markers and a CEL rule on the
-  instance schema. A live backup and restore test runs on request
+  instance schema. A destination only known per instance must come from a field declared with
+  `BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.type` or from `s3DestinationPath()` over constrained
+  bucket and prefix fields. A live backup and restore test runs on request
   (`bun run test:integration:cnpg-barman-cloud`). (#302)
 
 ### Changed
@@ -37,12 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API client and watch now read them with `KubeConfig.applyToHTTPSOptions()` on each request.
   `getHttpLibraryForRuntime()` takes the KubeConfig as an optional second argument; without it,
   requests carry no client certificate.
-- **Default CloudNativePG operator is now chart 0.29.2 (operator 1.30.2), from 0.23.0
-  (operator 1.25.0).** `cnpgBootstrap`, `cnpgHelmRelease` and the operator that
-  `webAppWithProcessing` installs use it when no `version` is given; `CNPG_CHART_VERSION` and
-  `CNPG_OPERATOR_VERSION` name it. Pass `version: '0.23.0'` to
-  keep the old operator. CloudNativePG removes the in-tree Barman Cloud support in 1.32.0, and the
-  Barman Cloud plugin needs 1.30 or later. (#302)
 
 ### Fixed
 
@@ -52,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborted signal stops the wait at once, and an already-aborted signal fails before the plugin
   runs. A Bun watch bounds the same read by the read timeout (30 seconds by default) and rejects
   with a `RequestTimeoutError`.
+- **CNPG `ScheduledBackup` readiness.** A schedule was ready only after a `Ready` condition (the
+  operator writes none) or its first backup, so a nightly `ScheduledBackup` kept a direct-mode
+  deploy with `waitForReady` waiting until the next night. It is now ready once the operator has
+  registered it (`status.lastCheckTime`), not ready while `status.error` is set, and ready with
+  reason `Suspended` when suspended. (#302)
 
 ## [0.46.0] - 2026-11-19
 

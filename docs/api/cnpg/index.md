@@ -246,11 +246,16 @@ the official `plugin-barman-cloud` chart, pinned at 0.9.0 (plugin v0.16.0).
 
 Requirements, from the plugin's documentation:
 
-- CloudNativePG 1.30 or later. `cnpgBootstrap` and `cnpgHelmRelease` install chart 0.29.2
-  (operator 1.30.2) by default. The plugin factories require `operatorVersion`, the operator
-  version running in the plugin's namespace, and refuse one older than 1.30.0
-  (`CNPG_BARMAN_CLOUD_OPERATOR_INCOMPATIBLE`), at admission in KRO mode too. TypeKro does not read
-  the live operator's version: `operatorVersion` is what you state it is.
+- CloudNativePG 1.30 or later, which needs an operator upgrade: `cnpgBootstrap` and
+  `cnpgHelmRelease` install chart 0.23.0 (operator 1.25.0) by default, which the plugin does not
+  support. Install chart 0.29.2 (operator 1.30.2) explicitly with
+  `version: BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION`, and read the upgrade notes for existing
+  clusters first: operator 1.30 no longer supports PostgreSQL 14, and new clusters default to
+  PostgreSQL 18. Changing the default is proposed separately in [#306](https://github.com/yehudacohen/typekro/pull/306). The plugin factories
+  require `operatorVersion`, the operator version running in the plugin's namespace, and refuse
+  one older than 1.30.0 (`CNPG_BARMAN_CLOUD_OPERATOR_INCOMPATIBLE`), at admission in KRO mode
+  too. TypeKro does not read the live operator's version: `operatorVersion` is what you state it
+  is.
 - The plugin runs in the operator's namespace (`cnpg-system` by default).
 - cert-manager is running: the chart issues the plugin's TLS certificates with it.
 
@@ -339,7 +344,11 @@ would let an instance add static keys. Only leaf values may come from the spec:
 `destinationPath`, `endpointURL`, `endpointCA`, `s3AddressingStyle`, `tags`, `historyTags`,
 `retentionPolicy`, the compression, encryption and parallelism settings, the sidecar's
 `logLevel`, `resources` and `retentionPolicyIntervalSeconds`, and an env entry's `value` or
-`valueFrom`. `inheritFromIAMRole` must be the literal `true`.
+`valueFrom`. `inheritFromIAMRole` must be the literal `true`. A `destinationPath` only known per
+instance must come from a required field declared with
+`BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.type` (whose pattern and CEL rule are on the instance
+schema) or from `s3DestinationPath(bucket, prefix)` over fields declared with the bucket and
+prefix constraint types; any other is refused when the composition is built.
 
 ### ObjectStore Readiness
 
@@ -385,14 +394,17 @@ await factory.deploy({
 ```
 
 `cnpgS3BackedCluster` reports `ready` once the cluster is `Ready` and its `ContinuousArchiving`
-condition is `True`.
+condition is `True`. Its `ScheduledBackup` is ready once the operator has registered the schedule
+(`status.lastCheckTime`), not after the first backup, so a nightly schedule doesn't hold up a
+deploy with `waitForReady`.
 
 ### Live backup and restore test
 
-`test/integration/cnpg/barman-cloud-backup-restore.test.ts` installs the default operator, the
-plugin and cert-manager, backs a cluster up to an S3-compatible gateway through an `ObjectStore` with
-`inheritFromIAMRole: true` (a test instance-metadata endpoint stands in for the IAM role),
-restores it into a new cluster and reads the rows back. It installs cluster-scoped operators, so
+`test/integration/cnpg/barman-cloud-backup-restore.test.ts` installs operator chart 0.29.2
+(explicitly), the plugin and cert-manager, backs a cluster up to an S3-compatible gateway through
+an `ObjectStore` with `inheritFromIAMRole: true` (a test instance-metadata endpoint stands in for
+the IAM role), restores it into a new cluster and reads the rows back. It also deploys
+`cnpgS3BackedCluster` with `waitForReady: true` and checks that it converges. It installs cluster-scoped operators, so
 it runs only on request, on a disposable cluster:
 `TYPEKRO_TEST_STORAGE_CLASS=standard bun run test:integration:cnpg-barman-cloud`. On kind with
 kindnet network policies, Flux's controllers could not reach cluster DNS while Flux's
@@ -415,7 +427,7 @@ const factory = cnpgBootstrap.factory('kro', {
 await factory.deploy({
   name: 'cnpg',
   namespace: 'cnpg-system',
-  version: '0.29.2',
+  version: '0.23.0',
   installCRDs: true,
 });
 ```

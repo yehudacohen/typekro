@@ -1,11 +1,14 @@
 /**
  * Live Barman Cloud plugin backup and restore.
  *
- * Installs the CloudNativePG operator `cnpgBootstrap` defaults to (chart 0.29.2, operator
- * 1.30.2) and the Barman Cloud plugin (chart 0.9.0) with cert-manager, backs a cluster up to an
- * S3-compatible bucket (VersityGW on a local directory; the MinIO images the shared fixture pins
- * are no longer pullable from Docker Hub or Quay) through an `ObjectStore` that uses `inheritFromIAMRole: true`, restores the backup
- * into a new cluster, and reads the rows back.
+ * Installs a CloudNativePG operator the plugin supports (chart 0.29.2, operator 1.30.2, chosen
+ * explicitly: `cnpgBootstrap`'s default chart is older) and the Barman Cloud plugin (chart 0.9.0)
+ * with cert-manager. It backs a cluster up to an S3-compatible bucket through an `ObjectStore` that
+ * uses `inheritFromIAMRole: true`, restores the backup into a new cluster and reads the rows back.
+ * Then it deploys the `cnpgS3BackedCluster` composition with `waitForReady: true` and checks that
+ * it converges: the cluster healthy, its nightly ScheduledBackup registered before it has run, and
+ * WAL archiving to the bucket. The bucket is VersityGW on a local directory; the MinIO images the
+ * shared fixture pins are no longer pullable from Docker Hub or Quay.
  *
  * Workload identity is simulated: a small instance-metadata endpoint in the test namespace hands
  * out the gateway's keys as an IAM role's credentials, and the sidecar's
@@ -39,7 +42,8 @@ import yaml from 'js-yaml';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import {
   BARMAN_CLOUD_PLUGIN_CHART_VERSION,
-  CNPG_OPERATOR_VERSION,
+  BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION,
+  BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION,
   backup,
   barmanCloudBackupMethod,
   barmanCloudPlugin,
@@ -139,6 +143,7 @@ const PLURALS: Record<string, [string, string, string]> = {
   ObjectStore: ['barmancloud.cnpg.io', 'v1', 'objectstores'],
   Cluster: ['postgresql.cnpg.io', 'v1', 'clusters'],
   Backup: ['postgresql.cnpg.io', 'v1', 'backups'],
+  ScheduledBackup: ['postgresql.cnpg.io', 'v1', 'scheduledbackups'],
 };
 
 describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () => {
@@ -150,6 +155,8 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
   const source = 'orders';
   const restored = 'orders-restored';
   const storeName = 'orders-backups';
+  const composed = 'composed';
+  let s3Endpoint = '';
 
   const apply = async (body: Record<string, any>) => {
     const [group, version, plural] = PLURALS[body.kind] ?? [];
@@ -329,6 +336,9 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
     // Remove the clusters first, then the monitoring ConfigMap the operator writes into every
     // namespace with a cluster, so the namespace holds only what the suite created.
     for (const [kind, name] of [
+      ['ScheduledBackup', `${composed}-scheduled`],
+      ['Cluster', composed],
+      ['ObjectStore', `${composed}-backups`],
       ['Cluster', restored],
       ['Cluster', source],
       ['Backup', `${source}-manual`],
@@ -357,10 +367,14 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
     await deleteTestNamespaceAndWait(lease, kubeConfig);
   });
 
-  it('installs the default CloudNativePG operator and the plugin that needs it', async () => {
+  it('installs a CloudNativePG operator the plugin supports, and the plugin', async () => {
     await cnpgBootstrap
       .factory('direct', { namespace: OPERATOR_NAMESPACE, waitForReady: true, timeout: 900_000 })
-      .deploy({ name: 'cnpg-operator', namespace: OPERATOR_NAMESPACE });
+      .deploy({
+        name: 'cnpg-operator',
+        namespace: OPERATOR_NAMESPACE,
+        version: BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION,
+      });
     const operator = await releaseOf('cnpg-operator');
     expect(operator.spec?.chart?.spec?.version).toBe('0.29.2');
     expect(condition(operator, 'Ready')).toBe(true);
@@ -371,7 +385,7 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
         name: 'barman-cloud',
         namespace: OPERATOR_NAMESPACE,
         version: BARMAN_CLOUD_PLUGIN_CHART_VERSION,
-        operatorVersion: CNPG_OPERATOR_VERSION,
+        operatorVersion: BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION,
       });
     const plugin = await releaseOf('barman-cloud');
     expect(plugin.spec?.chart?.spec?.version).toBe(BARMAN_CLOUD_PLUGIN_CHART_VERSION);
@@ -382,7 +396,7 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
       namespace: OPERATOR_NAMESPACE,
     });
     expect(deployment.spec?.template.spec?.containers[0]?.image).toEndWith(
-      `:${CNPG_OPERATOR_VERSION}`
+      `:${BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION}`
     );
 
     // The operator discovers the plugin by the chart's service, under the name it must keep.
@@ -395,6 +409,7 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
 
   it('backs a cluster up through the plugin and restores it into a new cluster', async () => {
     const endpoint = await deployS3Gateway();
+    s3Endpoint = endpoint;
 
     // The instance-metadata endpoint, serving the gateway's keys as a role's credentials.
     const core = createCoreV1ApiClient(kubeConfig);
@@ -532,6 +547,66 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
     // The plugin recorded the backup on the ObjectStore.
     const live = await read('ObjectStore', storeName);
     expect(Object.keys(live.status?.serverRecoveryWindow ?? {})).toContain(source);
+  });
+
+  it('deploys cnpgS3BackedCluster with waitForReady and converges', async () => {
+    expect(s3Endpoint).not.toBe('');
+    const factory = cnpgS3BackedCluster.factory('direct', {
+      namespace,
+      waitForReady: true,
+      timeout: 900_000,
+    });
+    // Nightly at 02:00: the deploy must not wait for the first scheduled backup.
+    await factory.deploy({
+      name: composed,
+      namespace,
+      instances: 1,
+      storageSize: '1Gi',
+      bucket: BUCKET,
+      prefix: `composed/${runId}`,
+      schedule: '0 0 2 * * *',
+    });
+
+    const schedule = await read('ScheduledBackup', `${composed}-scheduled`);
+    expect(schedule.status?.lastCheckTime).toBeString();
+    expect(schedule.status?.lastScheduleTime).toBeUndefined();
+    expect(healthy(await read('Cluster', composed))).toBe(true);
+
+    // The composition targets AWS S3 through the pod's IAM role. On kind there is neither, so
+    // point this test's ObjectStore at the gateway and the instance-metadata endpoint, as IRSA or
+    // EKS Pod Identity would supply the role on AWS, and wait for WAL archiving to succeed.
+    await createKubernetesObjectApiClient(kubeConfig).patch(
+      {
+        apiVersion: 'barmancloud.cnpg.io/v1',
+        kind: 'ObjectStore',
+        metadata: { name: `${composed}-backups`, namespace },
+        spec: {
+          configuration: { endpointURL: s3Endpoint, s3AddressingStyle: 'path' },
+          instanceSidecarConfiguration: {
+            env: [
+              {
+                name: 'AWS_EC2_METADATA_SERVICE_ENDPOINT',
+                value: `http://imds.${namespace}.svc.cluster.local:8080/`,
+              },
+              { name: 'AWS_METADATA_SERVICE_TIMEOUT', value: '5' },
+              { name: 'AWS_METADATA_SERVICE_NUM_ATTEMPTS', value: '5' },
+              { name: 'AWS_DEFAULT_REGION', value: 'us-east-1' },
+            ],
+          },
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'application/merge-patch+json'
+    );
+    await waitFor(
+      'Cluster',
+      composed,
+      (live) => healthy(live) && condition(live, 'ContinuousArchiving'),
+      900_000
+    );
   });
 
   it('has the API server refuse bad buckets on a KRO instance of cnpgS3BackedCluster', async () => {

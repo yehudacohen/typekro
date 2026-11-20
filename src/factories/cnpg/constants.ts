@@ -13,12 +13,15 @@ export const DEFAULT_CNPG_REPOSITORY_NAME = 'cnpg-repo';
 export const DEFAULT_CNPG_NAMESPACE = 'cnpg-system';
 
 /**
- * Default `cloudnative-pg` chart version: 0.29.2, released 2026-11-17, which installs operator
- * {@link CNPG_OPERATOR_VERSION}. Checked against the chart repository index.
+ * A `cloudnative-pg` chart version whose operator the Barman Cloud plugin supports: 0.29.2,
+ * released 2026-11-17, which installs operator {@link BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION}
+ * (checked against the chart repository index). The live backup and restore test installs it.
+ * It is not the `cnpgBootstrap` default, which is older than the plugin supports: pass it as
+ * `version` to install a compatible operator.
  */
-export const CNPG_CHART_VERSION = '0.29.2';
-/** Operator version {@link CNPG_CHART_VERSION} installs. */
-export const CNPG_OPERATOR_VERSION = '1.30.2';
+export const BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION = '0.29.2';
+/** Operator version {@link BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION} installs. */
+export const BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION = '1.30.2';
 
 /** Name a `Cluster` uses to refer to the plugin, in `spec.plugins` and elsewhere. */
 export const BARMAN_CLOUD_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';

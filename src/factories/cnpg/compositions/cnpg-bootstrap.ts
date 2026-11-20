@@ -5,7 +5,6 @@ import type { CallableComposition } from '../../../core/types/deployment.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { clusterRoleBinding } from '../../kubernetes/rbac/cluster-role-binding.js';
-import { CNPG_CHART_VERSION } from '../constants.js';
 import { cnpgHelmRelease, cnpgHelmRepository } from '../resources/helm.js';
 import {
   type CnpgBootstrapConfig,
@@ -38,7 +37,7 @@ import { mapCnpgConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * await cnpgFactory.deploy({
  *   name: 'cnpg',
  *   namespace: 'cnpg-system',
- *   version: '0.29.2',
+ *   version: '0.23.0',
  *   installCRDs: true,
  * });
  * ```
@@ -55,7 +54,7 @@ export const cnpgBootstrap: CallableComposition<
   },
   (spec: CnpgBootstrapConfig) => {
     const resolvedNamespace = spec.namespace || 'cnpg-system';
-    const resolvedVersion = spec.version || CNPG_CHART_VERSION;
+    const resolvedVersion = spec.version || '0.23.0';
     // Default to shared-lifecycle: the operator is cluster-scoped
     // infrastructure and should survive individual consumer instance
     // deletions. Users can opt out by passing `shared: false` when

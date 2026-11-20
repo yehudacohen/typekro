@@ -198,28 +198,80 @@ describe('CNPG ScheduledBackup Factory', () => {
 
       const status = sb.readinessEvaluator?.({
         status: {
+          lastCheckTime: '2024-01-15T02:00:00Z',
           lastScheduleTime: '2024-01-15T02:00:00Z',
         },
       });
 
       expect(status?.ready).toBe(true);
-      expect(status?.reason).toBe('ScheduleActive');
+      expect(status?.reason).toBe('ScheduleRegistered');
     });
 
-    it('should report not ready when no conditions and never scheduled', () => {
+    // CloudNativePG sets status.lastCheckTime on its first reconcile of a schedule and writes
+    // no conditions, so a nightly schedule is ready long before its first backup.
+    it('should report ready once the operator registered a schedule that has never run', () => {
       const sb = scheduledBackup({
         name: 'never-run-test',
         spec: {
           cluster: { name: 'test-db' },
-          schedule: '0 0 * * * *',
+          schedule: '0 0 2 * * *',
         },
       });
 
       const status = sb.readinessEvaluator?.({
-        status: {},
+        status: { lastCheckTime: '2026-11-20T10:00:00Z' },
       });
 
-      expect(status?.ready).toBe(false);
+      expect(status?.ready).toBe(true);
+      expect(status?.reason).toBe('ScheduleRegistered');
+      expect(status?.message).toContain('no backup has run yet');
+    });
+
+    it('should report not ready before the operator registers the schedule', () => {
+      const sb = scheduledBackup({
+        name: 'unregistered-test',
+        spec: {
+          cluster: { name: 'test-db' },
+          schedule: '0 0 2 * * *',
+        },
+      });
+
+      expect(sb.readinessEvaluator?.({ status: {} })).toMatchObject({
+        ready: false,
+        reason: 'AwaitingOperator',
+      });
+    });
+
+    it('should report not ready when the operator reports an error', () => {
+      const sb = scheduledBackup({
+        name: 'error-test',
+        spec: {
+          cluster: { name: 'test-db' },
+          schedule: '0 0 2 * * *',
+        },
+      });
+
+      expect(
+        sb.readinessEvaluator?.({
+          status: { lastCheckTime: '2026-11-20T10:00:00Z', error: 'invalid schedule' },
+        })
+      ).toMatchObject({ ready: false, reason: 'ScheduleError', message: 'invalid schedule' });
+    });
+
+    it('should report a suspended schedule ready, since the operator skips it on purpose', () => {
+      const sb = scheduledBackup({
+        name: 'suspended-test',
+        spec: {
+          cluster: { name: 'test-db' },
+          schedule: '0 0 2 * * *',
+          suspend: true,
+        },
+      });
+
+      expect(sb.readinessEvaluator?.({ spec: { suspend: true }, status: {} })).toMatchObject({
+        ready: true,
+        reason: 'Suspended',
+      });
     });
 
     it('should handle missing status', () => {

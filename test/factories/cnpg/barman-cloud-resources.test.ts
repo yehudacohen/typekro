@@ -3,10 +3,15 @@ import { join } from 'node:path';
 import { type Type, type } from 'arktype';
 import { TypeKroError } from '../../../src/core/errors.js';
 import {
+  BARMAN_CLOUD_BUCKET_CONSTRAINT,
+  BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT,
   BARMAN_CLOUD_PLUGIN_CHART_VERSION,
+  BARMAN_CLOUD_PREFIX_CONSTRAINT,
+  S3_DESTINATION_PATH_RULE,
+  s3DestinationPath,
   BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION,
-  CNPG_CHART_VERSION,
-  CNPG_OPERATOR_VERSION,
+  BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION,
+  BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION,
   cnpgHelmRelease,
   BARMAN_CLOUD_PLUGIN_NAME,
   backup,
@@ -22,6 +27,7 @@ import {
 } from '../../../src/factories/cnpg/index.js';
 import { Cel, kubernetesComposition } from '../../../src/index.js';
 import { crdSchemaFromJson, crdSchemaFromYaml, crdSpecErrors } from '../../utils/crd-schema.js';
+import { admissionErrors } from '../../utils/kro-admission.js';
 
 const fixtures = join(import.meta.dir, '../../fixtures/cnpg');
 const objectStoreCrd = crdSchemaFromYaml(
@@ -234,7 +240,7 @@ describe('objectStore with values from the composition spec', () => {
 
   it('accepts a store written out with its leaf values from the spec', () => {
     const schema = type({
-      destination: 'string',
+      destination: BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.type,
       endpoint: 'string',
       retention: 'string',
       compression: "'gzip' | 'zstd'",
@@ -274,6 +280,125 @@ describe('objectStore with values from the composition spec', () => {
         })
       )
     ).toEqual({ kro: undefined, direct: undefined });
+  });
+
+  it('accepts a destination built by s3DestinationPath() from constrained fields', () => {
+    const schema = type({
+      bucket: BARMAN_CLOUD_BUCKET_CONSTRAINT.type,
+      prefix: BARMAN_CLOUD_PREFIX_CONSTRAINT.type,
+    });
+    const make = (spec: { bucket: string; prefix: string }) => ({
+      configuration: { ...concrete, destinationPath: s3DestinationPath(spec.bucket, spec.prefix) },
+    });
+    expect(
+      refusals(render(schema, make, { bucket: 'example-backups', prefix: 'cnpg/orders' }))
+    ).toEqual({ kro: undefined, direct: undefined });
+  });
+
+  it('refuses a destination only known per instance that nothing would check', () => {
+    const refused = {
+      kro: 'CNPG_BARMAN_CLOUD_DESTINATION_INVALID',
+      direct: 'CNPG_BARMAN_CLOUD_DESTINATION_INVALID',
+    };
+    const instance = { destination: 's3://example-backups/cnpg' };
+    // A plain string field, or an optional field declared with the constraint type.
+    for (const schema of [
+      type({ destination: 'string' }),
+      type({ 'destination?': BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.type }),
+    ]) {
+      expect(
+        refusals(
+          render(
+            schema,
+            (spec: { destination: string }) => ({
+              configuration: { ...concrete, destinationPath: spec.destination },
+            }),
+            instance
+          )
+        )
+      ).toEqual(refused);
+    }
+    // A template over unconstrained fields.
+    expect(
+      refusals(
+        render(
+          type({ bucket: 'string', prefix: 'string' }),
+          (spec: { bucket: string; prefix: string }) => ({
+            configuration: {
+              ...concrete,
+              destinationPath: Cel.template('s3://%s/%s', spec.bucket, spec.prefix),
+            },
+          }),
+          { bucket: 'example-backups', prefix: 'cnpg' }
+        )
+      )
+    ).toEqual(refused);
+    // s3DestinationPath() over unconstrained fields.
+    expect(
+      refusals(
+        render(
+          type({ bucket: 'string', prefix: BARMAN_CLOUD_PREFIX_CONSTRAINT.type }),
+          (spec: { bucket: string; prefix: string }) => ({
+            configuration: {
+              ...concrete,
+              destinationPath: s3DestinationPath(spec.bucket, spec.prefix),
+            },
+          }),
+          { bucket: 'example-backups', prefix: 'cnpg' }
+        )
+      )
+    ).toEqual({
+      kro: 'CNPG_BARMAN_CLOUD_BUCKET_INVALID',
+      direct: 'CNPG_BARMAN_CLOUD_BUCKET_INVALID',
+    });
+  });
+
+  it('refuses a bad destination at admission when it comes from a constrained field', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'destination-probe',
+        kind: 'DestinationProbe',
+        spec: type({ destination: BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.type }),
+        status,
+      },
+      (spec) => {
+        objectStore({
+          name: 'orders-backups',
+          namespace: 'databases',
+          spec: { configuration: { ...concrete, destinationPath: spec.destination } },
+          id: 'store',
+        });
+        return { ready: true };
+      }
+    );
+    const yamlText = composition.toYaml();
+    expect(
+      admissionErrors(yamlText, 'DestinationProbe', { destination: 's3://example-backups/cnpg' })
+    ).toEqual([]);
+    expect(admissionErrors(yamlText, 'DestinationProbe', {})).toEqual([
+      'spec.destination: Required value',
+    ]);
+    for (const destination of [
+      'gs://example-backups/cnpg',
+      's3://example-backups',
+      's3://example-backups//cnpg',
+      's3://Example/cnpg',
+      's3://example..backups/cnpg',
+      's3://ab/cnpg',
+    ]) {
+      expect(admissionErrors(yamlText, 'DestinationProbe', { destination })).not.toEqual([]);
+    }
+    // A pattern can't refuse these; the instance schema's CEL rule does.
+    for (const destination of [
+      's3://192.168.5.4/cnpg',
+      's3://xn--example/cnpg',
+      's3://example.mrap/cnpg',
+      `s3://${'a'.repeat(64)}/cnpg`,
+    ]) {
+      expect(admissionErrors(yamlText, 'DestinationProbe', { destination })).toEqual([
+        `spec.destination: failed rule: ${S3_DESTINATION_PATH_RULE}`,
+      ]);
+    }
   });
 
   it('refuses when the RGD is built credentials an instance could change', () => {
@@ -439,12 +564,23 @@ describe('barmanCloudPluginHelmRelease', () => {
     }
   });
 
-  it('pairs with the operator cnpgHelmRelease installs by default', () => {
-    expect(CNPG_CHART_VERSION).toBe('0.29.2');
-    expect(CNPG_OPERATOR_VERSION).toBe('1.30.2');
-    expect(cnpgHelmRelease({ name: 'cnpg' }).spec.chart.spec.version).toBe(CNPG_CHART_VERSION);
+  it('refuses the operator cnpgHelmRelease installs by default, and accepts the tested one', () => {
+    // The default chart, 0.23.0, installs operator 1.25.0: too old for the plugin.
+    expect(cnpgHelmRelease({ name: 'cnpg' }).spec.chart.spec.version).toBe('0.23.0');
     expect(() =>
-      barmanCloudPluginHelmRelease({ name: 'barman-cloud', operatorVersion: CNPG_OPERATOR_VERSION })
+      barmanCloudPluginHelmRelease({ name: 'barman-cloud', operatorVersion: '1.25.0' })
+    ).toThrow('needs CloudNativePG 1.30.0 or later');
+    expect(BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION).toBe('0.29.2');
+    expect(BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION).toBe('1.30.2');
+    expect(
+      cnpgHelmRelease({ name: 'cnpg', version: BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION }).spec.chart
+        .spec.version
+    ).toBe('0.29.2');
+    expect(() =>
+      barmanCloudPluginHelmRelease({
+        name: 'barman-cloud',
+        operatorVersion: BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION,
+      })
     ).not.toThrow();
   });
 

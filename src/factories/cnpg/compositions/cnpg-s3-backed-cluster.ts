@@ -14,10 +14,7 @@ import {
   CnpgS3BackedClusterStatusSchema,
 } from '../types.js';
 import { barmanCloudBackupMethod, barmanCloudPlugin } from '../utils/barman-cloud.js';
-import {
-  BARMAN_CLOUD_BUCKET_CONSTRAINT,
-  BARMAN_CLOUD_PREFIX_CONSTRAINT,
-} from '../utils/barman-cloud-constraints.js';
+import { s3DestinationPath } from '../utils/barman-cloud-constraints.js';
 
 /** CEL: the cluster reports condition `type` as True. */
 function clusterCondition(
@@ -58,16 +55,14 @@ export const cnpgS3BackedCluster: CallableComposition<
     status: CnpgS3BackedClusterStatusSchema,
   },
   (spec: CnpgS3BackedClusterConfig) => {
-    BARMAN_CLOUD_BUCKET_CONSTRAINT.enforce(spec.bucket);
-    BARMAN_CLOUD_PREFIX_CONSTRAINT.enforce(spec.prefix);
-
     const objectStoreName = Cel.template('%s-backups', spec.name);
     const store = objectStore({
       name: objectStoreName,
       namespace: spec.namespace,
       spec: {
         configuration: {
-          destinationPath: Cel.template('s3://%s/%s', spec.bucket, spec.prefix),
+          // Checks bucket and prefix with their constraints' strict enforce().
+          destinationPath: s3DestinationPath(spec.bucket, spec.prefix),
           s3Credentials: { inheritFromIAMRole: true },
           wal: { compression: 'gzip' },
           data: { compression: 'gzip' },

@@ -7,7 +7,7 @@
     "minBytes": 4096,
     "fraction": 0.02
   },
-  "sharedPoolBytes": 220416,
+  "sharedPoolBytes": 218368,
   "pooledOwners": [
     "aws-load-balancer-controller",
     "crowdsec",
@@ -26,7 +26,7 @@
     "cilium": 45056,
     "clickhouse": 158976,
     "clickstack": 161792,
-    "cnpg": 54272,
+    "cnpg": 56320,
     "core": 903168,
     "dagster": 59136,
     "envoy-ai-gateway": 29952,

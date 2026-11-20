@@ -12,7 +12,10 @@ import {
 } from '../../../utils/type-guards.js';
 import { BARMAN_CLOUD_PLUGIN_NAME } from '../constants.js';
 import type { ClusterExternalCluster, ClusterPlugin, PluginConfiguration } from '../types.js';
-import { isS3DestinationPath } from './barman-cloud-constraints.js';
+import {
+  BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT,
+  isCheckedDestination,
+} from './barman-cloud-constraints.js';
 
 // =============================================================================
 // WORKLOAD IDENTITY
@@ -240,17 +243,12 @@ export function assertWorkloadIdentityObjectStore(spec: unknown): void {
     }
   }
 
+  // A concrete destination must be admitted. One only known per instance must come from a
+  // required spec field declared with the destination constraint, or from s3DestinationPath()
+  // over constrained bucket and prefix fields; anything else would skip the check.
   const destination = configuration.destinationPath;
-  if (
-    !isSymbolic(destination) &&
-    !(typeof destination === 'string' && isS3DestinationPath(destination))
-  ) {
-    throw new TypeKroError(
-      `ObjectStore destinationPath must be s3://<bucket>/<prefix> with a valid S3 bucket name ` +
-        `and a non-empty prefix; got ${JSON.stringify(destination)}.`,
-      'CNPG_BARMAN_CLOUD_DESTINATION_INVALID',
-      { destinationPath: destination }
-    );
+  if (!isCheckedDestination(destination)) {
+    BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.enforce(destination);
   }
 }
 

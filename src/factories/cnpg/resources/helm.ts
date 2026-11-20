@@ -18,12 +18,13 @@ import { helmReleaseLifecycle } from '../../helm/lifecycle.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { helmRelease } from '../../helm/helm-release.js';
-import {
-  CNPG_CHART_REPOSITORY_URL,
-  CNPG_CHART_VERSION,
-  DEFAULT_CNPG_REPOSITORY_NAME,
-} from '../constants.js';
 import type { CnpgHelmReleaseConfig, CnpgHelmRepositoryConfig } from '../types.js';
+
+/** Default Helm chart repository URL for CloudNativePG. */
+const DEFAULT_CNPG_REPO_URL = 'https://cloudnative-pg.github.io/charts';
+
+/** Default chart version. */
+const DEFAULT_CNPG_VERSION = '0.23.0';
 
 /**
  * Create a HelmRepository for the CloudNativePG chart repository.
@@ -44,9 +45,9 @@ export function cnpgHelmRepository(
   config: Composable<CnpgHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return helmRepository({
-    name: config.name || DEFAULT_CNPG_REPOSITORY_NAME,
+    name: config.name || 'cnpg-repo',
     namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
-    url: config.url || CNPG_CHART_REPOSITORY_URL,
+    url: config.url || DEFAULT_CNPG_REPO_URL,
     interval: config.interval || '5m',
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
@@ -65,7 +66,7 @@ export function cnpgHelmRepository(
  * const release = cnpgHelmRelease({
  *   name: 'cnpg',
  *   namespace: 'cnpg-system',
- *   version: '0.29.2',
+ *   version: '0.23.0',
  *   values: { crds: { create: true } },
  *   id: 'cnpgHelmRelease',
  * });
@@ -79,12 +80,12 @@ export function cnpgHelmRelease(
     name: config.name,
     namespace: config.namespace || 'cnpg-system',
     chart: {
-      repository: CNPG_CHART_REPOSITORY_URL,
+      repository: DEFAULT_CNPG_REPO_URL,
       name: 'cloudnative-pg',
-      version: config.version || CNPG_CHART_VERSION,
+      version: config.version || DEFAULT_CNPG_VERSION,
     },
     sourceRef: {
-      name: config.repositoryName || DEFAULT_CNPG_REPOSITORY_NAME,
+      name: config.repositoryName || 'cnpg-repo',
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },

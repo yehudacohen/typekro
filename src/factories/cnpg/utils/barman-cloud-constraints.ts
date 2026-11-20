@@ -6,6 +6,7 @@
 // composes these with an unconstrained, optional or derived field is refused when it is built.
 
 import { type } from 'arktype';
+import { Cel } from '../../../core/references/cel.js';
 import { specConstraint } from '../../../core/validation/spec-constraint.js';
 import {
   BARMAN_CLOUD_PLUGIN_CHART_VERSION,
@@ -140,7 +141,8 @@ export const BARMAN_CLOUD_COMPATIBLE_CNPG_VERSION = /^1\.(3[0-9]|[4-9][0-9])\.(0
  * in the plugin's namespace, such as `1.30.2`, required and at least
  * {@link BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION}. The pattern is on the instance schema, so the
  * API server refuses a KRO instance that names an older operator or none; direct mode refuses it
- * too. `cnpgBootstrap` installs `CNPG_OPERATOR_VERSION` by default.
+ * too. `cnpgBootstrap`'s default chart installs 1.25.0, which is too old; install
+ * `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION` (operator 1.30.2) instead.
  */
 export const BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT = specConstraint({
   path: 'operatorVersion',
@@ -153,7 +155,8 @@ export const BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT = specConstraint({
   message: (version) =>
     `The Barman Cloud plugin needs CloudNativePG ${BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION} or ` +
     `later; set operatorVersion to the operator version running in the plugin's namespace, ` +
-    `such as "1.30.2" (cnpgBootstrap installs it by default, chart 0.29.2); got ` +
+    `such as "1.30.2" (cnpgBootstrap with version "0.29.2" installs it; its default chart ` +
+    `installs 1.25.0); got ` +
     `${JSON.stringify(version)}.`,
 });
 
@@ -170,4 +173,67 @@ const S3_DESTINATION_SHAPE = /^s3:\/\/([^/]+)\/(.+?)\/?$/;
 export function isS3DestinationPath(destination: string): boolean {
   const match = S3_DESTINATION_SHAPE.exec(destination);
   return match !== null && isS3BucketName(match[1] ?? '') && S3_KEY_PREFIX.test(match[2] ?? '');
+}
+
+/**
+ * The shape of an `ObjectStore` destination, as an instance-schema pattern: `s3://`, a bucket
+ * shaped like {@link S3_BUCKET_NAME}, and a prefix like {@link S3_KEY_PREFIX}, optionally ending
+ * in `/`. The bucket's length, IP-address and reserved-name rules are in
+ * {@link S3_DESTINATION_PATH_RULE}.
+ */
+export const S3_DESTINATION_PATH = new RegExp(
+  `^s3://${S3_BUCKET_NAME.source.slice(1, -1)}/${S3_KEY_PREFIX.source.slice(1, -1)}/?$`
+);
+
+/** {@link S3_BUCKET_NAME_RULE} and the bucket length, applied to the bucket of a destination. */
+export const S3_DESTINATION_PATH_RULE =
+  `matches(self, '^s3://[^/]{3,63}/') && ` +
+  `!matches(self, '^s3://[0-9]+([.][0-9]+){3}/') && ` +
+  `!matches(self, '^s3://(${S3_RESERVED_BUCKET_PREFIXES.map(celRegexLiteral).join('|')})') && ` +
+  `!matches(self, '^s3://[^/]*(${S3_RESERVED_BUCKET_SUFFIXES.map(celRegexLiteral).join('|')})/')`;
+
+/**
+ * `destinationPath` of an `ObjectStore` from a composition spec: required, `s3://<bucket>/<prefix>`
+ * with a valid bucket name. The pattern and the CEL rule are on the instance schema, so the API
+ * server refuses a bad destination on a KRO instance. `objectStore()` accepts a destination only
+ * known per instance when it comes from a required field declared with this type, or from
+ * {@link s3DestinationPath} over constrained `bucket` and `prefix` fields.
+ */
+export const BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT = specConstraint({
+  path: 'destinationPath',
+  type: type(S3_DESTINATION_PATH).configure({ expected: 'an s3://<bucket>/<prefix> URL' }),
+  rule: S3_DESTINATION_PATH_RULE,
+  holds: isS3DestinationPath,
+  required: true,
+  code: 'CNPG_BARMAN_CLOUD_DESTINATION_INVALID',
+  declaredWith: 'BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.type',
+  message: (destination) =>
+    `ObjectStore destinationPath must be s3://<bucket>/<prefix> with a valid S3 bucket name ` +
+    `and a non-empty prefix; got ${JSON.stringify(destination)}.`,
+});
+
+/** Destinations built by {@link s3DestinationPath} from constrained parts. */
+const CHECKED_DESTINATIONS = new WeakSet<object>();
+
+/**
+ * `s3://<bucket>/<prefix>` for an `ObjectStore`. `bucket` and `prefix` are each checked with
+ * {@link BARMAN_CLOUD_BUCKET_CONSTRAINT} and {@link BARMAN_CLOUD_PREFIX_CONSTRAINT}'s strict
+ * `enforce()`: concrete values must be admitted, and values only known per instance must come
+ * from required spec fields declared with those types, whose instance schema checks them. With
+ * concrete parts the result is a string; otherwise a CEL template `objectStore()` accepts.
+ */
+export function s3DestinationPath(bucket: string, prefix: string): string {
+  BARMAN_CLOUD_BUCKET_CONSTRAINT.enforce(bucket);
+  BARMAN_CLOUD_PREFIX_CONSTRAINT.enforce(prefix);
+  if (typeof bucket === 'string' && typeof prefix === 'string') return `s3://${bucket}/${prefix}`;
+  const destination = Cel.template('s3://%s/%s', bucket, prefix);
+  CHECKED_DESTINATIONS.add(destination as unknown as object);
+  return destination;
+}
+
+/** True for a destination {@link s3DestinationPath} built from parts only known per instance. */
+export function isCheckedDestination(destination: unknown): boolean {
+  return (
+    typeof destination === 'object' && destination !== null && CHECKED_DESTINATIONS.has(destination)
+  );
 }
