@@ -207,7 +207,7 @@ yarn add typekro arktype
 
 ## Requirements
 
-- Node.js 18+ or Bun
+- Node.js 22.19.0 or later, or Bun
 - TypeScript 5.0+
 - Kubernetes cluster (for deployment)
 - Kro controller (optional, for runtime features)

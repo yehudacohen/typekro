@@ -19,6 +19,12 @@ jobs:
         with:
           bun-version: '1.2.x'
 
+      # The packed-import and runtime checks run under Node; TypeKro requires Node >= 22.19.0.
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 'lts/*'
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -104,6 +110,42 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  node-runtime:
+    # The supported Node.js range starts at 22.19.0 (the floor of undici 8, which
+    # @kubernetes/client-node 2 uses). Check the floor and the current LTS: the packed package
+    # imports cleanly, and the Kubernetes transport works over mutual TLS.
+    name: node-runtime (${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', 'lts/*']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # TODO: pin to SHA for supply chain security
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.2.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Packed imports under Node
+        run: node --version && node scripts/test-packed-imports.mjs
+
+      - name: Kubernetes transport over mutual TLS under Node
+        run: node scripts/test-node-kubernetes-tls.mjs
+
+      - name: Container build runtime under Node
+        run: node scripts/test-container-node-runtime.mjs
 
   alchemy-kubernetes-capture:
     # The capture tool has its own package.json and bun.lock (it pins Alchemy and Effect versions
