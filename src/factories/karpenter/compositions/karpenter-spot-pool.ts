@@ -83,8 +83,9 @@ function optionalControllerInputs(
  * empty or underutilized nodes after 5 minutes, disrupts one node at a time,
  * and has a CPU limit of 16 by default.
  *
- * The controller takes `replicas` and `resources` as `karpenterBootstrap` does. Its default
- * requests (1 CPU per replica) do not fit stable nodes with one vCPU; size them to those nodes.
+ * The controller takes `replicas` and `resources` as `karpenterBootstrap` does. TypeKro's default
+ * requests (1 CPU per replica; the chart sets `controller.resources: {}`) do not fit stable nodes
+ * with one vCPU; size them to those nodes.
  *
  * Deploy it in direct mode, which installs the controller and CRDs before the
  * NodeClass and NodePool. KRO mode needs the Karpenter CRDs installed first.

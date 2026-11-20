@@ -101,12 +101,12 @@ manages the CRDs.
 | `podDisruptionBudget.maxUnavailable` | `podDisruptionBudget.maxUnavailable` | `1` (the PDB is always named `karpenter`) |
 | `nodeSelector`, `affinity` | merged by Helm with the chart defaults | chart defaults |
 | `topologySpreadConstraints`, `tolerations` | replace the chart's lists | the chart's lists |
-| `resources` | `controller.resources` | requests 1 CPU / 1Gi, limit 1Gi memory; `{}` sets none |
+| `resources` | `controller.resources` | TypeKro's: requests 1 CPU / 1Gi, limit 1Gi memory; `{}` sets none |
 
-The resource default is deliberate: a BestEffort controller is the first pod starved under
-pressure, and it cannot reschedule onto nodes it launches itself. The chart names its
-PodDisruptionBudget `karpenter` whatever the release is called, so install one bootstrap per
-namespace.
+The resource default is TypeKro's, not the chart's: the chart sets `controller.resources: {}`.
+It is deliberate: a BestEffort controller is the first pod starved under pressure, and it cannot
+reschedule onto nodes it launches itself. The chart names its PodDisruptionBudget `karpenter`
+whatever the release is called, so install one bootstrap per namespace.
 
 The chart's default affinity keeps the controller off nodes Karpenter launched
 (`karpenter.sh/nodepool DoesNotExist`). Run it on a managed node group or Fargate, using
@@ -163,10 +163,12 @@ Its one-node budget lists no `reasons`, so from Karpenter 1.15 it also bounds no
 (the `Unhealthy` reason) when the alpha `nodeRepair` gate is on: one unhealthy node is replaced
 at a time.
 
-The controller takes `replicas` and `resources` as `karpenterBootstrap` does. Its default requests
-(1 CPU and 1Gi per replica) do not fit stable nodes with one vCPU, so size them to the nodes the
-controller runs on, for example
+The controller takes `replicas` and `resources` as `karpenterBootstrap` does. TypeKro's default
+requests (1 CPU and 1Gi per replica; the chart sets `controller.resources: {}`) do not fit stable
+nodes with one vCPU, so size them to the nodes the controller runs on, for example
 `resources: { requests: { cpu: '250m', memory: '512Mi' }, limits: { memory: '768Mi' } }`.
+Running one replica on one small stable node fits, but the controller is unavailable while that
+node is drained for maintenance.
 
 `amiAlias` is required and must be pinned (`<family>@v<version>`, for example
 `al2023@v20251117`). A missing alias, `@latest` and a second `@` are refused in both modes: in

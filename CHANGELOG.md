@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Karpenter spot pool controller sizing.** `karpenterSpotPool` takes `replicas` and
   `resources` for its controller, as `karpenterBootstrap` does, in direct mode and as KRO
-  instance fields. The defaults are unchanged (2 replicas, requests of 1 CPU / 1Gi, a 1Gi memory
-  limit), and `resources: {}` sets none. Stable nodes with one vCPU can now run the controller.
+  instance fields. The defaults are unchanged: 2 replicas, and TypeKro's resource default of
+  requests of 1 CPU / 1Gi and a 1Gi memory limit (the upstream chart sets
+  `controller.resources: {}`). `resources: {}` sets none. Stable nodes with one vCPU can now run
+  the controller.
 
 ## [0.47.0] - 2026-11-20
 

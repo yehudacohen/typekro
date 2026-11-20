@@ -62,8 +62,9 @@ export const KARPENTER_DEFAULT_TOPOLOGY_SPREAD_CONSTRAINTS = [
 ] as const;
 
 /**
- * Default controller resources. A BestEffort controller is first to be starved
- * and cannot reschedule onto the nodes it launches. Pass `resources: {}` to opt out.
+ * TypeKro's default controller resources; the chart itself sets `controller.resources: {}`.
+ * A BestEffort controller is first to be starved and cannot reschedule onto the nodes it
+ * launches. Pass `resources: {}` to opt out.
  */
 export const KARPENTER_DEFAULT_RESOURCES = {
   requests: { cpu: '1', memory: '1Gi' },
