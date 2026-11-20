@@ -141,8 +141,8 @@ export const BARMAN_CLOUD_COMPATIBLE_CNPG_VERSION = /^1\.(3[0-9]|[4-9][0-9])\.(0
  * in the plugin's namespace, such as `1.30.2`, required and at least
  * {@link BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION}. The pattern is on the instance schema, so the
  * API server refuses a KRO instance that names an older operator or none; direct mode refuses it
- * too. `cnpgBootstrap`'s default chart installs 1.25.0, which is too old; install
- * `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION` (operator 1.30.2) instead.
+ * too. `cnpgBootstrap`'s default chart, `DEFAULT_CNPG_CHART_VERSION`, installs 1.30.2; an
+ * install pinned to chart 0.23.0 runs 1.25.0, which is too old.
  */
 export const BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT = specConstraint({
   path: 'operatorVersion',
@@ -155,7 +155,7 @@ export const BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT = specConstraint({
   message: (version) =>
     `The Barman Cloud plugin needs CloudNativePG ${BARMAN_CLOUD_PLUGIN_MINIMUM_CNPG_VERSION} or ` +
     `later; set operatorVersion to the operator version running in the plugin's namespace, ` +
-    `such as "1.30.2" (cnpgBootstrap with version "0.29.2" installs it; its default chart ` +
+    `such as "1.30.2" (cnpgBootstrap's default chart, 0.29.2, installs it; chart 0.23.0 ` +
     `installs 1.25.0); got ` +
     `${JSON.stringify(version)}.`,
 });

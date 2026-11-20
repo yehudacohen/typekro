@@ -246,12 +246,13 @@ the official `plugin-barman-cloud` chart, pinned at 0.9.0 (plugin v0.16.0).
 
 Requirements, from the plugin's documentation:
 
-- CloudNativePG 1.30 or later, which needs an operator upgrade: `cnpgBootstrap` and
-  `cnpgHelmRelease` install chart 0.23.0 (operator 1.25.0) by default, which the plugin does not
-  support. Install chart 0.29.2 (operator 1.30.2) explicitly with
-  `version: BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION`, and read the upgrade notes for existing
-  clusters first: operator 1.30 no longer supports PostgreSQL 14, and new clusters default to
-  PostgreSQL 18. Changing the default is proposed separately in [#306](https://github.com/yehudacohen/typekro/pull/306). The plugin factories
+- CloudNativePG 1.30 or later. `cnpgBootstrap` and `cnpgHelmRelease` install chart 0.29.2
+  (operator 1.30.2) by default, which the plugin supports. An install that pins an older
+  `version`, such as 0.23.0 (operator 1.25.0), needs an operator upgrade first: see
+  [Upgrading the operator](#upgrading-the-operator), including its Kubernetes floor and the
+  one-minor-at-a-time path. `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION` (0.29.2, operator 1.30.2)
+  names the chart the live backup and restore test ran against; pin it as `version` to keep a
+  plugin-compatible operator if the default later moves. The plugin factories
   require `operatorVersion`, the operator version running in the plugin's namespace, and refuse
   one older than 1.30.0 (`CNPG_BARMAN_CLOUD_OPERATOR_INCOMPATIBLE`), at admission in KRO mode
   too. TypeKro does not read the live operator's version: `operatorVersion` is what you state it
@@ -409,7 +410,7 @@ for a base backup to exist.
 ### Live backup and restore test
 
 `test/integration/cnpg/barman-cloud-backup-restore.test.ts` installs operator chart 0.29.2
-(explicitly), the plugin and cert-manager, backs a cluster up to an S3-compatible gateway through
+(pinned with `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION`), the plugin and cert-manager, backs a cluster up to an S3-compatible gateway through
 an `ObjectStore` with `inheritFromIAMRole: true` (a test instance-metadata endpoint stands in for
 the IAM role), restores it into a new cluster and reads the rows back. It also deploys
 `cnpgS3BackedCluster` with `waitForReady: true` and checks that it converges. It installs cluster-scoped operators, so
@@ -435,7 +436,7 @@ const factory = cnpgBootstrap.factory('kro', {
 await factory.deploy({
   name: 'cnpg',
   namespace: 'cnpg-system',
-  version: '0.23.0',
+  version: '0.29.2',
   installCRDs: true,
 });
 ```
@@ -456,6 +457,63 @@ instance.status.phase    // 'Ready' | 'Installing' | 'Failed'
 instance.status.failed   // boolean — true if HelmRelease Ready=False
 instance.status.version  // deployed chart version
 ```
+
+### Upgrading the operator
+
+**Breaking change in the next release.** `cnpgBootstrap` and `cnpgHelmRelease` install chart
+**0.29.2 (operator 1.30.2)** when no `version` is given (`DEFAULT_CNPG_CHART_VERSION`). Earlier
+TypeKro releases defaulted to 0.23.0 (operator 1.25.0). Redeploying an existing install without a
+`version` therefore moves its operator from 1.25 to 1.30, five minor versions at once.
+
+**Kubernetes compatibility.** Chart 0.29.2 declares `kubeVersion: >=1.29.0-0` (0.23.0 declared
+no floor), so Helm refuses to install it on a cluster older than Kubernetes 1.29. CloudNativePG
+1.30 officially supports Kubernetes 1.34, 1.35 and 1.36; it is tested on 1.31, 1.32, 1.33 and
+1.37 without official support
+([supported releases](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.2/docs/src/supported_releases.md)).
+Check your cluster's version before taking the new default.
+
+Pick one of three paths for an existing install:
+
+1. **Supported production path: one minor at a time.** Pin `version` and step through each
+   operator minor, reading that release's upgrade notes and waiting for every cluster to be
+   healthy before the next step. CloudNativePG recommends not skipping minor releases. The latest
+   chart for each minor:
+
+   | Operator | Chart `version` |
+   | --- | --- |
+   | 1.26.1 | `0.25.0` |
+   | 1.27.1 | `0.26.1` |
+   | 1.28.1 | `0.27.1` |
+   | 1.29.1 | `0.28.3` (declares `kubeVersion: >=1.29.0-0`) |
+   | 1.30.2 | `0.29.2` |
+
+   Once on 0.29.2, you can drop the pinned `version` to follow the default.
+2. **Direct jump from 1.25 to 1.30: what this release tested.** Leaving `version` unset upgrades
+   the operator in one step. The live test (`test/integration/cnpg/operator-upgrade.test.ts`)
+   covers exactly this on one disposable kind cluster (Kubernetes 1.36) with one single-instance
+   cluster: the cluster comes back healthy on its image with its rows, and a new cluster gets
+   PostgreSQL 18. That is not a guarantee for multi-instance clusters, poolers, replicas,
+   backups in flight or other configurations. Prefer path 1 for clusters you care about.
+3. **Keep the old operator.** Pass `version: '0.23.0'` to stay on operator 1.25.0. CloudNativePG
+   1.25 left support on August 22, 2025, and the Barman Cloud plugin needs 1.30 or later.
+
+Before any step to 1.30, from the CloudNativePG
+[1.30 release notes](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.2/docs/src/release_notes/v1.30.md)
+and [upgrade guide](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.2/docs/src/installation_upgrade.md):
+
+- **PostgreSQL 14 is not supported** by operator 1.30. Upgrade those clusters to PostgreSQL 15 or
+  later first, or keep them on an older operator.
+- **New clusters default to PostgreSQL 18** (`ghcr.io/cloudnative-pg/postgresql:18.7-system-trixie`)
+  when they set no `imageName`. Existing clusters keep their image. Set `imageName` (or an image
+  catalog) on new clusters that must stay on an older major version.
+- **Every cluster rolls.** Upgrading the operator upgrades the instance manager in every pod, one
+  instance at a time, and ends with a switchover (`primaryUpdateStrategy: unsupervised`, the
+  default); single-instance clusters restart. Applications reconnect. Poolers on the default
+  PgBouncer image roll to 1.26.1.
+- **Read "Upgrading to 1.30.0"** in the upgrade guide: role passwords are SCRAM-encoded by the
+  operator, `search_path` is pinned on operator connections, primaries are elected through a
+  per-cluster `Lease` (the chart grants the RBAC), and instances created by an operator older
+  than 1.24 need a rolling update before their status port can be reached.
 
 ## Usage in Compositions
 

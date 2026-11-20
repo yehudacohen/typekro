@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { cnpgHelmRepository, cnpgHelmRelease } from '../../../src/factories/cnpg/resources/helm.js';
+import {
+  cnpgHelmRelease,
+  cnpgHelmRepository,
+  DEFAULT_CNPG_CHART_VERSION,
+  DEFAULT_CNPG_OPERATOR_VERSION,
+} from '../../../src/factories/cnpg/resources/helm.js';
 import { cnpgBootstrap } from '../../../src/factories/cnpg/compositions/cnpg-bootstrap.js';
 import {
   isValuesMergeExpression,
@@ -76,6 +81,23 @@ describe('CNPG Helm Resources', () => {
       expect(release.apiVersion).toBe('helm.toolkit.fluxcd.io/v2');
       expect(release.metadata.name).toBe('cnpg');
       expect(release.metadata.namespace).toBe('cnpg-system');
+    });
+
+    it('installs chart 0.29.2 (operator 1.30.2) by default', () => {
+      expect(DEFAULT_CNPG_CHART_VERSION).toBe('0.29.2');
+      expect(DEFAULT_CNPG_OPERATOR_VERSION).toBe('1.30.2');
+      expect(cnpgHelmRelease({ name: 'cnpg' }).spec.chart.spec.version).toBe('0.29.2');
+      // An explicit version still wins, so an install can stay on the old operator.
+      expect(cnpgHelmRelease({ name: 'cnpg', version: '0.23.0' }).spec.chart.spec.version).toBe(
+        '0.23.0'
+      );
+    });
+
+    it('cnpgBootstrap installs the default chart when no version is given', async () => {
+      const factory = await cnpgBootstrap.factory('direct', { namespace: 'cnpg-system' });
+      const manifests = factory.toYaml({ name: 'cnpg', namespace: 'cnpg-system' });
+      expect(manifests).toContain('version: 0.29.2');
+      expect(manifests).not.toContain('0.23.0');
     });
 
     it('should include CRD creation in default values', () => {

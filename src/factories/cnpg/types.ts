@@ -136,7 +136,7 @@ export const CnpgBootstrapConfigSchema = type({
   name: 'string',
   /** Namespace for the operator (default: 'cnpg-system'). */
   'namespace?': 'string',
-  /** Chart version (default: '0.23.0'). */
+  /** Chart version (default: '0.29.2', operator 1.30.2; see `DEFAULT_CNPG_CHART_VERSION`). */
   'version?': 'string',
   /** Whether to install CRDs with the chart (default: true). */
   'installCRDs?': 'boolean',
@@ -651,7 +651,7 @@ export const CnpgHelmReleaseConfigSchema = type({
   name: 'string',
   /** Target namespace. */
   'namespace?': 'string',
-  /** Chart version (default: '0.23.0'). */
+  /** Chart version (default: '0.29.2', operator 1.30.2; see `DEFAULT_CNPG_CHART_VERSION`). */
   'version?': 'string',
   /** Helm values. */
   'values?': 'Record<string, unknown>',
@@ -803,7 +803,7 @@ export const BarmanCloudPluginBootstrapConfigSchema = type({
   version: BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT.type,
   /**
    * Version of the CloudNativePG operator in `namespace`, such as `1.30.2`; 1.30.0 or later.
-   * `cnpgBootstrap` installs 1.30.2 with `version: BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION`.
+   * `cnpgBootstrap` installs 1.30.2 by default (`DEFAULT_CNPG_CHART_VERSION`).
    */
   operatorVersion: BARMAN_CLOUD_OPERATOR_VERSION_CONSTRAINT.type,
   /** Extra chart values over the chart defaults; `crds.create` and `service.name` are fixed. */
