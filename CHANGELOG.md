@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-11-20
+
+This release has breaking changes: Node.js 22.19.0 is now the minimum, and the default
+CloudNativePG operator moves from 1.25.0 to 1.30.2 (see Changed).
+
 ### Added
 
 - **CloudNativePG Barman Cloud plugin.** `barmanCloudPluginHelmRelease` and the
