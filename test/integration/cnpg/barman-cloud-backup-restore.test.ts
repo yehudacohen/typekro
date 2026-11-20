@@ -1,8 +1,8 @@
 /**
  * Live Barman Cloud plugin backup and restore.
  *
- * Installs a CloudNativePG operator the plugin supports (chart 0.29.2, operator 1.30.2, chosen
- * explicitly: `cnpgBootstrap`'s default chart is older) and the Barman Cloud plugin (chart 0.9.0)
+ * Installs a CloudNativePG operator the plugin supports (chart 0.29.2, operator 1.30.2, pinned
+ * with `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION`) and the Barman Cloud plugin (chart 0.9.0)
  * with cert-manager. It backs a cluster up to an S3-compatible bucket through an `ObjectStore` that
  * uses `inheritFromIAMRole: true`, restores the backup into a new cluster and reads the rows back.
  * Then it deploys the `cnpgS3BackedCluster` composition with `waitForReady: true` and checks that

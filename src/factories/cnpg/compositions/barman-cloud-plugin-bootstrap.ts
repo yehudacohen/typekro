@@ -25,9 +25,9 @@ import { BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT } from '../utils/barman-cloud-co
 /**
  * Installs the CloudNativePG Barman Cloud plugin from the official chart, pinned at 0.9.0
  * (plugin v0.16.0), in the operator's namespace. `operatorVersion` names the CloudNativePG
- * version running there, which must be 1.30.0 or later. `cnpgBootstrap`'s default chart
- * (0.23.0, operator 1.25.0) is too old: install it with
- * `version: BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION` (0.29.2, operator 1.30.2).
+ * version running there, which must be 1.30.0 or later. `cnpgBootstrap`'s default chart,
+ * `DEFAULT_CNPG_CHART_VERSION` (0.29.2, operator 1.30.2), installs one; an install pinned to an
+ * older chart, such as 0.23.0 (operator 1.25.0), must be upgraded first.
  *
  * @see docs/api/cnpg/index.md#barman-cloud-plugin
  */

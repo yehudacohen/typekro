@@ -13,6 +13,8 @@ import {
   BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION,
   BARMAN_CLOUD_TESTED_CNPG_OPERATOR_VERSION,
   cnpgHelmRelease,
+  DEFAULT_CNPG_CHART_VERSION,
+  DEFAULT_CNPG_OPERATOR_VERSION,
   BARMAN_CLOUD_PLUGIN_NAME,
   backup,
   barmanCloudBackupMethod,
@@ -564,9 +566,18 @@ describe('barmanCloudPluginHelmRelease', () => {
     }
   });
 
-  it('refuses the operator cnpgHelmRelease installs by default, and accepts the tested one', () => {
-    // The default chart, 0.23.0, installs operator 1.25.0: too old for the plugin.
-    expect(cnpgHelmRelease({ name: 'cnpg' }).spec.chart.spec.version).toBe('0.23.0');
+  it('accepts the operator cnpgHelmRelease installs by default and the tested one', () => {
+    // The default chart installs an operator the plugin supports.
+    expect(cnpgHelmRelease({ name: 'cnpg' }).spec.chart.spec.version).toBe(
+      DEFAULT_CNPG_CHART_VERSION
+    );
+    expect(() =>
+      barmanCloudPluginHelmRelease({
+        name: 'barman-cloud',
+        operatorVersion: DEFAULT_CNPG_OPERATOR_VERSION,
+      })
+    ).not.toThrow();
+    // An install pinned to the old default, chart 0.23.0, runs operator 1.25.0: too old.
     expect(() =>
       barmanCloudPluginHelmRelease({ name: 'barman-cloud', operatorVersion: '1.25.0' })
     ).toThrow('needs CloudNativePG 1.30.0 or later');

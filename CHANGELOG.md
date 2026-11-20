@@ -13,10 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `barmanCloudPluginBootstrap` composition install the official `plugin-barman-cloud` chart,
   pinned at 0.9.0 (plugin v0.16.0), in the operator's namespace. `version` must be the pinned
   chart, and `operatorVersion` is required and must be CloudNativePG 1.30.0 or later, in direct
-  mode and at KRO admission. The default operator (chart 0.23.0, 1.25.0) is too old: install
-  `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION` (0.29.2, operator 1.30.2) explicitly. `crds.create` and the plugin's `service.name` are owned by the
-  factory: values that change them are refused, and they are applied last. `objectStore()`
-  renders an S3 `ObjectStore` that authenticates only through workload identity
+  mode and at KRO admission. The new default operator (chart 0.29.2, operator 1.30.2; see
+  Changed) supports it; an install pinned to chart 0.23.0 (operator 1.25.0) must be upgraded
+  first. `BARMAN_CLOUD_TESTED_CNPG_CHART_VERSION` (0.29.2) names the chart the live test ran
+  against. `crds.create` and the plugin's `service.name` are owned by the factory: values that
+  change them are refused, and they are applied last. `objectStore()` renders an S3
+  `ObjectStore` that authenticates only through workload identity
   (`inheritFromIAMRole: true`); it fails closed, so the credential structure must be written in
   the composition and only leaf values may come from the spec. `barmanCloudPlugin()`,
   `barmanCloudBackupMethod()` and `barmanCloudRecovery()` wire a `Cluster`, a `Backup` or
@@ -42,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API client and watch now read them with `KubeConfig.applyToHTTPSOptions()` on each request.
   `getHttpLibraryForRuntime()` takes the KubeConfig as an optional second argument; without it,
   requests carry no client certificate.
+- **Breaking: the default CloudNativePG operator is now chart 0.29.2 (operator 1.30.2), from
+  0.23.0 (operator 1.25.0).** `cnpgBootstrap`, `cnpgHelmRelease` and the operator that
+  `webAppWithProcessing` installs use it when no `version` is given, so redeploying an existing
+  install without a `version` moves its operator from 1.25 to 1.30, five minor versions at once.
+  Chart 0.29.2 declares `kubeVersion: >=1.29.0-0` (0.23.0 declared none), so Helm refuses it on
+  Kubernetes older than 1.29; operator 1.30 officially supports Kubernetes 1.34 to 1.36 and is
+  tested on 1.31 to 1.33 and 1.37 without official support. Operator 1.30 does not support
+  PostgreSQL 14, new clusters that set no image get PostgreSQL 18.7, and the upgrade rolls every
+  cluster's instance manager. Choose a path, described in "Upgrading the operator" in the CNPG
+  docs: for production, pin `version` and upgrade one minor at a time (charts 0.25.0, 0.26.1,
+  0.27.1, 0.28.3, then 0.29.2); the direct jump is tested live only on one disposable
+  single-instance cluster, not for multi-instance clusters or every configuration; or pass
+  `version: '0.23.0'` to keep the old operator. `DEFAULT_CNPG_CHART_VERSION` and
+  `DEFAULT_CNPG_OPERATOR_VERSION` name the new default.
 
 ### Fixed
 

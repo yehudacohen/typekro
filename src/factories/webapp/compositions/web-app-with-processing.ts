@@ -95,7 +95,7 @@ import {
  *   },
  *   // Operators install with sensible defaults; override only if
  *   // you need a specific chart version or custom install namespace.
- *   cnpgOperator: { version: '0.23.0' },
+ *   cnpgOperator: { version: '0.29.2' },
  * });
  * ```
  */

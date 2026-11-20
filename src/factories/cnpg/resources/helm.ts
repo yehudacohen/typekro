@@ -23,8 +23,15 @@ import type { CnpgHelmReleaseConfig, CnpgHelmRepositoryConfig } from '../types.j
 /** Default Helm chart repository URL for CloudNativePG. */
 const DEFAULT_CNPG_REPO_URL = 'https://cloudnative-pg.github.io/charts';
 
-/** Default chart version. */
-const DEFAULT_CNPG_VERSION = '0.23.0';
+/**
+ * Default `cloudnative-pg` chart version: 0.29.2 (released 2026-11-17), which installs operator
+ * 1.30.2. The chart declares `kubeVersion: >=1.29.0-0`. New clusters that set no image get
+ * PostgreSQL 18.7, and PostgreSQL 14 is no longer supported; see "Upgrading the operator" in the
+ * CNPG docs before upgrading an existing install.
+ */
+export const DEFAULT_CNPG_CHART_VERSION = '0.29.2';
+/** Operator version {@link DEFAULT_CNPG_CHART_VERSION} installs. */
+export const DEFAULT_CNPG_OPERATOR_VERSION = '1.30.2';
 
 /**
  * Create a HelmRepository for the CloudNativePG chart repository.
@@ -66,7 +73,7 @@ export function cnpgHelmRepository(
  * const release = cnpgHelmRelease({
  *   name: 'cnpg',
  *   namespace: 'cnpg-system',
- *   version: '0.23.0',
+ *   version: '0.29.2',
  *   values: { crds: { create: true } },
  *   id: 'cnpgHelmRelease',
  * });
@@ -82,7 +89,7 @@ export function cnpgHelmRelease(
     chart: {
       repository: DEFAULT_CNPG_REPO_URL,
       name: 'cloudnative-pg',
-      version: config.version || DEFAULT_CNPG_VERSION,
+      version: config.version || DEFAULT_CNPG_CHART_VERSION,
     },
     sourceRef: {
       name: config.repositoryName || 'cnpg-repo',
