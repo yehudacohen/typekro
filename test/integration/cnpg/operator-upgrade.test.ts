@@ -11,6 +11,16 @@
  * `TYPEKRO_CNPG_UPGRADE_LIVE=true` and `TYPEKRO_TEST_STORAGE_CLASS`, on a disposable cluster such
  * as kind. `bun run test:integration:cnpg-operator-upgrade` runs it. CI does not run it: the CI
  * workflow has no Kubernetes cluster.
+ *
+ * Known kind issue, test clusters only: on kind v0.32.0 (Kubernetes 1.36, kindnet network
+ * policies), pods in `flux-system` could not reach cluster DNS while Flux's `allow-egress`,
+ * `allow-scraping` and `allow-webhooks` NetworkPolicies were in place, so source-controller could
+ * not pull the KRO chart and the runtime install timed out. The recorded run deleted those three
+ * policies on the throwaway kind cluster as soon as Flux created them:
+ *
+ *   kubectl -n flux-system delete networkpolicy allow-egress allow-scraping allow-webhooks
+ *
+ * TypeKro's Flux install keeps its policies; never remove them on a shared or real cluster.
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
