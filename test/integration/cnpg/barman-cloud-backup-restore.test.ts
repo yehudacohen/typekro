@@ -601,6 +601,24 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
       undefined,
       'application/merge-patch+json'
     );
+    // The plugin injects the sidecar, with its env, when an instance pod is created: restart the
+    // cluster's pods so they pick up the patched ObjectStore.
+    await createKubernetesObjectApiClient(kubeConfig).patch(
+      {
+        apiVersion: 'postgresql.cnpg.io/v1',
+        kind: 'Cluster',
+        metadata: {
+          name: composed,
+          namespace,
+          annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() },
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'application/merge-patch+json'
+    );
     await waitFor(
       'Cluster',
       composed,
