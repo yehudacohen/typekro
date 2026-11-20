@@ -56,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deploy with `waitForReady` waiting until the next night. It is now ready once the operator has
   registered it (`status.lastCheckTime`), not ready while `status.error` is set, and ready with
   reason `Suspended` when suspended. (#302)
+- **Bun API clients authenticate once per request.** The generated client authenticates each
+  request before the transport runs, and the transport then ran the authentication providers a
+  second time to get the TLS options. An exec plugin whose credential is not cached ran twice per
+  request, a provider that refreshes could send one run's token with another run's client
+  certificate, and only the second run was inside the request deadline. The Bun API clients now
+  use an auth method from `BunCompatibleHttpLibrary.securityAuthentication()`: it runs the
+  providers once, inside the request deadline, and hands the TLS options (including a client
+  certificate an exec plugin returns) to the transport.
 
 ## [0.46.0] - 2026-11-19
 
