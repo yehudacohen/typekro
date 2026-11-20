@@ -366,8 +366,9 @@ export interface KarpenterBootstrapConfig {
   /** @default KARPENTER_DEFAULT_TOLERATIONS */
   tolerations?: KarpenterToleration[];
   /**
-   * Controller container resources. Defaults to requests of 1 CPU / 1Gi and a
-   * 1Gi memory limit; pass `{}` to set none.
+   * Controller container resources. TypeKro defaults them to requests of 1 CPU / 1Gi
+   * and a 1Gi memory limit (the chart sets `controller.resources: {}`); pass `{}` to set
+   * none.
    */
   resources?: KarpenterResourceRequirements;
 }
@@ -554,9 +555,10 @@ export interface KarpenterSpotPoolConfig {
   /** Controller replicas. @default 2 */
   replicas?: number;
   /**
-   * Controller container resources, as in {@link KarpenterBootstrapConfig.resources}. Defaults to
-   * requests of 1 CPU / 1Gi and a 1Gi memory limit; size them to the stable nodes the controller
-   * runs on, or pass `{}` to set none.
+   * Controller container resources, as in {@link KarpenterBootstrapConfig.resources}. TypeKro
+   * defaults them to requests of 1 CPU / 1Gi and a 1Gi memory limit (the chart sets
+   * `controller.resources: {}`); size them to the stable nodes the controller runs on, or pass
+   * `{}` to set none.
    */
   resources?: KarpenterResourceRequirements;
 }
