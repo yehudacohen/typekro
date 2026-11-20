@@ -86,13 +86,13 @@ export function createBunCompatibleApiClient<T extends k8s.ApiType>(
     throw new KubernetesClientError('No active cluster in KubeConfig', 'configuration');
   }
 
-  // Create configuration with Bun-compatible HTTP library
-  // The KubeConfig is passed as the auth method, which ensures that:
-  // - applyToRequest() is called on each request
-  // - Tokens are refreshed automatically when expired
-  // - OIDC/GKE/EKS/AKS token rotation is handled
+  // Create configuration with Bun-compatible HTTP library.
+  // The auth method authenticates each request through the KubeConfig, so tokens are refreshed
+  // when expired and OIDC/GKE/EKS/AKS token rotation is handled. It runs the providers ONCE per
+  // request, inside the request deadline, and hands the TLS options to the transport.
+  const httpApi = new BunCompatibleHttpLibrary(timeoutConfig, kubeConfig);
   const authConfig: AuthMethodsConfiguration = {
-    default: kubeConfig,
+    default: httpApi.securityAuthentication(),
   };
 
   const clientNode = getKubernetesClientNode();
@@ -104,13 +104,13 @@ export function createBunCompatibleApiClient<T extends k8s.ApiType>(
   const config = clientNode.createConfiguration({
     baseServer: baseServerConfig,
     authMethods: authConfig,
-    httpApi: new BunCompatibleHttpLibrary(timeoutConfig, kubeConfig),
+    httpApi,
   });
 
   logger.debug('Created Bun-compatible API client', {
     apiClient: apiClientClass.name,
     server: cluster.server,
-    tokenRefresh: 'enabled via KubeConfig.applyToRequest()',
+    tokenRefresh: 'enabled: the KubeConfig authenticates each request',
     hasCustomTimeouts: !!timeoutConfig,
   });
 
@@ -492,9 +492,10 @@ export function createBunCompatibleKubernetesObjectApi(
     throw new KubernetesClientError('No active cluster in KubeConfig', 'configuration');
   }
 
-  // Create configuration with Bun-compatible HTTP library
+  // Create configuration with Bun-compatible HTTP library (see createBunCompatibleApiClient).
+  const httpApi = new BunCompatibleHttpLibrary(timeoutConfig, kubeConfig);
   const authConfig: AuthMethodsConfiguration = {
-    default: kubeConfig,
+    default: httpApi.securityAuthentication(),
   };
 
   const clientNode = getKubernetesClientNode();
@@ -506,7 +507,7 @@ export function createBunCompatibleKubernetesObjectApi(
   const config = clientNode.createConfiguration({
     baseServer: baseServerConfig,
     authMethods: authConfig,
-    httpApi: new BunCompatibleHttpLibrary(timeoutConfig, kubeConfig),
+    httpApi,
   });
 
   const client = new SchemaPreservingKubernetesObjectApi(config);

@@ -13,6 +13,7 @@
 
 import * as http from 'node:http';
 import * as https from 'node:https';
+import type { SecurityAuthentication } from '@kubernetes/client-node/dist/gen/auth/auth.js';
 import type {
   HttpLibrary,
   RequestContext,
@@ -233,6 +234,18 @@ function isWatchUrl(url: string): boolean {
   return url.includes('?watch=true') || url.includes('&watch=true');
 }
 
+/** What the auth step produced for one request: its TLS options, and when its budget started. */
+interface RequestAuthentication {
+  tls: AgentTlsOptions;
+  startedAt: number;
+}
+
+/**
+ * Requests authenticated by {@link BunCompatibleHttpLibrary.securityAuthentication}, so the
+ * transport can take their TLS options instead of running the authentication providers again.
+ */
+const authenticatedRequests = new WeakMap<RequestContext, RequestAuthentication>();
+
 /** How long one request may take, and how much of that is left when the HTTP call starts. */
 interface RequestDeadline {
   /** The whole budget for the request, reported in the timeout error. */
@@ -304,6 +317,58 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
   }
 
   /**
+   * The auth method to configure the API client with, in place of the KubeConfig itself.
+   *
+   * The generated client authenticates each request through its auth method before handing it to
+   * the transport. With the KubeConfig as that method (`applySecurityAuthentication()`) the
+   * transport then had to run the authentication providers a SECOND time to get the TLS options
+   * (`applyToHTTPSOptions()`), since client-node 2 keeps them in an undici dispatcher it cannot
+   * read: an uncached exec plugin ran twice per request, a refreshing provider could put one
+   * generation's token on the request and another's client certificate on the connection, and
+   * only the second run was inside the request deadline.
+   *
+   * This method runs the providers once, through `applyToHTTPSOptions()`, inside the request's
+   * deadline. It sets the same headers `applySecurityAuthentication()` would (Basic auth, then the
+   * providers' headers), and keeps the TLS options for {@link send}, whose deadline starts when
+   * this one did.
+   */
+  public securityAuthentication(): SecurityAuthentication {
+    const source = this.tlsSource;
+    if (!source) throw new Error('securityAuthentication() needs the KubeConfig as the TLS source');
+    return {
+      getName: () => 'kubeconfig authentication (Bun transport)',
+      applySecurityAuthentication: async (context: RequestContext) => {
+        const url = new URL(context.getUrl());
+        const method = context.getHttpMethod();
+        const signal = requestSignal(context);
+        if (signal?.aborted) throw abortReason(signal);
+
+        const startedAt = Date.now();
+        const options: https.RequestOptions = {};
+        await applyTlsSourceWithin(source, options, {
+          timeoutMs: this.authBudgetFor(method, url),
+          signal,
+          operation: `${method} ${url.pathname}`,
+        });
+        if (options.auth) {
+          const basic = Buffer.from(options.auth).toString('base64');
+          context.setHeaderParam('Authorization', `Basic ${basic}`);
+        }
+        for (const [name, value] of Object.entries(options.headers ?? {})) {
+          if (value !== undefined) context.setHeaderParam(name, `${value}`);
+        }
+        authenticatedRequests.set(context, { tls: requestTlsOptions(options), startedAt });
+      },
+    };
+  }
+
+  /** The budget for reading credentials: the request's, or the read timeout for a watch. */
+  private authBudgetFor(method: string, url: URL): number {
+    const target = url.toString();
+    return isWatchUrl(target) ? this.timeouts.default : this.getTimeoutForRequest(method, target);
+  }
+
+  /**
    * One deadline covers the whole request: reading the TLS options AND the HTTP call. Reading the
    * options can run an exec credential plugin, so it is bounded too, and the HTTP call gets only
    * what is left of the budget. The caller's signal is honoured in both phases, and an
@@ -319,16 +384,20 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     if (signal?.aborted) throw abortReason(signal);
 
     const watch = isWatchUrl(url.toString());
-    const budgetMs = watch
-      ? this.timeouts.default
-      : this.getTimeoutForRequest(method, url.toString());
-    const startedAt = Date.now();
-    const tls = await this.resolveTls(signal, budgetMs, `${method} ${url.pathname}`);
+    const budgetMs = this.authBudgetFor(method, url);
+    // Authenticated by securityAuthentication(): the providers already ran, inside this request's
+    // deadline, which started then. Otherwise read the TLS options here, inside the deadline.
+    const authenticated = authenticatedRequests.get(request);
+    authenticatedRequests.delete(request);
+    const startedAt = authenticated?.startedAt ?? Date.now();
+    const tls =
+      authenticated?.tls ?? (await this.resolveTls(signal, budgetMs, `${method} ${url.pathname}`));
     if (watch) return this.makeRequest(request, tls, signal, undefined);
 
-    // Without a TLS source nothing was read, so the HTTP call gets the whole budget (not the budget
-    // minus a millisecond of scheduling).
-    const remainingMs = this.tlsSource ? budgetMs - (Date.now() - startedAt) : budgetMs;
+    // When nothing was read, the HTTP call gets the whole budget (not the budget minus a
+    // millisecond of scheduling).
+    const spentMs = authenticated || this.tlsSource ? Date.now() - startedAt : 0;
+    const remainingMs = budgetMs - spentMs;
     if (remainingMs <= 0) throw this.requestTimeoutError(method, url, budgetMs);
     return this.makeRequest(request, tls, signal, { budgetMs, remainingMs });
   }

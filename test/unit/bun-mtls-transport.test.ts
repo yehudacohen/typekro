@@ -9,6 +9,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createTestPki, type TestPki, testKubeconfig } from '../../scripts/lib/test-pki.mjs';
 import { createBunCompatibleCoreV1Api } from '../../src/core/kubernetes/bun-api-client.js';
@@ -155,5 +158,62 @@ describe('Bun transport over mutual TLS', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).not.toContain('unexpectedly succeeded');
     expect(await seenAfter(1)).toHaveLength(0);
+  });
+
+  // An exec credential plugin can return the client certificate and key itself. The transport must
+  // take them from the request's single authentication run, not from the kubeconfig's static TLS
+  // fields, which are empty here.
+  it('uses a client certificate an exec credential plugin returns', async () => {
+    seen.length = 0;
+    const directory = mkdtempSync(join(tmpdir(), 'typekro-exec-cert-'));
+    try {
+      writeFileSync(join(directory, 'client.crt'), pki.clientCert);
+      writeFileSync(join(directory, 'client.key'), pki.clientKey);
+      const script = [
+        "const fs = require('node:fs');",
+        'const dir = process.env.TYPEKRO_EXEC_CERT_DIR;',
+        'process.stdout.write(JSON.stringify({',
+        "  apiVersion: 'client.authentication.k8s.io/v1', kind: 'ExecCredential',",
+        '  status: {',
+        "    clientCertificateData: fs.readFileSync(dir + '/client.crt', 'utf8'),",
+        "    clientKeyData: fs.readFileSync(dir + '/client.key', 'utf8'),",
+        '  },',
+        '}));',
+      ].join('\n');
+      const kc = new (getKubernetesClientNode().KubeConfig)();
+      kc.loadFromOptions({
+        clusters: [
+          {
+            name: 'test',
+            server: serverUrl,
+            caData: Buffer.from(pki.caCert).toString('base64'),
+            skipTLSVerify: false,
+          },
+        ],
+        users: [
+          {
+            name: 'test',
+            exec: {
+              apiVersion: 'client.authentication.k8s.io/v1',
+              command: process.execPath,
+              args: ['-e', script],
+              env: [{ name: 'TYPEKRO_EXEC_CERT_DIR', value: directory }],
+              interactiveMode: 'Never',
+            },
+          },
+        ],
+        contexts: [{ name: 'test', cluster: 'test', user: 'test' }],
+        currentContext: 'test',
+      });
+
+      const namespace = await createBunCompatibleCoreV1Api(kc).readNamespace({ name: 'default' });
+
+      expect(namespace.metadata?.name).toBe('default');
+      expect(await seenAfter(1)).toEqual([
+        { path: '/api/v1/namespaces/default', clientCn: CLIENT_CN },
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
