@@ -551,6 +551,14 @@ export interface KarpenterSpotPoolConfig {
   spotCpuLimit?: string;
   consolidateAfter?: string;
   expireAfter?: string;
+  /** Controller replicas. @default 2 */
+  replicas?: number;
+  /**
+   * Controller container resources, as in {@link KarpenterBootstrapConfig.resources}. Defaults to
+   * requests of 1 CPU / 1Gi and a 1Gi memory limit; size them to the stable nodes the controller
+   * runs on, or pass `{}` to set none.
+   */
+  resources?: KarpenterResourceRequirements;
 }
 
 /** ArkType schema for {@link KarpenterSpotPoolConfig}. */
@@ -570,6 +578,8 @@ export const KarpenterSpotPoolConfigSchema: Type<KarpenterSpotPoolConfig> = type
   'spotCpuLimit?': 'string > 0',
   'consolidateAfter?': 'string > 0',
   'expireAfter?': 'string > 0',
+  'replicas?': 'number.integer >= 1',
+  'resources?': { 'requests?': resourceList, 'limits?': resourceList },
 });
 
 /** Status of {@link karpenterSpotPool}. */

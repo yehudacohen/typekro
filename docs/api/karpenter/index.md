@@ -163,6 +163,11 @@ Its one-node budget lists no `reasons`, so from Karpenter 1.15 it also bounds no
 (the `Unhealthy` reason) when the alpha `nodeRepair` gate is on: one unhealthy node is replaced
 at a time.
 
+The controller takes `replicas` and `resources` as `karpenterBootstrap` does. Its default requests
+(1 CPU and 1Gi per replica) do not fit stable nodes with one vCPU, so size them to the nodes the
+controller runs on, for example
+`resources: { requests: { cpu: '250m', memory: '512Mi' }, limits: { memory: '768Mi' } }`.
+
 `amiAlias` is required and must be pinned (`<family>@v<version>`, for example
 `al2023@v20251117`). A missing alias, `@latest` and a second `@` are refused in both modes: in
 direct mode by the composition, and in KRO mode by the API server, because the instance schema

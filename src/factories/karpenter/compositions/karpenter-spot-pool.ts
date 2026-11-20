@@ -57,17 +57,20 @@ export const DEFAULT_SPOT_INSTANCE_SIZES = ['large', 'xlarge'];
 export const SPOT_MIN_INSTANCE_TYPES = 8;
 
 /**
- * `namespace` and `version` when the caller set them; the controller applies their defaults. This
- * stays out of the composition body: a JS conditional on a schema proxy in the body makes KRO
- * serialization wrap every template there twice (`${${schema.spec.name}-spot}`), and defaulting
- * here as well nests `has()` around an expression, which CEL refuses.
+ * `namespace`, `version`, `replicas` and `resources` when the caller set them; the controller
+ * applies their defaults. This stays out of the composition body: a JS conditional on a schema
+ * proxy in the body makes KRO serialization wrap every template there twice
+ * (`${${schema.spec.name}-spot}`), and defaulting here as well nests `has()` around an expression,
+ * which CEL refuses.
  */
 function optionalControllerInputs(
   spec: KarpenterSpotPoolConfig
-): Pick<KarpenterBootstrapConfig, 'namespace' | 'version'> {
+): Pick<KarpenterBootstrapConfig, 'namespace' | 'version' | 'replicas' | 'resources'> {
   return {
     ...(spec.namespace !== undefined && { namespace: spec.namespace }),
     ...(spec.version !== undefined && { version: spec.version }),
+    ...(spec.replicas !== undefined && { replicas: spec.replicas }),
+    ...(spec.resources !== undefined && { resources: spec.resources }),
   };
 }
 
@@ -79,6 +82,9 @@ function optionalControllerInputs(
  * c/m/r 6g/7g/8g in sizes large and xlarge, spreads over `zones`, consolidates
  * empty or underutilized nodes after 5 minutes, disrupts one node at a time,
  * and has a CPU limit of 16 by default.
+ *
+ * The controller takes `replicas` and `resources` as `karpenterBootstrap` does. Its default
+ * requests (1 CPU per replica) do not fit stable nodes with one vCPU; size them to those nodes.
  *
  * Deploy it in direct mode, which installs the controller and CRDs before the
  * NodeClass and NodePool. KRO mode needs the Karpenter CRDs installed first.
