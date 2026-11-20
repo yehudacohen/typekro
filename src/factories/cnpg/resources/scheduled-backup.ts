@@ -33,7 +33,7 @@ const baseEvaluator = createConditionBasedReadinessEvaluator({ kind: 'ScheduledB
  */
 function scheduledBackupReadinessEvaluator(liveResource: unknown): ResourceStatus {
   const resource = liveResource as
-    | { spec?: { suspend?: boolean }; status?: ScheduledBackupStatus & { error?: string } }
+    | { spec?: { suspend?: boolean }; status?: ScheduledBackupStatus }
     | null
     | undefined;
   const status = resource?.status;

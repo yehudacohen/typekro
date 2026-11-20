@@ -38,6 +38,7 @@ import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bu
 setDefaultTimeout(1_800_000);
 
 import type * as k8s from '@kubernetes/client-node';
+import { evaluate } from 'cel-js';
 import yaml from 'js-yaml';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import {
@@ -625,6 +626,28 @@ describeOrSkip('CNPG Barman Cloud plugin: backup to S3 and restore (live)', () =
       (live) => healthy(live) && condition(live, 'ContinuousArchiving'),
       900_000
     );
+
+    // The composition's status expressions, as KRO evaluates them, hold on the live objects.
+    const graph = (yaml.loadAll(cnpgS3BackedCluster.toYaml()) as any[]).find(
+      (document) => document?.kind === 'ResourceGraphDefinition'
+    );
+    const statusFields = graph.spec.schema.status as Record<string, string>;
+    const context = {
+      cluster: await read('Cluster', composed),
+      scheduledBackup: await read('ScheduledBackup', `${composed}-scheduled`),
+    };
+    const statusNow = Object.fromEntries(
+      ['ready', 'clusterReady', 'walArchiving', 'scheduledBackupReady'].map((field) => [
+        field,
+        evaluate((statusFields[field] ?? '').slice(2, -1), context),
+      ])
+    );
+    expect(statusNow).toEqual({
+      ready: true,
+      clusterReady: true,
+      walArchiving: true,
+      scheduledBackupReady: true,
+    });
   });
 
   it('has the API server refuse bad buckets on a KRO instance of cnpgS3BackedCluster', async () => {

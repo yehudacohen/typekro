@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { join } from 'node:path';
 import { type Type, type } from 'arktype';
+import { evaluate } from 'cel-js';
 import yaml from 'js-yaml';
 import { TypeKroError } from '../../../src/core/errors.js';
 import {
@@ -8,9 +9,9 @@ import {
   BARMAN_CLOUD_PLUGIN_NAME,
   BARMAN_CLOUD_PLUGIN_VERSION_CONSTRAINT,
   BARMAN_CLOUD_PREFIX_CONSTRAINT,
-  S3_BUCKET_NAME_RULE,
   barmanCloudPluginBootstrap,
   cnpgS3BackedCluster,
+  S3_BUCKET_NAME_RULE,
 } from '../../../src/factories/cnpg/index.js';
 import { Cel, kubernetesComposition } from '../../../src/index.js';
 import { crdSchemaFromJson, crdSchemaFromYaml, crdSpecErrors } from '../../utils/crd-schema.js';
@@ -235,6 +236,7 @@ describe('cnpgS3BackedCluster (direct mode)', () => {
 type Rgd = {
   kind: string;
   spec: {
+    schema: { status: Record<string, string> };
     resources: Array<{
       id: string;
       template: { metadata: { name?: string }; spec?: Record<string, any> };
@@ -345,6 +347,40 @@ describe('cnpgS3BackedCluster (KRO admission)', () => {
         })
       ).toEqual([`spec.${field}: unknown field`]);
     }
+  });
+
+  it('is ready only once the schedule is registered, as well as the cluster and its WAL archiving', () => {
+    const status = rgdOf(cnpgS3BackedCluster).spec.schema.status;
+    const expression = (field: string) => {
+      const value = status[field] ?? '';
+      expect(value.startsWith('${') && value.endsWith('}')).toBe(true);
+      return value.slice(2, -1);
+    };
+    const conditions = (archiving: boolean) => [
+      { type: 'Ready', status: 'True' },
+      { type: 'ContinuousArchiving', status: archiving ? 'True' : 'False' },
+    ];
+    const evaluateWith = (
+      field: string,
+      scheduleStatus: Record<string, unknown>,
+      archiving = true
+    ) =>
+      evaluate(expression(field), {
+        cluster: { status: { conditions: conditions(archiving) } },
+        scheduledBackup: { status: scheduleStatus },
+      });
+
+    // Registered by the operator, before the first backup has run.
+    const registered = { lastCheckTime: '2026-11-20T10:00:00Z' };
+    expect(evaluateWith('scheduledBackupReady', registered)).toBe(true);
+    expect(evaluateWith('ready', registered)).toBe(true);
+    // Not registered yet, or refused by the operator.
+    for (const scheduleStatus of [{}, { ...registered, error: 'invalid schedule' }]) {
+      expect(evaluateWith('scheduledBackupReady', scheduleStatus)).toBe(false);
+      expect(evaluateWith('ready', scheduleStatus)).toBe(false);
+    }
+    // WAL archiving still counts.
+    expect(evaluateWith('ready', registered, false)).toBe(false);
   });
 
   it('serializes the ObjectStore with inheritFromIAMRole and no secret references', () => {

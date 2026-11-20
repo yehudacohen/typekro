@@ -102,10 +102,20 @@ export const cnpgS3BackedCluster: CallableComposition<
 
     const clusterReady = clusterCondition(db, 'Ready');
     const walArchiving = clusterCondition(db, 'ContinuousArchiving');
+    // The operator sets status.lastCheckTime when it registers the schedule, before any backup
+    // runs, and status.error when it refuses it; see the ScheduledBackup readiness evaluator.
+    const scheduledBackupReady = Cel.expr<boolean>(
+      'has(',
+      schedule.status.lastCheckTime,
+      ') && !has(',
+      schedule.status.error,
+      ')'
+    );
     return {
-      ready: Cel.expr<boolean>(clusterReady, ' && ', walArchiving),
+      ready: Cel.expr<boolean>(clusterReady, ' && ', walArchiving, ' && ', scheduledBackupReady),
       clusterReady,
       walArchiving,
+      scheduledBackupReady,
     };
   }
 );

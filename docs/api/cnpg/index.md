@@ -393,10 +393,18 @@ await factory.deploy({
 });
 ```
 
-`cnpgS3BackedCluster` reports `ready` once the cluster is `Ready` and its `ContinuousArchiving`
-condition is `True`. Its `ScheduledBackup` is ready once the operator has registered the schedule
-(`status.lastCheckTime`), not after the first backup, so a nightly schedule doesn't hold up a
-deploy with `waitForReady`.
+`cnpgS3BackedCluster` status:
+
+| Field | True when |
+|-------|-----------|
+| `clusterReady` | the cluster's `Ready` condition is `True` |
+| `walArchiving` | the cluster's `ContinuousArchiving` condition is `True` |
+| `scheduledBackupReady` | the operator has registered the base backup schedule (`status.lastCheckTime`) and reports no error |
+| `ready` | all three |
+
+A schedule is registered when the operator first reconciles it, not after its first backup, so a
+nightly schedule doesn't hold up `ready` or a deploy with `waitForReady`. `ready` does not wait
+for a base backup to exist.
 
 ### Live backup and restore test
 

@@ -545,6 +545,8 @@ export interface ScheduledBackupStatus {
   lastSuccessfulBackup?: string;
   /** Last failed backup time. */
   lastFailedBackup?: string;
+  /** The latest admission validation error the operator recorded. */
+  error?: string;
 }
 
 // ============================================================================
@@ -849,9 +851,14 @@ export const CnpgS3BackedClusterConfigSchema = type({
 export type CnpgS3BackedClusterConfig = typeof CnpgS3BackedClusterConfigSchema.infer;
 
 export const CnpgS3BackedClusterStatusSchema = type({
+  /** `clusterReady`, `walArchiving` and `scheduledBackupReady` together. */
   ready: 'boolean',
+  /** The cluster's `Ready` condition is `True`. */
   clusterReady: 'boolean',
+  /** The cluster's `ContinuousArchiving` condition is `True`. */
   walArchiving: 'boolean',
+  /** The operator has registered the base backup schedule (`status.lastCheckTime`), without an error. */
+  scheduledBackupReady: 'boolean',
 });
 
 export type CnpgS3BackedClusterStatus = typeof CnpgS3BackedClusterStatusSchema.infer;

@@ -23,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ScheduledBackup`, and a restore to the plugin. The `cnpgS3BackedCluster` composition creates an
   `ObjectStore`, a `Cluster` archiving to it and a `ScheduledBackup`; `bucket` must follow the S3
   general-purpose bucket naming rules, checked by a pattern, length markers and a CEL rule on the
-  instance schema. A destination only known per instance must come from a field declared with
+  instance schema. Its `ready` status is `clusterReady && walArchiving && scheduledBackupReady`,
+  the last true once the operator has registered the schedule. A destination only known per
+  instance must come from a field declared with
   `BARMAN_CLOUD_DESTINATION_PATH_CONSTRAINT.type` or from `s3DestinationPath()` over constrained
   bucket and prefix fields. A live backup and restore test runs on request
   (`bun run test:integration:cnpg-barman-cloud`). (#302)
