@@ -104,12 +104,31 @@ export function makeNatsBootstrap(
             '"nats://" + string(schema.spec.name) + "." + string(has(schema.spec.namespace) ? schema.spec.namespace : "nats-system") + ".svc:4222"'
           )
         : `nats://${spec.name}.${targetNamespace}.svc:4222`;
+      // Operator mode: the issued configuration becomes a file in the chart's
+      // own ConfigMap, included by nats.conf. Without the field nothing is
+      // added (KRO omits both keys), so an installation renders as before.
+      const operatorConfigValues = graphMode
+        ? operatorConfigChartValues(
+            Cel.expr<string>(
+              `has(schema.spec.operatorConfig) ? ${JSON.stringify(NATS_OPERATOR_CONFIG_FILE)} : omit()`
+            ),
+            Cel.expr<string>(
+              'has(schema.spec.operatorConfig) ? schema.spec.operatorConfig : omit()'
+            )
+          )
+        : spec.operatorConfig !== undefined
+          ? operatorConfigChartValues(
+              NATS_OPERATOR_CONFIG_FILE,
+              validateOperatorConfig(spec.operatorConfig)
+            )
+          : { config: {}, configMap: {} };
       const serverDefaults: NatsHelmValues = {
         // Keep the chart Service identity identical to the public endpoint for
         // every release name. Without this, Helm appends "-nats" whenever the
         // release name itself does not contain the chart name.
         fullnameOverride: spec.name,
         config: {
+          ...operatorConfigValues.config,
           cluster: { enabled: clusteringEnabled, replicas },
           jetstream: {
             enabled: true,
@@ -123,6 +142,7 @@ export function makeNatsBootstrap(
             },
           },
         },
+        ...operatorConfigValues.configMap,
         natsBox: { enabled: true },
         statefulSet: {
           merge: {
@@ -204,6 +224,8 @@ export function makeNatsBootstrap(
         // are maps. Widen both operands before comparison so Kubernetes CEL
         // can validate the deprecated compatibility assertion.
         nackValues: `dyn(self) == dyn(${JSON.stringify(controllerSpec.values ?? {})})`,
+        // The same seed check as direct mode, at KRO admission.
+        operatorConfig: `!self.matches(${JSON.stringify(NKEY_SEED_PATTERN)})`,
       },
     }
   );
@@ -265,6 +287,33 @@ export function makeNatsBootstrap(
 
   (composition as { factory: typeof composition.factory }).factory = natsBootstrapFactory;
   return composition;
+}
+
+/** The chart ConfigMap file that carries the operator-mode configuration. */
+export const NATS_OPERATOR_CONFIG_FILE = 'operator.conf';
+
+function operatorConfigChartValues(
+  include: unknown,
+  config: unknown
+): { readonly config: Record<string, unknown>; readonly configMap: Record<string, unknown> } {
+  return {
+    // Keys ending in `$include` become nats.conf include directives, resolved
+    // relative to the chart's config directory, where its ConfigMap is mounted.
+    config: { merge: { '00$include': include } },
+    configMap: { configMap: { merge: { data: { [NATS_OPERATOR_CONFIG_FILE]: config } } } },
+  };
+}
+
+/** An operator, account or user nkey seed: never allowed in a ConfigMap. */
+const NKEY_SEED_PATTERN = 'S[OAU][A-Z2-7]{56}';
+
+function validateOperatorConfig(config: string): string {
+  if (new RegExp(NKEY_SEED_PATTERN, 'u').test(config)) {
+    throw new Error(
+      'operatorConfig must not contain an nkey seed; pass only the issued serverConfig.'
+    );
+  }
+  return config;
 }
 
 /** Install an official NATS cluster backed by the shared NACK controller. */
