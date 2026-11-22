@@ -116,6 +116,23 @@ describe('karpenterSpotPool (direct mode)', () => {
     ).toBeUndefined();
   });
 
+  it('renders the annotations validated at build time, not later changes to the caller object', async () => {
+    const annotations: Record<string, string> = {
+      'example.com/permissions-digest': 'sha256-0123abcd',
+    };
+    const pool = makeKarpenterSpotPool({ nodeClassAnnotations: annotations });
+    annotations['example.com/permissions-digest'] = '${changed}';
+    annotations['typekro.dev/added-later'] = 'x';
+    const factory = await pool.factory('direct', { namespace: 'kube-system' });
+    const nodeClass = byKind(
+      (loadAll(factory.toYaml(spec)) as Manifest[]).filter(Boolean),
+      'EC2NodeClass'
+    );
+    expect((nodeClass.metadata as { annotations?: Record<string, string> }).annotations).toEqual({
+      'example.com/permissions-digest': 'sha256-0123abcd',
+    });
+  });
+
   it('the controller tolerates the caller-chosen stable taint and keeps the chart affinity', async () => {
     const controller = byKind(await render(), 'HelmRelease', 'karpenter');
     const values = controller.spec.values as {

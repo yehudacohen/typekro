@@ -172,9 +172,7 @@ export function makeKarpenterSpotPool(
       };
       const nodeClass = ec2NodeClass({
         name: spec.name,
-        ...(options.nodeClassAnnotations
-          ? { annotations: { ...options.nodeClassAnnotations } }
-          : {}),
+        ...(nodeClassAnnotations ? { annotations: { ...nodeClassAnnotations } } : {}),
         spec: {
           role: spec.nodeRole,
           amiSelectorTerms: [{ alias: spec.amiAlias }],
