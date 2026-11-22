@@ -2434,6 +2434,11 @@ export class DirectResourceFactoryImpl<
 
     // Handle objects
     if (value !== null && typeof value === 'object') {
+      // A symbol-branded value (a planning marker such as `artifactOutput()`
+      // or `sensitiveValue()`) is an atomic leaf: rebuilding it from its
+      // string keys drops the brand, and the plan would then carry the
+      // marker's fields as literal data instead of a reference.
+      if (Object.getOwnPropertySymbols(value).length > 0) return value;
       const resolved: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(value)) {
         setOwnProperty(resolved, key, this.deepResolveKubernetesRefs(val, `${path}.${key}`));
