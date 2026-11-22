@@ -10,6 +10,7 @@ export {
   DEFAULT_SPOT_INSTANCE_SIZES,
   isPinnedAmiAlias,
   karpenterSpotPool,
+  makeKarpenterSpotPool,
   PINNED_AMI_ALIAS,
   PinnedAmiAliasSchema,
   SPOT_MIN_INSTANCE_TYPES,

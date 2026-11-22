@@ -13,6 +13,7 @@ import {
   isPinnedAmiAlias,
   type KarpenterSpotPoolConfig,
   karpenterSpotPool,
+  makeKarpenterSpotPool,
   PinnedAmiAliasSchema,
 } from '../../../src/factories/karpenter/index.js';
 import { Cel, kubernetesComposition, simple } from '../../../src/index.js';
@@ -95,6 +96,24 @@ describe('karpenterSpotPool (direct mode)', () => {
       { tags: { 'karpenter.sh/discovery': 'platform' } },
     ]);
     expect(nodeClass.spec.securityGroupSelectorTerms).toEqual(nodeClass.spec.subnetSelectorTerms);
+  });
+
+  it('a built pool puts its NodeClass annotations on the EC2NodeClass; the default pool sets none', async () => {
+    const annotations = { 'example.com/permissions-digest': 'sha256-0123abcd' };
+    const factory = await makeKarpenterSpotPool({ nodeClassAnnotations: annotations }).factory(
+      'direct',
+      { namespace: 'kube-system' }
+    );
+    const manifests = (loadAll(factory.toYaml(spec)) as Manifest[]).filter(Boolean);
+    const annotated = byKind(manifests, 'EC2NodeClass');
+    expect((annotated.metadata as { annotations?: Record<string, string> }).annotations).toEqual(
+      annotations
+    );
+    expect(crdErrors(annotated, 'karpenter.k8s.aws_ec2nodeclasses.yaml')).toEqual([]);
+    const plain = byKind(await render(), 'EC2NodeClass');
+    expect(
+      (plain.metadata as { annotations?: Record<string, string> }).annotations
+    ).toBeUndefined();
   });
 
   it('the controller tolerates the caller-chosen stable taint and keeps the chart affinity', async () => {
@@ -341,6 +360,14 @@ describe('karpenterSpotPool (KRO mode)', () => {
     expect(yaml).toContain('schema.spec.replicas');
     expect(yaml).toContain('schema.spec.resources');
     expect(yaml).not.toContain('has(has(');
+  });
+
+  it('carries build-time NodeClass annotations into the graph, beside its dependency annotations', () => {
+    const yaml = makeKarpenterSpotPool({
+      nodeClassAnnotations: { 'example.com/permissions-digest': 'sha256-0123abcd' },
+    }).toYaml();
+    expect(yaml).toContain('example.com/permissions-digest: sha256-0123abcd');
+    expect(admissionErrors(yaml, 'KarpenterSpotPool', spec)).toEqual([]);
   });
 
   it('refuses a missing alias at admission', () => {

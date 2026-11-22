@@ -56,6 +56,8 @@ lets KRO reconcile it. Both produce the same `HelmRelease`s.
 |---|---|---|---|
 | `karpenterBootstrap` | Composition | Cluster | CRDs plus controller, with the defaults below |
 | `makeKarpenterBootstrap(options)` | Composition | Cluster | The same, with build-time options |
+| `karpenterSpotPool` | Composition | Cluster | Controller, one EC2NodeClass and one spot NodePool |
+| `makeKarpenterSpotPool(options)` | Composition | Cluster | The same, with build-time options |
 | `karpenterHelmRepositoryBootstrap` | Composition | Singleton | Shared OCI `HelmRepository` owner |
 | `nodePool` | NodePool | Cluster | Typed `karpenter.sh/v1` NodePool |
 | `ec2NodeClass` | EC2NodeClass | Cluster | Typed `karpenter.k8s.aws/v1` EC2NodeClass |
@@ -195,6 +197,18 @@ await factory.deploy({
 
 Deploy it in direct mode, which installs the CRDs before the NodeClass and NodePool. KRO mode needs
 the Karpenter CRDs installed first.
+
+`makeKarpenterSpotPool({ nodeClassAnnotations })` builds the same composition with annotations on the
+EC2NodeClass. Karpenter caches a NodeClass's validation result (its dry-run launch checks) keyed on the
+NodeClass's spec, annotations and tags, so an annotation whose value changes with the permissions those
+checks need, such as a digest of the controller's IAM policy, makes Karpenter validate again after a
+permission fix instead of reusing a cached failure.
+
+```typescript
+import { makeKarpenterSpotPool } from 'typekro/karpenter';
+
+const pool = makeKarpenterSpotPool({ nodeClassAnnotations: { 'example.com/permissions': permissionsDigest } });
+```
 
 ## NodePool
 
