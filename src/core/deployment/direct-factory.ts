@@ -67,6 +67,7 @@ import {
   type StaticYamlMaterializationOptions,
 } from '../planning/index.js';
 import type { CapabilityRequirement, PlanValue } from '../planning/types.js';
+import { isExplicitPlanValue } from '../planning/values.js';
 import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
 import { resolvePortableReadinessStrategy } from '../readiness/portable-strategies.js';
 import { runStandaloneOperation } from '../runtime/standalone-operation.js';
@@ -2434,6 +2435,8 @@ export class DirectResourceFactoryImpl<
 
     // Handle objects
     if (value !== null && typeof value === 'object') {
+      // Rebuilding a planning marker would drop the brand the planner needs.
+      if (isExplicitPlanValue(value)) return value;
       const resolved: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(value)) {
         setOwnProperty(resolved, key, this.deepResolveKubernetesRefs(val, `${path}.${key}`));

@@ -45,6 +45,7 @@
  */
 
 import { type } from 'arktype';
+import { byteQuantityBytes } from '../../../utils/byte-quantity.js';
 import { containsKubernetesRefs } from '../../../utils/type-guards.js';
 import type {
   ClickHouseInstallationStorage,
@@ -250,9 +251,7 @@ export const S3_PLAIN_REWRITABLE_VERSION_PATTERN =
  * {@link assertS3PlainRewritableVersion} for why a build-time check alone is
  * not enough there.
  */
-export const ClickHouseS3PlainRewritableVersionSchema = type(
-  S3_PLAIN_REWRITABLE_VERSION_PATTERN
-);
+export const ClickHouseS3PlainRewritableVersionSchema = type(S3_PLAIN_REWRITABLE_VERSION_PATTERN);
 
 /** Keys that only ever make sense on the `s3` storage mode. */
 const S3_ONLY_STORAGE_KEYS = [
@@ -409,29 +408,6 @@ export type ResolvedClickHouseStorage = typeof ResolvedClickHouseStorageSchema.i
 // ============================================================================
 
 /**
- * Byte multiplier per Kubernetes quantity suffix.
- *
- * A `Map` rather than an object literal: the suffix is taken from CALLER input,
- * and an object lookup keyed on caller input reads `Object.prototype` on a miss
- * (`'constructor'`, `'__proto__'`), returning something that is not a number
- * and is not `undefined` either. The regex in {@link parseByteQuantity} already
- * bounds the suffix to this exact set, so the two guards are independent — the
- * lookup does not depend on the pattern staying that tight.
- */
-const BYTE_SUFFIXES = new Map<string, number>([
-  ['', 1],
-  ['k', 1000],
-  ['K', 1000],
-  ['M', 1000 ** 2],
-  ['G', 1000 ** 3],
-  ['T', 1000 ** 4],
-  ['Ki', 1024],
-  ['Mi', 1024 ** 2],
-  ['Gi', 1024 ** 3],
-  ['Ti', 1024 ** 4],
-]);
-
-/**
  * Parse a Kubernetes-style quantity into bytes.
  *
  * ClickHouse's cache `max_size` wants a byte count, while every other size in
@@ -445,17 +421,14 @@ const BYTE_SUFFIXES = new Map<string, number>([
  * @throws Error when the quantity cannot be parsed or is not positive
  */
 export function parseByteQuantity(context: string, field: string, value: string): number {
-  const match = /^([0-9]+(?:\.[0-9]+)?)\s*(|k|K|M|G|T|Ki|Mi|Gi|Ti)$/.exec(value.trim());
-  const suffix = match?.[2];
-  const digits = match?.[1];
-  if (digits === undefined || suffix === undefined) {
+  const bytes = byteQuantityBytes(value);
+  if (bytes === undefined) {
     throw new Error(
       `${context}: '${field}' must be a Kubernetes-style byte quantity ` +
         `(e.g. '100Gi', '50G', '1048576') — got ${JSON.stringify(value)}.`
     );
   }
-  const bytes = Math.floor(Number(digits) * (BYTE_SUFFIXES.get(suffix) ?? 1));
-  if (!Number.isFinite(bytes) || bytes < 1) {
+  if (bytes < 1) {
     throw new Error(
       `${context}: '${field}' must resolve to at least one byte — got ${JSON.stringify(value)}.`
     );

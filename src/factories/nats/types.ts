@@ -20,6 +20,14 @@ export const NatsBootstrapConfigSchema = type({
   'pvcRetentionPolicy?': '"retain" | "delete"',
   'values?': 'Record<string, unknown>',
   /**
+   * A `nats.conf` fragment that turns on operator (JWT) mode, normally
+   * `issueNatsOperatorAccounts(...).serverConfig`. It is added to the chart's
+   * ConfigMap and included by the server configuration. It must hold only
+   * public JWTs and keys, never a seed. At most 512 KiB, which bounds the
+   * admission rule's cost and fits a ConfigMap with room to spare.
+   */
+  'operatorConfig?': 'string <= 524288',
+  /**
    * @deprecated Configure the shared controller through
    * `makeNatsBootstrap({ controller: { values } })`.
    */

@@ -28,6 +28,11 @@ function kind(document: string): string | undefined {
   return document.match(/^kind: (.+)$/m)?.[1];
 }
 
+const nackConnection = {
+  servers: ['nats://nats.nats-system.svc:4222'],
+  creds: '/etc/nats/orders/nats.creds',
+};
+
 const streamResources = kubernetesComposition(
   {
     name: 'jetstream-resources',
@@ -47,7 +52,7 @@ const streamResources = kubernetesComposition(
       replicas: 1,
       duplicateWindow: '2m',
       preventDelete: true,
-      servers: ['nats://nats.nats-system.svc:4222'],
+      ...nackConnection,
     });
     const consumer = jetStreamConsumer({
       id: 'processor',
@@ -58,7 +63,7 @@ const streamResources = kubernetesComposition(
       ackWait: '30s',
       maxDeliver: 5,
       filterSubject: 'orders.events.order-placed.>',
-      servers: ['nats://nats.nats-system.svc:4222'],
+      ...nackConnection,
     });
     return {
       ready: Cel.expr<boolean>(
@@ -513,9 +518,13 @@ describe('NATS and JetStream factories', () => {
     expect(direct).toContain('duplicateWindow: 2m');
     expect(direct).toContain('ackPolicy: explicit');
     expect(direct).toContain('durableName: account-commands');
+    for (const document of documents(direct)) {
+      expect(document).toContain(`creds: ${nackConnection.creds}`);
+    }
     expect(kro).toContain('kind: ResourceGraphDefinition');
     expect(kro).toContain('kind: Stream');
     expect(kro).toContain('kind: Consumer');
+    expect(kro.match(/creds: \/etc\/nats\/orders\/nats\.creds/g)).toHaveLength(2);
     expect(kro).toContain('namespace: ${schema.spec.namespace}');
   });
 });

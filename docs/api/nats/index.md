@@ -130,6 +130,143 @@ status: {
 `Installing` includes the interval before either release has reported a definitive `Ready`
 condition. The aggregate never reports `Ready` unless both releases are ready.
 
+## Operator mode: accounts and users
+
+`issueNatsOperatorAccounts` issues a NATS operator, its system account, accounts and
+per-workload users in TypeScript with the official `@nats-io/jwt` and `@nats-io/nkeys`
+libraries, and renders the server configuration for operator (JWT) mode with the memory
+resolver. No `nsc` or toolbox container is involved.
+
+```ts
+import { generateNatsSeed, issueNatsOperatorAccounts, natsBootstrap } from 'typekro/nats';
+
+// Generate each seed once and keep it in a secret store; `getOrCreateSecrets`
+// stands for your store's get-or-create. Never regenerate a seed on redeploy:
+// the account's public key is its identity, and JetStream data is stored under it.
+const seeds = await getOrCreateSecrets({
+  operator: () => generateNatsSeed('operator'),
+  system: () => generateNatsSeed('account'),
+  orders: () => generateNatsSeed('account'),
+  ordersWorker: () => generateNatsSeed('user'),
+});
+
+const issued = await issueNatsOperatorAccounts({
+  operator: { name: 'platform', seed: seeds.operator },
+  systemAccount: { seed: seeds.system }, // named SYS by default
+  accounts: [
+    {
+      name: 'orders',
+      seed: seeds.orders,
+      subjectPrefix: 'orders',
+      limits: {
+        fileStorage: '2Gi',
+        memoryStorage: '256Mi',
+        streams: 32,
+        consumers: 256,
+        connections: 128,
+      },
+      users: [{ name: 'worker', seed: seeds.ordersWorker }],
+    },
+  ],
+  issuedAt: new Date('2026-01-01T00:00:00Z'), // fixed: reissue is byte-identical
+});
+
+await natsBootstrap.factory('direct', { namespace: 'nats-system' }).deploy({
+  name: 'nats',
+  namespace: 'nats-system',
+  operatorConfig: issued.serverConfig,
+});
+
+// Store the issued user's `creds` as a Kubernetes Secret and pass the issued
+// `inboxPrefix` to the NATS client as its custom inbox prefix.
+```
+
+- **Seeds are inputs.** TypeKro never stores keys. The caller persists each seed once and
+  passes it on every issue, so identities stay stable across recreates.
+- **Deterministic.** The same seeds, configuration and `issuedAt` produce byte-identical
+  JWTs, server configuration and credentials, so reissuing on every deploy causes no drift.
+  Keep `issuedAt` fixed; change it only when you intend to reissue.
+- **Limits are required.** Every account states its JetStream file and memory storage
+  (bytes or a quantity such as `'2Gi'`), streams, consumers and connections. `-1` means
+  unlimited and must be written out. While an account has any JetStream storage, `streams`
+  and `consumers` must be at least 1, because the server reads 0 there as unlimited. Accounts
+  get no leaf node connections and refuse bearer tokens. The system account has no JetStream.
+- **Users are confined to a subject prefix.** A user may publish and subscribe to its prefix
+  and below it (the account's prefix, or a narrower one below it). For a trusted request/reply
+  service, `responses: true` lets NATS grant one dynamic publish to the reply subject supplied
+  with an incoming request. The default is `false`.
+- **Reply inboxes are per user.** Use the issued user's `inboxPrefix` in the client connection
+  options (`inboxPrefix` in NATS.js, `nats.CustomInboxPrefix` in NATS.go). It defaults to
+  `_INBOX.<user public key>` and stays stable across reissues from the same seed. For a client
+  that requires the standard NATS inbox prefix, explicitly set `inboxPrefix: '_INBOX'` when
+  issuing the user. This grants a subscription to every `_INBOX.>` reply in the account.
+- **JetStream API permissions are opt-in.** `jetStream` defaults to `false`.
+  `jetStream: { streams: ['ORDERS_EVENTS'] }` lets a user manage the named streams and their
+  consumers and acknowledge their deliveries. These permissions include changing the subjects
+  the named streams capture. Account discovery and list calls require `jetStream: true`, which
+  grants the account-wide `$JS.API.>`, `$JS.ACK.>` and `$JS.FC.>` permissions. In NATS.js, pass
+  `{ checkAPI: false }` to `jetstreamManager` with a scoped user to skip its account-info probe.
+  Use separate accounts for tenant isolation.
+- **Secrets stay secret.** `serverConfig` holds only public JWTs and keys. User `creds`
+  contain the user's seed and must be stored as a secret. Errors name the offending field,
+  never a seed.
+
+`natsBootstrap` takes the rendered fragment as `operatorConfig`, in direct mode and as a KRO
+instance field. It becomes the file `operator.conf` in the chart's ConfigMap
+(`configMap.merge.data`) and is included by `nats.conf` (`config.merge` with an `$include`
+key), and the chart's `podTemplate.configChecksumAnnotation` is turned on so the servers roll
+when it changes: nats-server cannot reload into or out of a resolver, so the config reloader
+alone would leave a server running without authentication. Without the field nothing is
+added. A fragment containing an nkey seed is refused in direct mode and at KRO admission, and
+the field is limited to 512 KiB.
+
+### NACK and toolbox credentials
+
+Issue separate users in the account that owns the stream. For the chart configuration below,
+give the NACK user and the toolbox user `jetStream: true` and `inboxPrefix: '_INBOX'` so they can
+use account-wide management and the standard client inboxes. Put each `.creds` file in an
+existing Kubernetes Secret under the key `nats.creds`. Put `orders-nack-creds` in the shared NACK
+controller namespace and `orders-toolbox-creds` in the NATS server namespace.
+
+```ts
+import { makeNatsBootstrap } from 'typekro/nats';
+
+const ordersNats = makeNatsBootstrap({
+  controller: {
+    values: {
+      additionalVolumes: [{ name: 'orders-creds', secret: { secretName: 'orders-nack-creds' } }],
+      additionalVolumeMounts: [
+        { name: 'orders-creds', mountPath: '/etc/nats/orders', readOnly: true },
+      ],
+    },
+  },
+});
+
+await ordersNats.factory('direct', { namespace: 'nats-system' }).deploy({
+  name: 'nats',
+  namespace: 'nats-system',
+  operatorConfig: issued.serverConfig,
+  values: {
+    natsBox: {
+      contexts: {
+        default: { creds: { secretName: 'orders-toolbox-creds', key: 'nats.creds' } },
+      },
+    },
+  },
+});
+
+// Pass these connection fields to both jetStreamStream and jetStreamConsumer.
+const nackConnection = {
+  servers: ['nats://nats.nats-system.svc:4222'],
+  creds: '/etc/nats/orders/nats.creds',
+};
+```
+
+The shared controller still uses CRD-connect mode. To use a NACK `Account` resource, put
+the Secret and the `Account` in the Stream and Consumer namespace. Set `spec.creds.secret.name`
+to the Secret name, `spec.creds.file` to `nats.creds`, and `spec.servers` to the NATS endpoint.
+Reference the `Account` from the Stream and Consumer CRs via `spec.account`.
+
 ## Streams and consumers
 
 ```ts
@@ -166,7 +303,7 @@ idempotency, command results, retry classification, dead-letter semantics, and s
 behavior. JetStream publication is at-least-once; message-ID deduplication is bounded by the
 configured duplicate window and does not replace an application inbox.
 
-For authenticated installations, configure the official charts through passthrough values.
+For other authentication modes, configure the official charts through passthrough values.
 Stream and Consumer factories expose `creds`, `nkey`, `servers`, and `jsDomain`; these are paths or
 routing settings, never inline credential contents. Because the controller is shared, prefer
 per-resource connection fields or NACK `Account` resources over controller-global credentials.

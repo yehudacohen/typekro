@@ -9,11 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **NATS operator mode.** `issueNatsOperatorAccounts` (in `typekro/nats`) issues an operator,
+  its system account, accounts and per-workload users with the official `@nats-io/jwt` and
+  `@nats-io/nkeys` libraries (new dependencies, pinned at 0.0.11 and 2.0.3). Seeds are inputs
+  the caller persists (`generateNatsSeed` makes new ones); with a fixed `issuedAt`, reissuing
+  gives byte-identical JWTs, configuration and credentials. Every account must state its
+  JetStream file and memory storage, streams, consumers and connections, and accounts refuse
+  bearer tokens. Users get a subject prefix and an individual reply inbox. JetStream API
+  access and dynamic replies require explicit opt-ins. JetStream access can be scoped to
+  named streams and their consumers. The result includes standard `.creds` files, the
+  clients' inbox prefixes and a memory-resolver `nats.conf` fragment
+  (`serverConfig`), which `natsBootstrap` takes as the new optional `operatorConfig` field in
+  direct mode and as a KRO instance field; the servers roll when it changes. A fragment holding
+  an nkey seed is refused in both modes. Installations without the field render as before.
+- The Kubernetes byte-quantity parser moves from the ClickHouse factory to a shared utility; its
+  behaviour is unchanged.
 - **Karpenter spot pool build options.** `makeKarpenterSpotPool(options)` builds the spot pool
   composition with the `makeKarpenterBootstrap` options for its controller and
   `nodeClassAnnotations` for its EC2NodeClass. Karpenter keys its cached NodeClass validation on
   the NodeClass's annotations, so an annotation that changes with the controller's permissions
   makes it validate again after a permission fix. `karpenterSpotPool` is unchanged.
+
+### Fixed
+
+- **Planning markers in merged chart values.** In direct mode, an `artifactOutput()` (or other
+  symbol-branded planning marker) inside chart defaults that a factory merges with caller
+  `values` was rebuilt as a plain object, so the plan carried its fields as literal data and
+  the apply never resolved it. Direct-mode reference resolution keeps recognised planning
+  markers whole and still resolves nested references in ordinary symbol-bearing objects.
 
 ## [0.48.0] - 2026-11-20
 

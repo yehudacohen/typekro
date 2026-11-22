@@ -7,7 +7,7 @@
     "minBytes": 4096,
     "fraction": 0.02
   },
-  "sharedPoolBytes": 218368,
+  "sharedPoolBytes": 212480,
   "pooledOwners": [
     "aws-load-balancer-controller",
     "crowdsec",
@@ -36,7 +36,7 @@
     "harbor": 33024,
     "hatchet": 9216,
     "inngest": 17920,
-    "nats": 15616,
+    "nats": 21504,
     "opensearch": 19968,
     "ory": 229120,
     "pebble": 14336,
