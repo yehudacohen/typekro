@@ -198,11 +198,15 @@ await factory.deploy({
 Deploy it in direct mode, which installs the CRDs before the NodeClass and NodePool. KRO mode needs
 the Karpenter CRDs installed first.
 
-`makeKarpenterSpotPool({ nodeClassAnnotations })` builds the same composition with annotations on the
-EC2NodeClass. Karpenter caches a NodeClass's validation result (its dry-run launch checks) keyed on the
-NodeClass's spec, annotations and tags, so an annotation whose value changes with the permissions those
-checks need, such as a digest of the controller's IAM policy, makes Karpenter validate again after a
-permission fix instead of reusing a cached failure.
+`makeKarpenterSpotPool(options)` builds the same composition with build-time options: the
+`makeKarpenterBootstrap` options for the controller it installs, and `nodeClassAnnotations` for the
+EC2NodeClass. Karpenter caches a NodeClass's validation result (its dry-run launch checks) for 30 minutes,
+keyed on the NodeClass's spec, annotations and tags, so an annotation whose value changes with the
+permissions those checks need, such as a digest of the controller's IAM policy, makes Karpenter validate
+again after a permission fix instead of reusing a cached failure. Keys must be Kubernetes qualified names
+outside the `typekro.dev/` prefix, and values may not contain `${`. The options belong to the composition:
+in KRO mode they are part of its ResourceGraphDefinition, so instances needing different annotations use
+compositions built with different `name` and `kind`.
 
 ```typescript
 import { makeKarpenterSpotPool } from 'typekro/karpenter';

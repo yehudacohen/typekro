@@ -564,12 +564,15 @@ export interface KarpenterSpotPoolConfig {
 }
 
 /** Build-time options of {@link makeKarpenterSpotPool}. Concrete values only. */
-export interface KarpenterSpotPoolBuildOptions {
+export interface KarpenterSpotPoolBuildOptions extends KarpenterBootstrapBuildOptions {
   /** Composition name. @default 'karpenter-spot-pool' */
   readonly name?: string;
   /** KRO kind. @default 'KarpenterSpotPool' */
   readonly kind?: string;
-  /** Annotations put on the EC2NodeClass. */
+  /**
+   * Annotations put on the EC2NodeClass. Keys are Kubernetes qualified names
+   * outside the `typekro.dev/` prefix; values may not contain `${`.
+   */
   readonly nodeClassAnnotations?: Readonly<Record<string, string>>;
 }
 

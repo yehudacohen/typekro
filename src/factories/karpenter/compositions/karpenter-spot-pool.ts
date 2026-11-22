@@ -118,12 +118,19 @@ export const karpenterSpotPool: CallableComposition<
 /**
  * Build a {@link karpenterSpotPool} composition with build-time options.
  *
- * `nodeClassAnnotations` are put on the EC2NodeClass. Karpenter keys its
- * cached NodeClass validation result on the NodeClass's annotations, among
- * other fields, so a caller can stamp a value that changes when the AWS
+ * It takes the {@link makeKarpenterBootstrap} options for the controller it
+ * installs (CRD ownership, namespace ownership, chart values, lifecycle) and
+ * `nodeClassAnnotations`, put on the EC2NodeClass. Karpenter keys its cached
+ * NodeClass validation result on the NodeClass's spec, annotations and tags
+ * (karpenter-provider-aws `pkg/controllers/nodeclass/validation.go`,
+ * `cacheKey`), so a caller can stamp a value that changes when the AWS
  * permissions the validation checks change (for example a digest of the
  * controller's IAM policy), and the next reconcile validates again instead of
  * reusing a cached failure.
+ *
+ * The options are part of the composition. In KRO mode they are part of its
+ * ResourceGraphDefinition, so instances that need different annotations need
+ * compositions built with different `name` and `kind`.
  *
  * @param options - Build-time options. Must be concrete values.
  *
@@ -135,15 +142,7 @@ export const karpenterSpotPool: CallableComposition<
 export function makeKarpenterSpotPool(
   options: KarpenterSpotPoolBuildOptions = {}
 ): CallableComposition<KarpenterSpotPoolConfig, KarpenterSpotPoolStatus> {
-  if (options.nodeClassAnnotations) {
-    for (const [key, value] of Object.entries(options.nodeClassAnnotations)) {
-      if (typeof key !== 'string' || typeof value !== 'string' || key.length === 0) {
-        throw new TypeError(
-          'makeKarpenterSpotPool nodeClassAnnotations must map non-empty keys to strings.'
-        );
-      }
-    }
-  }
+  const nodeClassAnnotations = validNodeClassAnnotations(options.nodeClassAnnotations);
   return kubernetesComposition(
     {
       name: options.name ?? 'karpenter-spot-pool',
@@ -154,16 +153,19 @@ export function makeKarpenterSpotPool(
     (spec) => {
       assertPinnedAmiAlias(spec.amiAlias);
 
-      const { controller, status: controllerStatus } = karpenterControllerResources({
-        name: spec.name,
-        ...optionalControllerInputs(spec),
-        clusterName: spec.clusterName,
-        interruptionQueue: spec.interruptionQueue,
-        tolerations: [
-          ...KARPENTER_DEFAULT_TOLERATIONS.map((toleration) => ({ ...toleration })),
-          { key: spec.stableTaintKey, operator: 'Exists' as const },
-        ],
-      });
+      const { controller, status: controllerStatus } = karpenterControllerResources(
+        {
+          name: spec.name,
+          ...optionalControllerInputs(spec),
+          clusterName: spec.clusterName,
+          interruptionQueue: spec.interruptionQueue,
+          tolerations: [
+            ...KARPENTER_DEFAULT_TOLERATIONS.map((toleration) => ({ ...toleration })),
+            { key: spec.stableTaintKey, operator: 'Exists' as const },
+          ],
+        },
+        options
+      );
 
       const discovery = {
         [KARPENTER_DISCOVERY_TAG]: Cel.default(spec.discoveryTag, spec.clusterName),
@@ -239,4 +241,45 @@ export function makeKarpenterSpotPool(
       };
     }
   );
+}
+
+const qualifiedNamePart = /^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$/;
+const dnsSubdomain = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * The NodeClass annotations as a plain copy, or `undefined` when there are
+ * none. Each key must be a Kubernetes qualified name outside TypeKro's own
+ * `typekro.dev/` prefix (TypeKro writes those itself), and no value may hold
+ * `${`, which KRO would read as an expression.
+ */
+function validNodeClassAnnotations(
+  annotations: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  if (!annotations) return undefined;
+  const entries = Object.entries(annotations);
+  if (entries.length === 0) return undefined;
+  for (const [key, value] of entries) {
+    const slash = key.lastIndexOf('/');
+    const prefix = slash >= 0 ? key.slice(0, slash) : undefined;
+    const name = slash >= 0 ? key.slice(slash + 1) : key;
+    const validKey =
+      qualifiedNamePart.test(name) &&
+      (prefix === undefined || (prefix.length <= 253 && dnsSubdomain.test(prefix)));
+    if (!validKey) {
+      throw new TypeError(
+        `makeKarpenterSpotPool nodeClassAnnotations key ${JSON.stringify(key)} is not a Kubernetes qualified name.`
+      );
+    }
+    if (prefix === 'typekro.dev' || prefix?.endsWith('.typekro.dev')) {
+      throw new TypeError(
+        `makeKarpenterSpotPool nodeClassAnnotations key ${JSON.stringify(key)} uses the typekro.dev prefix, which TypeKro reserves.`
+      );
+    }
+    if (typeof value !== 'string' || value.includes('${')) {
+      throw new TypeError(
+        `makeKarpenterSpotPool nodeClassAnnotations value for ${JSON.stringify(key)} must be a string without \${ (KRO reads it as an expression).`
+      );
+    }
+  }
+  return Object.fromEntries(entries);
 }
