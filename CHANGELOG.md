@@ -14,12 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@nats-io/nkeys` libraries (new dependencies, pinned at 0.0.11 and 2.0.3). Seeds are inputs
   the caller persists (`generateNatsSeed` makes new ones); with a fixed `issuedAt`, reissuing
   gives byte-identical JWTs, configuration and credentials. Every account must state its
-  JetStream file and memory storage, streams, consumers and connections. Users are confined to
-  the account's subject prefix (or a narrower one) plus their inbox, replies and, by default,
-  the JetStream API. The result includes standard `.creds` files and a memory-resolver
-  `nats.conf` fragment (`serverConfig`), which `natsBootstrap` takes as the new optional
-  `operatorConfig` field in direct mode and as a KRO instance field. A fragment holding an nkey
-  seed is refused in both modes. Installations without the field render as before.
+  JetStream file and memory storage, streams, consumers and connections, and accounts refuse
+  bearer tokens. Users are confined to the account's subject prefix (or a narrower one) plus
+  replies, their inbox (optionally a private `inboxPrefix`) and, by default, the JetStream API.
+  The result includes standard `.creds` files and a memory-resolver `nats.conf` fragment
+  (`serverConfig`), which `natsBootstrap` takes as the new optional `operatorConfig` field in
+  direct mode and as a KRO instance field; the servers roll when it changes. A fragment holding
+  an nkey seed is refused in both modes. Installations without the field render as before.
+- The Kubernetes byte-quantity parser moves from the ClickHouse factory to a shared utility; its
+  behaviour is unchanged.
 
 ## [0.48.0] - 2026-11-20
 

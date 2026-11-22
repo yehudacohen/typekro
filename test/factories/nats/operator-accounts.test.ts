@@ -40,7 +40,14 @@ function config(overrides: Partial<NatsOperatorAccountsConfig> = {}): NatsOperat
         },
         users: [
           { name: 'worker', seed: WORKER_SEED },
-          { name: 'api', seed: API_SEED, subjectPrefix: 'orders.api', jetStream: false },
+          {
+            name: 'api',
+            seed: API_SEED,
+            subjectPrefix: 'orders.api',
+            jetStream: false,
+            responses: false,
+            inboxPrefix: '_INBOX_orders_api',
+          },
         ],
       },
       {
@@ -85,7 +92,6 @@ describe('NATS operator accounts', () => {
     const ordersClaims = claims(orders?.jwt ?? '');
     expect(ordersClaims.iss).toBe(issued.operator.publicKey);
     expect(ordersClaims.sub).toBe(orders?.publicKey ?? '');
-    expect(ordersClaims.nats.disallow_bearer).toBe(true);
     expect(ordersClaims.nats.limits).toMatchObject({
       disk_storage: 2 * 1024 ** 3,
       mem_storage: 256 * 1024 ** 2,
@@ -93,6 +99,7 @@ describe('NATS operator accounts', () => {
       consumer: 256,
       conn: 128,
       leaf: 0,
+      disallow_bearer: true,
     });
     expect(claims(billing?.jwt ?? '').nats.limits).toMatchObject({
       disk_storage: 0,
@@ -106,13 +113,22 @@ describe('NATS operator accounts', () => {
     const workerClaims = claims(worker?.jwt ?? '');
     expect(workerClaims.iss).toBe(orders?.publicKey ?? '');
     expect(workerClaims.nats.pub).toEqual({
-      allow: ['orders.>', '$JS.API.>', '$JS.ACK.>'],
+      allow: ['orders', 'orders.>', '$JS.API.>', '$JS.ACK.>', '$JS.FC.>'],
       deny: [],
     });
-    expect(workerClaims.nats.sub).toEqual({ allow: ['orders.>', '_INBOX.>'], deny: [] });
+    expect(workerClaims.nats.sub).toEqual({
+      allow: ['orders', 'orders.>', '_INBOX.>'],
+      deny: [],
+    });
     expect(workerClaims.nats.resp).toEqual({ max: 1, ttl: 0 });
     expect(workerClaims.nats.bearer_token).toBe(false);
-    expect(claims(api?.jwt ?? '').nats.pub).toEqual({ allow: ['orders.api.>'], deny: [] });
+    const apiClaims = claims(api?.jwt ?? '');
+    expect(apiClaims.nats.pub).toEqual({ allow: ['orders.api', 'orders.api.>'], deny: [] });
+    expect(apiClaims.nats.sub).toEqual({
+      allow: ['orders.api', 'orders.api.>', '_INBOX_orders_api.>'],
+      deny: [],
+    });
+    expect(apiClaims.nats).not.toHaveProperty('resp');
 
     const creds = await parseCreds(new TextEncoder().encode(worker?.creds ?? ''));
     expect(creds.jwt).toBe(worker?.jwt ?? '');
@@ -207,7 +223,7 @@ describe('NATS operator accounts', () => {
       ],
       [
         { accounts: [{ ...orders, limits: { ...orders.limits, fileStorage: '2GB' } }] },
-        /binary quantity/,
+        /quantity such as "2Gi"/,
       ],
       [
         { accounts: [{ ...orders, limits: { ...orders.limits, streams: 1.5 } }] },
@@ -216,6 +232,22 @@ describe('NATS operator accounts', () => {
       [
         { accounts: [{ ...orders, limits: { ...orders.limits, connections: -2 } }] },
         /limits\.connections/,
+      ],
+      [
+        { accounts: [{ ...orders, limits: { ...orders.limits, streams: 0 } }] },
+        /reads 0 as unlimited.*limits\.streams/,
+      ],
+      [
+        { accounts: [{ ...orders, limits: { ...orders.limits, consumers: 0 } }] },
+        /limits\.consumers/,
+      ],
+      [
+        {
+          accounts: [
+            { ...orders, users: [{ name: 'w', seed: WORKER_SEED, inboxPrefix: '_INBOX.>' }] },
+          ],
+        },
+        /inboxPrefix/,
       ],
       [{ issuedAt: -1 }, /issuedAt/],
       [{ issuedAt: new Date(Number.NaN) }, /issuedAt/],
@@ -246,10 +278,13 @@ describe('NATS operator accounts', () => {
     const values = release?.spec?.values as {
       config: { merge: Record<string, unknown>; jetstream: { enabled: boolean } };
       configMap: { merge: { data: Record<string, string> } };
+      podTemplate: unknown;
     };
     expect(values.config.merge).toEqual({ '00$include': NATS_OPERATOR_CONFIG_FILE });
     expect(values.config.jetstream.enabled).toBe(true);
     expect(values.configMap.merge.data[NATS_OPERATOR_CONFIG_FILE]).toBe(issued.serverConfig);
+    // nats-server cannot reload into operator mode: a changed config rolls the pods.
+    expect(values.podTemplate).toEqual({ configChecksumAnnotation: true });
 
     const open = natsBootstrap.factory('direct', { namespace: 'typekro-system' }).toYaml({
       name: 'nats',
@@ -257,6 +292,7 @@ describe('NATS operator accounts', () => {
     });
     expect(open).not.toContain('$include');
     expect(open).not.toContain('configMap');
+    expect(open).not.toContain('configChecksumAnnotation');
 
     expect(() =>
       natsBootstrap.factory('direct', { namespace: 'typekro-system' }).toYaml({
@@ -271,14 +307,17 @@ describe('NATS operator accounts', () => {
     const factory = natsBootstrap.factory('kro', { namespace: 'typekro-system' });
     const rgd = factory.toYaml();
     expect(rgd).toContain(
-      'operatorConfig: string | validation="!self.matches(\\"S[OAU][A-Z2-7]{56}\\")"'
+      'operatorConfig: string | maxLength=524288 validation="!self.matches(\\"S[OAU][A-Z2-7]{56}\\")"'
     );
     // Both chart keys are omitted when the instance has no operatorConfig.
     expect(rgd).toContain(
-      `"00$include": (has(schema.spec.operatorConfig) ? "${NATS_OPERATOR_CONFIG_FILE}" : omit())`
+      `"00$include": (has(schema.spec.operatorConfig) ? dyn("${NATS_OPERATOR_CONFIG_FILE}") : omit())`
     );
     expect(rgd).toContain(
-      `"${NATS_OPERATOR_CONFIG_FILE}": (has(schema.spec.operatorConfig) ? schema.spec.operatorConfig : omit())`
+      `"${NATS_OPERATOR_CONFIG_FILE}": (has(schema.spec.operatorConfig) ? dyn(schema.spec.operatorConfig) : omit())`
+    );
+    expect(rgd).toContain(
+      '"configChecksumAnnotation": (has(schema.spec.operatorConfig) ? dyn(true) : omit())'
     );
 
     const issued = await issueNatsOperatorAccounts(config());

@@ -105,23 +105,28 @@ export function makeNatsBootstrap(
           )
         : `nats://${spec.name}.${targetNamespace}.svc:4222`;
       // Operator mode: the issued configuration becomes a file in the chart's
-      // own ConfigMap, included by nats.conf. Without the field nothing is
-      // added (KRO omits both keys), so an installation renders as before.
+      // own ConfigMap, included by nats.conf, and the pods roll when it
+      // changes (nats-server cannot reload into or out of a resolver).
+      // Without the field nothing is added (KRO omits every key), so an
+      // installation renders as before. KRO types omit() as a map, so the
+      // present branch is dyn().
       const operatorConfigValues = graphMode
         ? operatorConfigChartValues(
             Cel.expr<string>(
-              `has(schema.spec.operatorConfig) ? ${JSON.stringify(NATS_OPERATOR_CONFIG_FILE)} : omit()`
+              `has(schema.spec.operatorConfig) ? dyn(${JSON.stringify(NATS_OPERATOR_CONFIG_FILE)}) : omit()`
             ),
             Cel.expr<string>(
-              'has(schema.spec.operatorConfig) ? schema.spec.operatorConfig : omit()'
-            )
+              'has(schema.spec.operatorConfig) ? dyn(schema.spec.operatorConfig) : omit()'
+            ),
+            Cel.expr<boolean>('has(schema.spec.operatorConfig) ? dyn(true) : omit()')
           )
         : spec.operatorConfig !== undefined
           ? operatorConfigChartValues(
               NATS_OPERATOR_CONFIG_FILE,
-              validateOperatorConfig(spec.operatorConfig)
+              validateOperatorConfig(spec.operatorConfig),
+              true
             )
-          : { config: {}, configMap: {} };
+          : { config: {}, chart: {} };
       const serverDefaults: NatsHelmValues = {
         // Keep the chart Service identity identical to the public endpoint for
         // every release name. Without this, Helm appends "-nats" whenever the
@@ -142,7 +147,7 @@ export function makeNatsBootstrap(
             },
           },
         },
-        ...operatorConfigValues.configMap,
+        ...operatorConfigValues.chart,
         natsBox: { enabled: true },
         statefulSet: {
           merge: {
@@ -294,13 +299,17 @@ export const NATS_OPERATOR_CONFIG_FILE = 'operator.conf';
 
 function operatorConfigChartValues(
   include: unknown,
-  config: unknown
-): { readonly config: Record<string, unknown>; readonly configMap: Record<string, unknown> } {
+  config: unknown,
+  rollPods: unknown
+): { readonly config: Record<string, unknown>; readonly chart: Record<string, unknown> } {
   return {
     // Keys ending in `$include` become nats.conf include directives, resolved
     // relative to the chart's config directory, where its ConfigMap is mounted.
     config: { merge: { '00$include': include } },
-    configMap: { configMap: { merge: { data: { [NATS_OPERATOR_CONFIG_FILE]: config } } } },
+    chart: {
+      configMap: { merge: { data: { [NATS_OPERATOR_CONFIG_FILE]: config } } },
+      podTemplate: { configChecksumAnnotation: rollPods },
+    },
   };
 }
 

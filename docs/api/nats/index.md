@@ -187,14 +187,17 @@ await natsBootstrap.factory('direct', { namespace: 'nats-system' }).deploy({
   JWTs, server configuration and credentials, so reissuing on every deploy causes no drift.
   Keep `issuedAt` fixed; change it only when you intend to reissue.
 - **Limits are required.** Every account states its JetStream file and memory storage
-  (bytes or a binary quantity such as `'2Gi'`), streams, consumers and connections. `-1`
-  means unlimited and must be written out. Accounts get no leaf node connections and refuse
-  bearer tokens. The system account has no JetStream.
-- **Users are confined to a subject prefix.** A user may publish and subscribe below its
-  prefix (the account's, or a narrower one below it), subscribe to `_INBOX.>`, and reply to
-  requests it receives (`responses: false` turns that off). With `jetStream` (the default) it
-  may also use `$JS.API.>` and `$JS.ACK.>`. The JetStream API is account-wide, so the account
-  remains the isolation boundary between tenants.
+  (bytes or a quantity such as `'2Gi'`), streams, consumers and connections. `-1` means
+  unlimited and must be written out. While an account has any JetStream storage, `streams`
+  and `consumers` must be at least 1, because the server reads 0 there as unlimited. Accounts
+  get no leaf node connections and refuse bearer tokens. The system account has no JetStream.
+- **Users are confined to a subject prefix.** A user may publish and subscribe to its prefix
+  and below it (the account's prefix, or a narrower one below it), and reply to requests it
+  receives (`responses: false` turns that off). With `jetStream` (the default) it may also
+  publish to `$JS.API.>`, `$JS.ACK.>` and `$JS.FC.>`. Its reply inboxes are `_INBOX.>`, which
+  every user of the account shares; set `inboxPrefix` (and the same custom inbox prefix in the
+  client) to confine them. The JetStream API is account-wide, so the account remains the
+  isolation boundary between tenants.
 - **Secrets stay secret.** `serverConfig` holds only public JWTs and keys. User `creds`
   contain the user's seed and must be stored as a secret. Errors name the offending field,
   never a seed.
@@ -202,9 +205,11 @@ await natsBootstrap.factory('direct', { namespace: 'nats-system' }).deploy({
 `natsBootstrap` takes the rendered fragment as `operatorConfig`, in direct mode and as a KRO
 instance field. It becomes the file `operator.conf` in the chart's ConfigMap
 (`configMap.merge.data`) and is included by `nats.conf` (`config.merge` with an `$include`
-key). Without the field nothing is added. A fragment containing an nkey seed is refused in
-direct mode and at KRO admission. The chart's config reloader applies a changed
-configuration without restarting the servers.
+key), and the chart's `podTemplate.configChecksumAnnotation` is turned on so the servers roll
+when it changes: nats-server cannot reload into or out of a resolver, so the config reloader
+alone would leave a server running without authentication. Without the field nothing is
+added. A fragment containing an nkey seed is refused in direct mode and at KRO admission, and
+the field is limited to 512 KiB.
 
 When the server runs in operator mode, NACK and the toolbox need credentials too: give each
 `Stream` and `Consumer` a `creds` path (or use a NACK `Account`) for a user of the account that

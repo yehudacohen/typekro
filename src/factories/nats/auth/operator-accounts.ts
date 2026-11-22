@@ -10,14 +10,17 @@ import {
 } from '@nats-io/jwt';
 import { createAccount, createOperator, createUser, fromSeed, type KeyPair } from '@nats-io/nkeys';
 import { TypeKroError } from '../../../core/errors.js';
+import { byteQuantityBytes } from '../../../utils/byte-quantity.js';
 
 /** The kind of nkey a seed belongs to. */
 export type NatsSeedKind = 'operator' | 'account' | 'user';
 
 /**
  * Per-account resource limits. Every field is required: an account never gets
- * JetStream or connections by default. Storage takes bytes or a binary quantity
- * (`'2Gi'`, `'256Mi'`); `-1` means unlimited and must be written out.
+ * JetStream or connections by default. Storage takes bytes or a Kubernetes
+ * quantity (`'2Gi'`, `'256Mi'`); `-1` means unlimited and must be written out.
+ * While the account has JetStream storage, `streams` and `consumers` must be at
+ * least 1 (or -1): the server reads 0 there as unlimited.
  */
 export interface NatsAccountLimits {
   /** JetStream file storage for the whole account. */
@@ -51,6 +54,13 @@ export interface NatsAccountUserConfig {
   readonly jetStream?: boolean;
   /** Allow replies to requests the user receives. Default `true`. */
   readonly responses?: boolean;
+  /**
+   * Confine the user's reply inboxes to `<inboxPrefix>.>` instead of the
+   * shared `_INBOX.>`; the client must use the same custom inbox prefix. Without
+   * it the user can subscribe to every inbox in the account, including other
+   * users' replies.
+   */
+  readonly inboxPrefix?: string;
 }
 
 /** One account (the isolation unit) and its users. */
@@ -226,7 +236,14 @@ export async function issueNatsOperatorAccounts(
       return {
         name: userName,
         key: userKey,
-        claims: userClaims(userPrefix, user.jetStream ?? true, user.responses ?? true),
+        claims: userClaims(
+          userPrefix,
+          user.jetStream ?? true,
+          user.responses ?? true,
+          user.inboxPrefix === undefined
+            ? '_INBOX'
+            : requireSubjectPrefix(user.inboxPrefix, `${userPath}.inboxPrefix`, true)
+        ),
       };
     });
     return { name, key, subjectPrefix, limits, users };
@@ -241,7 +258,7 @@ export async function issueNatsOperatorAccounts(
   );
   const accounts: NatsIssuedAccount[] = [];
   for (const account of accountInputs) {
-    const claims: Partial<Account> = { limits: account.limits, disallow_bearer: true };
+    const claims: Partial<Account> = { limits: account.limits };
     const jwt = await encodeAt(issuedAt, () =>
       encodeAccount(account.name, account.key, claims, { signer: operatorKey })
     );
@@ -362,7 +379,7 @@ function requireName(name: string, path: string): string {
 
 const SUBJECT_TOKEN = /^[^\s.*>]+$/u;
 
-function requireSubjectPrefix(prefix: string, path: string): string {
+function requireSubjectPrefix(prefix: string, path: string, inbox = false): string {
   const tokens = typeof prefix === 'string' ? prefix.split('.') : [];
   if (tokens.length === 0 || !tokens.every((token) => SUBJECT_TOKEN.test(token))) {
     throw new NatsOperatorAccountsError(
@@ -370,7 +387,7 @@ function requireSubjectPrefix(prefix: string, path: string): string {
       path
     );
   }
-  if (prefix.startsWith('$') || prefix === '_INBOX' || prefix.startsWith('_INBOX.')) {
+  if (prefix.startsWith('$') || (!inbox && (prefix === '_INBOX' || prefix.startsWith('_INBOX.')))) {
     throw new NatsOperatorAccountsError(`subject prefix "${prefix}" is reserved by NATS`, path);
   }
   return prefix;
@@ -380,6 +397,11 @@ function accountLimits(limits: NatsAccountLimits, path: string): Partial<Operato
   if (!limits || typeof limits !== 'object') {
     throw new NatsOperatorAccountsError('limits are required', path);
   }
+  const diskStorage = storageBytes(limits.fileStorage, `${path}.fileStorage`);
+  const memoryStorage = storageBytes(limits.memoryStorage, `${path}.memoryStorage`);
+  // JetStream is on when the account has any storage. The server reads a
+  // stream or consumer limit of 0 as unlimited, so it cannot mean "none" then.
+  const jetStream = diskStorage !== 0 || memoryStorage !== 0;
   return {
     subs: -1,
     data: -1,
@@ -391,10 +413,11 @@ function accountLimits(limits: NatsAccountLimits, path: string): Partial<Operato
     // Leaf node connections are not part of this model; an account that
     // needs them is configured explicitly.
     leaf: 0,
-    disk_storage: storageBytes(limits.fileStorage, `${path}.fileStorage`),
-    mem_storage: storageBytes(limits.memoryStorage, `${path}.memoryStorage`),
-    streams: count(limits.streams, `${path}.streams`),
-    consumer: count(limits.consumers, `${path}.consumers`),
+    disallow_bearer: true,
+    disk_storage: diskStorage,
+    mem_storage: memoryStorage,
+    streams: count(limits.streams, `${path}.streams`, jetStream),
+    consumer: count(limits.consumers, `${path}.consumers`, jetStream),
   };
 }
 
@@ -412,38 +435,42 @@ function systemAccountLimits(): Partial<OperatorLimits> {
   };
 }
 
-function userClaims(prefix: string, jetStream: boolean, responses: boolean): Partial<User> {
-  const publish = [`${prefix}.>`, ...(jetStream ? ['$JS.API.>', '$JS.ACK.>'] : [])];
+function userClaims(
+  prefix: string,
+  jetStream: boolean,
+  responses: boolean,
+  inboxPrefix: string
+): Partial<User> {
+  const subjects = [prefix, `${prefix}.>`];
+  // $JS.FC answers push-consumer flow control; $JS.ACK acknowledges messages.
+  const jetStreamPublish = jetStream ? ['$JS.API.>', '$JS.ACK.>', '$JS.FC.>'] : [];
   return {
-    pub: { allow: publish, deny: [] },
-    sub: { allow: [`${prefix}.>`, '_INBOX.>'], deny: [] },
+    pub: { allow: [...subjects, ...jetStreamPublish], deny: [] },
+    sub: { allow: [...subjects, `${inboxPrefix}.>`], deny: [] },
     ...(responses ? { resp: { max: 1, ttl: 0 } } : {}),
     bearer_token: false,
   };
 }
 
-function count(value: number, path: string): number {
+function count(value: number, path: string, positive = false): number {
   if (!Number.isSafeInteger(value) || value < -1) {
     throw new NatsOperatorAccountsError('must be a whole number, or -1 for unlimited', path);
+  }
+  if (positive && value === 0) {
+    throw new NatsOperatorAccountsError(
+      'must be at least 1, or -1 for unlimited, while the account has JetStream storage (the server reads 0 as unlimited)',
+      path
+    );
   }
   return value;
 }
 
-const BINARY_UNITS: Readonly<Record<string, number>> = {
-  '': 1,
-  Ki: 1024,
-  Mi: 1024 ** 2,
-  Gi: 1024 ** 3,
-  Ti: 1024 ** 4,
-};
-
 function storageBytes(value: number | string, path: string): number {
   if (typeof value === 'number') return count(value, path);
-  const match = typeof value === 'string' ? /^(\d+)(Ki|Mi|Gi|Ti)?$/u.exec(value) : null;
-  const bytes = match?.[1] ? Number(match[1]) * (BINARY_UNITS[match[2] ?? ''] ?? 1) : Number.NaN;
-  if (!Number.isSafeInteger(bytes)) {
+  const bytes = typeof value === 'string' ? byteQuantityBytes(value) : undefined;
+  if (bytes === undefined) {
     throw new NatsOperatorAccountsError(
-      'storage must be bytes, -1 for unlimited, or a binary quantity such as "2Gi"',
+      'storage must be bytes, -1 for unlimited, or a quantity such as "2Gi"',
       path
     );
   }
