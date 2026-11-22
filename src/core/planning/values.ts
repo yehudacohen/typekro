@@ -46,17 +46,20 @@ type ExpressionValueInput = {
   readonly [PLAN_EXPRESSION_BRAND]: true;
 };
 
-/** Detect an explicit planning value embedded in an otherwise ordinary value tree. */
-export function containsExplicitPlanValue(value: unknown, seen = new WeakSet<object>()): boolean {
-  if (typeof value !== 'object' || value === null) return false;
-  if (
+/** Detect a planning marker at this value. */
+export function isExplicitPlanValue(value: unknown): boolean {
+  return (
     isBranded(value, PLAN_EXPRESSION_BRAND) ||
     isBranded(value, SENSITIVE_INPUT_BRAND) ||
     isBranded(value, EXTERNAL_INPUT_BRAND) ||
     isBranded(value, ARTIFACT_OUTPUT_BRAND)
-  ) {
-    return true;
-  }
+  );
+}
+
+/** Detect an explicit planning value embedded in an otherwise ordinary value tree. */
+export function containsExplicitPlanValue(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  if (isExplicitPlanValue(value)) return true;
   if (seen.has(value)) return false;
   seen.add(value);
   const prototype = Object.getPrototypeOf(value);

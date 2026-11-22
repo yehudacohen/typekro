@@ -29,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Planning markers in merged chart values.** In direct mode, an `artifactOutput()` (or other
   symbol-branded planning marker) inside chart defaults that a factory merges with caller
   `values` was rebuilt as a plain object, so the plan carried its fields as literal data and
-  the apply never resolved it. Direct-mode reference resolution now keeps branded markers whole,
-  as the values merge already did.
+  the apply never resolved it. Direct-mode reference resolution keeps recognised planning
+  markers whole and still resolves nested references in ordinary symbol-bearing objects.
 
 ## [0.48.0] - 2026-11-20
 
