@@ -563,6 +563,19 @@ export interface KarpenterSpotPoolConfig {
   resources?: KarpenterResourceRequirements;
 }
 
+/** Build-time options of {@link makeKarpenterSpotPool}. Concrete values only. */
+export interface KarpenterSpotPoolBuildOptions extends KarpenterBootstrapBuildOptions {
+  /** Composition name. @default 'karpenter-spot-pool' */
+  readonly name?: string;
+  /** KRO kind. @default 'KarpenterSpotPool' */
+  readonly kind?: string;
+  /**
+   * Annotations put on the EC2NodeClass. Keys are Kubernetes qualified names
+   * outside the `typekro.dev/` prefix; values may not contain `${`.
+   */
+  readonly nodeClassAnnotations?: Readonly<Record<string, string>>;
+}
+
 /** ArkType schema for {@link KarpenterSpotPoolConfig}. */
 export const KarpenterSpotPoolConfigSchema: Type<KarpenterSpotPoolConfig> = type({
   name: releaseName,

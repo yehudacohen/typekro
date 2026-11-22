@@ -13,6 +13,7 @@ import {
   isPinnedAmiAlias,
   type KarpenterSpotPoolConfig,
   karpenterSpotPool,
+  makeKarpenterSpotPool,
   PinnedAmiAliasSchema,
 } from '../../../src/factories/karpenter/index.js';
 import { Cel, kubernetesComposition, simple } from '../../../src/index.js';
@@ -95,6 +96,41 @@ describe('karpenterSpotPool (direct mode)', () => {
       { tags: { 'karpenter.sh/discovery': 'platform' } },
     ]);
     expect(nodeClass.spec.securityGroupSelectorTerms).toEqual(nodeClass.spec.subnetSelectorTerms);
+  });
+
+  it('a built pool puts its NodeClass annotations on the EC2NodeClass; the default pool sets none', async () => {
+    const annotations = { 'example.com/permissions-digest': 'sha256-0123abcd' };
+    const factory = await makeKarpenterSpotPool({ nodeClassAnnotations: annotations }).factory(
+      'direct',
+      { namespace: 'kube-system' }
+    );
+    const manifests = (loadAll(factory.toYaml(spec)) as Manifest[]).filter(Boolean);
+    const annotated = byKind(manifests, 'EC2NodeClass');
+    expect((annotated.metadata as { annotations?: Record<string, string> }).annotations).toEqual(
+      annotations
+    );
+    expect(crdErrors(annotated, 'karpenter.k8s.aws_ec2nodeclasses.yaml')).toEqual([]);
+    const plain = byKind(await render(), 'EC2NodeClass');
+    expect(
+      (plain.metadata as { annotations?: Record<string, string> }).annotations
+    ).toBeUndefined();
+  });
+
+  it('renders the annotations validated at build time, not later changes to the caller object', async () => {
+    const annotations: Record<string, string> = {
+      'example.com/permissions-digest': 'sha256-0123abcd',
+    };
+    const pool = makeKarpenterSpotPool({ nodeClassAnnotations: annotations });
+    annotations['example.com/permissions-digest'] = '${changed}';
+    annotations['typekro.dev/added-later'] = 'x';
+    const factory = await pool.factory('direct', { namespace: 'kube-system' });
+    const nodeClass = byKind(
+      (loadAll(factory.toYaml(spec)) as Manifest[]).filter(Boolean),
+      'EC2NodeClass'
+    );
+    expect((nodeClass.metadata as { annotations?: Record<string, string> }).annotations).toEqual({
+      'example.com/permissions-digest': 'sha256-0123abcd',
+    });
   });
 
   it('the controller tolerates the caller-chosen stable taint and keeps the chart affinity', async () => {
@@ -341,6 +377,66 @@ describe('karpenterSpotPool (KRO mode)', () => {
     expect(yaml).toContain('schema.spec.replicas');
     expect(yaml).toContain('schema.spec.resources');
     expect(yaml).not.toContain('has(has(');
+  });
+
+  it('carries build-time NodeClass annotations into the graph, beside its dependency annotations', () => {
+    const yaml = makeKarpenterSpotPool({
+      nodeClassAnnotations: { 'example.com/permissions-digest': 'sha256-0123abcd' },
+    }).toYaml();
+    const docs = loadAll(yaml) as Array<{
+      kind: string;
+      spec: {
+        resources: Array<{
+          id: string;
+          template: { metadata: { annotations?: Record<string, string> } };
+        }>;
+      };
+    }>;
+    const nodeClass = docs
+      .filter((doc) => doc?.kind === 'ResourceGraphDefinition')
+      .flatMap((doc) => doc.spec.resources)
+      .find((resource) => resource.id === 'nodeClass');
+    const annotations = nodeClass?.template.metadata.annotations ?? {};
+    expect(annotations['example.com/permissions-digest']).toBe('sha256-0123abcd');
+    // The NodeClass still waits for the controller.
+    expect(Object.keys(annotations).some((key) => key.startsWith('typekro.dev/depends-on-'))).toBe(
+      true
+    );
+    expect(admissionErrors(yaml, 'KarpenterSpotPool', spec)).toEqual([]);
+  });
+
+  it('refuses NodeClass annotations Kubernetes or KRO would reject, and omits an empty set', async () => {
+    expect(() =>
+      makeKarpenterSpotPool({ nodeClassAnnotations: { 'Example.com/Permissions Digest': 'x' } })
+    ).toThrow(/qualified name/);
+    expect(() =>
+      makeKarpenterSpotPool({ nodeClassAnnotations: { 'typekro.dev/depends-on-controller': 'x' } })
+    ).toThrow(/reserves/);
+    expect(() =>
+      makeKarpenterSpotPool({
+        nodeClassAnnotations: { 'example.com/policy': '${schema.spec.name}' },
+      })
+    ).toThrow(/expression/);
+    const factory = await makeKarpenterSpotPool({ nodeClassAnnotations: {} }).factory('direct', {
+      namespace: 'kube-system',
+    });
+    const nodeClass = byKind(
+      (loadAll(factory.toYaml(spec)) as Manifest[]).filter(Boolean),
+      'EC2NodeClass'
+    );
+    expect(
+      (nodeClass.metadata as { annotations?: Record<string, string> }).annotations ?? {}
+    ).toEqual({});
+  });
+
+  it('passes the bootstrap build options through to the controller it installs', async () => {
+    const factory = await makeKarpenterSpotPool({ crds: 'external' }).factory('direct', {
+      namespace: 'kube-system',
+    });
+    const manifests = (loadAll(factory.toYaml(spec)) as Manifest[]).filter(Boolean);
+    expect(
+      manifests.filter((item) => item.kind === 'HelmRelease').map((item) => item.metadata.name)
+    ).toEqual(['karpenter']);
   });
 
   it('refuses a missing alias at admission', () => {
