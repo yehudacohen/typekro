@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Karpenter spot pool build options.** `makeKarpenterSpotPool(options)` builds the spot pool
+  composition with the `makeKarpenterBootstrap` options for its controller and
+  `nodeClassAnnotations` for its EC2NodeClass. Karpenter keys its cached NodeClass validation on
+  the NodeClass's annotations, so an annotation that changes with the controller's permissions
+  makes it validate again after a permission fix. `karpenterSpotPool` is unchanged.
+
 ## [0.48.0] - 2026-11-20
 
 ### Added

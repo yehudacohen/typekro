@@ -20,6 +20,7 @@ import { nodePool } from '../resources/node-pool.js';
 import { karpenterReady } from '../resources/readiness.js';
 import {
   type KarpenterBootstrapConfig,
+  type KarpenterSpotPoolBuildOptions,
   type KarpenterSpotPoolConfig,
   KarpenterSpotPoolConfigSchema,
   type KarpenterSpotPoolStatus,
@@ -112,87 +113,171 @@ function optionalControllerInputs(
 export const karpenterSpotPool: CallableComposition<
   KarpenterSpotPoolConfig,
   KarpenterSpotPoolStatus
-> = kubernetesComposition(
-  {
-    name: 'karpenter-spot-pool',
-    kind: 'KarpenterSpotPool',
-    spec: KarpenterSpotPoolConfigSchema,
-    status: KarpenterSpotPoolStatusSchema,
-  },
-  (spec) => {
-    assertPinnedAmiAlias(spec.amiAlias);
+> = makeKarpenterSpotPool();
 
-    const { controller, status: controllerStatus } = karpenterControllerResources({
-      name: spec.name,
-      ...optionalControllerInputs(spec),
-      clusterName: spec.clusterName,
-      interruptionQueue: spec.interruptionQueue,
-      tolerations: [
-        ...KARPENTER_DEFAULT_TOLERATIONS.map((toleration) => ({ ...toleration })),
-        { key: spec.stableTaintKey, operator: 'Exists' as const },
-      ],
-    });
+/**
+ * Build a {@link karpenterSpotPool} composition with build-time options.
+ *
+ * It takes the {@link makeKarpenterBootstrap} options for the controller it
+ * installs (CRD ownership, namespace ownership, chart values, lifecycle) and
+ * `nodeClassAnnotations`, put on the EC2NodeClass. Karpenter keys its cached
+ * NodeClass validation result on the NodeClass's spec, annotations and tags
+ * (karpenter-provider-aws `pkg/controllers/nodeclass/validation.go`,
+ * `cacheKey`), so a caller can stamp a value that changes when the AWS
+ * permissions the validation checks change (for example a digest of the
+ * controller's IAM policy), and the next reconcile validates again instead of
+ * reusing a cached failure.
+ *
+ * The options are part of the composition. In KRO mode they are part of its
+ * ResourceGraphDefinition, so instances that need different annotations need
+ * compositions built with different `name` and `kind`.
+ *
+ * @param options - Build-time options. Must be concrete values.
+ *
+ * @example
+ * ```typescript
+ * const pool = makeKarpenterSpotPool({ nodeClassAnnotations: { 'example.com/permissions': digest } });
+ * ```
+ */
+export function makeKarpenterSpotPool(
+  options: KarpenterSpotPoolBuildOptions = {}
+): CallableComposition<KarpenterSpotPoolConfig, KarpenterSpotPoolStatus> {
+  const nodeClassAnnotations = validNodeClassAnnotations(options.nodeClassAnnotations);
+  return kubernetesComposition(
+    {
+      name: options.name ?? 'karpenter-spot-pool',
+      kind: options.kind ?? 'KarpenterSpotPool',
+      spec: KarpenterSpotPoolConfigSchema,
+      status: KarpenterSpotPoolStatusSchema,
+    },
+    (spec) => {
+      assertPinnedAmiAlias(spec.amiAlias);
 
-    const discovery = {
-      [KARPENTER_DISCOVERY_TAG]: Cel.default(spec.discoveryTag, spec.clusterName),
-    };
-    const nodeClass = ec2NodeClass({
-      name: spec.name,
-      spec: {
-        role: spec.nodeRole,
-        amiSelectorTerms: [{ alias: spec.amiAlias }],
-        subnetSelectorTerms: [{ tags: discovery }],
-        securityGroupSelectorTerms: [{ tags: discovery }],
-      },
-      id: 'nodeClass',
-    });
-    nodeClass.dependsOn(controller);
+      const { controller, status: controllerStatus } = karpenterControllerResources(
+        {
+          name: spec.name,
+          ...optionalControllerInputs(spec),
+          clusterName: spec.clusterName,
+          interruptionQueue: spec.interruptionQueue,
+          tolerations: [
+            ...KARPENTER_DEFAULT_TOLERATIONS.map((toleration) => ({ ...toleration })),
+            { key: spec.stableTaintKey, operator: 'Exists' as const },
+          ],
+        },
+        options
+      );
 
-    const spotPool = nodePool({
-      name: Cel.template('%s-spot', spec.name),
-      spec: {
-        template: {
-          spec: {
-            nodeClassRef: { group: KARPENTER_AWS_GROUP, kind: 'EC2NodeClass', name: spec.name },
-            requirements: [
-              { key: KARPENTER_LABELS.capacityType, operator: 'In', values: ['spot', 'on-demand'] },
-              {
-                key: KARPENTER_LABELS.instanceFamily,
-                operator: 'In',
-                values: Cel.default(spec.spotInstanceFamilies, DEFAULT_SPOT_INSTANCE_FAMILIES),
-              },
-              {
-                key: KARPENTER_LABELS.instanceSize,
-                operator: 'In',
-                values: Cel.default(spec.spotInstanceSizes, DEFAULT_SPOT_INSTANCE_SIZES),
-              },
-              {
-                key: KARPENTER_LABELS.instanceType,
-                operator: 'Exists',
-                minValues: SPOT_MIN_INSTANCE_TYPES,
-              },
-              { key: KARPENTER_LABELS.arch, operator: 'In', values: ['arm64'] },
-              { key: KARPENTER_LABELS.os, operator: 'In', values: ['linux'] },
-              { key: KARPENTER_LABELS.zone, operator: 'In', values: spec.zones },
-            ],
-            expireAfter: Cel.default(spec.expireAfter, '720h'),
+      const discovery = {
+        [KARPENTER_DISCOVERY_TAG]: Cel.default(spec.discoveryTag, spec.clusterName),
+      };
+      const nodeClass = ec2NodeClass({
+        name: spec.name,
+        ...(nodeClassAnnotations ? { annotations: { ...nodeClassAnnotations } } : {}),
+        spec: {
+          role: spec.nodeRole,
+          amiSelectorTerms: [{ alias: spec.amiAlias }],
+          subnetSelectorTerms: [{ tags: discovery }],
+          securityGroupSelectorTerms: [{ tags: discovery }],
+        },
+        id: 'nodeClass',
+      });
+      nodeClass.dependsOn(controller);
+
+      const spotPool = nodePool({
+        name: Cel.template('%s-spot', spec.name),
+        spec: {
+          template: {
+            spec: {
+              nodeClassRef: { group: KARPENTER_AWS_GROUP, kind: 'EC2NodeClass', name: spec.name },
+              requirements: [
+                {
+                  key: KARPENTER_LABELS.capacityType,
+                  operator: 'In',
+                  values: ['spot', 'on-demand'],
+                },
+                {
+                  key: KARPENTER_LABELS.instanceFamily,
+                  operator: 'In',
+                  values: Cel.default(spec.spotInstanceFamilies, DEFAULT_SPOT_INSTANCE_FAMILIES),
+                },
+                {
+                  key: KARPENTER_LABELS.instanceSize,
+                  operator: 'In',
+                  values: Cel.default(spec.spotInstanceSizes, DEFAULT_SPOT_INSTANCE_SIZES),
+                },
+                {
+                  key: KARPENTER_LABELS.instanceType,
+                  operator: 'Exists',
+                  minValues: SPOT_MIN_INSTANCE_TYPES,
+                },
+                { key: KARPENTER_LABELS.arch, operator: 'In', values: ['arm64'] },
+                { key: KARPENTER_LABELS.os, operator: 'In', values: ['linux'] },
+                { key: KARPENTER_LABELS.zone, operator: 'In', values: spec.zones },
+              ],
+              expireAfter: Cel.default(spec.expireAfter, '720h'),
+            },
           },
+          disruption: {
+            consolidationPolicy: 'WhenEmptyOrUnderutilized',
+            consolidateAfter: Cel.default(spec.consolidateAfter, '5m'),
+            budgets: [{ nodes: '1' }],
+          },
+          limits: { cpu: Cel.default(spec.spotCpuLimit, '16') },
         },
-        disruption: {
-          consolidationPolicy: 'WhenEmptyOrUnderutilized',
-          consolidateAfter: Cel.default(spec.consolidateAfter, '5m'),
-          budgets: [{ nodes: '1' }],
-        },
-        limits: { cpu: Cel.default(spec.spotCpuLimit, '16') },
-      },
-      id: 'spotPool',
-    });
-    spotPool.dependsOn(nodeClass);
+        id: 'spotPool',
+      });
+      spotPool.dependsOn(nodeClass);
 
-    return {
-      ready: Cel.expr<boolean>(controllerStatus.ready, ' && ', karpenterReady(nodeClass, spotPool)),
-      controllerReady: controllerStatus.ready,
-      capacityReady: karpenterReady(nodeClass, spotPool),
-    };
+      return {
+        ready: Cel.expr<boolean>(
+          controllerStatus.ready,
+          ' && ',
+          karpenterReady(nodeClass, spotPool)
+        ),
+        controllerReady: controllerStatus.ready,
+        capacityReady: karpenterReady(nodeClass, spotPool),
+      };
+    }
+  );
+}
+
+const qualifiedNamePart = /^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$/;
+const dnsSubdomain = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * The NodeClass annotations as a plain copy, or `undefined` when there are
+ * none. Each key must be a Kubernetes qualified name outside TypeKro's own
+ * `typekro.dev/` prefix (TypeKro writes those itself), and no value may hold
+ * `${`, which KRO would read as an expression.
+ */
+function validNodeClassAnnotations(
+  annotations: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  if (!annotations) return undefined;
+  const entries = Object.entries(annotations);
+  if (entries.length === 0) return undefined;
+  for (const [key, value] of entries) {
+    const slash = key.lastIndexOf('/');
+    const prefix = slash >= 0 ? key.slice(0, slash) : undefined;
+    const name = slash >= 0 ? key.slice(slash + 1) : key;
+    const validKey =
+      qualifiedNamePart.test(name) &&
+      (prefix === undefined || (prefix.length <= 253 && dnsSubdomain.test(prefix)));
+    if (!validKey) {
+      throw new TypeError(
+        `makeKarpenterSpotPool nodeClassAnnotations key ${JSON.stringify(key)} is not a Kubernetes qualified name.`
+      );
+    }
+    if (prefix === 'typekro.dev' || prefix?.endsWith('.typekro.dev')) {
+      throw new TypeError(
+        `makeKarpenterSpotPool nodeClassAnnotations key ${JSON.stringify(key)} uses the typekro.dev prefix, which TypeKro reserves.`
+      );
+    }
+    if (typeof value !== 'string' || value.includes('${')) {
+      throw new TypeError(
+        `makeKarpenterSpotPool nodeClassAnnotations value for ${JSON.stringify(key)} must be a string without \${ (KRO reads it as an expression).`
+      );
+    }
   }
-);
+  return Object.fromEntries(entries);
+}
