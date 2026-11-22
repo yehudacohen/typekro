@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **NATS operator mode.** `issueNatsOperatorAccounts` (in `typekro/nats`) issues an operator,
+  its system account, accounts and per-workload users with the official `@nats-io/jwt` and
+  `@nats-io/nkeys` libraries (new dependencies, pinned at 0.0.11 and 2.0.3). Seeds are inputs
+  the caller persists (`generateNatsSeed` makes new ones); with a fixed `issuedAt`, reissuing
+  gives byte-identical JWTs, configuration and credentials. Every account must state its
+  JetStream file and memory storage, streams, consumers and connections. Users are confined to
+  the account's subject prefix (or a narrower one) plus their inbox, replies and, by default,
+  the JetStream API. The result includes standard `.creds` files and a memory-resolver
+  `nats.conf` fragment (`serverConfig`), which `natsBootstrap` takes as the new optional
+  `operatorConfig` field in direct mode and as a KRO instance field. A fragment holding an nkey
+  seed is refused in both modes. Installations without the field render as before.
+
 ## [0.48.0] - 2026-11-20
 
 ### Added

@@ -130,6 +130,86 @@ status: {
 `Installing` includes the interval before either release has reported a definitive `Ready`
 condition. The aggregate never reports `Ready` unless both releases are ready.
 
+## Operator mode: accounts and users
+
+`issueNatsOperatorAccounts` issues a NATS operator, its system account, accounts and
+per-workload users in TypeScript with the official `@nats-io/jwt` and `@nats-io/nkeys`
+libraries, and renders the server configuration for operator (JWT) mode with the memory
+resolver. No `nsc` or toolbox container is involved.
+
+```ts
+import { generateNatsSeed, issueNatsOperatorAccounts, natsBootstrap } from 'typekro/nats';
+
+// Generate each seed once and keep it in a secret store; `getOrCreateSecrets`
+// stands for your store's get-or-create. Never regenerate a seed on redeploy:
+// the account's public key is its identity, and JetStream data is stored under it.
+const seeds = await getOrCreateSecrets({
+  operator: () => generateNatsSeed('operator'),
+  system: () => generateNatsSeed('account'),
+  orders: () => generateNatsSeed('account'),
+  ordersWorker: () => generateNatsSeed('user'),
+});
+
+const issued = await issueNatsOperatorAccounts({
+  operator: { name: 'platform', seed: seeds.operator },
+  systemAccount: { seed: seeds.system }, // named SYS by default
+  accounts: [
+    {
+      name: 'orders',
+      seed: seeds.orders,
+      subjectPrefix: 'orders',
+      limits: {
+        fileStorage: '2Gi',
+        memoryStorage: '256Mi',
+        streams: 32,
+        consumers: 256,
+        connections: 128,
+      },
+      users: [{ name: 'worker', seed: seeds.ordersWorker }],
+    },
+  ],
+  issuedAt: new Date('2026-01-01T00:00:00Z'), // fixed: reissue is byte-identical
+});
+
+await natsBootstrap.factory('direct', { namespace: 'nats-system' }).deploy({
+  name: 'nats',
+  namespace: 'nats-system',
+  operatorConfig: issued.serverConfig,
+});
+
+// issued.accounts[0].users[0].creds is a standard NATS credentials file: store it
+// as a Kubernetes Secret for the workload.
+```
+
+- **Seeds are inputs.** TypeKro never stores keys. The caller persists each seed once and
+  passes it on every issue, so identities stay stable across recreates.
+- **Deterministic.** The same seeds, configuration and `issuedAt` produce byte-identical
+  JWTs, server configuration and credentials, so reissuing on every deploy causes no drift.
+  Keep `issuedAt` fixed; change it only when you intend to reissue.
+- **Limits are required.** Every account states its JetStream file and memory storage
+  (bytes or a binary quantity such as `'2Gi'`), streams, consumers and connections. `-1`
+  means unlimited and must be written out. Accounts get no leaf node connections and refuse
+  bearer tokens. The system account has no JetStream.
+- **Users are confined to a subject prefix.** A user may publish and subscribe below its
+  prefix (the account's, or a narrower one below it), subscribe to `_INBOX.>`, and reply to
+  requests it receives (`responses: false` turns that off). With `jetStream` (the default) it
+  may also use `$JS.API.>` and `$JS.ACK.>`. The JetStream API is account-wide, so the account
+  remains the isolation boundary between tenants.
+- **Secrets stay secret.** `serverConfig` holds only public JWTs and keys. User `creds`
+  contain the user's seed and must be stored as a secret. Errors name the offending field,
+  never a seed.
+
+`natsBootstrap` takes the rendered fragment as `operatorConfig`, in direct mode and as a KRO
+instance field. It becomes the file `operator.conf` in the chart's ConfigMap
+(`configMap.merge.data`) and is included by `nats.conf` (`config.merge` with an `$include`
+key). Without the field nothing is added. A fragment containing an nkey seed is refused in
+direct mode and at KRO admission. The chart's config reloader applies a changed
+configuration without restarting the servers.
+
+When the server runs in operator mode, NACK and the toolbox need credentials too: give each
+`Stream` and `Consumer` a `creds` path (or use a NACK `Account`) for a user of the account that
+owns the stream.
+
 ## Streams and consumers
 
 ```ts
@@ -166,7 +246,7 @@ idempotency, command results, retry classification, dead-letter semantics, and s
 behavior. JetStream publication is at-least-once; message-ID deduplication is bounded by the
 configured duplicate window and does not replace an application inbox.
 
-For authenticated installations, configure the official charts through passthrough values.
+For other authentication modes, configure the official charts through passthrough values.
 Stream and Consumer factories expose `creds`, `nkey`, `servers`, and `jsDomain`; these are paths or
 routing settings, never inline credential contents. Because the controller is shared, prefer
 per-resource connection fields or NACK `Account` resources over controller-global credentials.
