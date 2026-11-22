@@ -2,15 +2,16 @@ import { describe, expect, it } from 'bun:test';
 import { decode, parseCreds } from '@nats-io/jwt';
 import { load } from 'js-yaml';
 import {
-  NATS_OPERATOR_CONFIG_FILE,
-  natsBootstrap,
-} from '../../../src/factories/nats/compositions/nats-bootstrap.js';
-import {
   generateNatsSeed,
   issueNatsOperatorAccounts,
   type NatsOperatorAccountsConfig,
   NatsOperatorAccountsError,
 } from '../../../src/factories/nats/auth/operator-accounts.js';
+import {
+  makeNatsBootstrap,
+  NATS_OPERATOR_CONFIG_FILE,
+  natsBootstrap,
+} from '../../../src/factories/nats/compositions/nats-bootstrap.js';
 
 // Fixed test seeds generated once with @nats-io/nkeys. They protect nothing.
 const OPERATOR_SEED = 'SOAEFSK7RMHC2MPIFD4R2STR27TY75XOJKVEKTLVVZI4U5DZ56KDMJKTTQ';
@@ -45,7 +46,7 @@ function config(overrides: Partial<NatsOperatorAccountsConfig> = {}): NatsOperat
             seed: API_SEED,
             subjectPrefix: 'orders.api',
             jetStream: false,
-            responses: false,
+            responses: true,
             inboxPrefix: '_INBOX_orders_api',
           },
         ],
@@ -112,28 +113,71 @@ describe('NATS operator accounts', () => {
     const [worker, api] = orders?.users ?? [];
     const workerClaims = claims(worker?.jwt ?? '');
     expect(workerClaims.iss).toBe(orders?.publicKey ?? '');
+    expect(worker?.inboxPrefix).toBe(`_INBOX.${worker?.publicKey}`);
     expect(workerClaims.nats.pub).toEqual({
-      allow: ['orders', 'orders.>', '$JS.API.>', '$JS.ACK.>', '$JS.FC.>'],
+      allow: ['orders', 'orders.>'],
       deny: [],
     });
     expect(workerClaims.nats.sub).toEqual({
-      allow: ['orders', 'orders.>', '_INBOX.>'],
+      allow: ['orders', 'orders.>', `${worker?.inboxPrefix}.>`],
       deny: [],
     });
-    expect(workerClaims.nats.resp).toEqual({ max: 1, ttl: 0 });
+    expect(workerClaims.nats).not.toHaveProperty('resp');
     expect(workerClaims.nats.bearer_token).toBe(false);
     const apiClaims = claims(api?.jwt ?? '');
+    expect(api?.inboxPrefix).toBe('_INBOX_orders_api');
     expect(apiClaims.nats.pub).toEqual({ allow: ['orders.api', 'orders.api.>'], deny: [] });
     expect(apiClaims.nats.sub).toEqual({
       allow: ['orders.api', 'orders.api.>', '_INBOX_orders_api.>'],
       deny: [],
     });
-    expect(apiClaims.nats).not.toHaveProperty('resp');
+    expect(apiClaims.nats.resp).toEqual({ max: 1, ttl: 0 });
 
     const creds = await parseCreds(new TextEncoder().encode(worker?.creds ?? ''));
     expect(creds.jwt).toBe(worker?.jwt ?? '');
     expect(creds.key).toBe(WORKER_SEED);
     expect(creds.aid).toBe(orders?.publicKey ?? '');
+  });
+
+  it('supports explicit account-wide access, shared inboxes and stream-scoped access', async () => {
+    const [orders] = config().accounts;
+    if (!orders) throw new Error('fixture');
+    const issued = await issueNatsOperatorAccounts(
+      config({
+        accounts: [
+          {
+            ...orders,
+            users: [
+              { name: 'manager', seed: WORKER_SEED, jetStream: true, inboxPrefix: '_INBOX' },
+              { name: 'consumer', seed: API_SEED, jetStream: { streams: ['ORDERS', 'AUDIT_LOG'] } },
+            ],
+          },
+        ],
+      })
+    );
+    const [manager, consumer] = issued.accounts[0]?.users ?? [];
+    expect(manager?.inboxPrefix).toBe('_INBOX');
+    expect(claims(manager?.jwt ?? '').nats).toMatchObject({
+      pub: { allow: ['orders', 'orders.>', '$JS.API.>', '$JS.ACK.>', '$JS.FC.>'] },
+      sub: { allow: ['orders', 'orders.>', '_INBOX.>'] },
+    });
+    const scoped = decode<{ pub: { allow: string[] }; sub: { allow: string[] } }>(
+      consumer?.jwt ?? ''
+    ).nats;
+    if (!scoped.pub || !scoped.sub) throw new Error('Expected scoped publish and subscribe claims');
+    expect(scoped.pub.allow).toEqual(
+      expect.arrayContaining([
+        '$JS.API.STREAM.INFO.ORDERS',
+        '$JS.API.CONSUMER.CREATE.ORDERS.>',
+        '$JS.API.CONSUMER.MSG.NEXT.AUDIT_LOG.*',
+        '$JS.ACK.AUDIT_LOG.*.*.*.*.*.*',
+      ])
+    );
+    expect(scoped.pub.allow).not.toContain('$JS.API.>');
+    expect(scoped.pub.allow).not.toContain('$JS.API.INFO');
+    expect(scoped.pub.allow).not.toContain('$JS.API.STREAM.LIST');
+    expect(scoped.pub.allow).not.toContain('$JS.ACK.>');
+    expect(scoped.sub.allow).toEqual(['orders', 'orders.>', `${consumer?.inboxPrefix}.>`]);
   });
 
   it('reissues byte-identical output from the same seeds and issue time', async () => {
@@ -264,6 +308,22 @@ describe('NATS operator accounts', () => {
     }
   });
 
+  it('rejects empty scopes and stream names that are not literal JetStream names', async () => {
+    const [orders] = config().accounts;
+    if (!orders) throw new Error('fixture');
+    for (const streams of [[], ['*'], ['>'], ['ORDERS.*'], ['ORDERS.OTHER'], ['path/ORDERS']]) {
+      await expect(
+        issueNatsOperatorAccounts(
+          config({
+            accounts: [
+              { ...orders, users: [{ name: 'w', seed: WORKER_SEED, jetStream: { streams } }] },
+            ],
+          })
+        )
+      ).rejects.toThrow(/jetStream\.streams/);
+    }
+  });
+
   it('turns on operator mode in the NATS installation from the issued configuration', async () => {
     const issued = await issueNatsOperatorAccounts(config());
     const yaml = natsBootstrap.factory('direct', { namespace: 'typekro-system' }).toYaml({
@@ -301,6 +361,44 @@ describe('NATS operator accounts', () => {
         operatorConfig: `${issued.serverConfig}\n# ${ORDERS_SEED}\n`,
       })
     ).toThrow(/must not contain an nkey seed/);
+  });
+
+  it('supports existing credential Secrets for the NACK controller and NATS toolbox', async () => {
+    const issued = await issueNatsOperatorAccounts(config());
+    const controllerValues = {
+      additionalVolumes: [{ name: 'orders-creds', secret: { secretName: 'orders-nack-creds' } }],
+      additionalVolumeMounts: [
+        { name: 'orders-creds', mountPath: '/etc/nats/orders', readOnly: true },
+      ],
+    };
+    const toolbox = {
+      contexts: {
+        default: { creds: { secretName: 'orders-toolbox-creds', key: 'nats.creds' } },
+      },
+    };
+    const declarations = await makeNatsBootstrap({ controller: { values: controllerValues } })
+      .factory('direct', { namespace: 'typekro-system' })
+      .toAlchemyResources({
+        name: 'nats',
+        namespace: 'nats-system',
+        operatorConfig: issued.serverConfig,
+        values: { natsBox: toolbox },
+      });
+    const controller = declarations.find(
+      (declaration) => declaration.props.resourceId === 'nackHelmRelease'
+    );
+    expect(controller?.props.resource.spec?.values).toMatchObject({
+      ...controllerValues,
+      jetstream: { controlLoop: true },
+    });
+    expect(controller?.props.resource.spec?.values).not.toHaveProperty('jetstream.nats');
+    const server = declarations.find(
+      (declaration) => declaration.props.resourceId === 'natsHelmRelease'
+    );
+    expect(server?.props.resource.spec?.values).toMatchObject({
+      natsBox: { enabled: true, ...toolbox },
+      configMap: { merge: { data: { [NATS_OPERATOR_CONFIG_FILE]: issued.serverConfig } } },
+    });
   });
 
   it('serializes operator mode as a KRO instance field', async () => {

@@ -177,8 +177,8 @@ await natsBootstrap.factory('direct', { namespace: 'nats-system' }).deploy({
   operatorConfig: issued.serverConfig,
 });
 
-// issued.accounts[0].users[0].creds is a standard NATS credentials file: store it
-// as a Kubernetes Secret for the workload.
+// Store the issued user's `creds` as a Kubernetes Secret and pass the issued
+// `inboxPrefix` to the NATS client as its custom inbox prefix.
 ```
 
 - **Seeds are inputs.** TypeKro never stores keys. The caller persists each seed once and
@@ -192,12 +192,21 @@ await natsBootstrap.factory('direct', { namespace: 'nats-system' }).deploy({
   and `consumers` must be at least 1, because the server reads 0 there as unlimited. Accounts
   get no leaf node connections and refuse bearer tokens. The system account has no JetStream.
 - **Users are confined to a subject prefix.** A user may publish and subscribe to its prefix
-  and below it (the account's prefix, or a narrower one below it), and reply to requests it
-  receives (`responses: false` turns that off). With `jetStream` (the default) it may also
-  publish to `$JS.API.>`, `$JS.ACK.>` and `$JS.FC.>`. Its reply inboxes are `_INBOX.>`, which
-  every user of the account shares; set `inboxPrefix` (and the same custom inbox prefix in the
-  client) to confine them. The JetStream API is account-wide, so the account remains the
-  isolation boundary between tenants.
+  and below it (the account's prefix, or a narrower one below it). For a trusted request/reply
+  service, `responses: true` lets NATS grant one dynamic publish to the reply subject supplied
+  with an incoming request. The default is `false`.
+- **Reply inboxes are per user.** Use the issued user's `inboxPrefix` in the client connection
+  options (`inboxPrefix` in NATS.js, `nats.CustomInboxPrefix` in NATS.go). It defaults to
+  `_INBOX.<user public key>` and stays stable across reissues from the same seed. For a client
+  that requires the standard NATS inbox prefix, explicitly set `inboxPrefix: '_INBOX'` when
+  issuing the user. This grants a subscription to every `_INBOX.>` reply in the account.
+- **JetStream API permissions are opt-in.** `jetStream` defaults to `false`.
+  `jetStream: { streams: ['ORDERS_EVENTS'] }` lets a user manage the named streams and their
+  consumers and acknowledge their deliveries. These permissions include changing the subjects
+  the named streams capture. Account discovery and list calls require `jetStream: true`, which
+  grants the account-wide `$JS.API.>`, `$JS.ACK.>` and `$JS.FC.>` permissions. In NATS.js, pass
+  `{ checkAPI: false }` to `jetstreamManager` with a scoped user to skip its account-info probe.
+  Use separate accounts for tenant isolation.
 - **Secrets stay secret.** `serverConfig` holds only public JWTs and keys. User `creds`
   contain the user's seed and must be stored as a secret. Errors name the offending field,
   never a seed.
@@ -211,9 +220,52 @@ alone would leave a server running without authentication. Without the field not
 added. A fragment containing an nkey seed is refused in direct mode and at KRO admission, and
 the field is limited to 512 KiB.
 
-When the server runs in operator mode, NACK and the toolbox need credentials too: give each
-`Stream` and `Consumer` a `creds` path (or use a NACK `Account`) for a user of the account that
-owns the stream.
+### NACK and toolbox credentials
+
+Issue separate users in the account that owns the stream. For the chart configuration below,
+give the NACK user and the toolbox user `jetStream: true` and `inboxPrefix: '_INBOX'` so they can
+use account-wide management and the standard client inboxes. Put each `.creds` file in an
+existing Kubernetes Secret under the key `nats.creds`. Put `orders-nack-creds` in the shared NACK
+controller namespace and `orders-toolbox-creds` in the NATS server namespace.
+
+```ts
+import { makeNatsBootstrap } from 'typekro/nats';
+
+const ordersNats = makeNatsBootstrap({
+  controller: {
+    values: {
+      additionalVolumes: [{ name: 'orders-creds', secret: { secretName: 'orders-nack-creds' } }],
+      additionalVolumeMounts: [
+        { name: 'orders-creds', mountPath: '/etc/nats/orders', readOnly: true },
+      ],
+    },
+  },
+});
+
+await ordersNats.factory('direct', { namespace: 'nats-system' }).deploy({
+  name: 'nats',
+  namespace: 'nats-system',
+  operatorConfig: issued.serverConfig,
+  values: {
+    natsBox: {
+      contexts: {
+        default: { creds: { secretName: 'orders-toolbox-creds', key: 'nats.creds' } },
+      },
+    },
+  },
+});
+
+// Pass these connection fields to both jetStreamStream and jetStreamConsumer.
+const nackConnection = {
+  servers: ['nats://nats.nats-system.svc:4222'],
+  creds: '/etc/nats/orders/nats.creds',
+};
+```
+
+The shared controller still uses CRD-connect mode. To use a NACK `Account` resource, put
+the Secret and the `Account` in the Stream and Consumer namespace. Set `spec.creds.secret.name`
+to the Secret name, `spec.creds.file` to `nats.creds`, and `spec.servers` to the NATS endpoint.
+Reference the `Account` from the Stream and Consumer CRs via `spec.account`.
 
 ## Streams and consumers
 

@@ -28,6 +28,7 @@
         "@effect/platform-bun": "4.0.0-rc.110",
         "@effect/platform-node-shared": "4.0.0-rc.110",
         "@effect/vitest": "4.0.0-rc.110",
+        "@nats-io/transport-node": "3.4.0",
         "@types/bun": "^1.2.19",
         "@types/estraverse": "^5.1.7",
         "@types/js-yaml": "^4.0.9",
@@ -446,7 +447,13 @@
 
     "@nats-io/jwt": ["@nats-io/jwt@0.0.11", "", { "dependencies": { "@nats-io/nkeys": "2.0.3" } }, "sha512-olBQaTjqKgsalKKWtOA2fzQrFV2aNPKz56oadujZLrT5IsFhWw07OrYS8+XDfgh8bSAXZuMmZEZJ8QxPZwF0tw=="],
 
+    "@nats-io/nats-core": ["@nats-io/nats-core@3.4.0", "", { "dependencies": { "@nats-io/nkeys": "2.0.3", "@nats-io/nuid": "3.0.0" } }, "sha512-QMDM86EUNm+wudlKC67HLar/KHHQUvJGLfb4jbahje3pUk3K9afeck9fwsxBZF0eUFox6T/TA6m/t+lQqf+QsQ=="],
+
     "@nats-io/nkeys": ["@nats-io/nkeys@2.0.3", "", { "dependencies": { "tweetnacl": "^1.0.3" } }, "sha512-JVt56GuE6Z89KUkI4TXUbSI9fmIfAmk6PMPknijmuL72GcD+UgIomTcRWiNvvJKxA01sBbmIPStqJs5cMRBC3A=="],
+
+    "@nats-io/nuid": ["@nats-io/nuid@3.0.0", "", {}, "sha512-QbXZDrxmYlrn5AD06gYcUTmEHwxn96HBQMIk7XTjDlEcx6FPzVBBPjp4AMRh1lEv6B4iJ6Xb/Uz61JugPXFRQg=="],
+
+    "@nats-io/transport-node": ["@nats-io/transport-node@3.4.0", "", { "dependencies": { "@nats-io/nats-core": "3.4.0", "@nats-io/nkeys": "2.0.3", "@nats-io/nuid": "3.0.0" } }, "sha512-hH7u7ejIBTFEJIZ8rIcMrHJI6wl+HhpO5sVFs1+ppmXa8RuB2+Lh1+UwTzZ5xTNNm1TKcRkYy+2qCV56qp8RxA=="],
 
     "@neon-rs/load": ["@neon-rs/load@0.0.4", "", {}, "sha512-kTPhdZyTQxB+2wpiRcFWrDcejc4JI6tkPuS7UZCG4l6Zvc5kU/gGQ/ozvHTh1XR5tS+UlfAfGuPajjzQjCiHCw=="],
 

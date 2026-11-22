@@ -47,18 +47,17 @@ export interface NatsAccountUserConfig {
    */
   readonly subjectPrefix?: string;
   /**
-   * Allow the JetStream API (`$JS.API.>`) and acknowledgements (`$JS.ACK.>`).
-   * The API is account-wide, so a user with it can manage every stream in the
-   * account. Default `true`.
+   * Default `false`. Set `true` for the account-wide JetStream API and
+   * delivery acknowledgements, or grant access only to the named streams and their
+   * consumers. The scoped form omits account discovery and stream listing.
    */
-  readonly jetStream?: boolean;
-  /** Allow replies to requests the user receives. Default `true`. */
+  readonly jetStream?: boolean | { readonly streams: readonly string[] };
+  /** Allow one dynamic reply to the reply subject of an incoming request. Default `false`. */
   readonly responses?: boolean;
   /**
-   * Confine the user's reply inboxes to `<inboxPrefix>.>` instead of the
-   * shared `_INBOX.>`; the client must use the same custom inbox prefix. Without
-   * it the user can subscribe to every inbox in the account, including other
-   * users' replies.
+   * Reply inbox prefix, defaulting to `_INBOX.<user public key>`. Set the same
+   * prefix in the client. Explicitly set `'_INBOX'` to subscribe to shared
+   * `_INBOX.>` reply inboxes.
    */
   readonly inboxPrefix?: string;
 }
@@ -96,6 +95,8 @@ export interface NatsIssuedUser {
   readonly name: string;
   readonly publicKey: string;
   readonly jwt: string;
+  /** Custom inbox prefix to use in the client connection options. */
+  readonly inboxPrefix: string;
   /** The standard NATS credentials file (JWT and seed). Store it as a secret. */
   readonly creds: string;
 }
@@ -216,13 +217,14 @@ export async function issueNatsOperatorAccounts(
       }
       userNames.add(userName);
       const userKey = keyPair(user.seed, 'user', `${userPath}.seed`);
-      if (userKeys.has(userKey.getPublicKey())) {
+      const publicKey = userKey.getPublicKey();
+      if (userKeys.has(publicKey)) {
         throw new NatsOperatorAccountsError(
           'user seed is used by another user',
           `${userPath}.seed`
         );
       }
-      userKeys.add(userKey.getPublicKey());
+      userKeys.add(publicKey);
       const userPrefix =
         user.subjectPrefix === undefined
           ? subjectPrefix
@@ -233,16 +235,20 @@ export async function issueNatsOperatorAccounts(
           `${userPath}.subjectPrefix`
         );
       }
+      const inboxPrefix =
+        user.inboxPrefix === undefined
+          ? `_INBOX.${publicKey}`
+          : requireSubjectPrefix(user.inboxPrefix, `${userPath}.inboxPrefix`, true);
       return {
         name: userName,
         key: userKey,
+        publicKey,
+        inboxPrefix,
         claims: userClaims(
           userPrefix,
-          user.jetStream ?? true,
-          user.responses ?? true,
-          user.inboxPrefix === undefined
-            ? '_INBOX'
-            : requireSubjectPrefix(user.inboxPrefix, `${userPath}.inboxPrefix`, true)
+          jetStreamPublishSubjects(user.jetStream, `${userPath}.jetStream`),
+          user.responses === true,
+          inboxPrefix
         ),
       };
     });
@@ -269,8 +275,9 @@ export async function issueNatsOperatorAccounts(
       );
       users.push({
         name: user.name,
-        publicKey: user.key.getPublicKey(),
+        publicKey: user.publicKey,
         jwt: userJwt,
+        inboxPrefix: user.inboxPrefix,
         creds: new TextDecoder().decode(fmtCreds(userJwt, user.key)),
       });
     }
@@ -435,15 +442,74 @@ function systemAccountLimits(): Partial<OperatorLimits> {
   };
 }
 
+const STREAM_API = [
+  'STREAM.CREATE',
+  'STREAM.UPDATE',
+  'STREAM.INFO',
+  'STREAM.DELETE',
+  'STREAM.PURGE',
+  'STREAM.MSG.GET',
+  'STREAM.MSG.DELETE',
+  'CONSUMER.CREATE',
+  'CONSUMER.LIST',
+  'CONSUMER.NAMES',
+];
+const CONSUMER_API = [
+  'CONSUMER.DURABLE.CREATE',
+  'CONSUMER.INFO',
+  'CONSUMER.DELETE',
+  'CONSUMER.PAUSE',
+  'CONSUMER.RESET',
+  'CONSUMER.UNPIN',
+  'CONSUMER.MSG.NEXT',
+];
+
+function jetStreamPublishSubjects(
+  access: NatsAccountUserConfig['jetStream'],
+  path: string
+): string[] {
+  if (access === undefined || access === false) return [];
+  if (access === true) return ['$JS.API.>', '$JS.ACK.>', '$JS.FC.>'];
+  const streams = access?.streams;
+  if (!Array.isArray(streams) || streams.length === 0) {
+    throw new NatsOperatorAccountsError('specify at least one stream', `${path}.streams`);
+  }
+  for (const [index, stream] of streams.entries()) {
+    if (
+      typeof stream !== 'string' ||
+      !SUBJECT_TOKEN.test(stream) ||
+      stream.includes('/') ||
+      stream.includes('\\') ||
+      new TextEncoder().encode(stream).length > 255
+    ) {
+      throw new NatsOperatorAccountsError(
+        'stream name must be a literal JetStream name of at most 255 bytes',
+        `${path}.streams[${index}]`
+      );
+    }
+  }
+  return [...new Set(streams)].flatMap((stream) => [
+    ...STREAM_API.map((operation) => `$JS.API.${operation}.${stream}`),
+    ...CONSUMER_API.map((operation) => `$JS.API.${operation}.${stream}.*`),
+    `$JS.API.CONSUMER.CREATE.${stream}.>`,
+    `$JS.API.DIRECT.GET.${stream}`,
+    `$JS.API.DIRECT.GET.${stream}.>`,
+    // Cover both delivery formats. Exact token counts keep the stream name
+    // in its own position even when a domain or sequence number matches it.
+    `$JS.ACK.${stream}.*.*.*.*.*.*`,
+    `$JS.ACK.*.*.${stream}.*.*.*.*.*.*`,
+    `$JS.FC.${stream}.*.*`,
+    `$JS.FC.*.*.${stream}.*.*`,
+  ]);
+}
+
 function userClaims(
   prefix: string,
-  jetStream: boolean,
+  jetStreamPublish: string[],
   responses: boolean,
   inboxPrefix: string
 ): Partial<User> {
   const subjects = [prefix, `${prefix}.>`];
-  // $JS.FC answers push-consumer flow control; $JS.ACK acknowledges messages.
-  const jetStreamPublish = jetStream ? ['$JS.API.>', '$JS.ACK.>', '$JS.FC.>'] : [];
   return {
     pub: { allow: [...subjects, ...jetStreamPublish], deny: [] },
     sub: { allow: [...subjects, `${inboxPrefix}.>`], deny: [] },

@@ -15,9 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the caller persists (`generateNatsSeed` makes new ones); with a fixed `issuedAt`, reissuing
   gives byte-identical JWTs, configuration and credentials. Every account must state its
   JetStream file and memory storage, streams, consumers and connections, and accounts refuse
-  bearer tokens. Users are confined to the account's subject prefix (or a narrower one) plus
-  replies, their inbox (optionally a private `inboxPrefix`) and, by default, the JetStream API.
-  The result includes standard `.creds` files and a memory-resolver `nats.conf` fragment
+  bearer tokens. Users get a subject prefix and an individual reply inbox. JetStream API
+  access and dynamic replies require explicit opt-ins. JetStream access can be scoped to
+  named streams and their consumers. The result includes standard `.creds` files, the
+  clients' inbox prefixes and a memory-resolver `nats.conf` fragment
   (`serverConfig`), which `natsBootstrap` takes as the new optional `operatorConfig` field in
   direct mode and as a KRO instance field; the servers roll when it changes. A fragment holding
   an nkey seed is refused in both modes. Installations without the field render as before.
