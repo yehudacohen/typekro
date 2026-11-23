@@ -27,7 +27,8 @@ interface PoolClass {
 
 interface PoolSpec {
   readonly replicas?: number;
-  readonly podTemplate?: { readonly spec?: { readonly nodeSelector?: Readonly<Record<string, string>> } };
+  readonly workerImage?: string;
+  readonly template?: { readonly nodeSelector?: Readonly<Record<string, string>> };
   readonly sandboxClasses?: readonly PoolClass[];
 }
 
@@ -83,7 +84,9 @@ export const substrateWorkerPoolReadiness = registerPortableReadinessEvaluator(
     const wanted = resource.spec?.sandboxClasses?.[0];
     const actual = resource.status?.sandboxClasses?.find(item => item.name === wanted?.name);
     const replicas = resource.spec?.replicas ?? 0;
+    const architecture = resource.spec?.template?.nodeSelector?.['kubernetes.io/arch'];
     return status(!resource.metadata.deletionTimestamp && replicas > 0 && !!wanted?.configRef
+      && (architecture === 'amd64' || architecture === 'arm64') && /@sha256:[0-9a-f]{64}$/u.test(resource.spec?.workerImage ?? '')
       && !!resource.status?.selector && resource.status.replicas === replicas
       && resource.status.readyReplicas === replicas && actual?.configRef?.name === wanted.configRef.name
       && !actual?.pendingConfigRef && actual?.conditions?.some(condition => condition.type === 'Resolved'

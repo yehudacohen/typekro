@@ -20,6 +20,7 @@ const clusterKinds = new Set(['Namespace', 'CustomResourceDefinition', 'ClusterR
 const substrateCrdNames = new Set(['workerpools.ate.dev', 'sandboxconfigs.ate.dev', 'csidriverconfigs.ate.dev']);
 const controlPlane = ['ate-api-server', 'ate-idp-server', 'atenet-router', 'atenet-egress', 'ate-controller'] as const;
 const immutableImage = /@sha256:[0-9a-f]{64}$/u;
+const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 
 interface PodWorkloadSpec {
   readonly replicas?: number;
@@ -33,6 +34,8 @@ export interface AgentSubstrateInstallationBundle {
   /** The release commit used to render the Kubernetes bundle. */
   readonly sourceCommit: typeof agentSubstrateCommit;
   readonly namespace: string;
+  /** Set when the installation owns the release's pod certificate controller. */
+  readonly certificateControllerNamespace?: string;
   /** Rendered release objects plus the selected WorkerPool and private storage references. */
   readonly manifests: readonly KubernetesResource[];
 }
@@ -49,7 +52,8 @@ function phase(resource: KubernetesResource): number {
 }
 
 function validateBundle(bundle: AgentSubstrateInstallationBundle): void {
-  if (bundle.sourceCommit !== agentSubstrateCommit || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(bundle.namespace)) {
+  const namespaces = new Set([bundle.namespace, ...(bundle.certificateControllerNamespace ? [bundle.certificateControllerNamespace] : [])]);
+  if (bundle.sourceCommit !== agentSubstrateCommit || [...namespaces].some(namespace => !dnsLabel.test(namespace))) {
     throw new Error('Agent Substrate requires a v1.0.0 installation bundle and a concrete namespace.');
   }
   const seen = new Set<string>();
@@ -62,7 +66,13 @@ function validateBundle(bundle: AgentSubstrateInstallationBundle): void {
     if (kind === 'CustomResourceDefinition' && !substrateCrdNames.has(metadata.name)) {
       throw new Error('The bundle contains an unrelated custom resource definition.');
     }
-    if (clusterKinds.has(kind) ? metadata.namespace !== undefined : metadata.namespace !== bundle.namespace) {
+    if ((kind === 'WorkerPool' || kind === 'SandboxConfig') && apiVersion !== 'ate.dev/v1') {
+      throw new Error('The Agent Substrate bundle has an unsupported API version.');
+    }
+    if (kind === 'Namespace' && !namespaces.has(metadata.name)) {
+      throw new Error('The bundle can own only its selected namespace.');
+    }
+    if (clusterKinds.has(kind) ? metadata.namespace !== undefined : !metadata.namespace || !namespaces.has(metadata.namespace)) {
       throw new Error('An Agent Substrate resource is outside its installation namespace or scope.');
     }
     if (kind === 'Deployment' || kind === 'DaemonSet' || kind === 'StatefulSet' || kind === 'Job') {

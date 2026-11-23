@@ -52,13 +52,14 @@ describe('Agent Substrate v1 installation', () => {
     expect(substrateDeploymentReadiness({ ...rollout, metadata: { ...rollout.metadata, generation: 3 } }).ready).toBe(false);
     const sandboxClass = { name: 'gvisor', configRef: { name: 'renderer-pinned' } };
     const pool = { apiVersion: 'ate.dev/v1', kind: 'WorkerPool', metadata: { name: 'renderer', generation: 2 },
-      spec: { replicas: 1, sandboxClasses: [sandboxClass] },
+      spec: { replicas: 1, workerImage: image, template: { nodeSelector: { 'kubernetes.io/arch': 'arm64' } }, sandboxClasses: [sandboxClass] },
       status: { replicas: 1, readyReplicas: 1, selector: 'pool=renderer', sandboxClasses: [{ ...sandboxClass,
         conditions: [{ type: 'Resolved', status: 'True', observedGeneration: 2 }] }] },
     };
     expect(substrateWorkerPoolReadiness(pool).ready).toBe(true);
     expect(substrateWorkerPoolReadiness({ ...pool, status: { ...pool.status, readyReplicas: 0 } }).ready).toBe(false);
     expect(substrateWorkerPoolReadiness({ ...pool, metadata: { ...pool.metadata, generation: 3 } }).ready).toBe(false);
+    expect(substrateWorkerPoolReadiness({ ...pool, spec: { ...pool.spec, workerImage: 'neutral:latest' } }).ready).toBe(false);
     const config = { apiVersion: 'ate.dev/v1', kind: 'SandboxConfig', metadata: { name: 'renderer-pinned' },
       spec: { sandboxClass: 'gvisor', defaultVersion: 'qualified', versions: [{ name: 'qualified', state: 'Enabled',
         assets: { arm64: { gvisor: { url: 'https://example.test/asset', sha256: '5'.repeat(64) } } } }] },
