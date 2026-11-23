@@ -86,14 +86,14 @@ function validateBundle(bundle: AgentSubstrateInstallationBundle): void {
         throw new Error('The Agent Substrate API rollout must observe the release readiness check.');
       }
     }
-    const key = `${kind}/${metadata.name}`;
+    const key = `${metadata.namespace ?? ''}/${kind}/${metadata.name}`;
     if (seen.has(key)) throw new Error('The Agent Substrate bundle has a duplicate Kubernetes resource.');
     seen.add(key);
   }
   const required = [
-    'CustomResourceDefinition/workerpools.ate.dev', 'CustomResourceDefinition/sandboxconfigs.ate.dev',
-    'DaemonSet/atelet', 'Service/api', 'Service/atenet-router', 'Service/atenet-egress',
-    ...controlPlane.map(name => `Deployment/${name}`),
+    '/CustomResourceDefinition/workerpools.ate.dev', '/CustomResourceDefinition/sandboxconfigs.ate.dev',
+    ...['DaemonSet/atelet', 'Service/api', 'Service/atenet-router', 'Service/atenet-egress',
+      ...controlPlane.map(name => `Deployment/${name}`)].map(name => `${bundle.namespace}/${name}`),
   ];
   if (!required.every(key => seen.has(key)) || !bundle.manifests.some(resource => resource.kind === 'WorkerPool')
     || !bundle.manifests.some(resource => resource.kind === 'SandboxConfig')
@@ -113,7 +113,7 @@ export function agentSubstrateInstallation(bundle: AgentSubstrateInstallationBun
     const groups = new Map<number, string[]>();
     const pools = [];
     for (const manifest of [...manifests].sort((left, right) => phase(left) - phase(right))) {
-      const id = `substrate${createHash('sha256').update(`${manifest.kind}/${manifest.metadata.name}`).digest('hex').slice(0, 16)}`;
+      const id = `substrate${createHash('sha256').update(`${manifest.metadata.namespace ?? ''}/${manifest.kind}/${manifest.metadata.name}`).digest('hex').slice(0, 16)}`;
       const clusterScoped = clusterKinds.has(manifest.kind);
       const resource = createResource<{ replicas: number }, { readyReplicas: number }>({
         ...manifest, id, spec: manifest.spec as { replicas: number },
