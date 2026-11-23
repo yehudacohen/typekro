@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.49.0",
+  "packageVersion": "0.50.0",
   "owners": {
     "advanced": {
       "files": 1,
@@ -179,10 +179,10 @@
     },
     "ory": {
       "files": 19,
-      "rawBytes": 224480,
-      "surfaceBytes": 200546,
-      "docBytes": 23180,
-      "commentBytes": 23934
+      "rawBytes": 225078,
+      "surfaceBytes": 200997,
+      "docBytes": 23327,
+      "commentBytes": 24081
     },
     "pebble": {
       "files": 6,
@@ -236,7 +236,7 @@
   },
   "reachable": {
     "files": 628,
-    "rawBytes": 2359525
+    "rawBytes": 2360123
   },
   "unreachable": {
     "files": 0,
