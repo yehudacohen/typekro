@@ -9,6 +9,7 @@ interface Condition {
 
 interface RolloutStatus {
   readonly observedGeneration?: number;
+  readonly replicas?: number;
   readonly readyReplicas?: number;
   readonly availableReplicas?: number;
   readonly updatedReplicas?: number;
@@ -45,7 +46,9 @@ interface SandboxConfigSpec {
   readonly versions?: readonly {
     readonly name: string;
     readonly state: string;
-    readonly assets?: Readonly<Record<string, Readonly<Record<string, { readonly url: string; readonly sha256: string }>>>>;
+    readonly assets?: Readonly<
+      Record<string, Readonly<Record<string, { readonly url: string; readonly sha256: string }>>>
+    >;
   }[];
 }
 
@@ -54,57 +57,106 @@ function status(ready: boolean, reason: string): ResourceStatus {
 }
 
 export const substrateDeploymentReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.deployment', '1',
-  (resource: KubernetesResource<{ replicas?: number }, RolloutStatus>): ResourceStatus => {
+  'typekro.readiness.agent-substrate.deployment',
+  '1',
+  (input: unknown): ResourceStatus => {
+    const resource = input as KubernetesResource<{ replicas?: number }, RolloutStatus>;
     const replicas = resource.spec?.replicas ?? 1;
     const generation = resource.metadata.generation;
     const live = resource.status;
-    return status(!resource.metadata.deletionTimestamp && generation !== undefined
-      && live?.observedGeneration === generation && replicas > 0 && live.readyReplicas === replicas
-      && live.availableReplicas === replicas && live.updatedReplicas === replicas, 'RolloutPending');
+    return status(
+      !resource.metadata.deletionTimestamp &&
+        generation !== undefined &&
+        live?.observedGeneration === generation &&
+        replicas > 0 &&
+        live.replicas === replicas &&
+        live.readyReplicas === replicas &&
+        live.availableReplicas === replicas &&
+        live.updatedReplicas === replicas,
+      'RolloutPending'
+    );
   }
 );
 
 export const substrateDaemonSetReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.daemon-set', '1',
-  (resource: KubernetesResource<unknown, RolloutStatus>): ResourceStatus => {
+  'typekro.readiness.agent-substrate.daemon-set',
+  '1',
+  (input: unknown): ResourceStatus => {
+    const resource = input as KubernetesResource<unknown, RolloutStatus>;
     const generation = resource.metadata.generation;
     const live = resource.status;
     const desired = live?.desiredNumberScheduled ?? 0;
-    return status(!resource.metadata.deletionTimestamp && generation !== undefined
-      && live?.observedGeneration === generation && desired > 0 && live.numberReady === desired
-      && live.updatedNumberScheduled === desired && live.numberAvailable === desired, 'NodeRolloutPending');
+    return status(
+      !resource.metadata.deletionTimestamp &&
+        generation !== undefined &&
+        live?.observedGeneration === generation &&
+        desired > 0 &&
+        live.numberReady === desired &&
+        live.updatedNumberScheduled === desired &&
+        live.numberAvailable === desired,
+      'NodeRolloutPending'
+    );
   }
 );
 
 /** Kubernetes v1.0.0 reports resolution per class and readiness as pod counts. */
 export const substrateWorkerPoolReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.worker-pool', '1',
-  (resource: KubernetesResource<PoolSpec, PoolStatus>): ResourceStatus => {
+  'typekro.readiness.agent-substrate.worker-pool',
+  '1',
+  (input: unknown): ResourceStatus => {
+    const resource = input as KubernetesResource<PoolSpec, PoolStatus>;
     const wanted = resource.spec?.sandboxClasses?.[0];
-    const actual = resource.status?.sandboxClasses?.find(item => item.name === wanted?.name);
+    const actual = resource.status?.sandboxClasses?.find((item) => item.name === wanted?.name);
     const replicas = resource.spec?.replicas ?? 0;
     const architecture = resource.spec?.template?.nodeSelector?.['kubernetes.io/arch'];
-    return status(!resource.metadata.deletionTimestamp && replicas > 0 && !!wanted?.configRef
-      && (architecture === 'amd64' || architecture === 'arm64') && /@sha256:[0-9a-f]{64}$/u.test(resource.spec?.workerImage ?? '')
-      && !!resource.status?.selector && resource.status.replicas === replicas
-      && resource.status.readyReplicas === replicas && actual?.configRef?.name === wanted.configRef.name
-      && !actual?.pendingConfigRef && actual?.conditions?.some(condition => condition.type === 'Resolved'
-        && condition.status === 'True' && condition.observedGeneration === resource.metadata.generation) === true,
-    'WorkerPoolNotReady');
+    return status(
+      !resource.metadata.deletionTimestamp &&
+        replicas > 0 &&
+        !!wanted?.configRef &&
+        (architecture === 'amd64' || architecture === 'arm64') &&
+        /@sha256:[0-9a-f]{64}$/u.test(resource.spec?.workerImage ?? '') &&
+        !!resource.status?.selector &&
+        resource.status.replicas === replicas &&
+        resource.status.readyReplicas === replicas &&
+        actual?.configRef?.name === wanted.configRef.name &&
+        !actual?.pendingConfigRef &&
+        actual?.conditions?.some(
+          (condition) =>
+            condition.type === 'Resolved' &&
+            condition.status === 'True' &&
+            condition.observedGeneration === resource.metadata.generation
+        ) === true,
+      'WorkerPoolNotReady'
+    );
   }
 );
 
 /** Checks the live immutable asset pins. The worker runtime verifies the downloaded bytes. */
 export const substrateSandboxConfigReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.sandbox-config', '1',
-  (resource: KubernetesResource<SandboxConfigSpec>): ResourceStatus => {
-    const version = resource.spec?.versions?.find(item => item.name === resource.spec?.defaultVersion);
+  'typekro.readiness.agent-substrate.sandbox-config',
+  '1',
+  (input: unknown): ResourceStatus => {
+    const resource = input as KubernetesResource<SandboxConfigSpec>;
+    const version = resource.spec?.versions?.find(
+      (item) => item.name === resource.spec?.defaultVersion
+    );
     const perArchitecture = Object.values(version?.assets ?? {});
-    return status(!resource.metadata.deletionTimestamp && !!resource.spec?.sandboxClass
-      && version?.state === 'Enabled' && perArchitecture.length > 0 && perArchitecture.every(assets => {
-        const files = Object.values(assets);
-        return files.length > 0 && files.every(asset => /^(gs|s3|https):\/\//u.test(asset.url) && /^[0-9a-f]{64}$/u.test(asset.sha256));
-      }), 'SandboxAssetsNotPinned');
+    return status(
+      !resource.metadata.deletionTimestamp &&
+        !!resource.spec?.sandboxClass &&
+        version?.state === 'Enabled' &&
+        perArchitecture.length > 0 &&
+        perArchitecture.every((assets) => {
+          const files = Object.values(assets);
+          return (
+            files.length > 0 &&
+            files.every(
+              (asset) =>
+                /^(gs|s3|https):\/\//u.test(asset.url) && /^[0-9a-f]{64}$/u.test(asset.sha256)
+            )
+          );
+        }),
+      'SandboxAssetsNotPinned'
+    );
   }
 );

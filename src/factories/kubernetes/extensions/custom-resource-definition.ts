@@ -6,7 +6,7 @@ import { createResource } from '../../shared.js';
 export type V1CustomResourceDefinitionSpec = NonNullable<V1CustomResourceDefinition['spec']>;
 export type V1CustomResourceDefinitionStatus = NonNullable<V1CustomResourceDefinition['status']>;
 
-export const customResourceDefinitionReadinessEvaluator = registerPortableReadinessEvaluator(
+const customResourceDefinitionReadinessEvaluator = registerPortableReadinessEvaluator(
   'typekro.readiness.kubernetes.custom-resource-definition-factory',
   '1',
   (liveResource: V1CustomResourceDefinition) => {

@@ -9,6 +9,7 @@
   },
   "sharedPoolBytes": 212480,
   "pooledOwners": [
+    "agent-substrate",
     "aws-load-balancer-controller",
     "crowdsec",
     "external-secrets",
