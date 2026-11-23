@@ -142,6 +142,10 @@
       "import": "./dist/factories/nats/index.js",
       "types": "./dist/factories/nats/index.d.ts"
     },
+    "./agent-substrate": {
+      "import": "./dist/factories/agent-substrate/index.js",
+      "types": "./dist/factories/agent-substrate/index.d.ts"
+    },
     "./hatchet": {
       "import": "./dist/factories/hatchet/index.js",
       "types": "./dist/factories/hatchet/index.d.ts"

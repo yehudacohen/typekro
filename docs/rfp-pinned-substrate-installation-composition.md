@@ -1,10 +1,9 @@
 # RFP: Pinned Agent Substrate installation composition
 
-Status: proposed documentation contract; no implementation, cluster action, or provider qualification.
+Status: installation composition candidate. Runtime and cluster qualification are separate.
 
-TypeKro may compose a pinned Kubernetes installation of Agent Substrate commit
-`0ab30264bcac18b312ed49222e40d7ea42a0aa6b` / tree
-`69455ba85bf45a7160a38585ae899686c33c60bb`. It owns installation dependency
+TypeKro composes a pinned Kubernetes installation of Agent Substrate v1.0.0
+at commit `b34fbee742906494b5eb4f1f36987176bf8770a4`. It owns installation dependency
 order and Kubernetes readiness only. The consuming application framework owns
 logical actor admission, lease epochs, receipts, cancellation/finalization and
 client handles; the consuming service owns destination policy/evidence. None of
@@ -12,23 +11,17 @@ these authorities is delegated to Substrate snapshots.
 
 ## Exact object boundary
 
-The installation applies actual Kubernetes CRDs `WorkerPool` (namespaced, with
+The `typekro/agent-substrate` composition accepts the reviewed release's rendered Kubernetes bundle, with digest-pinned images, an explicit namespace, a WorkerPool, and references to the selected PostgreSQL and private snapshot store. The installation applies actual Kubernetes CRDs `WorkerPool` (namespaced, with
 `status.replicas`, `status.readyReplicas` and selector) and cluster-scoped
-`SandboxConfig` (content-addressed assets, no status subresource), plus API
+`SandboxConfig` (content-addressed assets, no status subresource). It can include the release's `CSIDriverConfig` definition. The bundle contains the API
 server/PostgreSQL migration, controller, `atelet` DaemonSet, router/egress,
 RBAC, network and snapshot-storage resources. `ActorTemplate`, `Actor` and
 `Worker` are instead `ateapi.Control` gRPC proto resources: they are not CRDs
 and must never be represented as Kubernetes manifests.
 
-`customResource()` is insufficient: its always-ready evaluator proves only a
-live object. This composition needs dedicated evaluators for CRD Established /
-NamesAccepted; API authenticated health plus database migration; controller and
-atelet rollout; WorkerPool `readyReplicas == spec.replicas` with exact
-version/node selector; SandboxConfig asset integrity on eligible nodes; and
-router/gateway health. Failed, draining and version-skew states are explicit
-non-ready states. A pinned upgrade drains/fences workers before changing
-version; rollback preserves and observes retained actor/workspace/snapshot
-state, never calling a snapshot a completed remote effect.
+Readiness checks both CRD conditions, matching rollout generations, WorkerPool counts and resolved sandbox configuration. The API Deployment must carry the release `/readyz` probe. That probe becomes available after PostgreSQL connects and schema migration finishes. SandboxConfig readiness checks the active version's digest pins. The worker verifies the actual assets when it starts. The runtime proof must exercise that step.
+
+TypeKro follows the installation graph in reverse for uninstall. Cluster-scoped resources have an explicit deletion scope. The database, snapshot store and existing Secrets stay under their own lifecycle. Upgrades and cleanup require application-owned actor drain and finalization before changing the installation.
 
 ## Focused external registration seam
 
