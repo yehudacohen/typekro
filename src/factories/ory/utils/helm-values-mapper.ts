@@ -710,11 +710,16 @@ export const getOryHealthChecks = (config: OryIdentityStackConfig): OryHealthChe
     || config.components?.[check.component] !== false);
 };
 
-export const getOryMetricSignals = (config: OryIdentityStackConfig): OryMetricSignal[] => [
-  { name: 'serviceMonitorEnabled', component: 'hydra', enabled: config.hydra?.serviceMonitor?.enabled === true },
-  { name: 'serviceMonitorEnabled', component: 'kratos', enabled: config.kratos?.serviceMonitor?.enabled === true },
-  { name: 'serviceMonitorEnabled', component: 'keto', enabled: config.keto?.serviceMonitor?.enabled === true },
-  { name: 'serviceMonitorEnabled', component: 'oathkeeper', enabled: config.oathkeeper?.serviceMonitor?.enabled === true },
-  { name: 'maesterMetricsConfigured', component: 'hydra', enabled: config.maester?.hydra?.serviceMonitor?.enabled === true },
-  { name: 'maesterMetricsConfigured', component: 'oathkeeper', enabled: config.maester?.oathkeeper?.enabled === true },
-];
+export const getOryMetricSignals = (config: OryIdentityStackConfig): OryMetricSignal[] => {
+  const signals: OryMetricSignal[] = [
+    { name: 'serviceMonitorEnabled', component: 'hydra', enabled: config.hydra?.serviceMonitor?.enabled === true },
+    { name: 'serviceMonitorEnabled', component: 'kratos', enabled: config.kratos?.serviceMonitor?.enabled === true },
+    { name: 'serviceMonitorEnabled', component: 'keto', enabled: config.keto?.serviceMonitor?.enabled === true },
+    { name: 'serviceMonitorEnabled', component: 'oathkeeper', enabled: config.oathkeeper?.serviceMonitor?.enabled === true },
+    { name: 'maesterMetricsConfigured', component: 'hydra', enabled: config.maester?.hydra?.serviceMonitor?.enabled === true },
+    { name: 'maesterMetricsConfigured', component: 'oathkeeper', enabled: config.maester?.oathkeeper?.enabled === true },
+  ];
+  // Omitted components report no signals, matching getOryHealthChecks.
+  return signals.filter((signal) => signal.component !== 'keto' && signal.component !== 'oathkeeper'
+    || config.components?.[signal.component] !== false);
+};
