@@ -19,6 +19,7 @@ export const agentSubstrateCommit = 'b34fbee742906494b5eb4f1f36987176bf8770a4';
 const clusterKinds = new Set(['Namespace', 'CustomResourceDefinition', 'ClusterRole', 'ClusterRoleBinding', 'SandboxConfig', 'PriorityClass']);
 const substrateCrdNames = new Set(['workerpools.ate.dev', 'sandboxconfigs.ate.dev', 'csidriverconfigs.ate.dev']);
 const controlPlane = ['ate-api-server', 'ate-idp-server', 'atenet-router', 'atenet-egress', 'ate-controller'] as const;
+const releaseReadinessProbes = new Set(['ate-api-server', 'atenet-router']);
 const immutableImage = /@sha256:[0-9a-f]{64}$/u;
 const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 
@@ -81,9 +82,9 @@ function validateBundle(bundle: AgentSubstrateInstallationBundle): void {
       if (!containers.length || containers.some(container => !container.image || !immutableImage.test(container.image))) {
         throw new Error('Agent Substrate workload images must be pinned by digest.');
       }
-      if (kind === 'Deployment' && metadata.name === 'ate-api-server'
+      if (kind === 'Deployment' && releaseReadinessProbes.has(metadata.name)
         && !pod?.containers?.some(container => container.readinessProbe?.httpGet?.path === '/readyz')) {
-        throw new Error('The Agent Substrate API rollout must observe the release readiness check.');
+        throw new Error(`The Agent Substrate ${metadata.name} rollout must observe the release /readyz check.`);
       }
     }
     const key = `${metadata.namespace ?? ''}/${kind}/${metadata.name}`;

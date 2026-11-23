@@ -42,6 +42,9 @@ describe('Agent Substrate v1 installation', () => {
     const changed = manifests().map(item => item.metadata.name === 'ate-api-server'
       ? { ...item, spec: { template: { spec: { containers: [{ image: 'neutral:latest' }] } } } } : item);
     expect(() => agentSubstrateInstallation({ sourceCommit: agentSubstrateCommit, namespace, manifests: changed })).toThrow(/pinned by digest/u);
+    const uncheckedRouter = manifests().map(item => item.kind === 'Deployment' && item.metadata.name === 'atenet-router'
+      ? { ...item, spec: { template: { spec: { containers: [{ image }] } } } } : item);
+    expect(() => agentSubstrateInstallation({ sourceCommit: agentSubstrateCommit, namespace, manifests: uncheckedRouter })).toThrow(/atenet-router.*readyz/u);
   });
 
   test('waits for the current rollout and exact sandbox resolution', () => {
