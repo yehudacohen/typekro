@@ -277,6 +277,29 @@ describe('Ory identity stack composition', () => {
     expect(factory.toYaml(external)).toContain("typekro.io/hoisted-namespaces: '[]'");
   });
 
+  it('installs only Kratos and Hydra when the direct stack opts out of Keto and Oathkeeper', async () => {
+    const config = managedIdentityConfig('external');
+    const { hydra, kratos } = config.dependencySources;
+    const direct = oryIdentityStack.factory('direct', { namespace: config.namespace });
+    const selection = {
+      ...config,
+      components: { keto: false, oathkeeper: false },
+      dependencySources: { hydra, kratos },
+    };
+    const declarations = await direct.toAlchemyResources(selection);
+    const ownedObjects = declarations.map(({ props }) => props.resource);
+    expect(ownedObjects.map(({ kind, metadata }) => `${kind}/${metadata?.name}`).sort()).toEqual([
+      'HelmRelease/identity-test-hydra',
+      'HelmRelease/identity-test-kratos',
+      'HelmRepository/ory',
+    ]);
+    await expect(direct.toAlchemyResources({ ...selection, components: { oathkeeper: false } }))
+      .rejects.toThrow('Ory production configuration is incomplete');
+    expect(oryIdentityStack.toYaml()).toContain(
+      'validation="(!has(self.keto) || self.keto) && (!has(self.oathkeeper) || self.oathkeeper)"'
+    );
+  });
+
   it('Merges graph-mode Ory whole-object Helm values through Kro map merge', () => {
     const yaml = oryIdentityStack.toYaml();
 

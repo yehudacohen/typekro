@@ -43,6 +43,11 @@ export const oryKroLiteralSecretSchemaFieldValidations = Object.freeze({
     '(!has(self.hydra) || !has(self.hydra.systemSecret) || !has(self.hydra.systemSecret.value) || !has(self.hydra.systemSecret.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cookie) || !has(self.kratos.secrets.cookie.value) || !has(self.kratos.secrets.cookie.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cipher) || !has(self.kratos.secrets.cipher.value) || !has(self.kratos.secrets.cipher.value.value))',
 } as const);
 
+/** KRO status needs a fixed graph of Helm releases. */
+export const oryKroComponentSelectionSchemaFieldValidations = Object.freeze({
+  components: '(!has(self.keto) || self.keto) && (!has(self.oathkeeper) || self.oathkeeper)',
+} as const);
+
 function readyCondition(conditions: unknown): boolean {
   return Cel.expr<boolean>(conditions, '.exists(c, c.type == "Ready" && c.status == "True")');
 }
@@ -318,6 +323,7 @@ function graphSafeConfig(
       dependencySources: config.dependencySources,
       shared: config.shared,
       global: config.global,
+      components: config.components,
       hydra: defined({
         dsn: config.hydra?.dsn,
         issuerUrl: config.hydra?.issuerUrl,
@@ -548,6 +554,8 @@ export const oryIdentityStack: CallableComposition<
     const typedSpec = spec as unknown as OryIdentityStackConfig;
     const resolvedNamespace = typedSpec.namespace ?? 'ory-system';
     const resolvedVersion = typedSpec.version ?? ORY_CHART_VERSION;
+    const ketoEnabled = typedSpec.components?.keto !== false;
+    const oathkeeperEnabled = typedSpec.components?.oathkeeper !== false;
     const concreteSpec =
       !isSchemaSpec(typedSpec) &&
       ![typedSpec.name, typedSpec.namespace, typedSpec.version, typedSpec.dependencySources].some(
@@ -602,19 +610,21 @@ export const oryIdentityStack: CallableComposition<
       namespace: resolvedNamespace,
     });
 
-    const _oathkeeperRulesConfigMap = configMap({
-      id: 'oathkeeperRulesConfigMap',
-      metadata: {
-        name: `${typedSpec.name}-oathkeeper-rules`,
-        namespace: resolvedNamespace,
-        labels: {
-          'app.kubernetes.io/name': 'oathkeeper-rules',
-          'app.kubernetes.io/instance': typedSpec.name,
-          'app.kubernetes.io/managed-by': 'typekro',
+    if (oathkeeperEnabled) {
+      configMap({
+        id: 'oathkeeperRulesConfigMap',
+        metadata: {
+          name: `${typedSpec.name}-oathkeeper-rules`,
+          namespace: resolvedNamespace,
+          labels: {
+            'app.kubernetes.io/name': 'oathkeeper-rules',
+            'app.kubernetes.io/instance': typedSpec.name,
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
         },
-      },
-      data: { 'access-rules.json': '[]' },
-    });
+        data: { 'access-rules.json': '[]' },
+      });
+    }
 
     const hydra = hydraHelmRelease({
       id: 'hydraHelmRelease',
@@ -695,7 +705,7 @@ export const oryIdentityStack: CallableComposition<
           : [],
     });
 
-    const keto = ketoHelmRelease({
+    const ketoRelease = ketoEnabled ? ketoHelmRelease({
       id: 'ketoHelmRelease',
       name: `${typedSpec.name}-keto`,
       namespace: resolvedNamespace,
@@ -703,9 +713,9 @@ export const oryIdentityStack: CallableComposition<
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: values.keto,
-    });
+    }) : undefined;
 
-    const oathkeeper = oathkeeperHelmRelease({
+    const oathkeeperRelease = oathkeeperEnabled ? oathkeeperHelmRelease({
       id: 'oathkeeperHelmRelease',
       name: `${typedSpec.name}-oathkeeper`,
       namespace: resolvedNamespace,
@@ -717,7 +727,7 @@ export const oryIdentityStack: CallableComposition<
         'oathkeeper-maester',
         values.oathkeeperMaester
       ),
-    });
+    }) : undefined;
 
     const starterClients = Array.isArray(typedSpec.resources?.oauth2Clients)
       ? typedSpec.resources.oauth2Clients
@@ -725,6 +735,9 @@ export const oryIdentityStack: CallableComposition<
     const starterRules = Array.isArray(typedSpec.resources?.oathkeeperRules)
       ? typedSpec.resources.oathkeeperRules
       : [];
+    if (!oathkeeperEnabled && starterRules.length > 0) {
+      throw new Error('ORY_OATHKEEPER_DISABLED: Oathkeeper rules require the Oathkeeper component.');
+    }
 
     for (const client of starterClients) {
       oauth2Client({ ...client, namespace: client.namespace ?? resolvedNamespace });
@@ -736,21 +749,19 @@ export const oryIdentityStack: CallableComposition<
 
     const hydraReady = readyCondition(hydra.status.conditions);
     const kratosReady = readyCondition(kratos.status.conditions);
-    const ketoReady = readyCondition(keto.status.conditions);
-    const oathkeeperReady = readyCondition(oathkeeper.status.conditions);
+    const ketoReady = ketoRelease ? readyCondition(ketoRelease.status.conditions) : false;
+    const oathkeeperReady = oathkeeperRelease ? readyCondition(oathkeeperRelease.status.conditions) : false;
     const allServicesReady = Cel.expr<boolean>(
       hydraReady,
       ' && ',
       kratosReady,
-      ' && ',
-      ketoReady,
-      ' && ',
-      oathkeeperReady
+      ...(ketoRelease ? [' && ', ketoReady] : []),
+      ...(oathkeeperRelease ? [' && ', oathkeeperReady] : []),
     );
     const hydraReleaseName = hydra.metadata.name ?? `${typedSpec.name}-hydra`;
     const kratosReleaseName = kratos.metadata.name ?? `${typedSpec.name}-kratos`;
-    const ketoReleaseName = keto.metadata.name ?? `${typedSpec.name}-keto`;
-    const oathkeeperReleaseName = oathkeeper.metadata.name ?? `${typedSpec.name}-oathkeeper`;
+    const ketoReleaseName = ketoRelease?.metadata.name ?? `${typedSpec.name}-keto`;
+    const oathkeeperReleaseName = oathkeeperRelease?.metadata.name ?? `${typedSpec.name}-oathkeeper`;
     return {
       ready: allServicesReady,
       phase: Cel.expr<'Ready' | 'Installing'>(allServicesReady, ' ? "Ready" : "Installing"'),
@@ -769,10 +780,14 @@ export const oryIdentityStack: CallableComposition<
         hydraAdmin: serviceEndpoint(`${hydraReleaseName}-admin`, resolvedNamespace, 4445),
         kratosPublic: serviceEndpoint(`${kratosReleaseName}-public`, resolvedNamespace, 4433),
         kratosAdmin: serviceEndpoint(`${kratosReleaseName}-admin`, resolvedNamespace, 4434),
-        ketoRead: serviceEndpoint(`${ketoReleaseName}-read`, resolvedNamespace, 4466),
-        ketoWrite: serviceEndpoint(`${ketoReleaseName}-write`, resolvedNamespace, 4467),
-        oathkeeperProxy: serviceEndpoint(`${oathkeeperReleaseName}-proxy`, resolvedNamespace, 4455),
-        oathkeeperApi: serviceEndpoint(`${oathkeeperReleaseName}-api`, resolvedNamespace, 4456),
+        ...(ketoRelease ? {
+          ketoRead: serviceEndpoint(`${ketoReleaseName}-read`, resolvedNamespace, 4466),
+          ketoWrite: serviceEndpoint(`${ketoReleaseName}-write`, resolvedNamespace, 4467),
+        } : {}),
+        ...(oathkeeperRelease ? {
+          oathkeeperProxy: serviceEndpoint(`${oathkeeperReleaseName}-proxy`, resolvedNamespace, 4455),
+          oathkeeperApi: serviceEndpoint(`${oathkeeperReleaseName}-api`, resolvedNamespace, 4456),
+        } : {}),
       },
       version: Cel.template('%s', resolvedVersion),
     };
@@ -783,6 +798,9 @@ export const oryIdentityStack: CallableComposition<
     // YAML patch shape between `value` and `valueFrom` at reconciliation time,
     // so reject literal sources at admission instead of silently rewiring them
     // to nonexistent managed Secrets.
-    schemaFieldValidations: oryKroLiteralSecretSchemaFieldValidations,
+    schemaFieldValidations: {
+      ...oryKroLiteralSecretSchemaFieldValidations,
+      ...oryKroComponentSelectionSchemaFieldValidations,
+    },
   }
 );
