@@ -491,4 +491,20 @@ describe('Ory Helm values mapper', () => {
       expect.objectContaining({ name: 'maesterMetricsConfigured', component: 'hydra', enabled: true })
     );
   });
+
+  it('Omits metric signals for components the stack does not install', () => {
+    const signals = getOryMetricSignals({
+      ...externalConfig,
+      components: { keto: false, oathkeeper: false },
+      keto: { ...externalConfig.keto, serviceMonitor: { enabled: true } },
+      oathkeeper: { ...externalConfig.oathkeeper, serviceMonitor: { enabled: true } },
+      maester: { oathkeeper: { enabled: true, singleNamespaceMode: true } },
+    });
+
+    expect(signals.map((signal) => signal.component)).not.toContain('keto');
+    expect(signals.map((signal) => signal.component)).not.toContain('oathkeeper');
+    expect(signals).toContainEqual(
+      expect.objectContaining({ name: 'serviceMonitorEnabled', component: 'hydra' })
+    );
+  });
 });

@@ -547,7 +547,7 @@ export const validateOryConfig = (config: OryIdentityStackConfig): OryConfigVali
   if (!hasValueSource(resolvedConfig.kratos?.dsn)) {
     issues.push({ code: 'ORY_UNRESOLVED_DEPENDENCY_SOURCE', path: 'kratos.dsn', message: 'Kratos DSN source is required', component: 'kratos' });
   }
-  if (!hasValueSource(resolvedConfig.keto?.dsn)) {
+  if (resolvedConfig.components?.keto !== false && !hasValueSource(resolvedConfig.keto?.dsn)) {
     issues.push({ code: 'ORY_UNRESOLVED_DEPENDENCY_SOURCE', path: 'keto.dsn', message: 'Keto DSN source is required', component: 'keto' });
   }
   if (!hasValueSource(resolvedConfig.hydra?.systemSecret)) {
@@ -695,7 +695,7 @@ export const getOryHealthChecks = (config: OryIdentityStackConfig): OryHealthChe
   const valid = validateOryConfig(config).valid;
   const maesterHydra = config.maester?.hydra?.enabled !== false;
   const maesterOathkeeper = config.maester?.oathkeeper?.enabled !== false;
-  return [
+  const checks: OryHealthCheckStatus[] = [
     { name: 'helmRepositoryReady', component: 'hydra', healthy: true, resourceName: 'ory' },
     { name: 'hydraReady', component: 'hydra', healthy: valid },
     { name: 'kratosReady', component: 'kratos', healthy: valid },
@@ -706,13 +706,20 @@ export const getOryHealthChecks = (config: OryIdentityStackConfig): OryHealthChe
     { name: 'oauth2ClientReconciled', component: 'hydra', healthy: maesterHydra },
     { name: 'oathkeeperRuleValidated', component: 'oathkeeper', healthy: maesterOathkeeper },
   ];
+  return checks.filter((check) => check.component !== 'keto' && check.component !== 'oathkeeper'
+    || config.components?.[check.component] !== false);
 };
 
-export const getOryMetricSignals = (config: OryIdentityStackConfig): OryMetricSignal[] => [
-  { name: 'serviceMonitorEnabled', component: 'hydra', enabled: config.hydra?.serviceMonitor?.enabled === true },
-  { name: 'serviceMonitorEnabled', component: 'kratos', enabled: config.kratos?.serviceMonitor?.enabled === true },
-  { name: 'serviceMonitorEnabled', component: 'keto', enabled: config.keto?.serviceMonitor?.enabled === true },
-  { name: 'serviceMonitorEnabled', component: 'oathkeeper', enabled: config.oathkeeper?.serviceMonitor?.enabled === true },
-  { name: 'maesterMetricsConfigured', component: 'hydra', enabled: config.maester?.hydra?.serviceMonitor?.enabled === true },
-  { name: 'maesterMetricsConfigured', component: 'oathkeeper', enabled: config.maester?.oathkeeper?.enabled === true },
-];
+export const getOryMetricSignals = (config: OryIdentityStackConfig): OryMetricSignal[] => {
+  const signals: OryMetricSignal[] = [
+    { name: 'serviceMonitorEnabled', component: 'hydra', enabled: config.hydra?.serviceMonitor?.enabled === true },
+    { name: 'serviceMonitorEnabled', component: 'kratos', enabled: config.kratos?.serviceMonitor?.enabled === true },
+    { name: 'serviceMonitorEnabled', component: 'keto', enabled: config.keto?.serviceMonitor?.enabled === true },
+    { name: 'serviceMonitorEnabled', component: 'oathkeeper', enabled: config.oathkeeper?.serviceMonitor?.enabled === true },
+    { name: 'maesterMetricsConfigured', component: 'hydra', enabled: config.maester?.hydra?.serviceMonitor?.enabled === true },
+    { name: 'maesterMetricsConfigured', component: 'oathkeeper', enabled: config.maester?.oathkeeper?.enabled === true },
+  ];
+  // Omitted components report no signals, matching getOryHealthChecks.
+  return signals.filter((signal) => signal.component !== 'keto' && signal.component !== 'oathkeeper'
+    || config.components?.[signal.component] !== false);
+};

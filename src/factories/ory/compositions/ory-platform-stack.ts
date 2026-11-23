@@ -21,6 +21,7 @@ import {
 } from '../types.js';
 import {
   oryIdentityStack,
+  oryKroComponentSelectionSchemaFieldValidations,
   oryKroLiteralSecretSchemaFieldValidations,
 } from './ory-identity-stack.js';
 import { oathkeeperRule } from '../resources/oathkeeper-rule.js';
@@ -369,6 +370,9 @@ export const oryPlatformStack: CallableComposition<
     status: OryPlatformStackStatusSchema,
   },
   (spec: OryPlatformStackConfig) => {
+    if (spec.components?.keto === false || spec.components?.oathkeeper === false) {
+      throw new Error('ORY_COMPONENT_SELECTION_UNSUPPORTED: select components on oryIdentityStack in direct mode.');
+    }
     const namespaceName = spec.namespace ?? 'ory-system';
     const concreteSpec =
       !isSchemaSpec(spec) &&
@@ -730,6 +734,9 @@ export const oryPlatformStack: CallableComposition<
     // the imperative root. The platform exposes the same literal-capable
     // direct schema as the identity stack, so attach the KRO restriction at
     // this public root as well.
-    schemaFieldValidations: oryKroLiteralSecretSchemaFieldValidations,
+    schemaFieldValidations: {
+      ...oryKroLiteralSecretSchemaFieldValidations,
+      ...oryKroComponentSelectionSchemaFieldValidations,
+    },
   }
 );

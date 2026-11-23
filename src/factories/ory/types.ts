@@ -363,6 +363,8 @@ export interface OryIdentityStackConfig {
   shared?: boolean;
   /** Global image/chart convenience config. */
   global?: OryGlobalConfig;
+  /** Optional services to include in a direct identity stack. Both default to enabled. */
+  components?: { keto?: boolean; oathkeeper?: boolean };
   /** Hydra service config. */
   hydra?: OryHydraConfig;
   /** Kratos service config. */
@@ -437,15 +439,15 @@ export interface OryIdentityStackEndpointStatus {
   hydraAdmin: OryEndpointStatus;
   kratosPublic: OryEndpointStatus;
   kratosAdmin: OryEndpointStatus;
-  ketoRead: OryEndpointStatus;
-  ketoWrite: OryEndpointStatus;
-  oathkeeperProxy: OryEndpointStatus;
-  oathkeeperApi: OryEndpointStatus;
+  ketoRead?: OryEndpointStatus;
+  ketoWrite?: OryEndpointStatus;
+  oathkeeperProxy?: OryEndpointStatus;
+  oathkeeperApi?: OryEndpointStatus;
 }
 
 /** Observed status returned by the `oryIdentityStack` composition. */
 export interface OryIdentityStackStatus {
-  /** Overall readiness derived from all Ory HelmRelease Ready conditions. */
+  /** Overall readiness derived from enabled Ory HelmRelease Ready conditions. */
   ready: boolean;
   /** Stack installation phase. */
   phase: OryIdentityStackPhase;
@@ -1392,6 +1394,7 @@ export const OryIdentityStackConfigSchema = type({
     'imageRegistry?': 'string',
     'imagePullSecrets?': 'string[]',
   },
+  'components?': { 'keto?': 'boolean', 'oathkeeper?': 'boolean' },
   'hydra?': {
     'dsn?': oryValueSourceSchema,
     'issuerUrl?': 'string',
@@ -1475,10 +1478,10 @@ const oryEndpointSetStatusSchema = type({
   hydraAdmin: oryEndpointStatusSchema,
   kratosPublic: oryEndpointStatusSchema,
   kratosAdmin: oryEndpointStatusSchema,
-  ketoRead: oryEndpointStatusSchema,
-  ketoWrite: oryEndpointStatusSchema,
-  oathkeeperProxy: oryEndpointStatusSchema,
-  oathkeeperApi: oryEndpointStatusSchema,
+  'ketoRead?': oryEndpointStatusSchema,
+  'ketoWrite?': oryEndpointStatusSchema,
+  'oathkeeperProxy?': oryEndpointStatusSchema,
+  'oathkeeperApi?': oryEndpointStatusSchema,
 });
 
 export const OryIdentityStackStatusSchema = type({

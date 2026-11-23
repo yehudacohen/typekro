@@ -105,6 +105,19 @@ secret-environment wiring.
 
 Use `kratos.identitySchema` to replace Kratos' default mounted identity schema in both direct and KRO modes. TypeKro mounts it as `identity.default.schema.json` and wires `kratos.config.identity.schemas` to the matching default ref, so custom schema content does not require duplicate filename/ref configuration.
 
+Direct identity stacks can select `components: { keto: false, oathkeeper: false }`.
+Each omitted component defaults to enabled. A disabled component has no Helm
+release or endpoint, reports false in the component status, and does not hold
+stack readiness. With Keto disabled the stack requires the Kratos and Hydra
+databases. KRO and the managed `oryPlatformStack` use the full component set.
+
+Component selection decides what a deployment installs. It does not uninstall
+components from an existing stack: redeploying a four-component stack with
+`keto: false` or `oathkeeper: false` leaves the previously installed Keto or
+Oathkeeper Helm releases in place, because direct deployment does not prune
+resources that leave the graph. Remove them explicitly, or select the
+components when the stack is first created.
+
 ## Managed Local Platform
 
 Use `oryPlatformStack` for CI and local clusters when you want TypeKro to create local infrastructure instead of manually provisioning it first. Direct mode can create managed databases, local-only Secrets, routes, and a sample upstream before deploying Ory. KRO mode omits APISIX route resources from the ResourceGraphDefinition so clusters without APISIX CRDs can still activate the graph; KRO infrastructure status reports routes as unmanaged because the graph does not own APISIX route resources.
