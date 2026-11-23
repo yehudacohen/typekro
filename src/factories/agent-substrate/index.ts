@@ -4,6 +4,7 @@ import { kubernetesComposition } from '../../core/composition/imperative.js';
 import { setMetadataField, setReadinessEvaluator } from '../../core/metadata/resource-metadata.js';
 import { createCustomResourceDefinitionReadinessEvaluator } from '../../core/readiness/index.js';
 import { Cel } from '../../core/references/cel.js';
+import type { CallableComposition } from '../../core/types/deployment.js';
 import type { KubernetesResource } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 import {
@@ -171,7 +172,9 @@ function validateBundle(bundle: AgentSubstrateInstallationBundle): void {
 }
 
 /** Install the exact release bundle through TypeKro's owned Kubernetes lifecycle. */
-export function agentSubstrateInstallation(bundle: AgentSubstrateInstallationBundle) {
+export function agentSubstrateInstallation(
+  bundle: AgentSubstrateInstallationBundle
+): CallableComposition<object, { ready: boolean }> {
   validateBundle(bundle);
   const manifests = structuredClone(bundle.manifests);
   return kubernetesComposition(
@@ -190,12 +193,11 @@ export function agentSubstrateInstallation(bundle: AgentSubstrateInstallationBun
           .digest('hex')
           .slice(0, 16)}`;
         const clusterScoped = clusterKinds.has(manifest.kind);
-        const resource = createResource<{ replicas: number }, { readyReplicas: number }>(
-          {
-            ...manifest,
-            id,
-            spec: manifest.spec as { replicas: number },
-          },
+        const resource = createResource(
+          { ...manifest, id } as KubernetesResource<
+            Record<string, unknown>,
+            Record<string, unknown>
+          >,
           { scope: clusterScoped ? 'cluster' : 'namespaced' }
         );
         if (clusterScoped) setMetadataField(resource, 'scopes', ['agent-substrate-cluster']);
