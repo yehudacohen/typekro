@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-11-23
+
+### Added
+
+- **Ory component selection.** Direct `oryIdentityStack` deployments can omit Keto and
+  Oathkeeper with `components: { keto: false, oathkeeper: false }`, so an application that
+  needs Kratos for identity and Hydra for OAuth2 installs only those. Each component defaults
+  to enabled, so existing configurations are unchanged. An omitted component has no Helm
+  release, endpoint, health check or metric signal; reports `false` in the component status;
+  and does not hold stack readiness. With Keto omitted, its database connection is no longer
+  required. KRO mode and the managed `oryPlatformStack` keep the full component set and refuse
+  the selection, because their graphs are fixed.
+- Component selection decides what a deployment installs. It does not uninstall components
+  from an existing stack; see the Ory API docs.
+
+### Documentation
+
+- `CONTRIBUTING.md` describes the release process the deploy workflow implements.
+
 ## [0.49.0] - 2026-11-22
 
 ### Added
