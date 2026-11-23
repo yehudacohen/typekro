@@ -489,11 +489,11 @@ TypeKro follows semantic versioning:
 
 ### Release Steps
 
-1. Update version in `package.json`
-2. Update `CHANGELOG.md` with release notes
-3. Create release tag: `git tag v1.2.3`
-4. Push tag: `git push origin v1.2.3`
-5. GitHub Actions handles NPM publishing
+1. Open a release PR that updates the version in `package.json`, moves the `CHANGELOG.md` notes under the new version, and refreshes `scripts/declaration-baseline.json` (`bun run build:lib && bun run check:declaration-budgets --write-baseline`)
+2. Merge the release PR into `master`
+3. GitHub Actions (`deploy.yml`) sees a version without a tag, publishes to npm, then creates the `vX.Y.Z` tag and the GitHub Release
+
+Don't push the version tag yourself: the workflow only publishes when the tag doesn't exist yet.
 
 ## Getting Help
 
