@@ -38,8 +38,11 @@ import {
   isNotFoundError,
 } from '../shared-kubeconfig.js';
 
-const enabled = process.env.TYPEKRO_AGENT_SUBSTRATE_LIVE === 'true' && (await isClusterAvailable());
-const describeOrSkip = enabled ? describe : describe.skip;
+// Asked for (TYPEKRO_AGENT_SUBSTRATE_LIVE=true) and no cluster: fail, never skip silently.
+const requested = process.env.TYPEKRO_AGENT_SUBSTRATE_LIVE === 'true';
+const available = requested && (await isClusterAvailable());
+const enabled = available;
+const describeOrSkip = requested ? describe : describe.skip;
 
 const options: AgentSubstrateInstallationOptions = {
   ingressAllowedSpiffeIds: ['spiffe://cluster.local/ns/agents/sa/client'],
@@ -55,6 +58,10 @@ interface Live {
 }
 
 describeOrSkip('Agent Substrate v1.0.0 on a disposable cluster', () => {
+  it('has a cluster to install on', () => {
+    expect(available).toBe(true);
+  });
+
   const kubeConfig = enabled ? getIntegrationTestKubeConfig() : undefined;
   const api = enabled ? createKubernetesObjectApiClient(kubeConfig) : undefined;
   const composition = agentSubstrateInstallation(options);
@@ -157,12 +164,18 @@ describeOrSkip('Agent Substrate v1.0.0 on a disposable cluster', () => {
     // The policy is enforced once the API server has loaded it.
     let refusal = '';
     const deadline = Date.now() + 60_000;
-    while (!refusal && Date.now() < deadline) {
+    while (!refusal.includes('sandboxconfig-assets') && Date.now() < deadline) {
       try {
         await api?.create(config, undefined, 'All');
         await new Promise((resolve) => setTimeout(resolve, 2_000));
       } catch (error) {
-        refusal = String((error as { body?: unknown }).body ?? error);
+        const body = (error as { body?: unknown }).body;
+        const text = typeof body === 'string' ? body : JSON.stringify(body ?? String(error));
+        // Only the policy's own refusal ends the wait; anything else (a CRD or the policy not
+        // yet served) is retried until the deadline and reported.
+        refusal = text;
+        if (text.includes('sandboxconfig-assets')) break;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
       }
     }
     expect(refusal).toContain('sandboxconfig-assets');

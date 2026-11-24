@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { V1ResourceRequirements, V1Toleration } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../core/composition/imperative.js';
@@ -7,7 +8,12 @@ import { Cel } from '../../core/references/cel.js';
 import type { CallableComposition } from '../../core/types/deployment.js';
 import type { KubernetesResource } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
-import { substrateReadiness, substrateReadyCel, type SubstrateReadinessKind } from './readiness.js';
+import {
+  type SubstrateReadinessKind,
+  substrateAcceptedReadiness,
+  substrateReadiness,
+  substrateReadyCel,
+} from './readiness.js';
 import type { AgentSubstrateManifest, AgentSubstrateReleaseDocument } from './release.js';
 import { verifyAgentSubstrateRelease } from './release.js';
 import { agentSubstrateV1_0_0 as release } from './releases/v1.0.0.js';
@@ -47,6 +53,16 @@ export interface AgentSubstrateInstallationOptions {
   readonly ingressAllowedSpiffeIds?: readonly string[];
   readonly workerPools?: readonly AgentSubstrateWorkerPool[];
 }
+
+/**
+ * Stamped on every Namespace the installation creates. Apply refuses to patch an existing
+ * Namespace without it, so a Namespace the installation did not create is never adopted into
+ * the deployment record and `deleteInstance` can never remove it.
+ */
+export const agentSubstrateNamespaceOwnerAnnotation = {
+  key: 'typekro.io/agent-substrate-installation',
+  value: 'agent-substrate-installation-v1',
+} as const;
 
 const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const dnsSubdomain =
@@ -94,11 +110,23 @@ function validateOptions(options: AgentSubstrateInstallationOptions): void {
   }
 }
 
+function markNamespace(manifest: AgentSubstrateManifest): AgentSubstrateManifest {
+  const metadata = manifest.metadata as { annotations?: Record<string, string> };
+  metadata.annotations = {
+    ...metadata.annotations,
+    [agentSubstrateNamespaceOwnerAnnotation.key]: agentSubstrateNamespaceOwnerAnnotation.value,
+  };
+  return manifest;
+}
+
 /** The release objects with the ingress allowlist substituted into the router's arguments. */
 function releaseObjects(
   options: AgentSubstrateInstallationOptions
 ): AgentSubstrateReleaseDocument[] {
   const documents = structuredClone(release.documents) as AgentSubstrateReleaseDocument[];
+  for (const { manifest } of documents) {
+    if (manifest.kind === 'Namespace') markNamespace(manifest);
+  }
   const ids = options.ingressAllowedSpiffeIds ?? [];
   if (ids.length === 0) return documents;
   const router = documents.find(
@@ -135,7 +163,7 @@ function workerPoolObjects(
       (name): AgentSubstrateReleaseDocument => ({
         source: 'typekro',
         scope: 'Cluster',
-        manifest: { apiVersion: 'v1', kind: 'Namespace', metadata: { name } },
+        manifest: markNamespace({ apiVersion: 'v1', kind: 'Namespace', metadata: { name } }),
       })
     ),
     ...pools.map(
@@ -202,8 +230,11 @@ function pascal(value: string): string {
     .join('');
 }
 
+/** Readable, and unique even where `pascal` folds distinct names such as `a-b` and `a--b`. */
 function resourceId({ kind, metadata }: AgentSubstrateManifest): string {
-  return `substrate${pascal(kind)}${kind === 'WorkerPool' ? pascal(metadata.namespace ?? '') : ''}${pascal(metadata.name)}`;
+  const identity = `${kind}/${metadata.namespace ?? ''}/${metadata.name}`;
+  const hash = createHash('sha256').update(identity).digest('hex').slice(0, 6);
+  return `substrate${pascal(kind)}${kind === 'WorkerPool' ? pascal(metadata.namespace ?? '') : ''}${pascal(metadata.name)}${hash}`;
 }
 
 let verified = false;
@@ -257,10 +288,20 @@ export function agentSubstrateInstallation(
           { scope: scope === 'Cluster' ? 'cluster' : 'namespaced' }
         );
         if (scope === 'Cluster') setMetadataField(resource, 'scopes', ['agent-substrate-cluster']);
+        if (manifest.kind === 'Namespace') {
+          setMetadataField(resource, 'applyPolicy', {
+            strategy: 'create-or-patch',
+            existingResource: 'patch',
+            immutableFieldPolicy: 'fail',
+            requireOwnerAnnotation: agentSubstrateNamespaceOwnerAnnotation,
+          });
+        }
         if (readinessKinds.has(manifest.kind)) {
           const kind = manifest.kind as SubstrateReadinessKind;
           setReadinessEvaluator(resource, substrateReadiness[kind]);
           ready.push(`(${substrateReadyCel(kind, id)})`);
+        } else {
+          setReadinessEvaluator(resource, substrateAcceptedReadiness);
         }
         const order = phase(manifest);
         const members = phases.get(order) ?? [];

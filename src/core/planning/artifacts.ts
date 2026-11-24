@@ -25,6 +25,11 @@ export type ArtifactApplyPolicy =
       readonly patchType?: 'merge' | 'strategic';
       readonly existingResource: 'warn' | 'fail' | 'patch' | 'replace';
       readonly immutableFieldPolicy: 'fail' | 'recreate';
+      /**
+       * Refuse to patch, replace or preserve an existing object unless it carries this
+       * annotation with exactly this value, i.e. unless the same installation created it.
+       */
+      readonly requireOwnerAnnotation?: { readonly key: string; readonly value: string };
     }
   | {
       readonly strategy: 'server-side-apply';

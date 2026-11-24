@@ -11,6 +11,7 @@ export {
   ResourceConflictError,
   ResourceDeletionIncompleteError,
   ResourceDeploymentError,
+  ResourceOwnershipError,
   ResourceReadinessTimeoutError,
   ResourceReplacementTimeoutError,
   ServerSideApplyConflictError,

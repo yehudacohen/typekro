@@ -139,3 +139,15 @@ export const substrateReadiness: Readonly<
   SandboxConfig: evaluator('SandboxConfig'),
   WorkerPool: evaluator('WorkerPool'),
 };
+
+/**
+ * For objects with no rollout to wait for (Namespaces, RBAC, ConfigMaps, Services, policies):
+ * ready once the API server has accepted them. Set on each such object, so the installation
+ * does not depend on which other factories were imported.
+ */
+export const substrateAcceptedReadiness: ReadinessEvaluator<unknown> =
+  registerPortableReadinessEvaluator(
+    'typekro.readiness.agent-substrate.accepted',
+    '1',
+    (): ResourceStatus => ({ ready: true })
+  );

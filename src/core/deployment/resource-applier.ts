@@ -37,6 +37,7 @@ import type {
 } from '../types.js';
 import {
   ResourceConflictError,
+  ResourceOwnershipError,
   ResourceDeploymentError,
   ResourceReplacementTimeoutError,
   ServerSideApplyConflictError,
@@ -623,6 +624,15 @@ export class ResourceApplier implements ArtifactResourceApplier {
         operation: 'created',
       };
     }
+    const owner = effectivePolicy.requireOwnerAnnotation;
+    if (owner && existing.metadata?.annotations?.[owner.key] !== owner.value) {
+      throw new ResourceOwnershipError(
+        resource.metadata?.name || 'unknown',
+        resource.kind || 'Unknown',
+        owner,
+        resource.metadata?.namespace
+      );
+    }
     switch (effectivePolicy.existingResource) {
       case 'fail':
         throw new ResourceConflictError(
@@ -766,6 +776,7 @@ export class ResourceApplier implements ArtifactResourceApplier {
         }
         if (
           error instanceof ResourceConflictError ||
+          error instanceof ResourceOwnershipError ||
           error instanceof ResourceReplacementTimeoutError ||
           error instanceof ServerSideApplyConflictError
         ) {

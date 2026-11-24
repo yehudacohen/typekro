@@ -12,6 +12,7 @@ import {
   agentSubstrateCommit,
   agentSubstrateInstallation,
   agentSubstrateNamespace,
+  agentSubstrateNamespaceOwnerAnnotation,
   agentSubstrateVersion,
 } from '../../../src/factories/agent-substrate/index.js';
 import {
@@ -258,5 +259,39 @@ describe('Agent Substrate installation', () => {
     expect(() => agentSubstrateInstallation({ workerPools: [pool, pool] })).toThrow(
       /declared twice/u
     );
+  });
+});
+
+describe('Agent Substrate namespace ownership', () => {
+  const { key, value } = agentSubstrateNamespaceOwnerAnnotation;
+
+  test('marks every Namespace the installation creates, the bundle`s and the pools`', () => {
+    const rendered = render({
+      workerPools: [
+        { namespace: 'agents', name: 'one', replicas: 0 },
+        { namespace: 'more-agents', name: 'two', replicas: 0 },
+      ],
+    }) as (Rendered & { metadata: { annotations?: Record<string, string> } })[];
+    const namespaces = rendered.filter(({ kind }) => kind === 'Namespace');
+    expect(namespaces.map(({ metadata }) => metadata.name).sort()).toEqual([
+      'agents',
+      agentSubstrateNamespace,
+      'more-agents',
+      'podcertificate-controller-system',
+    ]);
+    for (const { metadata } of namespaces) expect(metadata.annotations?.[key]).toBe(value);
+    for (const { kind, metadata } of rendered) {
+      if (kind !== 'Namespace') expect(metadata.annotations?.[key]).toBeUndefined();
+    }
+  });
+
+  test('distinct names that fold to the same words keep distinct resource ids', () => {
+    const rendered = render({
+      workerPools: [
+        { namespace: 'agents', name: 'a-b', replicas: 0 },
+        { namespace: 'agents', name: 'a--b', replicas: 0 },
+      ],
+    });
+    expect(rendered.filter(({ kind }) => kind === 'WorkerPool')).toHaveLength(2);
   });
 });

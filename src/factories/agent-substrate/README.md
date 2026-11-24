@@ -71,6 +71,18 @@ The namespace is always `ate-system` (and `podcertificate-controller-system` for
 certificate controller). The release's flags, Service DNS names, NetworkPolicies and certificate
 identities name it literally, so the installation is not relocatable.
 
+## Namespace ownership
+
+Every Namespace the installation creates (the two fixed ones and each WorkerPool namespace)
+carries the annotation `typekro.io/agent-substrate-installation=agent-substrate-installation-v1`
+(`agentSubstrateNamespaceOwnerAnnotation`). Applying over an existing Namespace without that
+annotation fails with `ResourceOwnershipError` before anything is patched. An unrelated namespace
+such as `agents` is therefore never adopted into the deployment record, and
+`deleteInstance(name, { scopes: ['agent-substrate-cluster'] })` cannot delete it. Re-applying over
+a namespace the installation created works, and uninstalling deletes it. To use a namespace that
+already exists, pick another name, or annotate it yourself after checking that deleting it with the
+installation is acceptable.
+
 ## Readiness
 
 `readiness.ts` writes each kind's readiness once, as CEL. The resource-level evaluators run it
