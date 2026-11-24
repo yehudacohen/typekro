@@ -37,6 +37,7 @@ import type {
 } from '../types.js';
 import {
   ResourceConflictError,
+  ResourceOwnershipError,
   ResourceDeploymentError,
   ResourceReplacementTimeoutError,
   ServerSideApplyConflictError,
@@ -623,6 +624,15 @@ export class ResourceApplier implements ArtifactResourceApplier {
         operation: 'created',
       };
     }
+    const owner = effectivePolicy.requireOwnerAnnotation;
+    if (owner && existing.metadata?.annotations?.[owner.key] !== owner.value) {
+      throw new ResourceOwnershipError(
+        resource.metadata?.name || 'unknown',
+        resource.kind || 'Unknown',
+        owner,
+        resource.metadata?.namespace
+      );
+    }
     switch (effectivePolicy.existingResource) {
       case 'fail':
         throw new ResourceConflictError(
@@ -766,6 +776,7 @@ export class ResourceApplier implements ArtifactResourceApplier {
         }
         if (
           error instanceof ResourceConflictError ||
+          error instanceof ResourceOwnershipError ||
           error instanceof ResourceReplacementTimeoutError ||
           error instanceof ServerSideApplyConflictError
         ) {
@@ -790,6 +801,24 @@ export class ResourceApplier implements ArtifactResourceApplier {
               applyPolicy.fieldConflictPolicy,
               ensureError(error)
             );
+          }
+          // A create can race past the 404 read. Never let the generic conflict path
+          // touch an object whose ownership has not been verified.
+          const requiredOwner =
+            applyPolicy?.strategy === 'create-or-patch'
+              ? applyPolicy.requireOwnerAnnotation
+              : undefined;
+          if (requiredOwner) {
+            const current = await this.checkResourceExists(resolvedResource, resourceLogger);
+            if (!current) continue;
+            if (current.metadata?.annotations?.[requiredOwner.key] !== requiredOwner.value) {
+              throw new ResourceOwnershipError(
+                resolvedResource.metadata?.name || 'unknown',
+                resolvedResource.kind || 'Unknown',
+                requiredOwner,
+                resolvedResource.metadata?.namespace
+              );
+            }
           }
           const conflictStrategy =
             applyPolicy?.strategy === 'create-or-patch'

@@ -25,6 +25,11 @@ export type ArtifactApplyPolicy =
       readonly patchType?: 'merge' | 'strategic';
       readonly existingResource: 'warn' | 'fail' | 'patch' | 'replace';
       readonly immutableFieldPolicy: 'fail' | 'recreate';
+      /**
+       * Refuse to patch, replace or preserve an existing object unless it carries this
+       * annotation with exactly this value, i.e. unless the same installation created it.
+       */
+      readonly requireOwnerAnnotation?: { readonly key: string; readonly value: string };
     }
   | {
       readonly strategy: 'server-side-apply';
@@ -34,6 +39,18 @@ export type ArtifactApplyPolicy =
     }
   | { readonly strategy: 'create-only' }
   | { readonly strategy: 'replace' };
+
+/**
+ * Layer a resource's own apply policy over a default. Fields the resource sets win; a policy
+ * of a different strategy replaces the default entirely because the variants share no fields.
+ */
+export function mergeArtifactApplyPolicy(
+  base: ArtifactApplyPolicy,
+  own: ArtifactApplyPolicy | undefined
+): ArtifactApplyPolicy {
+  if (!own) return base;
+  return own.strategy === base.strategy ? ({ ...base, ...own } as ArtifactApplyPolicy) : own;
+}
 
 export interface ArtifactCompilerIdentity {
   readonly id: 'typekro.direct' | 'typekro.kro';

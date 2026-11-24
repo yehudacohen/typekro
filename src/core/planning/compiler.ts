@@ -13,6 +13,7 @@ import {
   type KroGraphChildArtifact,
   type KroInstanceArtifact,
   type KroResourceGraphDefinitionArtifact,
+  mergeArtifactApplyPolicy,
   type KroSupportingArtifact,
 } from './artifacts.js';
 import { canonicalDigest, canonicalStringify } from './canonical.js';
@@ -479,7 +480,11 @@ export function compileDirectArtifactPlan(
     if (node.lifecycle.creation === 'require-existing') {
       return { ...base, role: 'external-reference' as const };
     }
-    return { ...base, role: 'application-resource' as const, apply };
+    return {
+      ...base,
+      role: 'application-resource' as const,
+      apply: mergeArtifactApplyPolicy(apply, node.applyPolicy),
+    };
   });
   resources.push(
     ...(requirementArtifacts(

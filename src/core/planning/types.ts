@@ -1,6 +1,8 @@
 import type { AnyAspectDefinition } from '../aspects/types.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 
+import type { ArtifactApplyPolicy } from './artifacts.js';
+
 /** Version of the experimental semantic planning DTOs. */
 export const SEMANTIC_PLAN_VERSION = 1 as const;
 
@@ -409,6 +411,8 @@ export interface PlanNode {
   readonly activation: readonly PlanValue[];
   readonly readiness: readonly PlanValue[];
   readonly readinessStrategy?: ReadinessStrategyIdentity;
+  /** Per-resource apply policy declared by the composition; merges over the target default. */
+  readonly applyPolicy?: ArtifactApplyPolicy;
   /** Analyzer-proven collection dimensions retained for both target compilers. */
   readonly iteration?: readonly PlanIterationDimension[];
   /** Analyzer-produced property replacements applied after template lowering. */

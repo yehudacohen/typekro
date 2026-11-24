@@ -1,10 +1,9 @@
 # RFP: Pinned Agent Substrate installation composition
 
-Status: proposed documentation contract; no implementation, cluster action, or provider qualification.
+Status: installation composition candidate. Runtime and cluster qualification are separate.
 
-TypeKro may compose a pinned Kubernetes installation of Agent Substrate commit
-`0ab30264bcac18b312ed49222e40d7ea42a0aa6b` / tree
-`69455ba85bf45a7160a38585ae899686c33c60bb`. It owns installation dependency
+TypeKro composes a pinned Kubernetes installation of Agent Substrate v1.0.0
+at commit `b34fbee742906494b5eb4f1f36987176bf8770a4`. It owns installation dependency
 order and Kubernetes readiness only. The consuming application framework owns
 logical actor admission, lease epochs, receipts, cancellation/finalization and
 client handles; the consuming service owns destination policy/evidence. None of
@@ -12,23 +11,28 @@ these authorities is delegated to Substrate snapshots.
 
 ## Exact object boundary
 
-The installation applies actual Kubernetes CRDs `WorkerPool` (namespaced, with
-`status.replicas`, `status.readyReplicas` and selector) and cluster-scoped
-`SandboxConfig` (content-addressed assets, no status subresource), plus API
-server/PostgreSQL migration, controller, `atelet` DaemonSet, router/egress,
-RBAC, network and snapshot-storage resources. `ActorTemplate`, `Actor` and
-`Worker` are instead `ateapi.Control` gRPC proto resources: they are not CRDs
-and must never be represented as Kubernetes manifests.
+`typekro/agent-substrate` installs the release bundle vendored in
+`src/factories/agent-substrate/releases/v1.0.0.ts`, rendered from the tagged commit with the
+release's digest-pinned images and checked against its reviewed sha256 (see the factory's
+README). It is the control plane `ate-setup deploy ate-system` installs in the canonical
+`ate-system` namespace: the `WorkerPool`, `SandboxConfig` and `CSIDriverConfig` CRDs, RBAC, the
+SandboxConfig admission policy, the gVisor class-default SandboxConfig, the pod certificate
+controller, the API, IdP and controller Deployments, the `atelet` DaemonSet, the router and egress
+gateway, and the network policies. Callers add only gVisor WorkerPools and the router's ingress
+SPIFFE allowlist. PostgreSQL, the snapshot store, and the CA, JWT and configuration objects
+`ate-setup` generates stay with their own owners and are referenced by name. `ActorTemplate`,
+`Actor` and `Worker` are `ateapi.Control` gRPC resources, not CRDs, and are never Kubernetes
+manifests.
 
-`customResource()` is insufficient: its always-ready evaluator proves only a
-live object. This composition needs dedicated evaluators for CRD Established /
-NamesAccepted; API authenticated health plus database migration; controller and
-atelet rollout; WorkerPool `readyReplicas == spec.replicas` with exact
-version/node selector; SandboxConfig asset integrity on eligible nodes; and
-router/gateway health. Failed, draining and version-skew states are explicit
-non-ready states. A pinned upgrade drains/fences workers before changing
-version; rollback preserves and observes retained actor/workspace/snapshot
-state, never calling a snapshot a completed remote effect.
+Readiness is one CEL predicate per kind, run by the resource evaluators and conjoined for the root
+status: CRD conditions, current-generation rollouts with no older pods, and WorkerPools whose
+classes resolved the current generation with no pending config switch. The API server's `/readyz`
+probe, part of the release, passes only after PostgreSQL connects and migrations finish. The
+worker verifies SandboxConfig assets when it starts; the runtime proof must exercise that step.
+
+TypeKro follows the installation graph in reverse for uninstall. Cluster-scoped resources have an
+explicit deletion scope. Upgrades and cleanup require application-owned actor drain and
+finalization before changing the installation.
 
 ## Focused external registration seam
 

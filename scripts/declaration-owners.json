@@ -35,6 +35,12 @@
       ]
     },
     {
+      "owner": "agent-substrate",
+      "paths": [
+        "factories/agent-substrate/**"
+      ]
+    },
+    {
       "owner": "experimental/planning",
       "paths": [
         "experimental-planning.d.ts"

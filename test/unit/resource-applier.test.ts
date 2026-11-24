@@ -11,6 +11,7 @@ import type * as k8s from '@kubernetes/client-node';
 import {
   ResourceConflictError,
   ResourceDeploymentError,
+  ResourceOwnershipError,
   ResourceReplacementTimeoutError,
   type ServerSideApplyConflictError,
   UnsupportedMediaTypeError,
@@ -668,6 +669,80 @@ describe('ResourceApplier', () => {
       await expect(
         applier.applyResourceToCluster(resource, createTestOptions(), mockLogger)
       ).rejects.toBeInstanceOf(ResourceConflictError);
+    });
+
+    describe('owner annotation requirement', () => {
+      const owner = { key: 'example.test/installation', value: 'one' };
+      const namespaceOf = (annotations?: Record<string, string>): KubernetesResource =>
+        ({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'team', ...(annotations ? { annotations } : {}) },
+        }) as KubernetesResource;
+      const owned = (): KubernetesResource => {
+        const resource = namespaceOf({ [owner.key]: owner.value, extra: 'x' });
+        setMetadataField(resource, 'applyPolicy', {
+          strategy: 'create-or-patch',
+          existingResource: 'patch',
+          immutableFieldPolicy: 'fail',
+          requireOwnerAnnotation: owner,
+        } satisfies ArtifactApplyPolicy);
+        return resource;
+      };
+
+      it('refuses to patch an existing object that lacks the mark', async () => {
+        mockApi.read.mockResolvedValue(namespaceOf({ unrelated: 'yes' }));
+        await expect(
+          applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger)
+        ).rejects.toBeInstanceOf(ResourceOwnershipError);
+        expect(mockApi.patch).not.toHaveBeenCalled();
+        expect(mockApi.create).not.toHaveBeenCalled();
+      });
+
+      it('refuses an existing object with no annotations at all', async () => {
+        mockApi.read.mockResolvedValue(namespaceOf());
+        await expect(
+          applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger)
+        ).rejects.toThrow(/did not create it/u);
+        expect(mockApi.patch).not.toHaveBeenCalled();
+      });
+
+      it('rechecks ownership when a create races to a 409 and refuses an unowned object', async () => {
+        mockApi.read
+          .mockImplementationOnce(() => Promise.reject(createK8sError('Not Found', 404)))
+          .mockResolvedValue(namespaceOf({ unrelated: 'yes' }));
+        mockApi.create.mockImplementation(() =>
+          Promise.reject(createK8sError('Already Exists', 409))
+        );
+        await expect(
+          applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger)
+        ).rejects.toBeInstanceOf(ResourceOwnershipError);
+        expect(mockApi.patch).not.toHaveBeenCalled();
+      });
+
+      it('patches after a create 409 when the raced object carries the mark', async () => {
+        mockApi.read
+          .mockImplementationOnce(() => Promise.reject(createK8sError('Not Found', 404)))
+          .mockResolvedValue(namespaceOf({ [owner.key]: owner.value }));
+        mockApi.create.mockImplementation(() =>
+          Promise.reject(createK8sError('Already Exists', 409))
+        );
+        mockApi.patch.mockImplementation((resource) => Promise.resolve(resource));
+        await applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger);
+        expect(mockApi.patch).toHaveBeenCalledTimes(1);
+      });
+
+      it('creates a missing object and patches one it already marked', async () => {
+        mockApi.read.mockImplementation(() => Promise.reject(createK8sError('Not Found', 404)));
+        mockApi.create.mockImplementation((resource) => Promise.resolve(resource));
+        await applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger);
+        expect(mockApi.create).toHaveBeenCalledTimes(1);
+
+        mockApi.read.mockResolvedValue(namespaceOf({ [owner.key]: owner.value }));
+        mockApi.patch.mockImplementation((resource) => Promise.resolve(resource));
+        await applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger);
+        expect(mockApi.patch).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('honors strategic merge selection from artifact policy', async () => {

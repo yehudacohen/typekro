@@ -71,6 +71,24 @@ export class ResourceConflictError extends TypeKroError {
   }
 }
 
+/** An existing object is not owned by the installation that is applying over it. */
+export class ResourceOwnershipError extends TypeKroError {
+  constructor(
+    resourceName: string,
+    resourceKind: string,
+    ownerAnnotation: { key: string; value: string },
+    namespace?: string | undefined
+  ) {
+    const nsInfo = namespace ? ` in namespace '${namespace}'` : '';
+    super(
+      `Refusing to adopt existing ${resourceKind}/${resourceName}${nsInfo}: it lacks the annotation ${ownerAnnotation.key}=${ownerAnnotation.value}, so this installation did not create it. Use a name that is not taken, or remove the object yourself if it is safe to do so.`,
+      'RESOURCE_NOT_OWNED',
+      { resourceName, resourceKind, namespace, ownerAnnotation }
+    );
+    this.name = 'ResourceOwnershipError';
+  }
+}
+
 /** A server-side apply field-ownership conflict that must not degrade to legacy 409 handling. */
 export class ServerSideApplyConflictError extends TypeKroError {
   constructor(
