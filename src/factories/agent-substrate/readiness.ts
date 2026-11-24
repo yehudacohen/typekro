@@ -1,162 +1,141 @@
+/**
+ * Readiness of the Agent Substrate installation, written once as CEL.
+ *
+ * Each predicate below is the readiness of one kind of object. The resource-level evaluator runs
+ * it over the live object with cel-js, and the composition's root `status.ready` is the
+ * conjunction of the same predicates over every installation object, so the two cannot
+ * disagree. Every field access is guarded by `has()` in a lazy ternary, because cel-js reports
+ * an error for a missing field (see the Traefik bootstrap's load-balancer projection for the
+ * cel-go and cel-js differences this avoids).
+ */
+import { evaluate } from 'cel-js';
 import { registerPortableReadinessEvaluator } from '../../core/readiness/index.js';
-import type { KubernetesResource, ResourceStatus } from '../../core/types/index.js';
+import type { ReadinessEvaluator, ResourceStatus } from '../../core/types/index.js';
 
-interface Condition {
-  readonly type: string;
-  readonly status: string;
-  readonly observedGeneration?: number;
-}
+export type SubstrateReadinessKind =
+  | 'CustomResourceDefinition'
+  | 'Deployment'
+  | 'DaemonSet'
+  | 'SandboxConfig'
+  | 'WorkerPool';
 
-interface RolloutStatus {
-  readonly observedGeneration?: number;
-  readonly replicas?: number;
-  readonly readyReplicas?: number;
-  readonly availableReplicas?: number;
-  readonly updatedReplicas?: number;
-  readonly desiredNumberScheduled?: number;
-  readonly updatedNumberScheduled?: number;
-  readonly numberReady?: number;
-  readonly numberAvailable?: number;
-}
+const guard = (condition: string, then: string) => `(${condition} ? (${then}) : false)`;
+const count = (self: string, field: string) =>
+  `(has(${self}.status.${field}) ? ${self}.status.${field} : 0)`;
+const notDeleting = (self: string) => `!has(${self}.metadata.deletionTimestamp)`;
+const observedCurrent = (self: string) =>
+  guard(
+    `has(${self}.status.observedGeneration) && has(${self}.metadata.generation)`,
+    `${self}.status.observedGeneration == ${self}.metadata.generation`
+  );
 
-interface PoolClass {
-  readonly name: string;
-  readonly configRef?: { readonly name: string };
-  readonly pendingConfigRef?: { readonly name: string };
-  readonly conditions?: readonly Condition[];
-}
-
-interface PoolSpec {
-  readonly replicas?: number;
-  readonly workerImage?: string;
-  readonly template?: { readonly nodeSelector?: Readonly<Record<string, string>> };
-  readonly sandboxClasses?: readonly PoolClass[];
-}
-
-interface PoolStatus {
-  readonly replicas?: number;
-  readonly readyReplicas?: number;
-  readonly selector?: string;
-  readonly sandboxClasses?: readonly PoolClass[];
-}
-
-interface SandboxConfigSpec {
-  readonly sandboxClass?: string;
-  readonly defaultVersion?: string;
-  readonly versions?: readonly {
-    readonly name: string;
-    readonly state: string;
-    readonly assets?: Readonly<
-      Record<string, Readonly<Record<string, { readonly url: string; readonly sha256: string }>>>
-    >;
-  }[];
-}
-
-function status(ready: boolean, reason: string): ResourceStatus {
-  return ready ? { ready } : { ready, reason };
-}
-
-export const substrateDeploymentReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.deployment',
-  '1',
-  (input: unknown): ResourceStatus => {
-    const resource = input as KubernetesResource<{ replicas?: number }, RolloutStatus>;
-    const replicas = resource.spec?.replicas ?? 1;
-    const generation = resource.metadata.generation;
-    const live = resource.status;
-    return status(
-      !resource.metadata.deletionTimestamp &&
-        generation !== undefined &&
-        live?.observedGeneration === generation &&
-        replicas > 0 &&
-        live.replicas === replicas &&
-        live.readyReplicas === replicas &&
-        live.availableReplicas === replicas &&
-        live.updatedReplicas === replicas,
-      'RolloutPending'
-    );
-  }
-);
-
-export const substrateDaemonSetReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.daemon-set',
-  '1',
-  (input: unknown): ResourceStatus => {
-    const resource = input as KubernetesResource<unknown, RolloutStatus>;
-    const generation = resource.metadata.generation;
-    const live = resource.status;
-    const desired = live?.desiredNumberScheduled ?? 0;
-    return status(
-      !resource.metadata.deletionTimestamp &&
-        generation !== undefined &&
-        live?.observedGeneration === generation &&
-        desired > 0 &&
-        live.numberReady === desired &&
-        live.updatedNumberScheduled === desired &&
-        live.numberAvailable === desired,
-      'NodeRolloutPending'
-    );
-  }
-);
-
-/** Kubernetes v1.0.0 reports resolution per class and readiness as pod counts. */
-export const substrateWorkerPoolReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.worker-pool',
-  '1',
-  (input: unknown): ResourceStatus => {
-    const resource = input as KubernetesResource<PoolSpec, PoolStatus>;
-    const wanted = resource.spec?.sandboxClasses?.[0];
-    const actual = resource.status?.sandboxClasses?.find((item) => item.name === wanted?.name);
-    const replicas = resource.spec?.replicas ?? 0;
-    const architecture = resource.spec?.template?.nodeSelector?.['kubernetes.io/arch'];
-    return status(
-      !resource.metadata.deletionTimestamp &&
-        replicas > 0 &&
-        !!wanted?.configRef &&
-        (architecture === 'amd64' || architecture === 'arm64') &&
-        /@sha256:[0-9a-f]{64}$/u.test(resource.spec?.workerImage ?? '') &&
-        !!resource.status?.selector &&
-        resource.status.replicas === replicas &&
-        resource.status.readyReplicas === replicas &&
-        actual?.configRef?.name === wanted.configRef.name &&
-        !actual?.pendingConfigRef &&
-        actual?.conditions?.some(
-          (condition) =>
-            condition.type === 'Resolved' &&
-            condition.status === 'True' &&
-            condition.observedGeneration === resource.metadata.generation
-        ) === true,
-      'WorkerPoolNotReady'
-    );
-  }
-);
-
-/** Checks the live immutable asset pins. The worker runtime verifies the downloaded bytes. */
-export const substrateSandboxConfigReadiness = registerPortableReadinessEvaluator(
-  'typekro.readiness.agent-substrate.sandbox-config',
-  '1',
-  (input: unknown): ResourceStatus => {
-    const resource = input as KubernetesResource<SandboxConfigSpec>;
-    const version = resource.spec?.versions?.find(
-      (item) => item.name === resource.spec?.defaultVersion
-    );
-    const perArchitecture = Object.values(version?.assets ?? {});
-    return status(
-      !resource.metadata.deletionTimestamp &&
-        !!resource.spec?.sandboxClass &&
-        version?.state === 'Enabled' &&
-        perArchitecture.length > 0 &&
-        perArchitecture.every((assets) => {
-          const files = Object.values(assets);
-          return (
-            files.length > 0 &&
-            files.every(
-              (asset) =>
-                /^(gs|s3|https):\/\//u.test(asset.url) && /^[0-9a-f]{64}$/u.test(asset.sha256)
+/** The readiness predicate of a `kind` object named by the CEL identifier `self`. */
+export function substrateReadyCel(kind: SubstrateReadinessKind, self: string): string {
+  switch (kind) {
+    case 'CustomResourceDefinition':
+      return `${notDeleting(self)} && ${guard(
+        `has(${self}.status)`,
+        guard(
+          `has(${self}.status.conditions)`,
+          ['Established', 'NamesAccepted']
+            .map(
+              (type) =>
+                `${self}.status.conditions.exists(c, c.type == '${type}' && c.status == 'True')`
             )
-          );
-        }),
-      'SandboxAssetsNotPinned'
-    );
+            .join(' && ')
+        )
+      )}`;
+    case 'Deployment': {
+      // The current generation is observed and every desired pod is updated, ready and available,
+      // with no pod of an older ReplicaSet left. Zero desired replicas is ready once observed.
+      const desired = `(has(${self}.spec.replicas) ? ${self}.spec.replicas : 1)`;
+      return `${notDeleting(self)} && ${guard(
+        `has(${self}.status)`,
+        [
+          observedCurrent(self),
+          ...['replicas', 'updatedReplicas', 'readyReplicas', 'availableReplicas'].map(
+            (field) => `${count(self, field)} == ${desired}`
+          ),
+        ].join(' && ')
+      )}`;
+    }
+    case 'DaemonSet': {
+      // As `kubectl rollout status`: every scheduled pod is updated, ready and available.
+      const desired = count(self, 'desiredNumberScheduled');
+      return `${notDeleting(self)} && ${guard(
+        `has(${self}.status)`,
+        [
+          observedCurrent(self),
+          ...['updatedNumberScheduled', 'numberReady', 'numberAvailable'].map(
+            (field) => `${count(self, field)} == ${desired}`
+          ),
+        ].join(' && ')
+      )}`;
+    }
+    case 'SandboxConfig':
+      // No status subresource; its asset pins are checked when the bundle is built.
+      return notDeleting(self);
+    case 'WorkerPool': {
+      // Every pod is ready, and each sandbox class has resolved this generation to the named
+      // config (or, with no configRef, to the class default) with no config switch pending.
+      // A pool of zero replicas is ready once its classes resolve.
+      const resolved = `c.name == w.name && !has(c.pendingConfigRef) && ${guard(
+        'has(c.configRef)',
+        '(has(w.configRef) ? c.configRef.name == w.configRef.name : true)'
+      )} && ${guard(
+        'has(c.conditions)',
+        `c.conditions.exists(k, k.type == 'Resolved' && k.status == 'True' && ${guard(
+          `has(k.observedGeneration) && has(${self}.metadata.generation)`,
+          `k.observedGeneration == ${self}.metadata.generation`
+        )})`
+      )}`;
+      return `${notDeleting(self)} && ${guard(
+        `has(${self}.status)`,
+        [
+          `${count(self, 'replicas')} == ${self}.spec.replicas`,
+          `${count(self, 'readyReplicas')} == ${self}.spec.replicas`,
+          guard(
+            `has(${self}.status.sandboxClasses) && has(${self}.spec.sandboxClasses)`,
+            `${self}.spec.sandboxClasses.all(w, ${self}.status.sandboxClasses.exists(c, ${resolved}))`
+          ),
+        ].join(' && ')
+      )}`;
+    }
   }
-);
+}
+
+const REASONS: Record<SubstrateReadinessKind, string> = {
+  CustomResourceDefinition: 'CustomResourceDefinitionNotEstablished',
+  Deployment: 'RolloutPending',
+  DaemonSet: 'NodeRolloutPending',
+  SandboxConfig: 'SandboxConfigDeleting',
+  WorkerPool: 'WorkerPoolNotReady',
+};
+
+function evaluator(kind: SubstrateReadinessKind): ReadinessEvaluator<unknown> {
+  const expression = substrateReadyCel(kind, 'self');
+  return registerPortableReadinessEvaluator(
+    `typekro.readiness.agent-substrate.${kind}`,
+    '2',
+    (self: unknown): ResourceStatus => {
+      let ready = false;
+      try {
+        ready = evaluate(expression, { self: self as Record<string, unknown> }) === true;
+      } catch {
+        ready = false;
+      }
+      return ready ? { ready } : { ready, reason: REASONS[kind] };
+    }
+  );
+}
+
+/** Resource-level evaluators, one per kind, running {@link substrateReadyCel}. */
+export const substrateReadiness: Readonly<
+  Record<SubstrateReadinessKind, ReadinessEvaluator<unknown>>
+> = {
+  CustomResourceDefinition: evaluator('CustomResourceDefinition'),
+  Deployment: evaluator('Deployment'),
+  DaemonSet: evaluator('DaemonSet'),
+  SandboxConfig: evaluator('SandboxConfig'),
+  WorkerPool: evaluator('WorkerPool'),
+};

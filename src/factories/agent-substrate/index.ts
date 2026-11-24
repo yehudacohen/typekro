@@ -1,182 +1,230 @@
-import { createHash } from 'node:crypto';
+import type { V1ResourceRequirements, V1Toleration } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../core/composition/imperative.js';
+import { TypeKroError } from '../../core/errors.js';
 import { setMetadataField, setReadinessEvaluator } from '../../core/metadata/resource-metadata.js';
-import { createCustomResourceDefinitionReadinessEvaluator } from '../../core/readiness/index.js';
 import { Cel } from '../../core/references/cel.js';
 import type { CallableComposition } from '../../core/types/deployment.js';
 import type { KubernetesResource } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
-import {
-  substrateDaemonSetReadiness,
-  substrateDeploymentReadiness,
-  substrateSandboxConfigReadiness,
-  substrateWorkerPoolReadiness,
-} from './readiness.js';
+import { substrateReadiness, substrateReadyCel, type SubstrateReadinessKind } from './readiness.js';
+import type { AgentSubstrateManifest, AgentSubstrateReleaseDocument } from './release.js';
+import { verifyAgentSubstrateRelease } from './release.js';
+import { agentSubstrateV1_0_0 as release } from './releases/v1.0.0.js';
 
 export const agentSubstrateVersion = 'v1.0.0';
 export const agentSubstrateCommit = 'b34fbee742906494b5eb4f1f36987176bf8770a4';
+/** Canonical sha256 of the reviewed v1.0.0 bundle; see `README.md` in this directory. */
+export const agentSubstrateBundleSha256 =
+  'efafeb40b52f619855adcd5d5f0c2c0ebae795dff216f01b030ce4c44af7c7e5';
+/**
+ * The control-plane namespace. The release's manifests, flags, Service DNS names and pod
+ * certificate identities name it literally, so the installation is not relocatable.
+ */
+export const agentSubstrateNamespace = 'ate-system';
 
-const clusterKinds = new Set([
-  'Namespace',
-  'CustomResourceDefinition',
-  'ClusterRole',
-  'ClusterRoleBinding',
-  'SandboxConfig',
-  'PriorityClass',
-]);
-const substrateCrdNames = new Set([
-  'workerpools.ate.dev',
-  'sandboxconfigs.ate.dev',
-  'csidriverconfigs.ate.dev',
-]);
-const controlPlane = [
-  'ate-api-server',
-  'ate-idp-server',
-  'atenet-router',
-  'atenet-egress',
-  'ate-controller',
-] as const;
-const releaseReadinessProbes = new Set(['ate-api-server', 'atenet-router']);
-const crdReady = createCustomResourceDefinitionReadinessEvaluator();
-const immutableImage = /@sha256:[0-9a-f]{64}$/u;
-const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-
-interface PodWorkloadSpec {
-  readonly replicas?: number;
-  readonly template?: {
-    readonly spec?: {
-      readonly containers?: readonly {
-        readonly image?: string;
-        readonly readinessProbe?: { readonly httpGet?: { readonly path?: string } };
-      }[];
-      readonly initContainers?: readonly { readonly image?: string }[];
-    };
-  };
-}
-
-export interface AgentSubstrateInstallationBundle {
-  /** The release commit used to render the Kubernetes bundle. */
-  readonly sourceCommit: typeof agentSubstrateCommit;
+/** A gVisor WorkerPool running the release's `ateworker-gvisor` image. */
+export interface AgentSubstrateWorkerPool {
+  /** The pool's namespace, which the installation creates and owns. */
   readonly namespace: string;
-  /** Set when the installation owns the release's pod certificate controller. */
-  readonly certificateControllerNamespace?: string;
-  /** Rendered release objects plus the selected WorkerPool and private storage references. */
-  readonly manifests: readonly KubernetesResource[];
+  /** At most 63 characters, as the WorkerPool API requires. */
+  readonly name: string;
+  /** Worker pods to run; zero is allowed. */
+  readonly replicas: number;
+  /** A gVisor SandboxConfig. Omitted, the pool resolves the class default, `gvisor-default`. */
+  readonly sandboxConfig?: string;
+  readonly nodeSelector?: Readonly<Record<string, string>>;
+  readonly tolerations?: readonly V1Toleration[];
+  readonly resources?: V1ResourceRequirements;
 }
 
-function phase(resource: KubernetesResource): number {
-  if (resource.kind === 'Namespace' || resource.kind === 'CustomResourceDefinition') return 0;
-  if (
-    resource.kind === 'SandboxConfig' ||
-    resource.kind === 'Job' ||
-    resource.kind === 'StatefulSet'
-  )
-    return 2;
-  if (resource.kind === 'DaemonSet') return 6;
-  if (resource.kind === 'WorkerPool') return 7;
-  if (resource.kind !== 'Deployment') return 1;
-  if (resource.metadata.name === 'ate-api-server') return 4;
-  if (controlPlane.some((name) => name === resource.metadata.name)) return 5;
-  return 3;
+export interface AgentSubstrateInstallationOptions {
+  /**
+   * SPIFFE IDs (exact match) of the clients the ingress router lets reach actors, passed as
+   * `--ingress-allowed-spiffe-ids`. Unset, no client may reach actors through the router.
+   * This is the only value substituted into the release's own objects.
+   */
+  readonly ingressAllowedSpiffeIds?: readonly string[];
+  readonly workerPools?: readonly AgentSubstrateWorkerPool[];
 }
 
-function validateBundle(bundle: AgentSubstrateInstallationBundle): void {
-  const namespaces = new Set([
-    bundle.namespace,
-    ...(bundle.certificateControllerNamespace ? [bundle.certificateControllerNamespace] : []),
-  ]);
-  if (
-    bundle.sourceCommit !== agentSubstrateCommit ||
-    [...namespaces].some((namespace) => !dnsLabel.test(namespace))
-  ) {
-    throw new Error(
-      'Agent Substrate requires a v1.0.0 installation bundle and a concrete namespace.'
+const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const dnsSubdomain =
+  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/u;
+const spiffeId = /^spiffe:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._~%!$&'()*+;=:@-]+)+$/u;
+const reservedNamespaces = new Set(['default', 'kube-system', 'kube-public', 'kube-node-lease']);
+
+function refuse(message: string, context: Record<string, unknown>): never {
+  throw new TypeKroError(message, 'AGENT_SUBSTRATE_INVALID_OPTIONS', context);
+}
+
+function validateOptions(options: AgentSubstrateInstallationOptions): void {
+  const ids = options.ingressAllowedSpiffeIds ?? [];
+  for (const id of ids) {
+    if (!spiffeId.test(id)) refuse(`${JSON.stringify(id)} is not a SPIFFE ID.`, { id });
+  }
+  if (new Set(ids).size !== ids.length) refuse('The ingress SPIFFE IDs repeat.', { ids });
+  const bundleNamespaces = new Set(
+    release.documents
+      .filter(({ manifest }) => manifest.kind === 'Namespace')
+      .map(({ manifest }) => manifest.metadata.name)
+  );
+  const pools = new Set<string>();
+  for (const pool of options.workerPools ?? []) {
+    const where = `WorkerPool ${pool.namespace}/${pool.name}`;
+    if (!dnsLabel.test(pool.namespace) || !dnsLabel.test(pool.name)) {
+      refuse(`${where} needs a namespace and name that are DNS labels.`, { ...pool });
+    }
+    if (
+      bundleNamespaces.has(pool.namespace) ||
+      reservedNamespaces.has(pool.namespace) ||
+      pool.namespace.startsWith('kube-')
+    ) {
+      refuse(`${where} must be in a namespace of its own, not ${pool.namespace}.`, { ...pool });
+    }
+    if (!Number.isSafeInteger(pool.replicas) || pool.replicas < 0) {
+      refuse(`${where} needs a whole, non-negative replica count.`, { ...pool });
+    }
+    if (pool.sandboxConfig !== undefined && !dnsSubdomain.test(pool.sandboxConfig)) {
+      refuse(`${where} names an invalid SandboxConfig.`, { ...pool });
+    }
+    const key = `${pool.namespace}/${pool.name}`;
+    if (pools.has(key)) refuse(`${where} is declared twice.`, { ...pool });
+    pools.add(key);
+  }
+}
+
+/** The release objects with the ingress allowlist substituted into the router's arguments. */
+function releaseObjects(
+  options: AgentSubstrateInstallationOptions
+): AgentSubstrateReleaseDocument[] {
+  const documents = structuredClone(release.documents) as AgentSubstrateReleaseDocument[];
+  const ids = options.ingressAllowedSpiffeIds ?? [];
+  if (ids.length === 0) return documents;
+  const router = documents.find(
+    ({ manifest }) =>
+      manifest.kind === 'Deployment' &&
+      manifest.metadata.name === 'atenet-router' &&
+      manifest.metadata.namespace === agentSubstrateNamespace
+  )?.manifest as
+    | { spec: { template: { spec: { containers: { name: string; args: string[] }[] } } } }
+    | undefined;
+  const container = router?.spec.template.spec.containers[0];
+  if (container?.name !== 'atenet-router') {
+    throw new TypeKroError(
+      'The release has no atenet-router container to take the ingress allowlist.',
+      'AGENT_SUBSTRATE_BUNDLE_MODIFIED',
+      {}
     );
   }
-  const seen = new Set<string>();
-  for (const manifest of bundle.manifests) {
-    const { apiVersion, kind, metadata } = manifest;
-    if (
-      !apiVersion ||
-      !metadata.name ||
-      metadata.deletionTimestamp ||
-      manifest.status !== undefined ||
-      ['Actor', 'Actors', 'ActorTemplate', 'Worker', 'EgressPolicy', 'Secret'].includes(kind)
-    ) {
-      throw new Error(
-        'The Agent Substrate installation requires clean Kubernetes manifests and references to externally held Secrets.'
-      );
-    }
-    if (kind === 'CustomResourceDefinition' && !substrateCrdNames.has(metadata.name)) {
-      throw new Error('The bundle contains an unrelated custom resource definition.');
-    }
-    if ((kind === 'WorkerPool' || kind === 'SandboxConfig') && apiVersion !== 'ate.dev/v1') {
-      throw new Error('The Agent Substrate bundle has an unsupported API version.');
-    }
-    if (kind === 'Namespace' && !namespaces.has(metadata.name)) {
-      throw new Error('The bundle can own only its selected namespace.');
-    }
-    if (
-      clusterKinds.has(kind)
-        ? metadata.namespace !== undefined
-        : !metadata.namespace || !namespaces.has(metadata.namespace)
-    ) {
-      throw new Error(
-        'An Agent Substrate resource is outside its installation namespace or scope.'
-      );
-    }
-    if (kind === 'Deployment' || kind === 'DaemonSet' || kind === 'StatefulSet' || kind === 'Job') {
-      const pod = (manifest.spec as PodWorkloadSpec | undefined)?.template?.spec;
-      const containers = [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])];
-      if (
-        !containers.length ||
-        containers.some((container) => !container.image || !immutableImage.test(container.image))
-      ) {
-        throw new Error('Agent Substrate workload images must be pinned by digest.');
-      }
-      if (
-        kind === 'Deployment' &&
-        releaseReadinessProbes.has(metadata.name) &&
-        !pod?.containers?.some((container) => container.readinessProbe?.httpGet?.path === '/readyz')
-      ) {
-        throw new Error(
-          `The Agent Substrate ${metadata.name} rollout must observe the release /readyz check.`
-        );
-      }
-    }
-    const key = `${metadata.namespace ?? ''}/${kind}/${metadata.name}`;
-    if (seen.has(key))
-      throw new Error('The Agent Substrate bundle has a duplicate Kubernetes resource.');
-    seen.add(key);
-  }
-  const required = [
-    '/CustomResourceDefinition/workerpools.ate.dev',
-    '/CustomResourceDefinition/sandboxconfigs.ate.dev',
-    ...[
-      'DaemonSet/atelet',
-      'Service/api',
-      'Service/atenet-router',
-      'Service/atenet-egress',
-      ...controlPlane.map((name) => `Deployment/${name}`),
-    ].map((name) => `${bundle.namespace}/${name}`),
-  ];
-  if (
-    !required.every((key) => seen.has(key)) ||
-    !bundle.manifests.some((resource) => resource.kind === 'WorkerPool') ||
-    !bundle.manifests.some((resource) => resource.kind === 'SandboxConfig') ||
-    !bundle.manifests.some((resource) => resource.kind === 'NetworkPolicy')
-  ) {
-    throw new Error('The pinned installation bundle is incomplete.');
-  }
+  const preview = container.args.indexOf('--preview=');
+  container.args.splice(
+    preview < 0 ? container.args.length : preview,
+    0,
+    `--ingress-allowed-spiffe-ids=${ids.join(',')}`
+  );
+  return documents;
 }
 
-/** Install the exact release bundle through TypeKro's owned Kubernetes lifecycle. */
+function workerPoolObjects(
+  pools: readonly AgentSubstrateWorkerPool[]
+): AgentSubstrateReleaseDocument[] {
+  const namespaces = [...new Set(pools.map((pool) => pool.namespace))].sort();
+  return [
+    ...namespaces.map(
+      (name): AgentSubstrateReleaseDocument => ({
+        source: 'typekro',
+        scope: 'Cluster',
+        manifest: { apiVersion: 'v1', kind: 'Namespace', metadata: { name } },
+      })
+    ),
+    ...pools.map(
+      (pool): AgentSubstrateReleaseDocument => ({
+        source: 'typekro',
+        scope: 'Namespaced',
+        manifest: {
+          apiVersion: 'ate.dev/v1',
+          kind: 'WorkerPool',
+          metadata: { name: pool.name, namespace: pool.namespace },
+          spec: {
+            replicas: pool.replicas,
+            workerImage: release.images['ateworker-gvisor'],
+            sandboxClasses: [
+              {
+                name: 'gvisor',
+                ...(pool.sandboxConfig ? { configRef: { name: pool.sandboxConfig } } : {}),
+              },
+            ],
+            ...(pool.nodeSelector || pool.tolerations || pool.resources
+              ? {
+                  template: {
+                    ...(pool.nodeSelector ? { nodeSelector: { ...pool.nodeSelector } } : {}),
+                    ...(pool.tolerations ? { tolerations: structuredClone(pool.tolerations) } : {}),
+                    ...(pool.resources ? { resources: structuredClone(pool.resources) } : {}),
+                  },
+                }
+              : {}),
+          },
+        },
+      })
+    ),
+  ];
+}
+
+/**
+ * Apply order, as `ate-setup deploy ate-system` applies it: namespaces, CRDs, then RBAC,
+ * configuration, Services, policies and the SandboxConfig admission policy, then the
+ * SandboxConfig, the pod certificate controller, the control plane, and the WorkerPools.
+ */
+function phase({ kind, metadata }: AgentSubstrateManifest): number {
+  if (kind === 'Namespace') return 0;
+  if (kind === 'CustomResourceDefinition') return 1;
+  if (kind === 'SandboxConfig') return 3;
+  if (kind === 'Deployment' && metadata.name === 'podcertificate-controller') return 4;
+  if (kind === 'Deployment' || kind === 'DaemonSet') return 5;
+  if (kind === 'WorkerPool') return 6;
+  return 2;
+}
+
+const readinessKinds = new Set<string>([
+  'CustomResourceDefinition',
+  'Deployment',
+  'DaemonSet',
+  'SandboxConfig',
+  'WorkerPool',
+]);
+
+function pascal(value: string): string {
+  return value
+    .split(/[^A-Za-z0-9]+/u)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
+    .join('');
+}
+
+function resourceId({ kind, metadata }: AgentSubstrateManifest): string {
+  return `substrate${pascal(kind)}${kind === 'WorkerPool' ? pascal(metadata.namespace ?? '') : ''}${pascal(metadata.name)}`;
+}
+
+let verified = false;
+
+/**
+ * Install the reviewed Agent Substrate v1.0.0 bundle through TypeKro's Kubernetes lifecycle.
+ *
+ * The bundle is the release rendered from its tagged commit with digest-pinned release images
+ * (see `README.md`). It is checked against {@link agentSubstrateBundleSha256} before use. Root
+ * `status.ready` is true when every CRD, rollout, SandboxConfig and WorkerPool is ready by the
+ * same predicates the resource-level evaluators run.
+ */
 export function agentSubstrateInstallation(
-  bundle: AgentSubstrateInstallationBundle
+  options: AgentSubstrateInstallationOptions = {}
 ): CallableComposition<object, { ready: boolean }> {
-  validateBundle(bundle);
-  const manifests = structuredClone(bundle.manifests);
+  if (!verified) {
+    verifyAgentSubstrateRelease(release, agentSubstrateBundleSha256);
+    verified = true;
+  }
+  validateOptions(options);
+  const documents = [...releaseObjects(options), ...workerPoolObjects(options.workerPools ?? [])];
   return kubernetesComposition(
     {
       name: 'agent-substrate-installation-v1',
@@ -185,45 +233,50 @@ export function agentSubstrateInstallation(
       status: type({ ready: 'boolean' }),
     },
     () => {
-      const groups = new Map<number, string[]>();
-      const pools = [];
-      for (const manifest of [...manifests].sort((left, right) => phase(left) - phase(right))) {
-        const id = `substrate${createHash('sha256')
-          .update(`${manifest.metadata.namespace ?? ''}/${manifest.kind}/${manifest.metadata.name}`)
-          .digest('hex')
-          .slice(0, 16)}`;
-        const clusterScoped = clusterKinds.has(manifest.kind);
+      const ids = new Set<string>();
+      const ready: string[] = [];
+      const phases = new Map<
+        number,
+        { id: string; resource: { dependsOn(id: string): unknown } }[]
+      >();
+      for (const { scope, manifest } of documents) {
+        const id = resourceId(manifest);
+        if (ids.has(id)) {
+          throw new TypeKroError(
+            `Two installation objects share the id ${id}.`,
+            'AGENT_SUBSTRATE_DUPLICATE_ID',
+            { id }
+          );
+        }
+        ids.add(id);
         const resource = createResource(
-          { ...manifest, id } as KubernetesResource<
+          { ...manifest, id } as unknown as KubernetesResource<
             Record<string, unknown>,
             Record<string, unknown>
           >,
-          { scope: clusterScoped ? 'cluster' : 'namespaced' }
+          { scope: scope === 'Cluster' ? 'cluster' : 'namespaced' }
         );
-        if (clusterScoped) setMetadataField(resource, 'scopes', ['agent-substrate-cluster']);
-        if (manifest.kind === 'CustomResourceDefinition') setReadinessEvaluator(resource, crdReady);
-        if (manifest.kind === 'Deployment')
-          setReadinessEvaluator(resource, substrateDeploymentReadiness);
-        if (manifest.kind === 'DaemonSet')
-          setReadinessEvaluator(resource, substrateDaemonSetReadiness);
-        if (manifest.kind === 'SandboxConfig')
-          setReadinessEvaluator(resource, substrateSandboxConfigReadiness);
-        if (manifest.kind === 'WorkerPool') {
-          setReadinessEvaluator(resource, substrateWorkerPoolReadiness);
-          pools.push(
-            Cel.expr<boolean>(resource.status.readyReplicas, ' == ', resource.spec.replicas)
-          );
+        if (scope === 'Cluster') setMetadataField(resource, 'scopes', ['agent-substrate-cluster']);
+        if (readinessKinds.has(manifest.kind)) {
+          const kind = manifest.kind as SubstrateReadinessKind;
+          setReadinessEvaluator(resource, substrateReadiness[kind]);
+          ready.push(`(${substrateReadyCel(kind, id)})`);
         }
         const order = phase(manifest);
-        // The direct graph uses these same edges in reverse to remove owned resources.
-        for (const [prior, dependencies] of groups) {
-          if (prior < order) for (const dependency of dependencies) resource.dependsOn(dependency);
-        }
-        const peers = groups.get(order);
-        if (peers) peers.push(id);
-        else groups.set(order, [id]);
+        const members = phases.get(order) ?? [];
+        members.push({ id, resource });
+        phases.set(order, members);
       }
-      return { ready: pools.reduce((left, right) => Cel.expr<boolean>(left, ' && ', right)) };
+      // Each phase waits for the one before it. Namespaces are never an explicit dependsOn
+      // target: namespaced objects already wait for their Namespace.
+      const ordered = [...phases.keys()].sort((left, right) => left - right);
+      let previous: string[] = [];
+      for (const order of ordered) {
+        const members = phases.get(order) ?? [];
+        for (const { resource } of members) for (const id of previous) resource.dependsOn(id);
+        if (order !== 0) previous = members.map(({ id }) => id);
+      }
+      return { ready: Cel.expr<boolean>(ready.join(' && ')) };
     }
   );
 }

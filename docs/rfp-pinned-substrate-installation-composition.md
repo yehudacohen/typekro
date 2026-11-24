@@ -11,17 +11,28 @@ these authorities is delegated to Substrate snapshots.
 
 ## Exact object boundary
 
-The `typekro/agent-substrate` composition accepts the reviewed release's rendered Kubernetes bundle, with digest-pinned images, an explicit namespace, a WorkerPool, and references to the selected PostgreSQL and private snapshot store. The installation applies actual Kubernetes CRDs `WorkerPool` (namespaced, with
-`status.replicas`, `status.readyReplicas` and selector) and cluster-scoped
-`SandboxConfig` (content-addressed assets, no status subresource). It can include the release's `CSIDriverConfig` definition. The bundle contains the API
-server/PostgreSQL migration, controller, `atelet` DaemonSet, router/egress,
-RBAC, network and snapshot-storage resources. `ActorTemplate`, `Actor` and
-`Worker` are instead `ateapi.Control` gRPC proto resources: they are not CRDs
-and must never be represented as Kubernetes manifests.
+`typekro/agent-substrate` installs the release bundle vendored in
+`src/factories/agent-substrate/releases/v1.0.0.ts`, rendered from the tagged commit with the
+release's digest-pinned images and checked against its reviewed sha256 (see the factory's
+README). It is the control plane `ate-setup deploy ate-system` installs in the canonical
+`ate-system` namespace: the `WorkerPool`, `SandboxConfig` and `CSIDriverConfig` CRDs, RBAC, the
+SandboxConfig admission policy, the gVisor class-default SandboxConfig, the pod certificate
+controller, the API, IdP and controller Deployments, the `atelet` DaemonSet, the router and egress
+gateway, and the network policies. Callers add only gVisor WorkerPools and the router's ingress
+SPIFFE allowlist. PostgreSQL, the snapshot store, and the CA, JWT and configuration objects
+`ate-setup` generates stay with their own owners and are referenced by name. `ActorTemplate`,
+`Actor` and `Worker` are `ateapi.Control` gRPC resources, not CRDs, and are never Kubernetes
+manifests.
 
-Readiness checks both CRD conditions, matching rollout generations, WorkerPool counts and resolved sandbox configuration. The API Deployment must carry the release `/readyz` probe. That probe becomes available after PostgreSQL connects and schema migration finishes. SandboxConfig readiness checks the active version's digest pins. The worker verifies the actual assets when it starts. The runtime proof must exercise that step.
+Readiness is one CEL predicate per kind, run by the resource evaluators and conjoined for the root
+status: CRD conditions, current-generation rollouts with no older pods, and WorkerPools whose
+classes resolved the current generation with no pending config switch. The API server's `/readyz`
+probe, part of the release, passes only after PostgreSQL connects and migrations finish. The
+worker verifies SandboxConfig assets when it starts; the runtime proof must exercise that step.
 
-TypeKro follows the installation graph in reverse for uninstall. Cluster-scoped resources have an explicit deletion scope. The database, snapshot store and existing Secrets stay under their own lifecycle. Upgrades and cleanup require application-owned actor drain and finalization before changing the installation.
+TypeKro follows the installation graph in reverse for uninstall. Cluster-scoped resources have an
+explicit deletion scope. Upgrades and cleanup require application-owned actor drain and
+finalization before changing the installation.
 
 ## Focused external registration seam
 

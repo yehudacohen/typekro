@@ -234,6 +234,7 @@
     "test:integration:clickstack-queue": "REQUIRE_DOCKER_TESTS=true bun test --timeout 300000 test/integration/clickstack/queue-compaction.test.ts",
     "build:hyperdx-oidc-plugin": "bun run scripts/build-hyperdx-oidc-plugin.ts",
     "check:hyperdx-oidc-plugin": "bun run scripts/build-hyperdx-oidc-plugin.ts --check",
+    "test:integration:agent-substrate": "TYPEKRO_AGENT_SUBSTRATE_LIVE=true NODE_TLS_REJECT_UNAUTHORIZED=0 bun test test/integration/agent-substrate/kind-install.test.ts --timeout 900000",
     "test:integration:cnpg-barman-cloud": "TYPEKRO_BARMAN_CLOUD_LIVE=true NODE_TLS_REJECT_UNAUTHORIZED=0 bun test test/integration/cnpg/barman-cloud-backup-restore.test.ts --timeout 1800000",
     "test:integration:cnpg-operator-upgrade": "TYPEKRO_CNPG_UPGRADE_LIVE=true NODE_TLS_REJECT_UNAUTHORIZED=0 bun test test/integration/cnpg/operator-upgrade.test.ts --timeout 1800000",
     "test:integration:e2e": "bun test --timeout 60000 test/integration/e2e-cluster.test.ts",

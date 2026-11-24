@@ -1,0 +1,14 @@
+# A disposable kind cluster for test/integration/agent-substrate/kind-install.test.ts.
+# The same node version as the bundle's schema fixture, with the pod certificate APIs the release's
+# projected volumes use (Agent Substrate's hack/create-kind-cluster.sh at v1.0.0 enables the same).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+featureGates:
+  ClusterTrustBundle: true
+  ClusterTrustBundleProjection: true
+  PodCertificateRequest: true
+runtimeConfig:
+  'certificates.k8s.io/v1beta1': 'true'
