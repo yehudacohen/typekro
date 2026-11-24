@@ -145,10 +145,7 @@ function schemaNode(value: unknown, path: string): asserts value is SchemaNodeIR
       schemaNode(node.values, `${path}.values`);
       return;
     case 'object': {
-      if (
-        node.additionalProperties !== undefined &&
-        node.additionalProperties !== true
-      ) {
+      if (node.additionalProperties !== undefined && node.additionalProperties !== true) {
         throw new DesiredStatePlanDecodeError(
           `Invalid additionalProperties flag at ${path}.`,
           `${path}.additionalProperties`
@@ -324,6 +321,12 @@ function node(value: unknown, path: string): string {
   );
   if (item.readinessStrategy !== undefined) {
     readinessStrategy(item.readinessStrategy, `${path}.readinessStrategy`);
+  }
+  if (item.applyPolicy !== undefined) {
+    string(
+      record(item.applyPolicy, `${path}.applyPolicy`).strategy,
+      `${path}.applyPolicy.strategy`
+    );
   }
   if (item.iteration !== undefined) {
     array(item.iteration, `${path}.iteration`).forEach((entry, index) => {

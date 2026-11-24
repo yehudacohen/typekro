@@ -3,8 +3,9 @@
  * scopes against the real upstream CRDs and Kubernetes OpenAPI, its images, the canonical
  * namespace, and the narrow options.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { join } from 'node:path';
+import { KubeConfig } from '@kubernetes/client-node';
 import { loadAll } from 'js-yaml';
 
 import {
@@ -22,6 +23,8 @@ import {
   workloadImages,
 } from '../../../src/factories/agent-substrate/release.js';
 import { agentSubstrateV1_0_0 as release } from '../../../src/factories/agent-substrate/releases/v1.0.0.js';
+import { ResourceApplier } from '../../../src/core/deployment/resource-applier.js';
+import { getMetadataField } from '../../../src/core/metadata/index.js';
 import { loadKubernetesOpenApi } from '../../utils/kubernetes-openapi.js';
 
 const kubernetes = loadKubernetesOpenApi(
@@ -294,4 +297,43 @@ describe('Agent Substrate namespace ownership', () => {
     });
     expect(rendered.filter(({ kind }) => kind === 'WorkerPool')).toHaveLength(2);
   });
+});
+
+describe('Agent Substrate namespace ownership through the direct deploy path', () => {
+  test('the Namespace reaching the applier carries requireOwnerAnnotation', async () => {
+    const applied: { kind: string; policy: unknown }[] = [];
+    const spy = spyOn(ResourceApplier.prototype, 'applyResourceToCluster').mockImplementation(
+      async (resource) => {
+        applied.push({
+          kind: resource.kind,
+          policy: getMetadataField(resource, 'applyPolicy'),
+        });
+        return { ...resource, metadata: { ...resource.metadata, uid: 'stub' } } as never;
+      }
+    );
+    try {
+      const kubeConfig = new KubeConfig();
+      kubeConfig.loadFromOptions({
+        clusters: [{ name: 'stub', server: 'https://127.0.0.1:1', skipTLSVerify: true }],
+        users: [{ name: 'stub', token: 'stub' }],
+        contexts: [{ name: 'stub', cluster: 'stub', user: 'stub' }],
+        currentContext: 'stub',
+      });
+      const factory = agentSubstrateInstallation({
+        workerPools: [{ namespace: 'agents', name: 'default', replicas: 2 }],
+      }).factory('direct', { kubeConfig, waitForReady: false, timeout: 5_000 });
+      // The cluster behind the stub kubeconfig does not exist; only what reaches the applier matters.
+      await factory.deploy({}).catch(() => undefined);
+    } finally {
+      spy.mockRestore();
+    }
+    const namespaces = applied.filter(({ kind }) => kind === 'Namespace');
+    expect(namespaces.length).toBeGreaterThan(0);
+    for (const { policy } of namespaces) {
+      expect(policy).toMatchObject({
+        strategy: 'create-or-patch',
+        requireOwnerAnnotation: agentSubstrateNamespaceOwnerAnnotation,
+      });
+    }
+  }, 30_000);
 });

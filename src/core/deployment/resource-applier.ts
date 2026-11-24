@@ -802,6 +802,24 @@ export class ResourceApplier implements ArtifactResourceApplier {
               ensureError(error)
             );
           }
+          // A create can race past the 404 read. Never let the generic conflict path
+          // touch an object whose ownership has not been verified.
+          const requiredOwner =
+            applyPolicy?.strategy === 'create-or-patch'
+              ? applyPolicy.requireOwnerAnnotation
+              : undefined;
+          if (requiredOwner) {
+            const current = await this.checkResourceExists(resolvedResource, resourceLogger);
+            if (!current) continue;
+            if (current.metadata?.annotations?.[requiredOwner.key] !== requiredOwner.value) {
+              throw new ResourceOwnershipError(
+                resolvedResource.metadata?.name || 'unknown',
+                resolvedResource.kind || 'Unknown',
+                requiredOwner,
+                resolvedResource.metadata?.namespace
+              );
+            }
+          }
           const conflictStrategy =
             applyPolicy?.strategy === 'create-or-patch'
               ? applyPolicy.existingResource

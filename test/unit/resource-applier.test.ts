@@ -707,6 +707,31 @@ describe('ResourceApplier', () => {
         expect(mockApi.patch).not.toHaveBeenCalled();
       });
 
+      it('rechecks ownership when a create races to a 409 and refuses an unowned object', async () => {
+        mockApi.read
+          .mockImplementationOnce(() => Promise.reject(createK8sError('Not Found', 404)))
+          .mockResolvedValue(namespaceOf({ unrelated: 'yes' }));
+        mockApi.create.mockImplementation(() =>
+          Promise.reject(createK8sError('Already Exists', 409))
+        );
+        await expect(
+          applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger)
+        ).rejects.toBeInstanceOf(ResourceOwnershipError);
+        expect(mockApi.patch).not.toHaveBeenCalled();
+      });
+
+      it('patches after a create 409 when the raced object carries the mark', async () => {
+        mockApi.read
+          .mockImplementationOnce(() => Promise.reject(createK8sError('Not Found', 404)))
+          .mockResolvedValue(namespaceOf({ [owner.key]: owner.value }));
+        mockApi.create.mockImplementation(() =>
+          Promise.reject(createK8sError('Already Exists', 409))
+        );
+        mockApi.patch.mockImplementation((resource) => Promise.resolve(resource));
+        await applier.applyResourceToCluster(owned(), createTestOptions(), mockLogger);
+        expect(mockApi.patch).toHaveBeenCalledTimes(1);
+      });
+
       it('creates a missing object and patches one it already marked', async () => {
         mockApi.read.mockImplementation(() => Promise.reject(createK8sError('Not Found', 404)));
         mockApi.create.mockImplementation((resource) => Promise.resolve(resource));

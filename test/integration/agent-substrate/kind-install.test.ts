@@ -49,6 +49,24 @@ const options: AgentSubstrateInstallationOptions = {
   workerPools: [{ namespace: 'typekro-substrate-agents', name: 'pool', replicas: 0 }],
 };
 
+/** Whether the error, or anything it wraps, is the ownership refusal. */
+function refusesOwnership(error: unknown, seen = new Set<unknown>()): boolean {
+  if (!error || typeof error !== 'object' || seen.has(error)) return false;
+  seen.add(error);
+  const candidate = error as {
+    name?: string;
+    cause?: unknown;
+    errors?: unknown[];
+    context?: unknown;
+  };
+  return (
+    candidate.name === 'ResourceOwnershipError' ||
+    refusesOwnership(candidate.cause, seen) ||
+    (candidate.errors ?? []).some((inner) => refusesOwnership(inner, seen)) ||
+    refusesOwnership(candidate.context, seen)
+  );
+}
+
 interface Live {
   apiVersion: string;
   kind: string;
@@ -198,6 +216,41 @@ describeOrSkip('Agent Substrate v1.0.0 on a disposable cluster', () => {
           `${template.kind}/${template.metadata.name} deleted`
         );
       }
+    }
+  });
+  it('refuses to adopt a pre-existing Namespace it did not create and leaves it untouched', async () => {
+    const unowned: Live = {
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: { name: 'agents' },
+    };
+    expect(await read(unowned)).toBeUndefined();
+    await api?.create({
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: { name: 'agents', labels: { owner: 'someone-else' } },
+    });
+    const before = (await read(unowned)) as Live & { metadata: { resourceVersion?: string } };
+    try {
+      const guarded = agentSubstrateInstallation({
+        workerPools: [{ namespace: 'agents', name: 'default', replicas: 0 }],
+      }).factory('direct', {
+        ...(kubeConfig ? { kubeConfig } : {}),
+        waitForReady: false,
+        timeout: 120_000,
+      });
+      const failure = await guarded.deploy({}).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(failure).toBeDefined();
+      expect(refusesOwnership(failure)).toBe(true);
+      const after = (await read(unowned)) as Live & { metadata: { resourceVersion?: string } };
+      expect(before.metadata.resourceVersion).toBeDefined();
+      expect(after.metadata.resourceVersion).toEqual(before.metadata.resourceVersion as string);
+      expect(JSON.stringify(after.metadata) ?? '').not.toContain('agent-substrate');
+    } finally {
+      await api?.delete(unowned as never);
     }
   });
 });

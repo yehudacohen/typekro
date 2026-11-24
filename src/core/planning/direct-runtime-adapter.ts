@@ -218,6 +218,7 @@ export function materializeDirectArtifactManifest(
   }
   setResourceId(manifest, logicalId);
   if (artifact.identity?.scope) setMetadataField(manifest, 'scope', artifact.identity.scope);
+  // The compiled artifact already merged the resource's own policy over the default.
   if (isAppliedArtifact(artifact)) setMetadataField(manifest, 'applyPolicy', artifact.apply);
   const readinessStrategy = artifact.readiness.strategy;
   if (readinessStrategy?.kind === 'runtime-binding') {

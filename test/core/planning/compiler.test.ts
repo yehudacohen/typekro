@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { getReadinessEvaluator, getResourceId } from '../../../src/core/metadata/index.js';
+import {
+  getMetadataField,
+  getReadinessEvaluator,
+  getResourceId,
+  setMetadataField,
+} from '../../../src/core/metadata/index.js';
 import { resolvePortableReadinessStrategy } from '../../../src/core/readiness/index.js';
 import { Cel } from '../../../src/core/references/cel.js';
 import {
@@ -62,6 +67,35 @@ const compilerFixture = kubernetesComposition(
       data: { source: observed.status.endpoint },
     });
     return { ready: config.metadata.name === spec.name };
+  }
+);
+
+// One resource declares its own apply policy; its sibling relies on the default.
+const ownPolicy = {
+  strategy: 'create-or-patch',
+  existingResource: 'patch',
+  immutableFieldPolicy: 'fail',
+  requireOwnerAnnotation: { key: 'example.test/owner', value: 'one' },
+} as const;
+const ownPolicyFixture = kubernetesComposition(
+  {
+    name: 'own-policy-fixture',
+    apiVersion: 'testing.typekro.dev/v1alpha1',
+    kind: 'OwnPolicyFixture',
+    revision: '1',
+    spec: type({ name: 'string', namespace: 'string' }),
+    status: type({ ready: 'boolean' }),
+  },
+  (spec) => {
+    const guarded = simple.ConfigMap({
+      id: 'guarded',
+      name: spec.name,
+      namespace: spec.namespace,
+      data: { a: 'b' },
+    });
+    setMetadataField(guarded, 'applyPolicy', ownPolicy);
+    simple.ConfigMap({ id: 'plain', name: 'plain', namespace: spec.namespace, data: { a: 'b' } });
+    return { ready: guarded.metadata.name === spec.name };
   }
 );
 
@@ -291,6 +325,34 @@ describe('semantic artifact compilers', () => {
     expect(observed).not.toHaveProperty('apply');
   });
 
+  it('keeps a resource own apply policy over the default through compile and materialize', () => {
+    const plan = ownPolicyFixture.plan!({ name: 'demo', namespace: 'apps' }, { strict: true });
+    const factoryDefault = {
+      strategy: 'create-or-patch',
+      existingResource: 'warn',
+      immutableFieldPolicy: 'recreate',
+    } as const;
+    const artifacts = compileDirectArtifactPlan(plan, { applyPolicy: factoryDefault });
+    const applyOf = (id: string) =>
+      (artifacts.resources.find((resource) => resource.id === id) as DirectApplicationArtifact)
+        .apply;
+    // The resource's own fields win; the default fills what it leaves unset.
+    expect(applyOf('guarded')).toEqual({ ...factoryDefault, ...ownPolicy });
+    expect(applyOf('plain')).toEqual(factoryDefault);
+
+    const graph = directArtifactPlanToResourceGraph(artifacts, {
+      instanceName: 'demo',
+      spec: { name: 'demo', namespace: 'apps' },
+      resolveReadinessStrategy: resolvePortableReadinessStrategy,
+    });
+    const manifest = (id: string) =>
+      graph.resources.find((resource) => getResourceId(resource.manifest) === id)!.manifest;
+    expect(getMetadataField(manifest('guarded'), 'applyPolicy')).toMatchObject({
+      requireOwnerAnnotation: ownPolicy.requireOwnerAnnotation,
+    });
+    expect(getMetadataField(manifest('plain'), 'applyPolicy')).toEqual(factoryDefault);
+  });
+
   it('adapts direct artifacts into the established deployment graph without losing references', () => {
     const plan = compilerFixture.plan!({ name: 'demo', namespace: 'apps' }, { strict: true });
     const artifacts = compileDirectArtifactPlan(plan);
@@ -489,8 +551,9 @@ describe('semantic artifact compilers', () => {
         identity: { ...reference.identity, name: { kind: 'literal', value: 'changed-source' } },
       })),
     };
-    expect(() => decodeDirectArtifactExecutionRecord(JSON.stringify(changedObservation)))
-      .toThrow('digest does not match');
+    expect(() => decodeDirectArtifactExecutionRecord(JSON.stringify(changedObservation))).toThrow(
+      'digest does not match'
+    );
 
     const corrupted = JSON.parse(encoded) as {
       artifact: { id: string };

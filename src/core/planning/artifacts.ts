@@ -40,6 +40,18 @@ export type ArtifactApplyPolicy =
   | { readonly strategy: 'create-only' }
   | { readonly strategy: 'replace' };
 
+/**
+ * Layer a resource's own apply policy over a default. Fields the resource sets win; a policy
+ * of a different strategy replaces the default entirely because the variants share no fields.
+ */
+export function mergeArtifactApplyPolicy(
+  base: ArtifactApplyPolicy,
+  own: ArtifactApplyPolicy | undefined
+): ArtifactApplyPolicy {
+  if (!own) return base;
+  return own.strategy === base.strategy ? ({ ...base, ...own } as ArtifactApplyPolicy) : own;
+}
+
 export interface ArtifactCompilerIdentity {
   readonly id: 'typekro.direct' | 'typekro.kro';
   readonly version: number;

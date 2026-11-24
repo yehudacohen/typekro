@@ -1818,6 +1818,7 @@ function buildResourceNodes(
           ]
         : []),
     ]);
+    const applyPolicy = getMetadataField(resource, 'applyPolicy');
     nodes.push({
       id: logicalId,
       type: 'kubernetes-resource',
@@ -1827,6 +1828,7 @@ function buildResourceNodes(
       activation,
       readiness,
       ...(readinessStrategy ? { readinessStrategy } : {}),
+      ...(applyPolicy ? { applyPolicy } : {}),
       ...(iteration.length > 0 ? { iteration } : {}),
       ...(templateOverrides.length > 0 ? { templateOverrides } : {}),
       requiredCapabilities,
