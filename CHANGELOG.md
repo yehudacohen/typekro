@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-11-24
+
+### Added
+
+- **Agent Substrate v1 installation.** `typekro/agent-substrate` installs the Kubernetes control
+  plane of Agent Substrate v1.0.0 as ordinary TypeKro declarations: resources apply in dependency
+  order, every rollout has readiness, and uninstall follows the graph in reverse. The bundle is
+  vendored from the commit tag `v1.0.0` names, with each image pinned to the release's index
+  digest and each object's scope taken from the bundle CRDs or the Kubernetes OpenAPI. The
+  composition refuses content that doesn't match the reviewed sha256, and CI re-renders the bundle
+  from upstream (`bun run check:agent-substrate-bundle`). Callers set only the router's ingress
+  SPIFFE allowlist and gVisor WorkerPools; the namespace is the canonical `ate-system`. Readiness
+  is one CEL predicate per kind, shared by the resource evaluators and the root `status.ready`.
+- **Namespace ownership.** Namespaces the installation creates carry the
+  `typekro.io/agent-substrate-installation` annotation. Apply refuses an existing Namespace without
+  it (`ResourceOwnershipError`), before any patch, including when a create races into a 409, so an
+  uninstall never deletes a namespace the installation didn't create.
+- **Per-resource apply policies.** `create-or-patch` takes an optional `requireOwnerAnnotation`.
+  A resource's own apply policy now survives direct-mode compilation, merged over the factory
+  default rather than replaced by it.
+- An opt-in disposable-cluster test: `bun run test:integration:agent-substrate` (kind). It fails,
+  rather than skips, when requested without a cluster.
+
+- Agent Substrate resource ids carry a short hash suffix, so names that differ only in
+  punctuation (`a-b`, `a--b`) can't collide.
+
+### Maintenance
+
+- The Alchemy Kubernetes capture CI job uses `actions/checkout@v7`, like the other jobs.
+
 ## [0.50.0] - 2026-11-23
 
 ### Added

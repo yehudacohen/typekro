@@ -1,6 +1,6 @@
 {
   "name": "typekro",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "repository": {
