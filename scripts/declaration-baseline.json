@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.50.0",
+  "packageVersion": "0.51.0",
   "owners": {
     "advanced": {
       "files": 1,
@@ -8,6 +8,13 @@
       "surfaceBytes": 3113,
       "docBytes": 1111,
       "commentBytes": 1146
+    },
+    "agent-substrate": {
+      "files": 1,
+      "rawBytes": 2982,
+      "surfaceBytes": 1358,
+      "docBytes": 1589,
+      "commentBytes": 1624
     },
     "alchemy": {
       "files": 16,
@@ -74,10 +81,10 @@
     },
     "core": {
       "files": 276,
-      "rawBytes": 910098,
-      "surfaceBytes": 416912,
-      "docBytes": 481807,
-      "commentBytes": 493186
+      "rawBytes": 911277,
+      "surfaceBytes": 417532,
+      "docBytes": 482366,
+      "commentBytes": 493745
     },
     "crowdsec": {
       "files": 11,
@@ -235,8 +242,8 @@
     }
   },
   "reachable": {
-    "files": 628,
-    "rawBytes": 2360123
+    "files": 629,
+    "rawBytes": 2364284
   },
   "unreachable": {
     "files": 0,
