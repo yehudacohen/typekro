@@ -190,6 +190,7 @@
     "build:lib": "bun tsc --incremental false && bun run scripts/declaration-budgets/prune.ts",
     "build:examples": "bun tsc --project tsconfig.examples.json",
     "check:declaration-budgets": "bun run scripts/declaration-budgets/cli.ts",
+    "check:agent-substrate-bundle": "bun run scripts/vendor-agent-substrate-release.ts --check",
     "check:effect-cohort": "bun run scripts/check-effect-cohort.ts",
     "check:public-api": "bun run scripts/declaration-budgets/api-snapshot.ts",
     "dev": "bun tsc --watch",

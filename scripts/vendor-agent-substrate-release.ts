@@ -118,15 +118,23 @@ async function fetchOk(url: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
+/** GitHub API reads; a token, when the environment has one, avoids the anonymous rate limit. */
+const github = (path: string) =>
+  fetchOk(`https://api.github.com/repos/${REPOSITORY}/${path}`, {
+    headers: process.env.GITHUB_TOKEN
+      ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
+      : {},
+  });
+
 async function verifyTag(): Promise<void> {
-  const ref = (await (
-    await fetchOk(`https://api.github.com/repos/${REPOSITORY}/git/ref/tags/${VERSION}`)
-  ).json()) as { object: { type: string; sha: string } };
+  const ref = (await (await github(`git/ref/tags/${VERSION}`)).json()) as {
+    object: { type: string; sha: string };
+  };
   let commit = ref.object.sha;
   if (ref.object.type === 'tag') {
-    const tag = (await (
-      await fetchOk(`https://api.github.com/repos/${REPOSITORY}/git/tags/${ref.object.sha}`)
-    ).json()) as { object: { sha: string } };
+    const tag = (await (await github(`git/tags/${ref.object.sha}`)).json()) as {
+      object: { sha: string };
+    };
     commit = tag.object.sha;
   }
   if (commit !== SOURCE_COMMIT) {

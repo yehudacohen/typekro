@@ -57,6 +57,14 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run check:effect-cohort
 
+      # Re-renders the vendored Agent Substrate bundle from the tagged upstream commit and the
+      # release images on ghcr.io, and fails unless it matches what is checked in.
+      - name: Agent Substrate bundle matches its upstream release
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun run check:agent-substrate-bundle
+
       - name: Packed artifact budgets and imports
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:packed-imports
