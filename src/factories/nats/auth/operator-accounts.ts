@@ -488,6 +488,15 @@ function jetStreamPublishSubjects(
       );
     }
   }
+  return [
+    // Account information: the JetStream client's own first call (`jetstream()` and `jetstreamManager()` check
+    // the API with it). It names no stream, so it does not widen the per-stream scope.
+    '$JS.API.INFO',
+    ...scopedStreamSubjects(streams),
+  ];
+}
+
+function scopedStreamSubjects(streams: readonly string[]): string[] {
   return [...new Set(streams)].flatMap((stream) => [
     ...STREAM_API.map((operation) => `$JS.API.${operation}.${stream}`),
     ...CONSUMER_API.map((operation) => `$JS.API.${operation}.${stream}.*`),
