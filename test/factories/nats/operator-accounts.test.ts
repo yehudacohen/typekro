@@ -167,6 +167,7 @@ describe('NATS operator accounts', () => {
     if (!scoped.pub || !scoped.sub) throw new Error('Expected scoped publish and subscribe claims');
     expect(scoped.pub.allow).toEqual(
       expect.arrayContaining([
+        '$JS.API.INFO',
         '$JS.API.STREAM.INFO.ORDERS',
         '$JS.API.CONSUMER.CREATE.ORDERS.>',
         '$JS.API.CONSUMER.MSG.NEXT.AUDIT_LOG.*',
@@ -174,7 +175,6 @@ describe('NATS operator accounts', () => {
       ])
     );
     expect(scoped.pub.allow).not.toContain('$JS.API.>');
-    expect(scoped.pub.allow).not.toContain('$JS.API.INFO');
     expect(scoped.pub.allow).not.toContain('$JS.API.STREAM.LIST');
     expect(scoped.pub.allow).not.toContain('$JS.ACK.>');
     expect(scoped.sub.allow).toEqual(['orders', 'orders.>', `${consumer?.inboxPrefix}.>`]);
